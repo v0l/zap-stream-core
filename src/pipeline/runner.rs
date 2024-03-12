@@ -12,9 +12,10 @@ impl PipelineRunner {
     pub async fn push(&mut self, bytes: bytes::Bytes) -> Result<(), anyhow::Error> {
         let mut output = PipelinePayload::Bytes(bytes);
         for step in &mut self.steps {
-            let output2 = step.process(output).await?;
-            //info!("{} result: {:?}", step.name(), output2);
-            output = output2;
+            match step.process(output).await? {
+                Some(pkg) => output = pkg,
+                None => break,
+            }
         }
         Ok(())
     }
