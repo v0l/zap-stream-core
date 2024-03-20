@@ -1,0 +1,12 @@
+# List of endpoints to listen on
+# currently supporting srt/tcp
+endpoints = [
+    "srt://127.0.0.1:3333",
+    "tcp://127.0.0.1:3334"
+]
+
+# Output directory for egress
+output_dir = "./out"
+
+# Wehook system url (required)
+webhook_url = "http://localhost:5873/api/v1/stream-core"

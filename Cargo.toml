@@ -5,8 +5,8 @@ edition = "2021"
 
 [dependencies]
 srt-tokio = "0.4.3"
-tokio = { version = "1.36.0" , features = ["rt-multi-thread"]}
-anyhow = "1.0.80"
+tokio = { version = "1.36.0" , features = ["rt-multi-thread", "sync"]}
+anyhow = { version = "1.0.80", features = ["backtrace"] }
 pretty_env_logger = "0.5.0"
 bytes = "1.5.0"
 tokio-stream = "0.1.14"
@@ -15,3 +15,8 @@ async-trait = "0.1.77"
 log = "0.4.21"
 ffmpeg-sys-next = { version = "6.1.0", features = ["avformat", "avcodec", "swscale", "avfilter"]}
 libc = "0.2.153"
+pretty-hex = "0.4.1"
+uuid = { version = "1.8.0", features = ["v4", "serde"] }
+serde = { version = "1.0.197", features = ["derive"] }
+config = { version = "0.14.0", features = ["toml"] }
+url = "2.5.0"
