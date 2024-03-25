@@ -2,7 +2,9 @@ use std::ops::{Add, AddAssign};
 use std::time::{Duration, Instant};
 
 use anyhow::Error;
+use itertools::Itertools;
 use log::info;
+use tokio::runtime::Runtime;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
@@ -11,9 +13,10 @@ use crate::demux::Demuxer;
 use crate::demux::info::{DemuxStreamInfo, StreamChannelType};
 use crate::egress::hls::HlsEgress;
 use crate::encode::Encoder;
-use crate::pipeline::{EgressType, PipelineConfig, PipelinePayload, PipelineStep};
+use crate::pipeline::{EgressType, PipelineConfig, PipelinePayload};
 use crate::scale::Scaler;
 use crate::variant::VariantStream;
+use crate::webhook::Webhook;
 
 struct ScalerEncoder {
     pub scaler: Scaler,
@@ -31,10 +34,15 @@ pub struct PipelineRunner {
     started: Instant,
     frame_no: u64,
     stream_info: Option<DemuxStreamInfo>,
+    webhook: Webhook,
 }
 
 impl PipelineRunner {
-    pub fn new(config: PipelineConfig, recv: UnboundedReceiver<bytes::Bytes>) -> Self {
+    pub fn new(
+        config: PipelineConfig,
+        webhook: Webhook,
+        recv: UnboundedReceiver<bytes::Bytes>,
+    ) -> Self {
         let (demux_out, demux_in) = unbounded_channel();
         let (dec_tx, dec_rx) = broadcast::channel::<PipelinePayload>(32);
         Self {
@@ -48,6 +56,7 @@ impl PipelineRunner {
             started: Instant::now(),
             frame_no: 0,
             stream_info: None,
+            webhook,
         }
     }
 
@@ -102,6 +111,9 @@ impl PipelineRunner {
         info!("Configuring pipeline {:?}", info);
         self.stream_info = Some(info.clone());
 
+        // re-configure with demuxer info
+        self.config = self.webhook.configure(&info);
+
         let video_stream = info
             .channels
             .iter()
@@ -116,16 +128,16 @@ impl PipelineRunner {
                             .push(HlsEgress::new(egress_rx, self.config.id, cfg.clone()));
 
                         for v in &cfg.variants {
-                            let (var_tx, var_rx) = unbounded_channel();
                             match v {
                                 VariantStream::Video(vs) => {
+                                    let (sw_tx, sw_rx) = unbounded_channel();
                                     self.scalers.push(ScalerEncoder {
                                         scaler: Scaler::new(
                                             self.decoder_output.resubscribe(),
-                                            var_tx.clone(),
+                                            sw_tx.clone(),
                                             vs.clone(),
                                         ),
-                                        encoder: Encoder::new(var_rx, egress_tx.clone(), v.clone()),
+                                        encoder: Encoder::new(sw_rx, egress_tx.clone(), v.clone()),
                                     });
                                 }
                                 VariantStream::Audio(_) => {

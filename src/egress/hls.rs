@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::mem::transmute;
 use std::ptr;
@@ -14,9 +15,8 @@ use ffmpeg_sys_next::{
 use ffmpeg_sys_next::AVChannelOrder::AV_CHANNEL_ORDER_NATIVE;
 use ffmpeg_sys_next::AVColorSpace::AVCOL_SPC_BT709;
 use ffmpeg_sys_next::AVMediaType::{AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_VIDEO};
-use ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV420P;
-use ffmpeg_sys_next::AVSampleFormat::AV_SAMPLE_FMT_FLT;
 use futures_util::StreamExt;
+use itertools::Itertools;
 use log::info;
 use tokio::sync::mpsc::{Receiver, UnboundedReceiver};
 use uuid::{Bytes, Uuid, Variant};
@@ -26,6 +26,8 @@ use crate::fraction::Fraction;
 use crate::pipeline::{HLSEgressConfig, PipelinePayload};
 use crate::utils::{get_ffmpeg_error_msg, id_ref_to_uuid};
 use crate::variant::{VariantStream, VideoVariant};
+
+use ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV420P;
 
 pub struct HlsEgress {
     /// Pipeline id
@@ -56,11 +58,13 @@ impl HlsEgress {
     unsafe fn setup_muxer(&mut self) -> Result<(), Error> {
         let mut ctx = ptr::null_mut();
 
+        let base = format!("{}/{}", self.config.out_dir, self.id);
+
         let ret = avformat_alloc_output_context2(
             &mut ctx,
             ptr::null(),
             "hls\0".as_ptr() as *const libc::c_char,
-            format!("{}/stream_%v/live.m3u8\0", self.id).as_ptr() as *const libc::c_char,
+            format!("{}/stream_%v/live.m3u8\0", base).as_ptr() as *const libc::c_char,
         );
         if ret < 0 {
             return Err(Error::msg(get_ffmpeg_error_msg(ret)));
@@ -69,7 +73,7 @@ impl HlsEgress {
         av_opt_set(
             (*ctx).priv_data,
             "hls_segment_filename\0".as_ptr() as *const libc::c_char,
-            format!("{}/stream_%v/seg_%05d.ts\0", self.id).as_ptr() as *const libc::c_char,
+            format!("{}/stream_%v/seg_%05d.ts\0", base).as_ptr() as *const libc::c_char,
             0,
         );
 
@@ -94,16 +98,8 @@ impl HlsEgress {
             0,
         );
 
-        info!("map_str={}", self.config.stream_map);
-
-        av_opt_set(
-            (*ctx).priv_data,
-            "var_stream_map\0".as_ptr() as *const libc::c_char,
-            format!("{}\0", self.config.stream_map).as_ptr() as *const libc::c_char,
-            0,
-        );
-
         for var in &mut self.config.variants {
+            let tb = var.time_base();
             match var {
                 VariantStream::Video(vs) => {
                     let stream = avformat_new_stream(ctx, ptr::null());
@@ -113,6 +109,7 @@ impl HlsEgress {
 
                     // overwrite dst_index to match output stream
                     vs.dst_index = (*stream).index as usize;
+                    (*stream).time_base = tb;
 
                     let params = (*stream).codecpar;
                     (*params).height = vs.height as libc::c_int;
@@ -137,6 +134,7 @@ impl HlsEgress {
 
                     // overwrite dst_index to match output stream
                     va.dst_index = (*stream).index as usize;
+                    (*stream).time_base = tb;
 
                     let params = (*stream).codecpar;
 
@@ -160,6 +158,34 @@ impl HlsEgress {
             }
         }
 
+        // configure mapping
+        let mut stream_map: HashMap<usize, Vec<String>> = HashMap::new();
+        for var in &self.config.variants {
+            let cfg = match var {
+                VariantStream::Video(vx) => format!("v:{}", vx.dst_index),
+                VariantStream::Audio(ax) => format!("a:{}", ax.dst_index),
+            };
+            if let Some(out_stream) = stream_map.get_mut(&var.dst_index()) {
+                out_stream.push(cfg);
+            } else {
+                stream_map.insert(var.dst_index(), vec![cfg]);
+            }
+        }
+        let stream_map = stream_map
+            .values()
+            .into_iter()
+            .map(|v| v.join(","))
+            .join(" ");
+
+        info!("map_str={}", stream_map);
+
+        av_opt_set(
+            (*ctx).priv_data,
+            "var_stream_map\0".as_ptr() as *const libc::c_char,
+            format!("{}\0", stream_map).as_ptr() as *const libc::c_char,
+            0,
+        );
+
         av_dump_format(ctx, 0, ptr::null(), 1);
 
         let ret = avformat_write_header(ctx, ptr::null_mut());
@@ -172,34 +198,16 @@ impl HlsEgress {
     }
 
     unsafe fn process_pkt(&mut self, pkt: *mut AVPacket) -> Result<(), Error> {
-        let variant_id = id_ref_to_uuid((*pkt).opaque_ref);
-        let dst_stream_index = self.config.variants.iter().find_map(|v| match &v {
-            VariantStream::Video(vv) => {
-                if vv.id.eq(&variant_id) {
-                    Some(vv.dst_index)
-                } else {
-                    None
-                }
-            }
-            VariantStream::Audio(va) => {
-                if va.id.eq(&variant_id) {
-                    Some(va.dst_index)
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        });
-        if let None = dst_stream_index {
+        let variant_id = id_ref_to_uuid((*pkt).opaque_ref)?;
+        let variant = self.config.variants.iter().find(|v| v.id() == variant_id);
+        if variant.is_none() {
             return Err(Error::msg(format!(
                 "No stream found with id={:?}",
-                dst_stream_index
+                variant_id
             )));
         }
 
-        let stream = *(*self.ctx).streams.add(dst_stream_index.unwrap());
-        av_packet_rescale_ts(pkt, (*pkt).time_base, (*stream).time_base);
-
+        let stream = *(*self.ctx).streams.add(variant.unwrap().dst_index());
         (*pkt).stream_index = (*stream).index;
 
         let ret = av_interleaved_write_frame(self.ctx, pkt);
@@ -213,7 +221,7 @@ impl HlsEgress {
     pub fn process(&mut self) -> Result<(), Error> {
         while let Ok(pkg) = self.chan_in.try_recv() {
             match pkg {
-                PipelinePayload::AvPacket(pkt) => unsafe {
+                PipelinePayload::AvPacket(_, pkt) => unsafe {
                     if self.ctx == ptr::null_mut() {
                         self.setup_muxer()?;
                     }

@@ -158,7 +158,7 @@ impl Demuxer {
         }
         (*pkt).opaque = stream as *mut libc::c_void;
 
-        let pkg = PipelinePayload::AvPacket(pkt);
+        let pkg = PipelinePayload::AvPacket("Demuxer packet".to_owned(), pkt);
         self.chan_out.send(pkg)?;
         Ok(())
     }

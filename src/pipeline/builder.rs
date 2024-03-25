@@ -14,8 +14,16 @@ impl PipelineBuilder {
         Self { webhook }
     }
 
-    pub async fn build_for(&self, info: ConnectionInfo, recv: UnboundedReceiver<bytes::Bytes>) -> Result<PipelineRunner, anyhow::Error> {
-        let config = self.webhook.start(info).await?;
-        Ok(PipelineRunner::new(config, recv))
+    pub async fn build_for(
+        &self,
+        info: ConnectionInfo,
+        recv: UnboundedReceiver<bytes::Bytes>,
+    ) -> Result<PipelineRunner, anyhow::Error> {
+        self.webhook.start(info).await?;
+        Ok(PipelineRunner::new(
+            Default::default(),
+            self.webhook.clone(),
+            recv,
+        ))
     }
 }

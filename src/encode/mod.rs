@@ -3,11 +3,11 @@ use std::ptr;
 
 use anyhow::Error;
 use ffmpeg_sys_next::{
-    av_buffer_ref, AV_CH_LAYOUT_STEREO, AV_CODEC_FLAG_GLOBAL_HEADER, av_get_sample_fmt, av_opt_set,
-    av_packet_alloc, av_packet_free, AVBufferRef, AVChannelLayout,
-    AVChannelLayout__bindgen_ty_1, AVCodec, avcodec_alloc_context3, avcodec_find_encoder, avcodec_open2,
-    avcodec_receive_packet, avcodec_send_frame, AVCodecContext, AVERROR, AVFrame, AVRational,
-    AVStream,
+    av_buffer_ref, AV_CH_LAYOUT_STEREO, av_get_sample_fmt, av_opt_set, av_packet_alloc,
+    av_packet_free, av_packet_rescale_ts, AVBufferRef, AVChannelLayout,
+    AVChannelLayout__bindgen_ty_1, AVCodec, avcodec_alloc_context3, avcodec_find_encoder,
+    avcodec_open2, avcodec_receive_packet, avcodec_send_frame, AVCodecContext, AVERROR,
+    AVFrame,
 };
 use ffmpeg_sys_next::AVChannelOrder::AV_CHANNEL_ORDER_NATIVE;
 use ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV420P;
@@ -16,7 +16,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::ipc::Rx;
 use crate::pipeline::PipelinePayload;
-use crate::utils::{get_ffmpeg_error_msg, variant_id_ref};
+use crate::utils::{get_ffmpeg_error_msg, id_ref_to_uuid, variant_id_ref};
 use crate::variant::VariantStream;
 
 pub struct Encoder<T> {
@@ -33,8 +33,8 @@ unsafe impl<T> Send for Encoder<T> {}
 unsafe impl<T> Sync for Encoder<T> {}
 
 impl<TRecv> Encoder<TRecv>
-    where
-        TRecv: Rx<PipelinePayload>,
+where
+    TRecv: Rx<PipelinePayload>,
 {
     pub fn new(
         chan_in: TRecv,
@@ -69,17 +69,15 @@ impl<TRecv> Encoder<TRecv>
                 return Err(Error::msg("Failed to allocate encoder context"));
             }
 
+            (*ctx).time_base = self.variant.time_base();
             match &self.variant {
                 VariantStream::Video(vv) => {
                     (*ctx).bit_rate = vv.bitrate as i64;
                     (*ctx).width = (*frame).width;
                     (*ctx).height = (*frame).height;
-                    (*ctx).time_base = AVRational {
-                        num: 1,
-                        den: vv.fps as libc::c_int,
-                    };
 
-                    (*ctx).gop_size = (vv.fps * vv.keyframe_interval) as libc::c_int;
+                    let key_frames = vv.fps * vv.keyframe_interval;
+                    (*ctx).gop_size = key_frames as libc::c_int;
                     (*ctx).max_b_frames = 1;
                     (*ctx).pix_fmt = AV_PIX_FMT_YUV420P;
                     av_opt_set(
@@ -103,10 +101,6 @@ impl<TRecv> Encoder<TRecv>
                         },
                         opaque: ptr::null_mut(),
                     };
-                    (*ctx).time_base = AVRational {
-                        num: 1,
-                        den: va.sample_rate as libc::c_int,
-                    };
                 }
                 _ => {
                     // nothing
@@ -125,11 +119,10 @@ impl<TRecv> Encoder<TRecv>
     }
 
     unsafe fn process_frame(&mut self, frame: *mut AVFrame) -> Result<(), Error> {
-        let stream = (*frame).opaque as *mut AVStream;
-        if (*stream).index as usize != self.variant.src_index() {
-            return Ok(());
-        }
         self.setup_encoder(frame)?;
+
+        let var_id = id_ref_to_uuid((*frame).opaque_ref)?;
+        assert_eq!(var_id, self.variant.id());
 
         let mut ret = avcodec_send_frame(self.ctx, frame);
         if ret < 0 && ret != AVERROR(EAGAIN) {
@@ -147,11 +140,12 @@ impl<TRecv> Encoder<TRecv>
                 return Err(Error::msg(get_ffmpeg_error_msg(ret)));
             }
 
+            (*pkt).time_base = (*self.ctx).time_base;
             (*pkt).duration = (*frame).duration;
-            (*pkt).time_base = (*frame).time_base;
-            (*pkt).opaque = stream as *mut libc::c_void;
+            av_packet_rescale_ts(pkt, (*frame).time_base, (*self.ctx).time_base);
             (*pkt).opaque_ref = av_buffer_ref(self.var_id_ref);
-            self.chan_out.send(PipelinePayload::AvPacket(pkt))?;
+            self.chan_out
+                .send(PipelinePayload::AvPacket("Encoder packet".to_owned(), pkt))?;
         }
 
         Ok(())
@@ -160,7 +154,7 @@ impl<TRecv> Encoder<TRecv>
     pub fn process(&mut self) -> Result<(), Error> {
         while let Ok(pkg) = self.chan_in.try_recv_next() {
             match pkg {
-                PipelinePayload::AvFrame(frm) => unsafe {
+                PipelinePayload::AvFrame(_, frm) => unsafe {
                     self.process_frame(frm)?;
                 },
                 _ => return Err(Error::msg("Payload not supported")),

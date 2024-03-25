@@ -20,3 +20,4 @@ uuid = { version = "1.8.0", features = ["v4", "serde"] }
 serde = { version = "1.0.197", features = ["derive"] }
 config = { version = "0.14.0", features = ["toml"] }
 url = "2.5.0"
+itertools = "0.12.1"

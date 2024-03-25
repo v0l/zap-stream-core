@@ -3,7 +3,7 @@ use std::ptr;
 
 use anyhow::Error;
 use ffmpeg_sys_next::{
-    av_buffer_ref, av_frame_alloc, av_frame_copy_props, av_frame_unref, AVBufferRef,
+    av_buffer_ref, av_frame_alloc, av_frame_copy_props, AVBufferRef,
     AVFrame, SWS_BILINEAR, sws_getContext, sws_scale_frame, SwsContext,
 };
 use tokio::sync::broadcast;
@@ -74,24 +74,20 @@ impl Scaler {
         }
 
         let ret = sws_scale_frame(self.ctx, dst_frame, frame);
-        av_frame_unref(frame);
         if ret < 0 {
             return Err(Error::msg(get_ffmpeg_error_msg(ret)));
         }
 
-        (*dst_frame).time_base = (*frame).time_base;
-        (*dst_frame).pts = (*frame).pts;
-        (*dst_frame).pkt_dts = (*frame).pkt_dts;
         (*dst_frame).opaque_ref = av_buffer_ref(self.var_id_ref);
 
-        self.chan_out.send(PipelinePayload::AvFrame(dst_frame))?;
+        self.chan_out.send(PipelinePayload::AvFrame("Scaler frame".to_owned(), dst_frame))?;
         Ok(())
     }
 
     pub fn process(&mut self) -> Result<(), Error> {
         while let Ok(pkg) = self.chan_in.try_recv() {
             match pkg {
-                PipelinePayload::AvFrame(frm) => unsafe {
+                PipelinePayload::AvFrame(_, frm) => unsafe {
                     self.process_frame(frm)?;
                 },
                 _ => return Err(Error::msg("Payload not supported payload")),

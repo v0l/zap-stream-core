@@ -1,5 +1,6 @@
 use std::fmt::{Display, Formatter};
 
+use ffmpeg_sys_next::AVRational;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -9,10 +10,6 @@ pub enum VariantStream {
     Video(VideoVariant),
     /// Audio stream mapping
     Audio(AudioVariant),
-    /// Copy source stream (video)
-    CopyVideo(usize),
-    /// Copy source stream (audio)
-    CopyAudio(usize),
 }
 
 /// Information related to variant streams for a given egress
@@ -107,12 +104,37 @@ impl Display for AudioVariant {
 }
 
 impl VariantStream {
+    pub fn id(&self) -> Uuid {
+        match self {
+            VariantStream::Video(v) => v.id,
+            VariantStream::Audio(v) => v.id,
+        }
+    }
+
     pub fn src_index(&self) -> usize {
         match self {
             VariantStream::Video(v) => v.src_index,
             VariantStream::Audio(v) => v.src_index,
-            VariantStream::CopyVideo(v) => v.clone(),
-            VariantStream::CopyAudio(v) => v.clone(),
+        }
+    }
+
+    pub fn dst_index(&self) -> usize {
+        match self {
+            VariantStream::Video(v) => v.dst_index,
+            VariantStream::Audio(v) => v.dst_index,
+        }
+    }
+
+    pub fn time_base(&self) -> AVRational {
+        match &self {
+            VariantStream::Video(vv) => AVRational {
+                num: 1,
+                den: 90_000,
+            },
+            VariantStream::Audio(va) => AVRational {
+                num: 1,
+                den: va.sample_rate as libc::c_int,
+            },
         }
     }
 }

@@ -31,7 +31,7 @@ async fn main() -> anyhow::Result<()> {
     pretty_env_logger::init();
 
     unsafe {
-        //ffmpeg_sys_next::av_log_set_level(ffmpeg_sys_next::AV_LOG_MAX_OFFSET);
+        //ffmpeg_sys_next::av_log_set_level(ffmpeg_sys_next::AV_LOG_DEBUG);
         info!(
             "FFMPEG version={}",
             CStr::from_ptr(ffmpeg_sys_next::av_version_info())
@@ -47,7 +47,7 @@ async fn main() -> anyhow::Result<()> {
 
     let settings: Settings = builder.try_deserialize()?;
 
-    let webhook = Webhook::new(settings.webhook_url);
+    let webhook = Webhook::new(settings.clone());
     let builder = PipelineBuilder::new(webhook);
     let mut listeners = vec![];
     for e in settings.endpoints {
