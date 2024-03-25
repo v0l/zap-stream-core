@@ -1,23 +1,22 @@
 use std::mem::transmute;
 use std::ptr;
 
-use crate::ipc::Rx;
 use anyhow::Error;
-use async_trait::async_trait;
+use ffmpeg_sys_next::{
+    av_buffer_ref, AV_CH_LAYOUT_STEREO, AV_CODEC_FLAG_GLOBAL_HEADER, av_get_sample_fmt, av_opt_set,
+    av_packet_alloc, av_packet_free, AVBufferRef, AVChannelLayout,
+    AVChannelLayout__bindgen_ty_1, AVCodec, avcodec_alloc_context3, avcodec_find_encoder, avcodec_open2,
+    avcodec_receive_packet, avcodec_send_frame, AVCodecContext, AVERROR, AVFrame, AVRational,
+    AVStream,
+};
 use ffmpeg_sys_next::AVChannelOrder::AV_CHANNEL_ORDER_NATIVE;
 use ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV420P;
-use ffmpeg_sys_next::AVSampleFormat::AV_SAMPLE_FMT_FLT;
-use ffmpeg_sys_next::{
-    av_buffer_allocz, av_opt_set, av_packet_alloc, av_packet_free, avcodec_alloc_context3,
-    avcodec_find_encoder, avcodec_open2, avcodec_receive_packet, avcodec_send_frame, memcpy,
-    AVChannelLayout, AVChannelLayout__bindgen_ty_1, AVCodec, AVCodecContext, AVFrame, AVRational,
-    AVERROR, AV_CH_LAYOUT_STEREO,
-};
 use libc::EAGAIN;
-use tokio::sync::mpsc::{UnboundedSender};
+use tokio::sync::mpsc::UnboundedSender;
 
+use crate::ipc::Rx;
 use crate::pipeline::PipelinePayload;
-use crate::utils::get_ffmpeg_error_msg;
+use crate::utils::{get_ffmpeg_error_msg, variant_id_ref};
 use crate::variant::VariantStream;
 
 pub struct Encoder<T> {
@@ -26,26 +25,30 @@ pub struct Encoder<T> {
     codec: *const AVCodec,
     chan_in: T,
     chan_out: UnboundedSender<PipelinePayload>,
+    var_id_ref: *mut AVBufferRef,
 }
 
 unsafe impl<T> Send for Encoder<T> {}
+
 unsafe impl<T> Sync for Encoder<T> {}
 
 impl<TRecv> Encoder<TRecv>
-where
-    TRecv: Rx<PipelinePayload>,
+    where
+        TRecv: Rx<PipelinePayload>,
 {
     pub fn new(
         chan_in: TRecv,
         chan_out: UnboundedSender<PipelinePayload>,
         variant: VariantStream,
     ) -> Self {
+        let id_ref = variant_id_ref(&variant).unwrap();
         Self {
             ctx: ptr::null_mut(),
             codec: ptr::null(),
             variant,
             chan_in,
             chan_out,
+            var_id_ref: id_ref,
         }
     }
 
@@ -87,11 +90,9 @@ where
                     );
                 }
                 VariantStream::Audio(va) => {
-                    (*ctx).sample_fmt = if (*encoder).sample_fmts != ptr::null() {
-                        *(*encoder).sample_fmts.add(0)
-                    } else {
-                        AV_SAMPLE_FMT_FLT
-                    };
+                    (*ctx).sample_fmt = av_get_sample_fmt(
+                        format!("{}\0", va.sample_fmt).as_ptr() as *const libc::c_char
+                    );
                     (*ctx).bit_rate = va.bitrate as i64;
                     (*ctx).sample_rate = va.sample_rate as libc::c_int;
                     (*ctx).ch_layout = AVChannelLayout {
@@ -105,7 +106,7 @@ where
                     (*ctx).time_base = AVRational {
                         num: 1,
                         den: va.sample_rate as libc::c_int,
-                    }
+                    };
                 }
                 _ => {
                     // nothing
@@ -124,19 +125,23 @@ where
     }
 
     unsafe fn process_frame(&mut self, frame: *mut AVFrame) -> Result<(), Error> {
+        let stream = (*frame).opaque as *mut AVStream;
+        if (*stream).index as usize != self.variant.src_index() {
+            return Ok(());
+        }
         self.setup_encoder(frame)?;
 
         let mut ret = avcodec_send_frame(self.ctx, frame);
-        if ret < 0 {
+        if ret < 0 && ret != AVERROR(EAGAIN) {
             return Err(Error::msg(get_ffmpeg_error_msg(ret)));
         }
 
-        while ret > 0 {
+        while ret > 0 || ret == AVERROR(EAGAIN) {
             let mut pkt = av_packet_alloc();
             ret = avcodec_receive_packet(self.ctx, pkt);
             if ret < 0 {
+                av_packet_free(&mut pkt);
                 if ret == AVERROR(EAGAIN) {
-                    av_packet_free(&mut pkt);
                     return Ok(());
                 }
                 return Err(Error::msg(get_ffmpeg_error_msg(ret)));
@@ -144,27 +149,8 @@ where
 
             (*pkt).duration = (*frame).duration;
             (*pkt).time_base = (*frame).time_base;
-            (*pkt).opaque_ref = match &self.variant {
-                VariantStream::Audio(va) => {
-                    let buf = av_buffer_allocz(16);
-                    memcpy(
-                        (*buf).data as *mut libc::c_void,
-                        va.id.as_bytes().as_ptr() as *const libc::c_void,
-                        16,
-                    );
-                    buf
-                }
-                VariantStream::Video(vv) => {
-                    let buf = av_buffer_allocz(16);
-                    memcpy(
-                        (*buf).data as *mut libc::c_void,
-                        vv.id.as_bytes().as_ptr() as *const libc::c_void,
-                        16,
-                    );
-                    buf
-                }
-                _ => return Err(Error::msg("Cannot assign pkt stream index")),
-            };
+            (*pkt).opaque = stream as *mut libc::c_void;
+            (*pkt).opaque_ref = av_buffer_ref(self.var_id_ref);
             self.chan_out.send(PipelinePayload::AvPacket(pkt))?;
         }
 
@@ -172,7 +158,7 @@ where
     }
 
     pub fn process(&mut self) -> Result<(), Error> {
-        while let Ok(pkg) = self.chan_in.try_recv() {
+        while let Ok(pkg) = self.chan_in.try_recv_next() {
             match pkg {
                 PipelinePayload::AvFrame(frm) => unsafe {
                     self.process_frame(frm)?;

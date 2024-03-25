@@ -3,14 +3,14 @@ use std::ptr;
 
 use anyhow::Error;
 use ffmpeg_sys_next::{
-    av_frame_alloc, av_frame_copy_props, av_frame_unref, AVFrame, SWS_BILINEAR, sws_getContext,
-    sws_scale_frame, SwsContext,
+    av_buffer_ref, av_frame_alloc, av_frame_copy_props, av_frame_unref, AVBufferRef,
+    AVFrame, SWS_BILINEAR, sws_getContext, sws_scale_frame, SwsContext,
 };
 use tokio::sync::broadcast;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::pipeline::PipelinePayload;
-use crate::utils::get_ffmpeg_error_msg;
+use crate::utils::{get_ffmpeg_error_msg, video_variant_id_ref};
 use crate::variant::VideoVariant;
 
 pub struct Scaler {
@@ -18,9 +18,11 @@ pub struct Scaler {
     ctx: *mut SwsContext,
     chan_in: broadcast::Receiver<PipelinePayload>,
     chan_out: UnboundedSender<PipelinePayload>,
+    var_id_ref: *mut AVBufferRef,
 }
 
 unsafe impl Send for Scaler {}
+
 unsafe impl Sync for Scaler {}
 
 impl Scaler {
@@ -29,11 +31,13 @@ impl Scaler {
         chan_out: UnboundedSender<PipelinePayload>,
         variant: VideoVariant,
     ) -> Self {
+        let id_ref = video_variant_id_ref(&variant);
         Self {
             chan_in,
             chan_out,
             variant,
             ctx: ptr::null_mut(),
+            var_id_ref: id_ref,
         }
     }
 
@@ -78,6 +82,8 @@ impl Scaler {
         (*dst_frame).time_base = (*frame).time_base;
         (*dst_frame).pts = (*frame).pts;
         (*dst_frame).pkt_dts = (*frame).pkt_dts;
+        (*dst_frame).opaque_ref = av_buffer_ref(self.var_id_ref);
+
         self.chan_out.send(PipelinePayload::AvFrame(dst_frame))?;
         Ok(())
     }

@@ -1,5 +1,5 @@
-use crate::fraction::Fraction;
 use std::fmt::{Display, Formatter};
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -71,7 +71,7 @@ impl Display for VideoVariant {
 pub struct AudioVariant {
     /// Unique ID of this variant
     pub id: Uuid,
-    
+
     /// Source video stream to use for this variant
     pub src_index: usize,
 
@@ -89,6 +89,9 @@ pub struct AudioVariant {
 
     /// Sample rate
     pub sample_rate: usize,
+
+    /// Sample format as ffmpeg sample format string
+    pub sample_fmt: String,
 }
 
 impl Display for AudioVariant {
@@ -100,5 +103,16 @@ impl Display for AudioVariant {
             self.codec,
             self.bitrate / 1000
         )
+    }
+}
+
+impl VariantStream {
+    pub fn src_index(&self) -> usize {
+        match self {
+            VariantStream::Video(v) => v.src_index,
+            VariantStream::Audio(v) => v.src_index,
+            VariantStream::CopyVideo(v) => v.clone(),
+            VariantStream::CopyAudio(v) => v.clone(),
+        }
     }
 }

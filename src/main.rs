@@ -1,3 +1,16 @@
+use std::ffi::CStr;
+
+use config::Config;
+use futures_util::future::join_all;
+use futures_util::StreamExt;
+use log::{error, info};
+use tokio::sync::futures;
+use url::Url;
+
+use crate::pipeline::builder::PipelineBuilder;
+use crate::settings::Settings;
+use crate::webhook::Webhook;
+
 mod decode;
 mod demux;
 mod egress;
@@ -11,17 +24,6 @@ mod utils;
 mod variant;
 mod webhook;
 mod ipc;
-
-use crate::pipeline::builder::PipelineBuilder;
-use crate::settings::Settings;
-use crate::webhook::Webhook;
-use config::Config;
-use futures_util::StreamExt;
-use log::{error, info};
-use std::ffi::CStr;
-use futures_util::future::join_all;
-use tokio::sync::futures;
-use url::Url;
 
 /// Test:  ffmpeg -re -f lavfi -i testsrc -g 2 -r 30 -pix_fmt yuv420p -s 1280x720 -c:v h264 -b:v 2000k -f mpegts srt://localhost:3333
 #[tokio::main]

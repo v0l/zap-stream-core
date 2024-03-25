@@ -1,10 +1,12 @@
+use std::fmt::Display;
+
+use ffmpeg_sys_next::{AV_LEVEL_UNKNOWN, AV_PROFILE_H264_HIGH};
+use ffmpeg_sys_next::AVCodecID::{AV_CODEC_ID_AAC, AV_CODEC_ID_H264};
+use uuid::Uuid;
+
 use crate::ingress::ConnectionInfo;
 use crate::pipeline::{EgressType, HLSEgressConfig, PipelineConfig};
 use crate::variant::{AudioVariant, VariantStream, VideoVariant};
-use ffmpeg_sys_next::AVCodecID::{AV_CODEC_ID_AAC, AV_CODEC_ID_H264};
-use ffmpeg_sys_next::{AV_LEVEL_UNKNOWN, AV_PROFILE_H264_HIGH};
-use std::fmt::Display;
-use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct Webhook {
@@ -54,6 +56,7 @@ impl Webhook {
             codec: 86018,
             channels: 2,
             sample_rate: 44_100,
+            sample_fmt: "fltp".to_owned(),
         };
 
         let audio_var_2 = AudioVariant {
@@ -64,6 +67,7 @@ impl Webhook {
             codec: 86018,
             channels: 2,
             sample_rate: 44_100,
+            sample_fmt: "fltp".to_owned(),
         };
 
         Ok(PipelineConfig {

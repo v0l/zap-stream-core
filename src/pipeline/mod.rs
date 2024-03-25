@@ -1,7 +1,10 @@
 use std::ops::{Deref, DerefMut};
 
 use async_trait::async_trait;
-use ffmpeg_sys_next::{AVFrame, AVPacket};
+use ffmpeg_sys_next::{
+    av_frame_alloc, av_frame_free, av_frame_ref, av_packet_alloc, av_packet_free, av_packet_ref,
+    AVFrame, AVPacket,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::demux::info::DemuxStreamInfo;
@@ -34,7 +37,7 @@ pub struct PipelineConfig {
     pub egress: Vec<EgressType>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum PipelinePayload {
     /// No output
     Empty,
@@ -49,7 +52,44 @@ pub enum PipelinePayload {
 }
 
 unsafe impl Send for PipelinePayload {}
+
 unsafe impl Sync for PipelinePayload {}
+
+impl Clone for PipelinePayload {
+    fn clone(&self) -> Self {
+        match self {
+            PipelinePayload::Empty => PipelinePayload::Empty,
+            PipelinePayload::Bytes(b) => PipelinePayload::Bytes(b.clone()),
+            PipelinePayload::AvPacket(p) => unsafe {
+                let new_pkt = av_packet_alloc();
+                av_packet_ref(new_pkt, *p);
+                PipelinePayload::AvPacket(new_pkt)
+            },
+            PipelinePayload::AvFrame(p) => unsafe {
+                let new_frame = av_frame_alloc();
+                av_frame_ref(new_frame, *p);
+                PipelinePayload::AvFrame(new_frame)
+            },
+            PipelinePayload::SourceInfo(i) => PipelinePayload::SourceInfo(i.clone()),
+        }
+    }
+}
+
+impl Drop for PipelinePayload {
+    fn drop(&mut self) {
+        match self {
+            PipelinePayload::Empty => {}
+            PipelinePayload::Bytes(_) => {}
+            PipelinePayload::AvPacket(p) => unsafe {
+                av_packet_free(p);
+            },
+            PipelinePayload::AvFrame(p) => unsafe {
+                av_frame_free(p);
+            },
+            PipelinePayload::SourceInfo(_) => {}
+        }
+    }
+}
 
 #[async_trait]
 pub trait PipelineStep {

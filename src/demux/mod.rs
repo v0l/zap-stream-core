@@ -3,9 +3,9 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::Error;
 use bytes::{Bytes, BytesMut};
-use ffmpeg_sys_next::AVMediaType::{AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_VIDEO};
 use ffmpeg_sys_next::*;
-use log::info;
+use ffmpeg_sys_next::AVMediaType::{AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_VIDEO};
+use log::{info, warn};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::time::Instant;
 
@@ -32,6 +32,7 @@ pub(crate) struct Demuxer {
 }
 
 unsafe impl Send for Demuxer {}
+
 unsafe impl Sync for Demuxer {}
 
 unsafe extern "C" fn read_data(
@@ -105,17 +106,12 @@ impl Demuxer {
             av_find_best_stream(self.ctx, AVMEDIA_TYPE_VIDEO, -1, -1, ptr::null_mut(), 0) as usize;
         if video_stream_index != AVERROR_STREAM_NOT_FOUND as usize {
             let video_stream = *(*self.ctx).streams.add(video_stream_index);
-            let codec_copy = unsafe {
-                let ptr = avcodec_parameters_alloc();
-                avcodec_parameters_copy(ptr, (*video_stream).codecpar);
-                ptr
-            };
             channel_infos.push(StreamInfoChannel {
                 index: video_stream_index,
                 channel_type: StreamChannelType::Video,
                 width: (*(*video_stream).codecpar).width as usize,
                 height: (*(*video_stream).codecpar).height as usize,
-                codec_params: codec_copy,
+                fps: av_q2d((*video_stream).avg_frame_rate) as f32,
             });
         }
 
@@ -133,7 +129,7 @@ impl Demuxer {
                 channel_type: StreamChannelType::Audio,
                 width: (*(*audio_stream).codecpar).width as usize,
                 height: (*(*audio_stream).codecpar).height as usize,
-                codec_params: codec_copy,
+                fps: 0.0,
             });
         }
 
@@ -149,6 +145,7 @@ impl Demuxer {
         if ret == AVERROR_EOF {
             // reset EOF flag, stream never ends
             (*(*self.ctx).pb).eof_reached = 0;
+            warn!("EOF was reached, stream might skip frames");
             return Ok(());
         }
         if ret < 0 {
@@ -156,10 +153,13 @@ impl Demuxer {
             return Err(Error::msg(msg));
         }
         let stream = *(*self.ctx).streams.add((*pkt).stream_index as usize);
-        (*pkt).time_base = (*stream).time_base;
+        if (*pkt).time_base.num == 0 {
+            (*pkt).time_base = (*stream).time_base;
+        }
         (*pkt).opaque = stream as *mut libc::c_void;
 
-        self.chan_out.send(PipelinePayload::AvPacket(pkt))?;
+        let pkg = PipelinePayload::AvPacket(pkt);
+        self.chan_out.send(pkg)?;
         Ok(())
     }
 

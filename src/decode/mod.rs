@@ -3,12 +3,12 @@ use std::ptr;
 
 use anyhow::Error;
 use ffmpeg_sys_next::{
-    av_frame_alloc, av_packet_unref, avcodec_alloc_context3, avcodec_find_decoder,
-    avcodec_free_context, avcodec_open2, avcodec_parameters_to_context, avcodec_receive_frame,
-    avcodec_send_packet, AVCodec, AVCodecContext, AVPacket, AVStream, AVERROR, AVERROR_EOF,
+    av_frame_alloc, av_packet_unref, AVCodec, avcodec_alloc_context3,
+    avcodec_find_decoder, avcodec_free_context, avcodec_open2, avcodec_parameters_to_context,
+    avcodec_receive_frame, avcodec_send_packet, AVCodecContext, AVERROR, AVERROR_EOF, AVPacket, AVStream,
 };
 use tokio::sync::broadcast;
-use tokio::sync::mpsc::{Receiver, UnboundedReceiver};
+use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::pipeline::PipelinePayload;
 
@@ -32,6 +32,7 @@ pub struct Decoder {
 }
 
 unsafe impl Send for Decoder {}
+
 unsafe impl Sync for Decoder {}
 
 impl Decoder {
@@ -46,16 +47,23 @@ impl Decoder {
         }
     }
 
-    pub unsafe fn decode_pkt(&mut self, pkt: *mut AVPacket) -> Result<(), Error> {
+    pub unsafe fn decode_pkt(&mut self, pkt: *mut AVPacket) -> Result<usize, Error> {
         let stream_index = (*pkt).stream_index as i32;
         let stream = (*pkt).opaque as *mut AVStream;
-        let codec_par = (*stream).codecpar;
-        let has_codec_params = codec_par != ptr::null_mut();
-        if !has_codec_params {
-            panic!("Cant handle pkt, dropped!");
-        }
+        assert_eq!(
+            stream_index,
+            (*stream).index,
+            "Passed stream reference does not match stream_index of packet"
+        );
 
-        if has_codec_params && !self.codecs.contains_key(&stream_index) {
+        let codec_par = (*stream).codecpar;
+        assert_ne!(
+            codec_par,
+            ptr::null_mut(),
+            "Codec parameters are missing from stream"
+        );
+
+        if !self.codecs.contains_key(&stream_index) {
             let codec = avcodec_find_decoder((*codec_par).codec_id);
             if codec == ptr::null_mut() {
                 return Err(Error::msg("Failed to find codec"));
@@ -81,6 +89,7 @@ impl Decoder {
                 return Err(Error::msg(format!("Failed to decode packet {}", ret)));
             }
 
+            let mut frames = 0;
             while ret >= 0 {
                 let frame = av_frame_alloc();
                 ret = avcodec_receive_frame(ctx.context, frame);
@@ -91,22 +100,26 @@ impl Decoder {
                     return Err(Error::msg(format!("Failed to decode {}", ret)));
                 }
                 (*frame).time_base = (*pkt).time_base;
+                (*frame).opaque = stream as *mut libc::c_void;
                 self.chan_out.send(PipelinePayload::AvFrame(frame))?;
+                frames += 1;
             }
+            return Ok(frames);
         }
-        Ok(())
+        Ok(0)
     }
 
-    pub fn process(&mut self) -> Result<(), Error> {
+    pub fn process(&mut self) -> Result<usize, Error> {
         while let Ok(pkg) = self.chan_in.try_recv() {
-            if let PipelinePayload::AvPacket(pkt) = pkg {
+            return if let PipelinePayload::AvPacket(pkt) = pkg {
                 unsafe {
-                    self.decode_pkt(pkt)?;
+                    let frames = self.decode_pkt(pkt)?;
+                    Ok(frames)
                 }
             } else {
-                return Err(Error::msg("Payload not supported"));
-            }
+                Err(Error::msg("Payload not supported"))
+            };
         }
-        Ok(())
+        Ok(0)
     }
 }

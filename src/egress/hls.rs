@@ -3,28 +3,28 @@ use std::mem::transmute;
 use std::ptr;
 use std::ptr::slice_from_raw_parts;
 
-use crate::demux::info::{DemuxStreamInfo, StreamChannelType};
-use crate::fraction::Fraction;
 use anyhow::Error;
+use ffmpeg_sys_next::{
+    AV_CH_LAYOUT_STEREO, av_channel_layout_default, av_dump_format, av_get_sample_fmt,
+    av_interleaved_write_frame, av_opt_set, av_packet_rescale_ts, av_write_frame, AVChannelLayout,
+    AVChannelLayout__bindgen_ty_1, avcodec_send_frame, avcodec_send_packet, AVCodecContext,
+    avformat_alloc_output_context2, avformat_new_stream, avformat_write_header, AVFormatContext, AVPacket,
+    AVRational,
+};
 use ffmpeg_sys_next::AVChannelOrder::AV_CHANNEL_ORDER_NATIVE;
 use ffmpeg_sys_next::AVColorSpace::AVCOL_SPC_BT709;
 use ffmpeg_sys_next::AVMediaType::{AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_VIDEO};
 use ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use ffmpeg_sys_next::AVSampleFormat::AV_SAMPLE_FMT_FLT;
-use ffmpeg_sys_next::{
-    av_channel_layout_default, av_dump_format, av_interleaved_write_frame, av_opt_set,
-    av_packet_rescale_ts, av_write_frame, avcodec_send_frame, avcodec_send_packet,
-    avformat_alloc_output_context2, avformat_new_stream, avformat_write_header, AVChannelLayout,
-    AVChannelLayout__bindgen_ty_1, AVCodecContext, AVFormatContext, AVPacket, AVRational,
-    AV_CH_LAYOUT_STEREO,
-};
 use futures_util::StreamExt;
-use tokio::sync::mpsc::{Receiver, UnboundedReceiver};
 use log::info;
+use tokio::sync::mpsc::{Receiver, UnboundedReceiver};
 use uuid::{Bytes, Uuid, Variant};
 
+use crate::demux::info::{DemuxStreamInfo, StreamChannelType};
+use crate::fraction::Fraction;
 use crate::pipeline::{HLSEgressConfig, PipelinePayload};
-use crate::utils::get_ffmpeg_error_msg;
+use crate::utils::{get_ffmpeg_error_msg, id_ref_to_uuid};
 use crate::variant::{VariantStream, VideoVariant};
 
 pub struct HlsEgress {
@@ -36,10 +36,15 @@ pub struct HlsEgress {
 }
 
 unsafe impl Send for HlsEgress {}
+
 unsafe impl Sync for HlsEgress {}
 
 impl HlsEgress {
-    pub fn new(chan_in: UnboundedReceiver<PipelinePayload>, id: Uuid, config: HLSEgressConfig) -> Self {
+    pub fn new(
+        chan_in: UnboundedReceiver<PipelinePayload>,
+        id: Uuid,
+        config: HLSEgressConfig,
+    ) -> Self {
         Self {
             id,
             config,
@@ -137,7 +142,9 @@ impl HlsEgress {
 
                     (*params).codec_id = transmute(va.codec as i32);
                     (*params).codec_type = AVMEDIA_TYPE_AUDIO;
-                    (*params).format = AV_SAMPLE_FMT_FLT as libc::c_int;
+                    (*params).format = av_get_sample_fmt(
+                        format!("{}\0", va.sample_fmt).as_ptr() as *const libc::c_char
+                    ) as libc::c_int;
                     (*params).bit_rate = va.bitrate as i64;
                     (*params).sample_rate = va.sample_rate as libc::c_int;
                     (*params).ch_layout = AVChannelLayout {
@@ -165,19 +172,17 @@ impl HlsEgress {
     }
 
     unsafe fn process_pkt(&mut self, pkt: *mut AVPacket) -> Result<(), Error> {
-        let slice_raw = slice_from_raw_parts((*(*pkt).opaque_ref).data, 16);
-        let binding = Bytes::from(*(slice_raw as *const [u8; 16]));
-        let variant_id = Uuid::from_bytes_ref(&binding);
+        let variant_id = id_ref_to_uuid((*pkt).opaque_ref);
         let dst_stream_index = self.config.variants.iter().find_map(|v| match &v {
             VariantStream::Video(vv) => {
-                if vv.id.eq(variant_id) {
+                if vv.id.eq(&variant_id) {
                     Some(vv.dst_index)
                 } else {
                     None
                 }
             }
             VariantStream::Audio(va) => {
-                if va.id.eq(variant_id) {
+                if va.id.eq(&variant_id) {
                     Some(va.dst_index)
                 } else {
                     None

@@ -1,4 +1,3 @@
-use ffmpeg_sys_next::AVCodecParameters;
 use crate::fraction::Fraction;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -18,11 +17,8 @@ pub struct StreamInfoChannel {
     pub channel_type: StreamChannelType,
     pub width: usize,
     pub height: usize,
-    pub codec_params: *const AVCodecParameters,
+    pub fps: f32,
 }
-
-unsafe impl Sync for StreamInfoChannel {}
-unsafe impl Send for StreamInfoChannel {}
 
 impl TryInto<Fraction> for StreamInfoChannel {
     type Error = ();
