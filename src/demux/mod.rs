@@ -1,11 +1,10 @@
 use std::ptr;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use anyhow::Error;
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use ffmpeg_sys_next::*;
 use ffmpeg_sys_next::AVMediaType::{AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_VIDEO};
-use log::{info, warn};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::time::Instant;
 
@@ -41,18 +40,21 @@ unsafe extern "C" fn read_data(
     size: libc::c_int,
 ) -> libc::c_int {
     let chan = opaque as *mut UnboundedReceiver<Bytes>;
-    let mut data = (*chan).blocking_recv().expect("shit");
-    let buff_len = data.len();
-    let mut len = size.min(buff_len as libc::c_int);
+    if let Some(mut data) = (*chan).blocking_recv() {
+        let buff_len = data.len();
+        let mut len = size.min(buff_len as libc::c_int);
 
-    if len > 0 {
-        memcpy(
-            buffer as *mut libc::c_void,
-            data.as_ptr() as *const libc::c_void,
-            len as libc::c_ulonglong,
-        );
+        if len > 0 {
+            memcpy(
+                buffer as *mut libc::c_void,
+                data.as_ptr() as *const libc::c_void,
+                len as libc::c_ulonglong,
+            );
+        }
+        len
+    } else {
+        AVERROR_EOF
     }
-    len
 }
 
 impl Demuxer {
@@ -143,10 +145,7 @@ impl Demuxer {
         let pkt: *mut AVPacket = av_packet_alloc();
         let ret = av_read_frame(self.ctx, pkt);
         if ret == AVERROR_EOF {
-            // reset EOF flag, stream never ends
-            (*(*self.ctx).pb).eof_reached = 0;
-            warn!("EOF was reached, stream might skip frames");
-            return Ok(());
+            return Err(Error::msg("Stream EOF"));
         }
         if ret < 0 {
             let msg = get_ffmpeg_error_msg(ret);

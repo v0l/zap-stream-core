@@ -1,19 +1,10 @@
 use std::collections::{HashMap, HashSet};
-use std::ffi::{CStr, CString};
 use std::fmt::{Display, Formatter};
 use std::mem::transmute;
 use std::ptr;
-use std::ptr::slice_from_raw_parts;
 
 use anyhow::Error;
-use ffmpeg_sys_next::{
-    AV_CH_LAYOUT_STEREO, av_channel_layout_default, av_dump_format, av_get_sample_fmt,
-    av_interleaved_write_frame, av_opt_set, av_packet_rescale_ts, av_write_frame,
-    AVChannelLayout, AVChannelLayout__bindgen_ty_1, avcodec_parameters_copy,
-    avcodec_parameters_from_context, avcodec_send_frame, avcodec_send_packet, AVCodecContext,
-    avformat_alloc_output_context2, avformat_new_stream, avformat_write_header, AVFormatContext, AVPacket,
-    AVRational,
-};
+use ffmpeg_sys_next::{AV_CH_LAYOUT_STEREO, av_channel_layout_default, av_dump_format, av_get_sample_fmt, av_interleaved_write_frame, av_opt_set, AVChannelLayout, AVChannelLayout__bindgen_ty_1, avcodec_parameters_from_context, AVCodecContext, avformat_alloc_output_context2, avformat_free_context, avformat_new_stream, avformat_write_header, AVFormatContext, AVPacket, AVRational};
 use ffmpeg_sys_next::AVChannelOrder::AV_CHANNEL_ORDER_NATIVE;
 use ffmpeg_sys_next::AVColorSpace::AVCOL_SPC_BT709;
 use ffmpeg_sys_next::AVMediaType::{AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_VIDEO};
@@ -22,7 +13,7 @@ use futures_util::StreamExt;
 use itertools::Itertools;
 use log::info;
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc::{Receiver, UnboundedReceiver};
+use tokio::sync::mpsc::{UnboundedReceiver};
 use uuid::{Bytes, Uuid, Variant};
 
 use crate::demux::info::{DemuxStreamInfo, StreamChannelType};
@@ -51,7 +42,6 @@ impl Display for HLSEgressConfig {
 }
 
 pub struct HlsEgress {
-    /// Pipeline id
     id: Uuid,
     config: HLSEgressConfig,
     ctx: *mut AVFormatContext,
@@ -62,6 +52,15 @@ pub struct HlsEgress {
 unsafe impl Send for HlsEgress {}
 
 unsafe impl Sync for HlsEgress {}
+
+impl Drop for HlsEgress {
+    fn drop(&mut self) {
+        unsafe {
+            avformat_free_context(self.ctx);
+            self.ctx = ptr::null_mut();
+        }
+    }
+}
 
 impl HlsEgress {
     pub fn new(

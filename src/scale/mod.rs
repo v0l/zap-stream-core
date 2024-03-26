@@ -4,7 +4,7 @@ use std::ptr;
 use anyhow::Error;
 use ffmpeg_sys_next::{
     av_buffer_ref, av_frame_alloc, av_frame_copy_props, AVBufferRef, AVFrame,
-    SWS_BILINEAR, sws_getContext, sws_scale_frame, SwsContext,
+    SWS_BILINEAR, sws_freeContext, sws_getContext, sws_scale_frame, SwsContext,
 };
 use tokio::sync::broadcast;
 use tokio::sync::mpsc::UnboundedSender;
@@ -24,6 +24,15 @@ pub struct Scaler {
 unsafe impl Send for Scaler {}
 
 unsafe impl Sync for Scaler {}
+
+impl Drop for Scaler {
+    fn drop(&mut self) {
+        unsafe {
+            sws_freeContext(self.ctx);
+            self.ctx = ptr::null_mut();
+        }
+    }
+}
 
 impl Scaler {
     pub fn new(
@@ -79,7 +88,7 @@ impl Scaler {
         self.chan_out.send(PipelinePayload::AvFrame(
             "Scaler frame".to_owned(),
             dst_frame,
-            src_index
+            src_index,
         ))?;
         Ok(())
     }

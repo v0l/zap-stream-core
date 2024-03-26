@@ -21,6 +21,8 @@ impl Drop for CodecContext {
     fn drop(&mut self) {
         unsafe {
             avcodec_free_context(&mut self.context);
+            self.codec = ptr::null_mut();
+            self.context = ptr::null_mut();
         }
     }
 }

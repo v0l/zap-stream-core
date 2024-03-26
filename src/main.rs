@@ -1,10 +1,7 @@
 use std::ffi::CStr;
 
 use config::Config;
-use futures_util::future::join_all;
-use futures_util::StreamExt;
 use log::{error, info};
-use tokio::sync::futures;
 use url::Url;
 
 use crate::pipeline::builder::PipelineBuilder;
