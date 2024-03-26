@@ -1,6 +1,8 @@
+use std::ffi::CStr;
 use std::fmt::{Display, Formatter};
+use std::mem::transmute;
 
-use ffmpeg_sys_next::AVRational;
+use ffmpeg_sys_next::{avcodec_get_name, AVRational};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -10,6 +12,15 @@ pub enum VariantStream {
     Video(VideoVariant),
     /// Audio stream mapping
     Audio(AudioVariant),
+}
+
+impl Display for VariantStream {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VariantStream::Video(v) => write!(f, "{}", v),
+            VariantStream::Audio(a) => write!(f, "{}", a),
+        }
+    }
 }
 
 /// Information related to variant streams for a given egress
@@ -53,9 +64,15 @@ impl Display for VideoVariant {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Video #{}: {}, {}p, {}fps, {}kbps",
+            "Video #{}->{}: {}, {}x{}, {}fps, {}kbps",
             self.src_index,
-            self.codec,
+            self.dst_index,
+            unsafe {
+                CStr::from_ptr(avcodec_get_name(transmute(self.codec as i32)))
+                    .to_str()
+                    .unwrap()
+            },
+            self.width,
             self.height,
             self.fps,
             self.bitrate / 1000
@@ -95,9 +112,14 @@ impl Display for AudioVariant {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Audio #{}: {}, {}kbps",
+            "Audio #{}->{}: {}, {}kbps",
             self.src_index,
-            self.codec,
+            self.dst_index,
+            unsafe {
+                CStr::from_ptr(avcodec_get_name(transmute(self.codec as i32)))
+                    .to_str()
+                    .unwrap()
+            },
             self.bitrate / 1000
         )
     }
@@ -127,14 +149,26 @@ impl VariantStream {
 
     pub fn time_base(&self) -> AVRational {
         match &self {
-            VariantStream::Video(vv) => AVRational {
-                num: 1,
-                den: 90_000,
-            },
-            VariantStream::Audio(va) => AVRational {
-                num: 1,
-                den: va.sample_rate as libc::c_int,
-            },
+            VariantStream::Video(vv) => vv.time_base(),
+            VariantStream::Audio(va) => va.time_base(),
+        }
+    }
+}
+
+impl VideoVariant {
+    pub fn time_base(&self) -> AVRational {
+        AVRational {
+            num: 1,
+            den: 90_000,
+        }
+    }
+}
+
+impl AudioVariant {
+    pub fn time_base(&self) -> AVRational {
+        AVRational {
+            num: 1,
+            den: self.sample_rate as libc::c_int,
         }
     }
 }

@@ -1,9 +1,12 @@
+use std::fmt::{Display, Formatter};
 use std::ops::{Deref, DerefMut};
 
+use anyhow::Error;
 use ffmpeg_sys_next::{av_frame_clone, av_frame_copy_props, av_frame_free, av_packet_clone, av_packet_copy_props, av_packet_free, AVFrame, AVPacket};
 use serde::{Deserialize, Serialize};
 
 use crate::demux::info::DemuxStreamInfo;
+use crate::egress::hls::HLSEgressConfig;
 use crate::variant::VariantStream;
 
 pub mod builder;
@@ -17,17 +20,44 @@ pub enum EgressType {
     MPEGTS,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct HLSEgressConfig {
-    pub out_dir: String,
-    pub variants: Vec<VariantStream>,
+impl Display for EgressType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                EgressType::HLS(c) => format!("{}", c),
+                EgressType::DASH => "DASH".to_owned(),
+                EgressType::WHEP => "WHEP".to_owned(),
+                EgressType::MPEGTS => "MPEGTS".to_owned(),
+            }
+        )
+    }
 }
-
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct PipelineConfig {
     pub id: uuid::Uuid,
     pub recording: Vec<VariantStream>,
     pub egress: Vec<EgressType>,
+}
+
+impl Display for PipelineConfig {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "\nPipeline Config ID={}", self.id)?;
+        if self.recording.len() > 0 {
+            write!(f, "\nRecording:")?;
+            for r in &self.recording {
+                write!(f, "\n\t{}", r)?;
+            }
+        }
+        if self.egress.len() > 0 {
+            write!(f, "\nEgress:")?;
+            for e in &self.egress {
+                write!(f, "\n\t{}", e)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -39,7 +69,7 @@ pub enum PipelinePayload {
     /// FFMpeg AVPacket
     AvPacket(String, *mut AVPacket),
     /// FFMpeg AVFrame
-    AvFrame(String, *mut AVFrame),
+    AvFrame(String, *mut AVFrame, usize),
     /// Information about the input stream
     SourceInfo(DemuxStreamInfo),
 }
@@ -58,10 +88,10 @@ impl Clone for PipelinePayload {
                 av_packet_copy_props(new_pkt, *p);
                 PipelinePayload::AvPacket(t.clone(), new_pkt)
             },
-            PipelinePayload::AvFrame(t, p) => unsafe {
+            PipelinePayload::AvFrame(t, p, idx) => unsafe {
                 let new_frame = av_frame_clone(*p);
                 av_frame_copy_props(new_frame, *p);
-                PipelinePayload::AvFrame(t.clone(), new_frame)
+                PipelinePayload::AvFrame(t.clone(), new_frame, idx.clone())
             },
             PipelinePayload::SourceInfo(i) => PipelinePayload::SourceInfo(i.clone()),
         }
@@ -76,10 +106,14 @@ impl Drop for PipelinePayload {
             PipelinePayload::AvPacket(_, p) => unsafe {
                 av_packet_free(p);
             },
-            PipelinePayload::AvFrame(_, p) => unsafe {
+            PipelinePayload::AvFrame(_, p, _) => unsafe {
                 av_frame_free(p);
             },
             PipelinePayload::SourceInfo(_) => {}
         }
     }
+}
+
+pub trait PipelineProcessor {
+    fn process(&mut self) -> Result<(), Error>;
 }

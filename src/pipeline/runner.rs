@@ -12,15 +12,17 @@ use crate::decode::Decoder;
 use crate::demux::Demuxer;
 use crate::demux::info::{DemuxStreamInfo, StreamChannelType};
 use crate::egress::hls::HlsEgress;
-use crate::encode::Encoder;
-use crate::pipeline::{EgressType, PipelineConfig, PipelinePayload};
+use crate::encode::audio::AudioEncoder;
+use crate::encode::video::VideoEncoder;
+use crate::pipeline::{EgressType, PipelineConfig, PipelinePayload, PipelineProcessor};
 use crate::scale::Scaler;
+use crate::tag_frame::TagFrame;
 use crate::variant::VariantStream;
 use crate::webhook::Webhook;
 
-struct ScalerEncoder {
-    pub scaler: Scaler,
-    pub encoder: Encoder<UnboundedReceiver<PipelinePayload>>,
+struct PipelineChain {
+    pub first: Box<dyn PipelineProcessor + Sync + Send>,
+    pub second: Box<dyn PipelineProcessor + Sync + Send>,
 }
 
 pub struct PipelineRunner {
@@ -28,8 +30,7 @@ pub struct PipelineRunner {
     demuxer: Demuxer,
     decoder: Decoder,
     decoder_output: broadcast::Receiver<PipelinePayload>,
-    scalers: Vec<ScalerEncoder>,
-    encoders: Vec<Encoder<broadcast::Receiver<PipelinePayload>>>,
+    encoders: Vec<PipelineChain>,
     egress: Vec<HlsEgress>,
     started: Instant,
     frame_no: u64,
@@ -50,7 +51,6 @@ impl PipelineRunner {
             demuxer: Demuxer::new(recv, demux_out),
             decoder: Decoder::new(demux_in, dec_tx),
             decoder_output: dec_rx,
-            scalers: vec![],
             encoders: vec![],
             egress: vec![],
             started: Instant::now(),
@@ -86,20 +86,15 @@ impl PipelineRunner {
             panic!("Frame number overflowed, maybe you need a bigger number!");
         }
 
-        // video scalar-encoder chains
-        for sw in &mut self.scalers {
-            sw.scaler.process()?;
-            sw.encoder.process()?;
-            for eg in &mut self.egress {
-                eg.process()?;
-            }
+        // (scalar)-encoder chains
+        for sw in &mut self.encoders {
+            sw.first.process()?;
+            sw.second.process()?;
         }
-        // audio encoder chains
-        for enc in &mut self.encoders {
-            enc.process()?;
-            for eg in &mut self.egress {
-                eg.process()?;
-            }
+
+        // egress outputs
+        for eg in &mut self.egress {
+            eg.process()?;
         }
         Ok(())
     }
@@ -108,11 +103,11 @@ impl PipelineRunner {
         if self.stream_info.is_some() {
             return Err(Error::msg("Pipeline already configured!"));
         }
-        info!("Configuring pipeline {:?}", info);
         self.stream_info = Some(info.clone());
 
         // re-configure with demuxer info
         self.config = self.webhook.configure(&info);
+        info!("Configuring pipeline {}", self.config);
 
         let video_stream = info
             .channels
@@ -131,21 +126,33 @@ impl PipelineRunner {
                             match v {
                                 VariantStream::Video(vs) => {
                                     let (sw_tx, sw_rx) = unbounded_channel();
-                                    self.scalers.push(ScalerEncoder {
-                                        scaler: Scaler::new(
+                                    self.encoders.push(PipelineChain {
+                                        first: Box::new(Scaler::new(
                                             self.decoder_output.resubscribe(),
                                             sw_tx.clone(),
                                             vs.clone(),
-                                        ),
-                                        encoder: Encoder::new(sw_rx, egress_tx.clone(), v.clone()),
+                                        )),
+                                        second: Box::new(VideoEncoder::new(
+                                            sw_rx,
+                                            egress_tx.clone(),
+                                            vs.clone(),
+                                        )),
                                     });
                                 }
-                                VariantStream::Audio(_) => {
-                                    self.encoders.push(Encoder::new(
-                                        self.decoder_output.resubscribe(),
-                                        egress_tx.clone(),
-                                        v.clone(),
-                                    ));
+                                VariantStream::Audio(va) => {
+                                    let (tag_tx, tag_rx) = unbounded_channel();
+                                    self.encoders.push(PipelineChain {
+                                        first: Box::new(TagFrame::new(
+                                            v.clone(),
+                                            self.decoder_output.resubscribe(),
+                                            tag_tx,
+                                        )),
+                                        second: Box::new(AudioEncoder::new(
+                                            tag_rx,
+                                            egress_tx.clone(),
+                                            va.clone(),
+                                        )),
+                                    });
                                 }
                                 c => {
                                     return Err(Error::msg(format!(

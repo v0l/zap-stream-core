@@ -3,13 +3,13 @@ use std::ptr;
 
 use anyhow::Error;
 use ffmpeg_sys_next::{
-    av_buffer_ref, av_frame_alloc, av_frame_copy_props, AVBufferRef,
-    AVFrame, SWS_BILINEAR, sws_getContext, sws_scale_frame, SwsContext,
+    av_buffer_ref, av_frame_alloc, av_frame_copy_props, AVBufferRef, AVFrame,
+    SWS_BILINEAR, sws_getContext, sws_scale_frame, SwsContext,
 };
 use tokio::sync::broadcast;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::pipeline::PipelinePayload;
+use crate::pipeline::{PipelinePayload, PipelineProcessor};
 use crate::utils::{get_ffmpeg_error_msg, video_variant_id_ref};
 use crate::variant::VideoVariant;
 
@@ -41,11 +41,7 @@ impl Scaler {
         }
     }
 
-    unsafe fn process_frame(&mut self, frame: *mut AVFrame) -> Result<(), Error> {
-        if (*frame).width == 0 {
-            // only picture frames supported
-            return Ok(());
-        }
+    unsafe fn process_frame(&mut self, frame: *mut AVFrame, src_index: usize) -> Result<(), Error> {
         let dst_fmt = transmute((*frame).format);
 
         if self.ctx == ptr::null_mut() {
@@ -80,15 +76,23 @@ impl Scaler {
 
         (*dst_frame).opaque_ref = av_buffer_ref(self.var_id_ref);
 
-        self.chan_out.send(PipelinePayload::AvFrame("Scaler frame".to_owned(), dst_frame))?;
+        self.chan_out.send(PipelinePayload::AvFrame(
+            "Scaler frame".to_owned(),
+            dst_frame,
+            src_index
+        ))?;
         Ok(())
     }
+}
 
-    pub fn process(&mut self) -> Result<(), Error> {
+impl PipelineProcessor for Scaler {
+    fn process(&mut self) -> Result<(), Error> {
         while let Ok(pkg) = self.chan_in.try_recv() {
             match pkg {
-                PipelinePayload::AvFrame(_, frm) => unsafe {
-                    self.process_frame(frm)?;
+                PipelinePayload::AvFrame(_, frm, idx) => unsafe {
+                    if self.variant.src_index == idx {
+                        self.process_frame(frm, idx)?;
+                    }
                 },
                 _ => return Err(Error::msg("Payload not supported payload")),
             }

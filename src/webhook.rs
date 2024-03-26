@@ -3,8 +3,9 @@ use std::fmt::Display;
 use uuid::Uuid;
 
 use crate::demux::info::{DemuxStreamInfo, StreamChannelType};
+use crate::egress::hls::HLSEgressConfig;
 use crate::ingress::ConnectionInfo;
-use crate::pipeline::{EgressType, HLSEgressConfig, PipelineConfig};
+use crate::pipeline::{EgressType, PipelineConfig};
 use crate::settings::Settings;
 use crate::variant::{AudioVariant, VariantStream, VideoVariant};
 
@@ -34,7 +35,7 @@ impl Webhook {
             bitrate: 3_000_000,
             codec: 27,
             profile: 100,
-            level: 1,
+            level: 51,
             keyframe_interval: 2,
         }));
         vars.push(VariantStream::Video(VideoVariant {
@@ -47,7 +48,7 @@ impl Webhook {
             bitrate: 1_000_000,
             codec: 27,
             profile: 100,
-            level: 1,
+            level: 51,
             keyframe_interval: 2,
         }));
         let has_audio = stream_info

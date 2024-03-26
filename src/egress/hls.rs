@@ -1,5 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, CString};
+use std::fmt::{Display, Formatter};
 use std::mem::transmute;
 use std::ptr;
 use std::ptr::slice_from_raw_parts;
@@ -7,27 +8,47 @@ use std::ptr::slice_from_raw_parts;
 use anyhow::Error;
 use ffmpeg_sys_next::{
     AV_CH_LAYOUT_STEREO, av_channel_layout_default, av_dump_format, av_get_sample_fmt,
-    av_interleaved_write_frame, av_opt_set, av_packet_rescale_ts, av_write_frame, AVChannelLayout,
-    AVChannelLayout__bindgen_ty_1, avcodec_send_frame, avcodec_send_packet, AVCodecContext,
+    av_interleaved_write_frame, av_opt_set, av_packet_rescale_ts, av_write_frame,
+    AVChannelLayout, AVChannelLayout__bindgen_ty_1, avcodec_parameters_copy,
+    avcodec_parameters_from_context, avcodec_send_frame, avcodec_send_packet, AVCodecContext,
     avformat_alloc_output_context2, avformat_new_stream, avformat_write_header, AVFormatContext, AVPacket,
     AVRational,
 };
 use ffmpeg_sys_next::AVChannelOrder::AV_CHANNEL_ORDER_NATIVE;
 use ffmpeg_sys_next::AVColorSpace::AVCOL_SPC_BT709;
 use ffmpeg_sys_next::AVMediaType::{AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_VIDEO};
+use ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use futures_util::StreamExt;
 use itertools::Itertools;
 use log::info;
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::{Receiver, UnboundedReceiver};
 use uuid::{Bytes, Uuid, Variant};
 
 use crate::demux::info::{DemuxStreamInfo, StreamChannelType};
 use crate::fraction::Fraction;
-use crate::pipeline::{HLSEgressConfig, PipelinePayload};
+use crate::pipeline::PipelinePayload;
 use crate::utils::{get_ffmpeg_error_msg, id_ref_to_uuid};
 use crate::variant::{VariantStream, VideoVariant};
 
-use ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV420P;
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HLSEgressConfig {
+    pub out_dir: String,
+    pub variants: Vec<VariantStream>,
+}
+
+impl Display for HLSEgressConfig {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "HLS: out_dir={}", self.out_dir)?;
+        if self.variants.len() > 0 {
+            write!(f, "\n\tStreams: ")?;
+            for v in &self.variants {
+                write!(f, "\n\t\t{}", v)?;
+            }
+        }
+        Ok(())
+    }
+}
 
 pub struct HlsEgress {
     /// Pipeline id
@@ -35,6 +56,7 @@ pub struct HlsEgress {
     config: HLSEgressConfig,
     ctx: *mut AVFormatContext,
     chan_in: UnboundedReceiver<PipelinePayload>,
+    stream_init: HashSet<i32>,
 }
 
 unsafe impl Send for HlsEgress {}
@@ -52,6 +74,7 @@ impl HlsEgress {
             config,
             ctx: ptr::null_mut(),
             chan_in,
+            stream_init: HashSet::new(),
         }
     }
 
@@ -95,6 +118,34 @@ impl HlsEgress {
             (*ctx).priv_data,
             "hls_flags\0".as_ptr() as *const libc::c_char,
             "delete_segments\0".as_ptr() as *const libc::c_char,
+            0,
+        );
+
+        // configure mapping
+        let mut stream_map: HashMap<usize, Vec<String>> = HashMap::new();
+        for var in &self.config.variants {
+            let cfg = match var {
+                VariantStream::Video(vx) => format!("v:{}", vx.dst_index),
+                VariantStream::Audio(ax) => format!("a:{}", ax.dst_index),
+            };
+            if let Some(out_stream) = stream_map.get_mut(&var.dst_index()) {
+                out_stream.push(cfg);
+            } else {
+                stream_map.insert(var.dst_index(), vec![cfg]);
+            }
+        }
+        let stream_map = stream_map
+            .values()
+            .into_iter()
+            .map(|v| v.join(","))
+            .join(" ");
+
+        info!("map_str={}", stream_map);
+
+        av_opt_set(
+            (*ctx).priv_data,
+            "var_stream_map\0".as_ptr() as *const libc::c_char,
+            format!("{}\0", stream_map).as_ptr() as *const libc::c_char,
             0,
         );
 
@@ -158,34 +209,6 @@ impl HlsEgress {
             }
         }
 
-        // configure mapping
-        let mut stream_map: HashMap<usize, Vec<String>> = HashMap::new();
-        for var in &self.config.variants {
-            let cfg = match var {
-                VariantStream::Video(vx) => format!("v:{}", vx.dst_index),
-                VariantStream::Audio(ax) => format!("a:{}", ax.dst_index),
-            };
-            if let Some(out_stream) = stream_map.get_mut(&var.dst_index()) {
-                out_stream.push(cfg);
-            } else {
-                stream_map.insert(var.dst_index(), vec![cfg]);
-            }
-        }
-        let stream_map = stream_map
-            .values()
-            .into_iter()
-            .map(|v| v.join(","))
-            .join(" ");
-
-        info!("map_str={}", stream_map);
-
-        av_opt_set(
-            (*ctx).priv_data,
-            "var_stream_map\0".as_ptr() as *const libc::c_char,
-            format!("{}\0", stream_map).as_ptr() as *const libc::c_char,
-            0,
-        );
-
         av_dump_format(ctx, 0, ptr::null(), 1);
 
         let ret = avformat_write_header(ctx, ptr::null_mut());
@@ -208,7 +231,13 @@ impl HlsEgress {
         }
 
         let stream = *(*self.ctx).streams.add(variant.unwrap().dst_index());
-        (*pkt).stream_index = (*stream).index;
+        let idx = (*stream).index as i32;
+        (*pkt).stream_index = idx;
+        if !self.stream_init.contains(&idx) {
+            let encoder = (*pkt).opaque as *mut AVCodecContext;
+            avcodec_parameters_from_context((*stream).codecpar, encoder);
+            self.stream_init.insert(idx);
+        }
 
         let ret = av_interleaved_write_frame(self.ctx, pkt);
         if ret < 0 {
