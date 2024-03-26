@@ -31,8 +31,8 @@ unsafe impl<T> Send for VideoEncoder<T> {}
 unsafe impl<T> Sync for VideoEncoder<T> {}
 
 impl<TRecv> VideoEncoder<TRecv>
-where
-    TRecv: Rx<PipelinePayload>,
+    where
+        TRecv: Rx<PipelinePayload>,
 {
     pub fn new(
         chan_in: TRecv,
@@ -51,15 +51,15 @@ where
     }
 
     unsafe fn setup_encoder(&mut self, frame: *mut AVFrame) -> Result<(), Error> {
-        if self.ctx == ptr::null_mut() {
+        if self.ctx.is_null() {
             let codec = self.variant.codec;
             let encoder = avcodec_find_encoder(transmute(codec as i32));
-            if encoder == ptr::null_mut() {
+            if encoder.is_null() {
                 return Err(Error::msg("Encoder not found"));
             }
 
             let ctx = avcodec_alloc_context3(encoder);
-            if ctx == ptr::null_mut() {
+            if ctx.is_null() {
                 return Err(Error::msg("Failed to allocate encoder context"));
             }
 
@@ -133,8 +133,8 @@ where
 }
 
 impl<TRecv> PipelineProcessor for VideoEncoder<TRecv>
-where
-    TRecv: Rx<PipelinePayload>,
+    where
+        TRecv: Rx<PipelinePayload>,
 {
     fn process(&mut self) -> Result<(), Error> {
         while let Ok(pkg) = self.chan_in.try_recv_next() {

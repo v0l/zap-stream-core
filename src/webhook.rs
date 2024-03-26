@@ -1,5 +1,3 @@
-use std::fmt::Display;
-
 use uuid::Uuid;
 
 use crate::demux::info::{DemuxStreamInfo, StreamChannelType};
@@ -19,7 +17,7 @@ impl Webhook {
         Self { config }
     }
 
-    pub async fn start(&self, connection_info: ConnectionInfo) -> Result<(), anyhow::Error> {
+    pub async fn start(&self, _connection_info: ConnectionInfo) -> Result<(), anyhow::Error> {
         Ok(())
     }
 

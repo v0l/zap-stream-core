@@ -19,8 +19,8 @@ unsafe impl<T> Send for TagFrame<T> {}
 unsafe impl<T> Sync for TagFrame<T> {}
 
 impl<TRecv> TagFrame<TRecv>
-where
-    TRecv: Rx<PipelinePayload>,
+    where
+        TRecv: Rx<PipelinePayload>,
 {
     pub fn new(
         var: VariantStream,
@@ -38,8 +38,8 @@ where
 }
 
 impl<TRecv> PipelineProcessor for TagFrame<TRecv>
-where
-    TRecv: Rx<PipelinePayload>,
+    where
+        TRecv: Rx<PipelinePayload>,
 {
     fn process(&mut self) -> Result<(), Error> {
         while let Ok(pkg) = self.chan_in.try_recv_next() {

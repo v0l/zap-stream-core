@@ -16,13 +16,13 @@ fn gcd(mut a: usize, mut b: usize) -> usize {
         a = b;
         b = temp % b;
     }
-    return a;
+    a
 }
 
 impl From<(usize, usize)> for Fraction {
     fn from(value: (usize, usize)) -> Self {
-        let mut num = value.0;
-        let mut den = value.1;
+        let num = value.0;
+        let den = value.1;
 
         let gcd = gcd(num, den);
 

@@ -1,5 +1,4 @@
 use std::ffi::CStr;
-use std::ptr;
 
 use anyhow::Error;
 use ffmpeg_sys_next::{av_buffer_allocz, av_make_error_string, AVBufferRef, memcpy};
@@ -37,7 +36,6 @@ pub fn variant_id_ref(var: &VariantStream) -> Result<*mut AVBufferRef, Error> {
                 );
                 Ok(buf)
             }
-            _ => return Err(Error::msg("Cannot assign pkt stream index")),
         }
     }
 }
@@ -68,10 +66,10 @@ pub fn audio_variant_id_ref(var: &AudioVariant) -> *mut AVBufferRef {
 
 pub fn id_ref_to_uuid(buf: *mut AVBufferRef) -> Result<Uuid, Error> {
     unsafe {
-        if buf == ptr::null_mut() {
+        if buf.is_null() {
             return Err(Error::msg("Buffer was null"));
         }
         let binding = Bytes::from(*((*buf).data as *const [u8; 16]));
-        Ok(Uuid::from_bytes_ref(&binding).clone())
+        Ok(*Uuid::from_bytes_ref(&binding))
     }
 }

@@ -4,23 +4,20 @@ use std::mem::transmute;
 use std::ptr;
 
 use anyhow::Error;
-use ffmpeg_sys_next::{AV_CH_LAYOUT_STEREO, av_channel_layout_default, av_dump_format, av_get_sample_fmt, av_interleaved_write_frame, av_opt_set, AVChannelLayout, AVChannelLayout__bindgen_ty_1, avcodec_parameters_from_context, AVCodecContext, avformat_alloc_output_context2, avformat_free_context, avformat_new_stream, avformat_write_header, AVFormatContext, AVPacket, AVRational};
+use ffmpeg_sys_next::{AV_CH_LAYOUT_STEREO, av_dump_format, av_get_sample_fmt, av_interleaved_write_frame, av_opt_set, AVChannelLayout, AVChannelLayout__bindgen_ty_1, avcodec_parameters_from_context, AVCodecContext, avformat_alloc_output_context2, avformat_free_context, avformat_new_stream, avformat_write_header, AVFormatContext, AVPacket, AVRational};
 use ffmpeg_sys_next::AVChannelOrder::AV_CHANNEL_ORDER_NATIVE;
 use ffmpeg_sys_next::AVColorSpace::AVCOL_SPC_BT709;
 use ffmpeg_sys_next::AVMediaType::{AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_VIDEO};
 use ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV420P;
-use futures_util::StreamExt;
 use itertools::Itertools;
 use log::info;
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc::{UnboundedReceiver};
-use uuid::{Bytes, Uuid, Variant};
+use tokio::sync::mpsc::UnboundedReceiver;
+use uuid::Uuid;
 
-use crate::demux::info::{DemuxStreamInfo, StreamChannelType};
-use crate::fraction::Fraction;
 use crate::pipeline::PipelinePayload;
 use crate::utils::{get_ffmpeg_error_msg, id_ref_to_uuid};
-use crate::variant::{VariantStream, VideoVariant};
+use crate::variant::VariantStream;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HLSEgressConfig {
@@ -31,7 +28,7 @@ pub struct HLSEgressConfig {
 impl Display for HLSEgressConfig {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "HLS: out_dir={}", self.out_dir)?;
-        if self.variants.len() > 0 {
+        if !self.variants.is_empty() {
             write!(f, "\n\tStreams: ")?;
             for v in &self.variants {
                 write!(f, "\n\t\t{}", v)?;
@@ -135,7 +132,6 @@ impl HlsEgress {
         }
         let stream_map = stream_map
             .values()
-            .into_iter()
             .map(|v| v.join(","))
             .join(" ");
 
@@ -153,7 +149,7 @@ impl HlsEgress {
             match var {
                 VariantStream::Video(vs) => {
                     let stream = avformat_new_stream(ctx, ptr::null());
-                    if stream == ptr::null_mut() {
+                    if stream.is_null() {
                         return Err(Error::msg("Failed to add stream to output"));
                     }
 
@@ -178,7 +174,7 @@ impl HlsEgress {
                 }
                 VariantStream::Audio(va) => {
                     let stream = avformat_new_stream(ctx, ptr::null());
-                    if stream == ptr::null_mut() {
+                    if stream.is_null() {
                         return Err(Error::msg("Failed to add stream to output"));
                     }
 
@@ -204,7 +200,6 @@ impl HlsEgress {
                         opaque: ptr::null_mut(),
                     };
                 }
-                _ => return Err(Error::msg("Invalid config")),
             }
         }
 
@@ -230,7 +225,7 @@ impl HlsEgress {
         }
 
         let stream = *(*self.ctx).streams.add(variant.unwrap().dst_index());
-        let idx = (*stream).index as i32;
+        let idx = (*stream).index;
         (*pkt).stream_index = idx;
         if !self.stream_init.contains(&idx) {
             let encoder = (*pkt).opaque as *mut AVCodecContext;
@@ -250,7 +245,7 @@ impl HlsEgress {
         while let Ok(pkg) = self.chan_in.try_recv() {
             match pkg {
                 PipelinePayload::AvPacket(_, pkt) => unsafe {
-                    if self.ctx == ptr::null_mut() {
+                    if self.ctx.is_null() {
                         self.setup_muxer()?;
                     }
                     self.process_pkt(pkt)?;

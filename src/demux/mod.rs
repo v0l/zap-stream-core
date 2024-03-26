@@ -40,9 +40,9 @@ unsafe extern "C" fn read_data(
     size: libc::c_int,
 ) -> libc::c_int {
     let chan = opaque as *mut UnboundedReceiver<Bytes>;
-    if let Some(mut data) = (*chan).blocking_recv() {
+    if let Some(data) = (*chan).blocking_recv() {
         let buff_len = data.len();
-        let mut len = size.min(buff_len as libc::c_int);
+        let len = size.min(buff_len as libc::c_int);
 
         if len > 0 {
             memcpy(
@@ -121,7 +121,7 @@ impl Demuxer {
             av_find_best_stream(self.ctx, AVMEDIA_TYPE_AUDIO, -1, -1, ptr::null_mut(), 0) as usize;
         if audio_stream_index != AVERROR_STREAM_NOT_FOUND as usize {
             let audio_stream = *(*self.ctx).streams.add(audio_stream_index);
-            let codec_copy = unsafe {
+            let _codec_copy = unsafe {
                 let ptr = avcodec_parameters_alloc();
                 avcodec_parameters_copy(ptr, (*audio_stream).codecpar);
                 ptr

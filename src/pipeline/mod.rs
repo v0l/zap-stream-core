@@ -1,5 +1,4 @@
 use std::fmt::{Display, Formatter};
-use std::ops::{Deref, DerefMut};
 
 use anyhow::Error;
 use ffmpeg_sys_next::{av_frame_clone, av_frame_copy_props, av_frame_free, av_packet_clone, av_packet_copy_props, av_packet_free, AVFrame, AVPacket};
@@ -34,6 +33,7 @@ impl Display for EgressType {
         )
     }
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct PipelineConfig {
     pub id: uuid::Uuid,
@@ -44,13 +44,13 @@ pub struct PipelineConfig {
 impl Display for PipelineConfig {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "\nPipeline Config ID={}", self.id)?;
-        if self.recording.len() > 0 {
+        if !self.recording.is_empty() {
             write!(f, "\nRecording:")?;
             for r in &self.recording {
                 write!(f, "\n\t{}", r)?;
             }
         }
-        if self.egress.len() > 0 {
+        if !self.egress.is_empty() {
             write!(f, "\nEgress:")?;
             for e in &self.egress {
                 write!(f, "\n\t{}", e)?;
@@ -91,7 +91,7 @@ impl Clone for PipelinePayload {
             PipelinePayload::AvFrame(t, p, idx) => unsafe {
                 let new_frame = av_frame_clone(*p);
                 av_frame_copy_props(new_frame, *p);
-                PipelinePayload::AvFrame(t.clone(), new_frame, idx.clone())
+                PipelinePayload::AvFrame(t.clone(), new_frame, *idx)
             },
             PipelinePayload::SourceInfo(i) => PipelinePayload::SourceInfo(i.clone()),
         }

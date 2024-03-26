@@ -53,7 +53,7 @@ impl Scaler {
     unsafe fn process_frame(&mut self, frame: *mut AVFrame, src_index: usize) -> Result<(), Error> {
         let dst_fmt = transmute((*frame).format);
 
-        if self.ctx == ptr::null_mut() {
+        if self.ctx.is_null() {
             let ctx = sws_getContext(
                 (*frame).width,
                 (*frame).height,
@@ -66,7 +66,7 @@ impl Scaler {
                 ptr::null_mut(),
                 ptr::null_mut(),
             );
-            if ctx == ptr::null_mut() {
+            if ctx.is_null() {
                 return Err(Error::msg("Failed to create scalar context"));
             }
             self.ctx = ctx;

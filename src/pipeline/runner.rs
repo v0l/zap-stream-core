@@ -1,10 +1,8 @@
-use std::ops::{Add, AddAssign};
+use std::ops::Add;
 use std::time::{Duration, Instant};
 
 use anyhow::Error;
-use itertools::Itertools;
 use log::info;
-use tokio::runtime::Runtime;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
@@ -114,7 +112,7 @@ impl PipelineRunner {
             .iter()
             .find(|s| s.channel_type == StreamChannelType::Video);
 
-        if let Some(ref vs) = video_stream {
+        if let Some(_vs) = video_stream {
             for eg in &self.config.egress {
                 match eg {
                     EgressType::HLS(cfg) => {
@@ -154,12 +152,6 @@ impl PipelineRunner {
                                         )),
                                     });
                                 }
-                                c => {
-                                    return Err(Error::msg(format!(
-                                        "Variant config not supported {:?}",
-                                        c
-                                    )));
-                                }
                             }
                         }
                     }
@@ -168,7 +160,7 @@ impl PipelineRunner {
             }
         }
 
-        if self.egress.len() == 0 {
+        if self.egress.is_empty() {
             Err(Error::msg("No egress config, pipeline misconfigured!"))
         } else {
             Ok(())

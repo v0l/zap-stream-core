@@ -50,7 +50,7 @@ impl Decoder {
     }
 
     pub unsafe fn decode_pkt(&mut self, pkt: *mut AVPacket) -> Result<usize, Error> {
-        let stream_index = (*pkt).stream_index as i32;
+        let stream_index = (*pkt).stream_index;
         let stream = (*pkt).opaque as *mut AVStream;
         assert_eq!(
             stream_index,
@@ -65,13 +65,13 @@ impl Decoder {
             "Codec parameters are missing from stream"
         );
 
-        if !self.codecs.contains_key(&stream_index) {
+        if let std::collections::hash_map::Entry::Vacant(e) = self.codecs.entry(stream_index) {
             let codec = avcodec_find_decoder((*codec_par).codec_id);
-            if codec == ptr::null_mut() {
+            if codec.is_null() {
                 return Err(Error::msg("Failed to find codec"));
             }
-            let mut context = avcodec_alloc_context3(ptr::null());
-            if context == ptr::null_mut() {
+            let context = avcodec_alloc_context3(ptr::null());
+            if context.is_null() {
                 return Err(Error::msg("Failed to alloc context"));
             }
             if avcodec_parameters_to_context(context, codec_par) != 0 {
@@ -80,12 +80,10 @@ impl Decoder {
             if avcodec_open2(context, codec, ptr::null_mut()) < 0 {
                 return Err(Error::msg("Failed to open codec"));
             }
-            self.codecs
-                .insert(stream_index, CodecContext { context, codec });
+            e.insert(CodecContext { context, codec });
         }
         if let Some(ctx) = self.codecs.get_mut(&stream_index) {
-            let mut ret = -1;
-            ret = avcodec_send_packet(ctx.context, pkt);
+            let mut ret = avcodec_send_packet(ctx.context, pkt);
             av_packet_unref(pkt);
             if ret < 0 {
                 return Err(Error::msg(format!("Failed to decode packet {}", ret)));
@@ -115,7 +113,7 @@ impl Decoder {
     }
 
     pub fn process(&mut self) -> Result<usize, Error> {
-        while let Ok(pkg) = self.chan_in.try_recv() {
+        if let Ok(pkg) = self.chan_in.try_recv() {
             return if let PipelinePayload::AvPacket(_, pkt) = pkg {
                 unsafe {
                     let frames = self.decode_pkt(pkt)?;

@@ -49,8 +49,8 @@ impl<T> Drop for AudioEncoder<T> {
 }
 
 impl<TRecv> AudioEncoder<TRecv>
-where
-    TRecv: Rx<PipelinePayload>,
+    where
+        TRecv: Rx<PipelinePayload>,
 {
     pub fn new(
         chan_in: TRecv,
@@ -71,15 +71,15 @@ where
     }
 
     unsafe fn setup_encoder(&mut self, frame: *mut AVFrame) -> Result<(), Error> {
-        if self.ctx == ptr::null_mut() {
+        if self.ctx.is_null() {
             let codec = self.variant.codec;
             let encoder = avcodec_find_encoder(transmute(codec as i32));
-            if encoder == ptr::null_mut() {
+            if encoder.is_null() {
                 return Err(Error::msg("Encoder not found"));
             }
 
             let ctx = avcodec_alloc_context3(encoder);
-            if ctx == ptr::null_mut() {
+            if ctx.is_null() {
                 return Err(Error::msg("Failed to allocate encoder context"));
             }
 
@@ -100,7 +100,7 @@ where
 
             // setup audio FIFO
             let fifo = av_audio_fifo_alloc((*ctx).sample_fmt, 2, 1);
-            if fifo == ptr::null_mut() {
+            if fifo.is_null() {
                 return Err(Error::msg("Failed to allocate audio FiFO buffer"));
             }
 
@@ -181,7 +181,7 @@ where
             return Err(Error::msg("Failed to write samples to FIFO"));
         }
 
-        if dst_samples != ptr::null_mut() {
+        if !dst_samples.is_null() {
             av_freep(dst_samples.add(0) as *mut libc::c_void);
         }
 
@@ -257,8 +257,8 @@ where
 }
 
 impl<TRecv> PipelineProcessor for AudioEncoder<TRecv>
-where
-    TRecv: Rx<PipelinePayload>,
+    where
+        TRecv: Rx<PipelinePayload>,
 {
     fn process(&mut self) -> Result<(), Error> {
         while let Ok(pkg) = self.chan_in.try_recv_next() {
