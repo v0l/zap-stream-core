@@ -1,0 +1,12 @@
+name: zap-stream-core
+services:
+  app:
+    build:
+      context: .
+    environment:
+      - "RUST_LOG=info"
+    ports:
+      - "3333:3333"
+      - "3334:3334"
+    volumes:
+      - "./config.toml:/app/config.toml:ro"
