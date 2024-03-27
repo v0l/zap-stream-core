@@ -21,4 +21,4 @@ serde = { version = "1.0.197", features = ["derive"] }
 config = { version = "0.14.0", features = ["toml"] }
 url = "2.5.0"
 itertools = "0.12.1"
-hyper = "1.2.0"
+warp = "0.3.6"

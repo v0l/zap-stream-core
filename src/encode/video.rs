@@ -3,14 +3,13 @@ use std::ptr;
 
 use anyhow::Error;
 use ffmpeg_sys_next::{
-    av_buffer_ref, av_opt_set, av_packet_alloc, av_packet_free, av_packet_rescale_ts,
-    AVBufferRef, AVCodec, avcodec_alloc_context3, avcodec_find_encoder,
-    avcodec_open2, avcodec_receive_packet, avcodec_send_frame, AVCodecContext, AVERROR, AVFrame, AVRational,
+    av_buffer_ref, av_packet_alloc, av_packet_free, av_packet_rescale_ts, avcodec_alloc_context3,
+    avcodec_find_encoder, avcodec_open2, avcodec_receive_packet, avcodec_send_frame, AVBufferRef,
+    AVCodec, AVCodecContext, AVFrame, AVStream, AVERROR,
 };
-use ffmpeg_sys_next::AVColorSpace::AVCOL_SPC_BT709;
-use ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use libc::EAGAIN;
 use tokio::sync::mpsc::UnboundedSender;
+use crate::encode::set_encoded_pkt_timing;
 
 use crate::ipc::Rx;
 use crate::pipeline::{PipelinePayload, PipelineProcessor};
@@ -31,8 +30,8 @@ unsafe impl<T> Send for VideoEncoder<T> {}
 unsafe impl<T> Sync for VideoEncoder<T> {}
 
 impl<TRecv> VideoEncoder<TRecv>
-    where
-        TRecv: Rx<PipelinePayload>,
+where
+    TRecv: Rx<PipelinePayload>,
 {
     pub fn new(
         chan_in: TRecv,
@@ -63,28 +62,7 @@ impl<TRecv> VideoEncoder<TRecv>
                 return Err(Error::msg("Failed to allocate encoder context"));
             }
 
-            (*ctx).time_base = self.variant.time_base();
-            (*ctx).bit_rate = self.variant.bitrate as i64;
-            (*ctx).width = (*frame).width;
-            (*ctx).height = (*frame).height;
-            (*ctx).level = self.variant.level as libc::c_int;
-            (*ctx).profile = self.variant.profile as libc::c_int;
-            (*ctx).framerate = AVRational {
-                num: 1,
-                den: self.variant.fps as libc::c_int,
-            };
-
-            let key_frames = self.variant.fps * self.variant.keyframe_interval;
-            (*ctx).gop_size = key_frames as libc::c_int;
-            (*ctx).max_b_frames = 1;
-            (*ctx).pix_fmt = AV_PIX_FMT_YUV420P;
-            (*ctx).colorspace = AVCOL_SPC_BT709;
-            av_opt_set(
-                (*ctx).priv_data,
-                "preset\0".as_ptr() as *const libc::c_char,
-                "fast\0".as_ptr() as *const libc::c_char,
-                0,
-            );
+            self.variant.to_codec_context(ctx);
 
             let ret = avcodec_open2(ctx, encoder, ptr::null_mut());
             if ret < 0 {
@@ -119,9 +97,7 @@ impl<TRecv> VideoEncoder<TRecv>
                 return Err(Error::msg(get_ffmpeg_error_msg(ret)));
             }
 
-            (*pkt).time_base = (*self.ctx).time_base;
-            (*pkt).duration = (*frame).duration;
-            av_packet_rescale_ts(pkt, (*frame).time_base, (*self.ctx).time_base);
+            set_encoded_pkt_timing(self.ctx, pkt, frame);
             (*pkt).opaque = self.ctx as *mut libc::c_void;
             (*pkt).opaque_ref = av_buffer_ref(self.var_id_ref);
             self.chan_out
@@ -133,8 +109,8 @@ impl<TRecv> VideoEncoder<TRecv>
 }
 
 impl<TRecv> PipelineProcessor for VideoEncoder<TRecv>
-    where
-        TRecv: Rx<PipelinePayload>,
+where
+    TRecv: Rx<PipelinePayload>,
 {
     fn process(&mut self) -> Result<(), Error> {
         while let Ok(pkg) = self.chan_in.try_recv_next() {

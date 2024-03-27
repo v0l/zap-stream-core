@@ -4,6 +4,7 @@ use config::Config;
 use log::{error, info};
 use url::Url;
 
+use crate::egress::http::listen_out_dir;
 use crate::pipeline::builder::PipelineBuilder;
 use crate::settings::Settings;
 use crate::webhook::Webhook;
@@ -14,14 +15,14 @@ mod egress;
 mod encode;
 mod fraction;
 mod ingress;
+mod ipc;
 mod pipeline;
 mod scale;
 mod settings;
+mod tag_frame;
 mod utils;
 mod variant;
 mod webhook;
-mod ipc;
-mod tag_frame;
 
 /// Test:  ffmpeg -re -f lavfi -i testsrc -g 2 -r 30 -pix_fmt yuv420p -s 1280x720 -c:v h264 -b:v 2000k -f mpegts srt://localhost:3333
 #[tokio::main]
@@ -48,7 +49,7 @@ async fn main() -> anyhow::Result<()> {
     let webhook = Webhook::new(settings.clone());
     let builder = PipelineBuilder::new(webhook);
     let mut listeners = vec![];
-    for e in settings.endpoints {
+    for e in &settings.endpoints {
         let u: Url = e.parse()?;
         let addr = format!("{}:{}", u.host_str().unwrap(), u.port().unwrap());
         match u.scheme() {
@@ -59,6 +60,11 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     }
+    listeners.push(tokio::spawn(listen_out_dir(
+        "0.0.0.0:8080".to_owned(),
+        settings.clone(),
+    )));
+
     for handle in listeners {
         if let Err(e) = handle.await {
             error!("{e}");

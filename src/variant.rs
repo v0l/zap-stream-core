@@ -1,8 +1,18 @@
 use std::ffi::CStr;
 use std::fmt::{Display, Formatter};
 use std::mem::transmute;
+use std::ptr;
 
-use ffmpeg_sys_next::{avcodec_get_name, AVRational};
+use ffmpeg_sys_next::AVChannelOrder::AV_CHANNEL_ORDER_NATIVE;
+use ffmpeg_sys_next::AVCodecID::{AV_CODEC_ID_AAC, AV_CODEC_ID_H264};
+use ffmpeg_sys_next::AVColorSpace::AVCOL_SPC_BT709;
+use ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV420P;
+use ffmpeg_sys_next::{
+    av_get_sample_fmt, av_opt_set, avcodec_find_encoder, avcodec_find_encoder_by_name,
+    avcodec_get_name, AVChannelLayout, AVChannelLayout__bindgen_ty_1, AVCodec, AVCodecContext,
+    AVCodecParameters, AVRational, AVStream, AV_CH_LAYOUT_STEREO,
+};
+use ffmpeg_sys_next::AVColorRange::{AVCOL_RANGE_JPEG, AVCOL_RANGE_MPEG};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -162,6 +172,77 @@ impl VideoVariant {
             den: 90_000,
         }
     }
+
+    pub fn get_codec(&self) -> *const AVCodec {
+        unsafe { avcodec_find_encoder(transmute(self.codec as u32)) }
+    }
+
+    pub unsafe fn to_codec_context(&self, ctx: *mut AVCodecContext) {
+        let codec = self.get_codec();
+        (*ctx).codec_id = (*codec).id;
+        (*ctx).codec_type = (*codec).type_;
+        (*ctx).time_base = self.time_base();
+        (*ctx).bit_rate = self.bitrate as i64;
+        (*ctx).width = self.width as libc::c_int;
+        (*ctx).height = self.height as libc::c_int;
+        (*ctx).level = self.level as libc::c_int;
+        (*ctx).profile = self.profile as libc::c_int;
+        (*ctx).framerate = AVRational {
+            num: self.fps as libc::c_int,
+            den: 1,
+        };
+
+        let key_frames = self.fps * self.keyframe_interval;
+        (*ctx).gop_size = key_frames as libc::c_int;
+        (*ctx).keyint_min = key_frames as libc::c_int;
+        (*ctx).max_b_frames = 1;
+        (*ctx).pix_fmt = AV_PIX_FMT_YUV420P;
+        (*ctx).colorspace = AVCOL_SPC_BT709;
+        (*ctx).color_range = AVCOL_RANGE_MPEG;
+        if (*codec).id == AV_CODEC_ID_H264 {
+            av_opt_set(
+                (*ctx).priv_data,
+                "preset\0".as_ptr() as *const libc::c_char,
+                "fast\0".as_ptr() as *const libc::c_char,
+                0,
+            );
+            av_opt_set(
+                (*ctx).priv_data,
+                "tune\0".as_ptr() as *const libc::c_char,
+                "zerolatency\0".as_ptr() as *const libc::c_char,
+                0,
+            );
+        }
+    }
+
+    pub unsafe fn to_codec_params(&self, params: *mut AVCodecParameters) {
+        let codec = self.get_codec();
+        (*params).codec_id = (*codec).id;
+        (*params).codec_type = (*codec).type_;
+        (*params).height = self.height as libc::c_int;
+        (*params).width = self.width as libc::c_int;
+        (*params).format = AV_PIX_FMT_YUV420P as i32;
+        (*params).framerate = AVRational {
+            num: self.fps as libc::c_int,
+            den: 1,
+        };
+        (*params).bit_rate = self.bitrate as i64;
+        (*params).color_space = AVCOL_SPC_BT709;
+        (*params).level = self.level as libc::c_int;
+        (*params).profile = self.profile as libc::c_int;
+    }
+
+    pub unsafe fn to_stream(&self, stream: *mut AVStream) {
+        (*stream).time_base = self.time_base();
+        (*stream).avg_frame_rate = AVRational {
+            num: self.fps as libc::c_int,
+            den: 1,
+        };
+        (*stream).r_frame_rate = AVRational {
+            num: self.fps as libc::c_int,
+            den: 1,
+        };
+    }
 }
 
 impl AudioVariant {
@@ -169,6 +250,59 @@ impl AudioVariant {
         AVRational {
             num: 1,
             den: self.sample_rate as libc::c_int,
+        }
+    }
+
+    pub fn get_codec(&self) -> *const AVCodec {
+        unsafe {
+            if self.codec == AV_CODEC_ID_AAC as usize {
+                avcodec_find_encoder_by_name("libfdk_aac\0".as_ptr() as *const libc::c_char)
+            } else {
+                avcodec_find_encoder(transmute(self.codec as u32))
+            }
+        }
+    }
+
+    pub unsafe fn to_codec_context(&self, ctx: *mut AVCodecContext) {
+        let codec = self.get_codec();
+        (*ctx).codec_id = (*codec).id;
+        (*ctx).codec_type = (*codec).type_;
+        (*ctx).time_base = self.time_base();
+        (*ctx).sample_fmt =
+            av_get_sample_fmt(format!("{}\0", self.sample_fmt).as_ptr() as *const libc::c_char);
+        (*ctx).bit_rate = self.bitrate as i64;
+        (*ctx).sample_rate = self.sample_rate as libc::c_int;
+        (*ctx).ch_layout = self.channel_layout();
+    }
+
+    pub unsafe fn to_codec_params(&self, params: *mut AVCodecParameters) {
+        let codec = self.get_codec();
+        (*params).codec_id = (*codec).id;
+        (*params).codec_type = (*codec).type_;
+        (*params).format =
+            av_get_sample_fmt(format!("{}\0", self.sample_fmt).as_ptr() as *const libc::c_char)
+                as libc::c_int;
+        (*params).bit_rate = self.bitrate as i64;
+        (*params).sample_rate = self.sample_rate as libc::c_int;
+        (*params).ch_layout = self.channel_layout();
+    }
+
+    pub unsafe fn to_stream(&self, stream: *mut AVStream) {
+        (*stream).time_base = self.time_base();
+        (*stream).r_frame_rate = AVRational {
+            num: (*stream).time_base.den,
+            den: (*stream).time_base.num,
+        };
+    }
+
+    pub fn channel_layout(&self) -> AVChannelLayout {
+        AVChannelLayout {
+            order: AV_CHANNEL_ORDER_NATIVE,
+            nb_channels: 2,
+            u: AVChannelLayout__bindgen_ty_1 {
+                mask: AV_CH_LAYOUT_STEREO,
+            },
+            opaque: ptr::null_mut(),
         }
     }
 }

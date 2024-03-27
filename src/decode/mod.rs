@@ -7,6 +7,7 @@ use ffmpeg_sys_next::{
     avcodec_find_decoder, avcodec_free_context, avcodec_open2, avcodec_parameters_to_context,
     avcodec_receive_frame, avcodec_send_packet, AVCodecContext, AVERROR, AVERROR_EOF, AVPacket, AVStream,
 };
+use ffmpeg_sys_next::AVPictureType::AV_PICTURE_TYPE_NONE;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -99,7 +100,9 @@ impl Decoder {
                     }
                     return Err(Error::msg(format!("Failed to decode {}", ret)));
                 }
-                (*frame).time_base = (*stream).time_base;
+                // reset picture type, not to confuse the encoder
+                (*frame).pict_type = AV_PICTURE_TYPE_NONE;
+                (*frame).opaque = stream as *mut libc::c_void;
                 self.chan_out.send(PipelinePayload::AvFrame(
                     "Decoder frame".to_owned(),
                     frame,

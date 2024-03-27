@@ -4,7 +4,7 @@ use std::mem::transmute;
 use std::ptr;
 
 use anyhow::Error;
-use ffmpeg_sys_next::{AV_CH_LAYOUT_STEREO, av_dump_format, av_get_sample_fmt, av_interleaved_write_frame, av_opt_set, AVChannelLayout, AVChannelLayout__bindgen_ty_1, avcodec_parameters_from_context, AVCodecContext, avformat_alloc_output_context2, avformat_free_context, avformat_new_stream, avformat_write_header, AVFormatContext, AVPacket, AVRational};
+use ffmpeg_sys_next::{AV_CH_LAYOUT_STEREO, av_dump_format, av_get_sample_fmt, av_interleaved_write_frame, av_opt_set, AVChannelLayout, AVChannelLayout__bindgen_ty_1, avcodec_find_encoder, avcodec_parameters_from_context, AVCodecContext, avformat_alloc_output_context2, avformat_free_context, avformat_new_stream, avformat_write_header, AVFormatContext, AVPacket, AVRational};
 use ffmpeg_sys_next::AVChannelOrder::AV_CHANNEL_ORDER_NATIVE;
 use ffmpeg_sys_next::AVColorSpace::AVCOL_SPC_BT709;
 use ffmpeg_sys_next::AVMediaType::{AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_VIDEO};
@@ -145,7 +145,6 @@ impl HlsEgress {
         );
 
         for var in &mut self.config.variants {
-            let tb = var.time_base();
             match var {
                 VariantStream::Video(vs) => {
                     let stream = avformat_new_stream(ctx, ptr::null());
@@ -155,22 +154,8 @@ impl HlsEgress {
 
                     // overwrite dst_index to match output stream
                     vs.dst_index = (*stream).index as usize;
-                    (*stream).time_base = tb;
-
-                    let params = (*stream).codecpar;
-                    (*params).height = vs.height as libc::c_int;
-                    (*params).width = vs.width as libc::c_int;
-                    (*params).codec_id = transmute(vs.codec as i32);
-                    (*params).codec_type = AVMEDIA_TYPE_VIDEO;
-                    (*params).format = AV_PIX_FMT_YUV420P as i32;
-                    (*params).framerate = AVRational {
-                        num: 1,
-                        den: vs.fps as libc::c_int,
-                    };
-                    (*params).bit_rate = vs.bitrate as i64;
-                    (*params).color_space = AVCOL_SPC_BT709;
-                    (*params).level = vs.level as libc::c_int;
-                    (*params).profile = vs.profile as libc::c_int;
+                    vs.to_stream(stream);
+                    vs.to_codec_params((*stream).codecpar);
                 }
                 VariantStream::Audio(va) => {
                     let stream = avformat_new_stream(ctx, ptr::null());
@@ -180,25 +165,8 @@ impl HlsEgress {
 
                     // overwrite dst_index to match output stream
                     va.dst_index = (*stream).index as usize;
-                    (*stream).time_base = tb;
-
-                    let params = (*stream).codecpar;
-
-                    (*params).codec_id = transmute(va.codec as i32);
-                    (*params).codec_type = AVMEDIA_TYPE_AUDIO;
-                    (*params).format = av_get_sample_fmt(
-                        format!("{}\0", va.sample_fmt).as_ptr() as *const libc::c_char
-                    ) as libc::c_int;
-                    (*params).bit_rate = va.bitrate as i64;
-                    (*params).sample_rate = va.sample_rate as libc::c_int;
-                    (*params).ch_layout = AVChannelLayout {
-                        order: AV_CHANNEL_ORDER_NATIVE,
-                        nb_channels: 2,
-                        u: AVChannelLayout__bindgen_ty_1 {
-                            mask: AV_CH_LAYOUT_STEREO,
-                        },
-                        opaque: ptr::null_mut(),
-                    };
+                    va.to_stream(stream);
+                    va.to_codec_params((*stream).codecpar);
                 }
             }
         }

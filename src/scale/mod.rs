@@ -57,7 +57,7 @@ impl Scaler {
             let ctx = sws_getContext(
                 (*frame).width,
                 (*frame).height,
-                dst_fmt,
+                transmute((*frame).format),
                 self.variant.width as libc::c_int,
                 self.variant.height as libc::c_int,
                 dst_fmt,
@@ -83,6 +83,7 @@ impl Scaler {
             return Err(Error::msg(get_ffmpeg_error_msg(ret)));
         }
 
+        (*dst_frame).opaque = (*frame).opaque;
         (*dst_frame).opaque_ref = av_buffer_ref(self.var_id_ref);
 
         self.chan_out.send(PipelinePayload::AvFrame(

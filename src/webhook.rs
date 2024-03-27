@@ -1,3 +1,4 @@
+use ffmpeg_sys_next::AVCodecID::{AV_CODEC_ID_AAC, AV_CODEC_ID_AAC_LATM};
 use uuid::Uuid;
 
 use crate::demux::info::{DemuxStreamInfo, StreamChannelType};
@@ -62,7 +63,7 @@ impl Webhook {
                 codec: 86018,
                 channels: 2,
                 sample_rate: 44_100,
-                sample_fmt: "fltp".to_owned(),
+                sample_fmt: "s16".to_owned(),
             }));
             vars.push(VariantStream::Audio(AudioVariant {
                 id: Uuid::new_v4(),
@@ -72,7 +73,7 @@ impl Webhook {
                 codec: 86018,
                 channels: 2,
                 sample_rate: 44_100,
-                sample_fmt: "fltp".to_owned(),
+                sample_fmt: "s16".to_owned(),
             }));
         }
 

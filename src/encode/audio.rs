@@ -5,18 +5,16 @@ use anyhow::Error;
 use ffmpeg_sys_next::{
     av_audio_fifo_alloc, av_audio_fifo_free, av_audio_fifo_read, av_audio_fifo_realloc,
     av_audio_fifo_size, av_audio_fifo_write, av_buffer_ref, av_buffer_unref,
-    AV_CH_LAYOUT_STEREO, av_channel_layout_copy, av_frame_alloc, av_frame_free, av_frame_get_buffer,
-    av_freep, av_get_sample_fmt, av_packet_alloc, av_packet_free,
-    av_packet_rescale_ts, av_samples_alloc_array_and_samples, AVAudioFifo,
-    AVBufferRef, AVChannelLayout, AVChannelLayout__bindgen_ty_1, AVCodec,
-    avcodec_alloc_context3, avcodec_find_encoder, avcodec_free_context, avcodec_open2, avcodec_receive_packet, avcodec_send_frame,
-    AVCodecContext, AVERROR, AVFrame, swr_alloc_set_opts2, swr_convert, swr_free,
-    swr_init, SwrContext,
+    av_channel_layout_copy, av_frame_alloc, av_frame_free, av_frame_get_buffer, av_freep,
+    av_packet_alloc, av_packet_free, av_samples_alloc_array_and_samples, AVAudioFifo,
+    AVBufferRef, AVCodec, avcodec_alloc_context3, avcodec_free_context,
+    avcodec_open2, avcodec_receive_packet, avcodec_send_frame, AVCodecContext, AVERROR, AVFrame, swr_alloc_set_opts2,
+    swr_convert, swr_free, swr_init, SwrContext,
 };
-use ffmpeg_sys_next::AVChannelOrder::AV_CHANNEL_ORDER_NATIVE;
 use libc::EAGAIN;
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::encode::set_encoded_pkt_timing;
 use crate::ipc::Rx;
 use crate::pipeline::{PipelinePayload, PipelineProcessor};
 use crate::utils::{audio_variant_id_ref, get_ffmpeg_error_msg, id_ref_to_uuid};
@@ -49,8 +47,8 @@ impl<T> Drop for AudioEncoder<T> {
 }
 
 impl<TRecv> AudioEncoder<TRecv>
-    where
-        TRecv: Rx<PipelinePayload>,
+where
+    TRecv: Rx<PipelinePayload>,
 {
     pub fn new(
         chan_in: TRecv,
@@ -72,8 +70,7 @@ impl<TRecv> AudioEncoder<TRecv>
 
     unsafe fn setup_encoder(&mut self, frame: *mut AVFrame) -> Result<(), Error> {
         if self.ctx.is_null() {
-            let codec = self.variant.codec;
-            let encoder = avcodec_find_encoder(transmute(codec as i32));
+            let encoder = self.variant.get_codec();
             if encoder.is_null() {
                 return Err(Error::msg("Encoder not found"));
             }
@@ -83,20 +80,7 @@ impl<TRecv> AudioEncoder<TRecv>
                 return Err(Error::msg("Failed to allocate encoder context"));
             }
 
-            (*ctx).time_base = self.variant.time_base();
-            (*ctx).sample_fmt = av_get_sample_fmt(
-                format!("{}\0", self.variant.sample_fmt).as_ptr() as *const libc::c_char,
-            );
-            (*ctx).bit_rate = self.variant.bitrate as i64;
-            (*ctx).sample_rate = self.variant.sample_rate as libc::c_int;
-            (*ctx).ch_layout = AVChannelLayout {
-                order: AV_CHANNEL_ORDER_NATIVE,
-                nb_channels: 2,
-                u: AVChannelLayout__bindgen_ty_1 {
-                    mask: AV_CH_LAYOUT_STEREO,
-                },
-                opaque: ptr::null_mut(),
-            };
+            self.variant.to_codec_context(ctx);
 
             // setup audio FIFO
             let fifo = av_audio_fifo_alloc((*ctx).sample_fmt, 2, 1);
@@ -220,13 +204,17 @@ impl<TRecv> AudioEncoder<TRecv>
         assert_eq!(var_id, self.variant.id);
 
         self.setup_encoder(frame)?;
-
         if !self.process_audio_frame(frame)? {
             return Ok(());
         }
 
         // read audio from FIFO
-        let frame = self.get_fifo_frame()?;
+        let fifo_frame = self.get_fifo_frame()?;
+
+        // copy pointer to input stream
+        (*fifo_frame).opaque = (*frame).opaque;
+        let frame = fifo_frame;
+
         let mut ret = avcodec_send_frame(self.ctx, frame);
         if ret < 0 && ret != AVERROR(EAGAIN) {
             return Err(Error::msg(get_ffmpeg_error_msg(ret)));
@@ -243,9 +231,7 @@ impl<TRecv> AudioEncoder<TRecv>
                 return Err(Error::msg(get_ffmpeg_error_msg(ret)));
             }
 
-            (*pkt).time_base = (*self.ctx).time_base;
-            (*pkt).duration = (*frame).duration;
-            av_packet_rescale_ts(pkt, (*frame).time_base, (*self.ctx).time_base);
+            set_encoded_pkt_timing(self.ctx, pkt, frame);
             (*pkt).opaque = self.ctx as *mut libc::c_void;
             (*pkt).opaque_ref = av_buffer_ref(self.var_id_ref);
             self.chan_out
@@ -257,8 +243,8 @@ impl<TRecv> AudioEncoder<TRecv>
 }
 
 impl<TRecv> PipelineProcessor for AudioEncoder<TRecv>
-    where
-        TRecv: Rx<PipelinePayload>,
+where
+    TRecv: Rx<PipelinePayload>,
 {
     fn process(&mut self) -> Result<(), Error> {
         while let Ok(pkg) = self.chan_in.try_recv_next() {

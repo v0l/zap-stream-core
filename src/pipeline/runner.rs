@@ -2,7 +2,7 @@ use std::ops::Add;
 use std::time::{Duration, Instant};
 
 use anyhow::Error;
-use log::info;
+use log::{info, warn};
 use tokio::sync::broadcast;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
@@ -59,7 +59,7 @@ impl PipelineRunner {
     }
 
     pub fn run(&mut self) -> Result<(), Error> {
-        if let Some(info) = &self.stream_info {
+        /*if let Some(info) = &self.stream_info {
             if let Some(v_stream) = info
                 .channels
                 .iter()
@@ -73,7 +73,7 @@ impl PipelineRunner {
                     std::thread::sleep(poll_sleep);
                 }
             }
-        }
+        }*/
         if let Some(cfg) = self.demuxer.process()? {
             self.configure_pipeline(cfg)?;
         }

@@ -48,6 +48,7 @@ impl<TRecv> PipelineProcessor for TagFrame<TRecv>
                     if idx == self.variant.src_index() {
                         let new_frame = av_frame_clone(frm);
                         av_frame_copy_props(new_frame, frm);
+                        (*new_frame).opaque = (*frm).opaque;
                         (*new_frame).opaque_ref = av_buffer_ref(self.var_id_ref);
                         self.chan_out
                             .send(PipelinePayload::AvFrame(tag.clone(), new_frame, idx))?;
