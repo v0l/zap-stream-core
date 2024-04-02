@@ -3,16 +3,16 @@ use std::fmt::{Display, Formatter};
 use std::mem::transmute;
 use std::ptr;
 
+use ffmpeg_sys_next::{
+    AV_CH_LAYOUT_STEREO, av_get_sample_fmt, av_opt_set, AVChannelLayout,
+    AVChannelLayout__bindgen_ty_1, AVCodec, avcodec_find_encoder, avcodec_find_encoder_by_name, avcodec_get_name,
+    AVCodecContext, AVCodecParameters, AVRational, AVStream,
+};
 use ffmpeg_sys_next::AVChannelOrder::AV_CHANNEL_ORDER_NATIVE;
 use ffmpeg_sys_next::AVCodecID::{AV_CODEC_ID_AAC, AV_CODEC_ID_H264};
+use ffmpeg_sys_next::AVColorRange::AVCOL_RANGE_MPEG;
 use ffmpeg_sys_next::AVColorSpace::AVCOL_SPC_BT709;
 use ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV420P;
-use ffmpeg_sys_next::{
-    av_get_sample_fmt, av_opt_set, avcodec_find_encoder, avcodec_find_encoder_by_name,
-    avcodec_get_name, AVChannelLayout, AVChannelLayout__bindgen_ty_1, AVCodec, AVCodecContext,
-    AVCodecParameters, AVRational, AVStream, AV_CH_LAYOUT_STEREO,
-};
-use ffmpeg_sys_next::AVColorRange::{AVCOL_RANGE_JPEG, AVCOL_RANGE_MPEG};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -29,6 +29,64 @@ impl Display for VariantStream {
         match self {
             VariantStream::Video(v) => write!(f, "{}", v),
             VariantStream::Audio(a) => write!(f, "{}", a),
+        }
+    }
+}
+
+impl VariantStreamType for VariantStream {
+    fn id(&self) -> Uuid {
+        match self {
+            VariantStream::Video(v) => v.id,
+            VariantStream::Audio(v) => v.id,
+        }
+    }
+
+    fn src_index(&self) -> usize {
+        match self {
+            VariantStream::Video(v) => v.src_index,
+            VariantStream::Audio(v) => v.src_index,
+        }
+    }
+
+    fn dst_index(&self) -> usize {
+        match self {
+            VariantStream::Video(v) => v.dst_index,
+            VariantStream::Audio(v) => v.dst_index,
+        }
+    }
+
+    fn time_base(&self) -> AVRational {
+        match self {
+            VariantStream::Video(v) => v.time_base(),
+            VariantStream::Audio(v) => v.time_base(),
+        }
+    }
+
+    unsafe fn get_codec(&self) -> *const AVCodec {
+        match self {
+            VariantStream::Video(v) => v.get_codec(),
+            VariantStream::Audio(v) => v.get_codec(),
+        }
+    }
+
+    unsafe fn to_codec_context(&self, ctx: *mut AVCodecContext) {
+        match self {
+            VariantStream::Video(v) => v.to_codec_context(ctx),
+            VariantStream::Audio(v) => v.to_codec_context(ctx),
+        }
+    }
+
+    unsafe fn to_codec_params(&self, params: *mut AVCodecParameters) {
+        match self {
+            VariantStream::Video(v) => v.to_codec_params(params),
+            VariantStream::Audio(v) => v.to_codec_params(params),
+        }
+    }
+
+    unsafe fn to_stream(&self, stream: *mut AVStream) {
+        match self {
+            VariantStream::Video(v) => v.to_stream(stream),
+            VariantStream::Audio(v) => v.to_stream(stream),
         }
     }
 }
@@ -135,49 +193,42 @@ impl Display for AudioVariant {
     }
 }
 
-impl VariantStream {
-    pub fn id(&self) -> Uuid {
-        match self {
-            VariantStream::Video(v) => v.id,
-            VariantStream::Audio(v) => v.id,
-        }
-    }
-
-    pub fn src_index(&self) -> usize {
-        match self {
-            VariantStream::Video(v) => v.src_index,
-            VariantStream::Audio(v) => v.src_index,
-        }
-    }
-
-    pub fn dst_index(&self) -> usize {
-        match self {
-            VariantStream::Video(v) => v.dst_index,
-            VariantStream::Audio(v) => v.dst_index,
-        }
-    }
-
-    pub fn time_base(&self) -> AVRational {
-        match &self {
-            VariantStream::Video(vv) => vv.time_base(),
-            VariantStream::Audio(va) => va.time_base(),
-        }
-    }
+pub trait VariantStreamType {
+    fn id(&self) -> Uuid;
+    fn src_index(&self) -> usize;
+    fn dst_index(&self) -> usize;
+    fn time_base(&self) -> AVRational;
+    unsafe fn get_codec(&self) -> *const AVCodec;
+    unsafe fn to_codec_context(&self, ctx: *mut AVCodecContext);
+    unsafe fn to_codec_params(&self, params: *mut AVCodecParameters);
+    unsafe fn to_stream(&self, stream: *mut AVStream);
 }
 
-impl VideoVariant {
-    pub fn time_base(&self) -> AVRational {
+impl VariantStreamType for VideoVariant {
+    fn id(&self) -> Uuid {
+        self.id
+    }
+
+    fn src_index(&self) -> usize {
+        self.src_index
+    }
+
+    fn dst_index(&self) -> usize {
+        self.dst_index
+    }
+
+    fn time_base(&self) -> AVRational {
         AVRational {
             num: 1,
             den: 90_000,
         }
     }
 
-    pub fn get_codec(&self) -> *const AVCodec {
-        unsafe { avcodec_find_encoder(transmute(self.codec as u32)) }
+    unsafe fn get_codec(&self) -> *const AVCodec {
+        avcodec_find_encoder(transmute(self.codec as u32))
     }
 
-    pub unsafe fn to_codec_context(&self, ctx: *mut AVCodecContext) {
+    unsafe fn to_codec_context(&self, ctx: *mut AVCodecContext) {
         let codec = self.get_codec();
         (*ctx).codec_id = (*codec).id;
         (*ctx).codec_type = (*codec).type_;
@@ -215,7 +266,7 @@ impl VideoVariant {
         }
     }
 
-    pub unsafe fn to_codec_params(&self, params: *mut AVCodecParameters) {
+    unsafe fn to_codec_params(&self, params: *mut AVCodecParameters) {
         let codec = self.get_codec();
         (*params).codec_id = (*codec).id;
         (*params).codec_type = (*codec).type_;
@@ -232,7 +283,7 @@ impl VideoVariant {
         (*params).profile = self.profile as libc::c_int;
     }
 
-    pub unsafe fn to_stream(&self, stream: *mut AVStream) {
+    unsafe fn to_stream(&self, stream: *mut AVStream) {
         (*stream).time_base = self.time_base();
         (*stream).avg_frame_rate = AVRational {
             num: self.fps as libc::c_int,
@@ -242,28 +293,39 @@ impl VideoVariant {
             num: self.fps as libc::c_int,
             den: 1,
         };
+        self.to_codec_params((*stream).codecpar);
     }
 }
 
-impl AudioVariant {
-    pub fn time_base(&self) -> AVRational {
+impl VariantStreamType for AudioVariant {
+    fn id(&self) -> Uuid {
+        self.id
+    }
+
+    fn src_index(&self) -> usize {
+        self.src_index
+    }
+
+    fn dst_index(&self) -> usize {
+        self.dst_index
+    }
+
+    fn time_base(&self) -> AVRational {
         AVRational {
             num: 1,
             den: self.sample_rate as libc::c_int,
         }
     }
 
-    pub fn get_codec(&self) -> *const AVCodec {
-        unsafe {
-            if self.codec == AV_CODEC_ID_AAC as usize {
-                avcodec_find_encoder_by_name("libfdk_aac\0".as_ptr() as *const libc::c_char)
-            } else {
-                avcodec_find_encoder(transmute(self.codec as u32))
-            }
+    unsafe fn get_codec(&self) -> *const AVCodec {
+        if self.codec == AV_CODEC_ID_AAC as usize {
+            avcodec_find_encoder_by_name("libfdk_aac\0".as_ptr() as *const libc::c_char)
+        } else {
+            avcodec_find_encoder(transmute(self.codec as u32))
         }
     }
 
-    pub unsafe fn to_codec_context(&self, ctx: *mut AVCodecContext) {
+    unsafe fn to_codec_context(&self, ctx: *mut AVCodecContext) {
         let codec = self.get_codec();
         (*ctx).codec_id = (*codec).id;
         (*ctx).codec_type = (*codec).type_;
@@ -275,7 +337,7 @@ impl AudioVariant {
         (*ctx).ch_layout = self.channel_layout();
     }
 
-    pub unsafe fn to_codec_params(&self, params: *mut AVCodecParameters) {
+    unsafe fn to_codec_params(&self, params: *mut AVCodecParameters) {
         let codec = self.get_codec();
         (*params).codec_id = (*codec).id;
         (*params).codec_type = (*codec).type_;
@@ -287,15 +349,19 @@ impl AudioVariant {
         (*params).ch_layout = self.channel_layout();
     }
 
-    pub unsafe fn to_stream(&self, stream: *mut AVStream) {
+    unsafe fn to_stream(&self, stream: *mut AVStream) {
         (*stream).time_base = self.time_base();
         (*stream).r_frame_rate = AVRational {
             num: (*stream).time_base.den,
             den: (*stream).time_base.num,
         };
-    }
 
-    pub fn channel_layout(&self) -> AVChannelLayout {
+        self.to_codec_params((*stream).codecpar);
+    }
+}
+
+impl AudioVariant {
+    fn channel_layout(&self) -> AVChannelLayout {
         AVChannelLayout {
             order: AV_CHANNEL_ORDER_NATIVE,
             nb_channels: 2,

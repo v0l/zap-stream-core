@@ -42,16 +42,15 @@ unsafe extern "C" fn read_data(
     let chan = opaque as *mut UnboundedReceiver<Bytes>;
     if let Some(data) = (*chan).blocking_recv() {
         let buff_len = data.len();
-        let len = size.min(buff_len as libc::c_int);
-
-        if len > 0 {
+        assert!(size as usize >= buff_len);
+        if buff_len > 0 {
             memcpy(
                 buffer as *mut libc::c_void,
                 data.as_ptr() as *const libc::c_void,
-                len as libc::c_ulonglong,
+                buff_len as libc::c_ulonglong,
             );
         }
-        len
+        buff_len as libc::c_int
     } else {
         AVERROR_EOF
     }
@@ -155,6 +154,9 @@ impl Demuxer {
         if (*pkt).time_base.num == 0 {
             (*pkt).time_base = (*stream).time_base;
         }
+        if (*stream).start_time > 0 && (*pkt).pts != AV_NOPTS_VALUE {
+            (*pkt).pts -= (*stream).start_time;
+        }
         (*pkt).opaque = stream as *mut libc::c_void;
 
         let pkg = PipelinePayload::AvPacket("Demuxer packet".to_owned(), pkt);
@@ -166,7 +168,7 @@ impl Demuxer {
         unsafe {
             let score = (*self.ctx).probe_score;
             if score < 30 {
-                if (Instant::now() - self.started) > Duration::from_secs(1) {
+                if (Instant::now() - self.started) > Duration::from_millis(500) {
                     return Ok(Some(self.probe_input()?));
                 }
                 return Ok(None);

@@ -1,8 +1,7 @@
-use ffmpeg_sys_next::AVCodecID::{AV_CODEC_ID_AAC, AV_CODEC_ID_AAC_LATM};
 use uuid::Uuid;
 
 use crate::demux::info::{DemuxStreamInfo, StreamChannelType};
-use crate::egress::hls::HLSEgressConfig;
+use crate::egress::EgressConfig;
 use crate::ingress::ConnectionInfo;
 use crate::pipeline::{EgressType, PipelineConfig};
 use crate::settings::Settings;
@@ -24,40 +23,47 @@ impl Webhook {
 
     pub fn configure(&self, stream_info: &DemuxStreamInfo) -> PipelineConfig {
         let mut vars: Vec<VariantStream> = vec![];
-        vars.push(VariantStream::Video(VideoVariant {
-            id: Uuid::new_v4(),
-            src_index: 0,
-            dst_index: 0,
-            width: 1280,
-            height: 720,
-            fps: 30,
-            bitrate: 3_000_000,
-            codec: 27,
-            profile: 100,
-            level: 51,
-            keyframe_interval: 2,
-        }));
-        vars.push(VariantStream::Video(VideoVariant {
-            id: Uuid::new_v4(),
-            src_index: 0,
-            dst_index: 1,
-            width: 640,
-            height: 360,
-            fps: 30,
-            bitrate: 1_000_000,
-            codec: 27,
-            profile: 100,
-            level: 51,
-            keyframe_interval: 2,
-        }));
-        let has_audio = stream_info
+        if let Some(video_src) = stream_info
             .channels
             .iter()
-            .any(|c| c.channel_type == StreamChannelType::Audio);
-        if has_audio {
+            .find(|c| c.channel_type == StreamChannelType::Video)
+        {
+            vars.push(VariantStream::Video(VideoVariant {
+                id: Uuid::new_v4(),
+                src_index: video_src.index,
+                dst_index: 0,
+                width: 1280,
+                height: 720,
+                fps: video_src.fps as u16,
+                bitrate: 3_000_000,
+                codec: 27,
+                profile: 100,
+                level: 51,
+                keyframe_interval: 2,
+            }));
+            vars.push(VariantStream::Video(VideoVariant {
+                id: Uuid::new_v4(),
+                src_index: video_src.index,
+                dst_index: 1,
+                width: 640,
+                height: 360,
+                fps: video_src.fps as u16,
+                bitrate: 1_000_000,
+                codec: 27,
+                profile: 100,
+                level: 51,
+                keyframe_interval: 2,
+            }));
+        }
+
+        if let Some(audio_src) = stream_info
+            .channels
+            .iter()
+            .find(|c| c.channel_type == StreamChannelType::Audio)
+        {
             vars.push(VariantStream::Audio(AudioVariant {
                 id: Uuid::new_v4(),
-                src_index: 1,
+                src_index: audio_src.index,
                 dst_index: 0,
                 bitrate: 320_000,
                 codec: 86018,
@@ -67,7 +73,7 @@ impl Webhook {
             }));
             vars.push(VariantStream::Audio(AudioVariant {
                 id: Uuid::new_v4(),
-                src_index: 1,
+                src_index: audio_src.index,
                 dst_index: 1,
                 bitrate: 220_000,
                 codec: 86018,
@@ -80,10 +86,18 @@ impl Webhook {
         PipelineConfig {
             id: Uuid::new_v4(),
             recording: vec![],
-            egress: vec![EgressType::HLS(HLSEgressConfig {
-                out_dir: self.config.output_dir.clone(),
-                variants: vars,
-            })],
+            egress: vec![
+                EgressType::HLS(EgressConfig {
+                    name: "HLS".to_owned(),
+                    out_dir: self.config.output_dir.clone(),
+                    variants: vars.clone(),
+                }),
+                /*EgressType::MPEGTS(EgressConfig {
+                    name: "MPEGTS".to_owned(),
+                    out_dir: self.config.output_dir.clone(),
+                    variants: vars.clone(),
+                }),*/
+            ],
         }
     }
 }

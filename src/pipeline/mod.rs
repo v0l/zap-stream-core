@@ -5,7 +5,7 @@ use ffmpeg_sys_next::{av_frame_clone, av_frame_copy_props, av_frame_free, av_pac
 use serde::{Deserialize, Serialize};
 
 use crate::demux::info::DemuxStreamInfo;
-use crate::egress::hls::HLSEgressConfig;
+use crate::egress::EgressConfig;
 use crate::variant::VariantStream;
 
 pub mod builder;
@@ -13,10 +13,10 @@ pub mod runner;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum EgressType {
-    HLS(HLSEgressConfig),
+    HLS(EgressConfig),
     DASH,
     WHEP,
-    MPEGTS,
+    MPEGTS(EgressConfig),
 }
 
 impl Display for EgressType {
@@ -28,7 +28,7 @@ impl Display for EgressType {
                 EgressType::HLS(c) => format!("{}", c),
                 EgressType::DASH => "DASH".to_owned(),
                 EgressType::WHEP => "WHEP".to_owned(),
-                EgressType::MPEGTS => "MPEGTS".to_owned(),
+                EgressType::MPEGTS(c) => format!("{}", c),
             }
         )
     }
@@ -84,11 +84,13 @@ impl Clone for PipelinePayload {
             PipelinePayload::Empty => PipelinePayload::Empty,
             PipelinePayload::Bytes(b) => PipelinePayload::Bytes(b.clone()),
             PipelinePayload::AvPacket(t, p) => unsafe {
+                assert!(!(**p).data.is_null(), "Cannot clone empty packet");
                 let new_pkt = av_packet_clone(*p);
                 av_packet_copy_props(new_pkt, *p);
                 PipelinePayload::AvPacket(t.clone(), new_pkt)
             },
             PipelinePayload::AvFrame(t, p, idx) => unsafe {
+                assert!(!(**p).extended_data.is_null(), "Cannot clone empty frame");
                 let new_frame = av_frame_clone(*p);
                 av_frame_copy_props(new_frame, *p);
                 PipelinePayload::AvFrame(t.clone(), new_frame, *idx)

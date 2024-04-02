@@ -5,7 +5,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::ipc::Rx;
 use crate::pipeline::{PipelinePayload, PipelineProcessor};
 use crate::utils::variant_id_ref;
-use crate::variant::VariantStream;
+use crate::variant::{VariantStream, VariantStreamType};
 
 pub struct TagFrame<TRecv> {
     variant: VariantStream,

@@ -14,7 +14,7 @@ use crate::encode::set_encoded_pkt_timing;
 use crate::ipc::Rx;
 use crate::pipeline::{PipelinePayload, PipelineProcessor};
 use crate::utils::{get_ffmpeg_error_msg, id_ref_to_uuid, video_variant_id_ref};
-use crate::variant::VideoVariant;
+use crate::variant::{VariantStreamType, VideoVariant};
 
 pub struct VideoEncoder<T> {
     variant: VideoVariant,
@@ -23,6 +23,7 @@ pub struct VideoEncoder<T> {
     chan_in: T,
     chan_out: UnboundedSender<PipelinePayload>,
     var_id_ref: *mut AVBufferRef,
+    pts: i64,
 }
 
 unsafe impl<T> Send for VideoEncoder<T> {}
@@ -46,6 +47,7 @@ where
             chan_in,
             chan_out,
             var_id_ref: id_ref,
+            pts: 0,
         }
     }
 
@@ -89,7 +91,7 @@ where
         while ret > 0 || ret == AVERROR(EAGAIN) {
             let mut pkt = av_packet_alloc();
             ret = avcodec_receive_packet(self.ctx, pkt);
-            if ret < 0 {
+            if ret != 0 {
                 av_packet_free(&mut pkt);
                 if ret == AVERROR(EAGAIN) {
                     return Ok(());
@@ -97,11 +99,12 @@ where
                 return Err(Error::msg(get_ffmpeg_error_msg(ret)));
             }
 
-            set_encoded_pkt_timing(self.ctx, pkt, frame);
+            set_encoded_pkt_timing(self.ctx, pkt, &mut self.pts, &self.variant);
             (*pkt).opaque = self.ctx as *mut libc::c_void;
             (*pkt).opaque_ref = av_buffer_ref(self.var_id_ref);
+            assert_ne!((*pkt).data, ptr::null_mut());
             self.chan_out
-                .send(PipelinePayload::AvPacket("Encoder packet".to_owned(), pkt))?;
+                .send(PipelinePayload::AvPacket("Video Encoder packet".to_owned(), pkt))?;
         }
 
         Ok(())

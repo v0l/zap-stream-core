@@ -3,7 +3,7 @@ use std::ptr;
 
 use anyhow::Error;
 use ffmpeg_sys_next::{
-    av_frame_alloc, av_packet_unref, AVCodec, avcodec_alloc_context3,
+    av_frame_alloc, AVCodec, avcodec_alloc_context3,
     avcodec_find_decoder, avcodec_free_context, avcodec_open2, avcodec_parameters_to_context,
     avcodec_receive_frame, avcodec_send_packet, AVCodecContext, AVERROR, AVERROR_EOF, AVPacket, AVStream,
 };
@@ -85,7 +85,6 @@ impl Decoder {
         }
         if let Some(ctx) = self.codecs.get_mut(&stream_index) {
             let mut ret = avcodec_send_packet(ctx.context, pkt);
-            av_packet_unref(pkt);
             if ret < 0 {
                 return Err(Error::msg(format!("Failed to decode packet {}", ret)));
             }

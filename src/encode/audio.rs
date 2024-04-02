@@ -1,3 +1,4 @@
+use std::ffi::CStr;
 use std::mem::transmute;
 use std::ptr;
 
@@ -5,30 +6,34 @@ use anyhow::Error;
 use ffmpeg_sys_next::{
     av_audio_fifo_alloc, av_audio_fifo_free, av_audio_fifo_read, av_audio_fifo_realloc,
     av_audio_fifo_size, av_audio_fifo_write, av_buffer_ref, av_buffer_unref,
-    av_channel_layout_copy, av_frame_alloc, av_frame_free, av_frame_get_buffer, av_freep,
-    av_packet_alloc, av_packet_free, av_samples_alloc_array_and_samples, AVAudioFifo,
+    av_channel_layout_copy, av_frame_alloc, av_frame_clone, av_frame_free, av_frame_get_buffer,
+    av_frame_unref, av_freep, av_get_sample_fmt_name, av_packet_alloc, av_packet_free,
+    av_rescale_rnd, av_samples_alloc, av_samples_alloc_array_and_samples, AVAudioFifo,
     AVBufferRef, AVCodec, avcodec_alloc_context3, avcodec_free_context,
-    avcodec_open2, avcodec_receive_packet, avcodec_send_frame, AVCodecContext, AVERROR, AVFrame, swr_alloc_set_opts2,
-    swr_convert, swr_free, swr_init, SwrContext,
+    avcodec_open2, avcodec_receive_packet, avcodec_send_frame, AVCodecContext, AVERROR, AVFrame,
+    swr_alloc_set_opts2, swr_convert, swr_convert_frame, swr_free, swr_get_delay, swr_init, SwrContext,
 };
+use ffmpeg_sys_next::AVRounding::AV_ROUND_UP;
 use libc::EAGAIN;
+use log::info;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::encode::set_encoded_pkt_timing;
+use crate::encode::{dump_pkt_info, set_encoded_pkt_timing};
 use crate::ipc::Rx;
 use crate::pipeline::{PipelinePayload, PipelineProcessor};
 use crate::utils::{audio_variant_id_ref, get_ffmpeg_error_msg, id_ref_to_uuid};
-use crate::variant::AudioVariant;
+use crate::variant::{AudioVariant, VariantStreamType};
 
 pub struct AudioEncoder<T> {
     variant: AudioVariant,
     ctx: *mut AVCodecContext,
     codec: *const AVCodec,
-    fifo: *mut AVAudioFifo,
     swr_ctx: *mut SwrContext,
+    fifo: *mut AVAudioFifo,
     chan_in: T,
     chan_out: UnboundedSender<PipelinePayload>,
     var_id_ref: *mut AVBufferRef,
+    pts: i64,
 }
 
 unsafe impl<T> Send for AudioEncoder<T> {}
@@ -59,12 +64,13 @@ where
         Self {
             ctx: ptr::null_mut(),
             codec: ptr::null(),
-            fifo: ptr::null_mut(),
             swr_ctx: ptr::null_mut(),
+            fifo: ptr::null_mut(),
             variant,
             chan_in,
             chan_out,
             var_id_ref: id_ref,
+            pts: 0,
         }
     }
 
@@ -82,31 +88,52 @@ where
 
             self.variant.to_codec_context(ctx);
 
-            // setup audio FIFO
-            let fifo = av_audio_fifo_alloc((*ctx).sample_fmt, 2, 1);
-            if fifo.is_null() {
-                return Err(Error::msg("Failed to allocate audio FiFO buffer"));
-            }
+            // setup re-sampler if output format does not match input format
+            if (*ctx).sample_fmt != transmute((*frame).format)
+                || (*ctx).sample_rate != (*frame).sample_rate
+                || (*ctx).ch_layout.nb_channels != (*frame).ch_layout.nb_channels
+            {
+                info!(
+                    "Setup audio resampler: {}@{}->{}@{}",
+                    CStr::from_ptr(av_get_sample_fmt_name(transmute((*frame).format)))
+                        .to_str()
+                        .unwrap(),
+                    (*frame).sample_rate,
+                    CStr::from_ptr(av_get_sample_fmt_name((*ctx).sample_fmt))
+                        .to_str()
+                        .unwrap(),
+                    (*ctx).sample_rate
+                );
 
-            let mut swr_ctx = ptr::null_mut();
-            let ret = swr_alloc_set_opts2(
-                &mut swr_ctx,
-                &(*ctx).ch_layout,
-                (*ctx).sample_fmt,
-                (*ctx).sample_rate,
-                &(*frame).ch_layout,
-                transmute((*frame).format),
-                (*frame).sample_rate,
-                0,
-                ptr::null_mut(),
-            );
-            if ret < 0 {
-                return Err(Error::msg(get_ffmpeg_error_msg(ret)));
-            }
+                let mut swr_ctx = ptr::null_mut();
+                let ret = swr_alloc_set_opts2(
+                    &mut swr_ctx,
+                    &(*ctx).ch_layout,
+                    (*ctx).sample_fmt,
+                    (*ctx).sample_rate,
+                    &(*frame).ch_layout,
+                    transmute((*frame).format),
+                    (*frame).sample_rate,
+                    0,
+                    ptr::null_mut(),
+                );
+                if ret < 0 {
+                    return Err(Error::msg(get_ffmpeg_error_msg(ret)));
+                }
 
-            let ret = swr_init(swr_ctx);
-            if ret < 0 {
-                return Err(Error::msg(get_ffmpeg_error_msg(ret)));
+                let ret = swr_init(swr_ctx);
+                if ret < 0 {
+                    return Err(Error::msg(get_ffmpeg_error_msg(ret)));
+                }
+
+                self.swr_ctx = swr_ctx;
+
+                let fifo = av_audio_fifo_alloc((*ctx).sample_fmt, (*ctx).ch_layout.nb_channels, 1);
+                if fifo.is_null() {
+                    return Err(Error::msg("Failed to allocate audio FIFO"));
+                }
+
+                self.fifo = fifo;
             }
 
             let ret = avcodec_open2(ctx, encoder, ptr::null_mut());
@@ -116,87 +143,97 @@ where
 
             self.ctx = ctx;
             self.codec = encoder;
-            self.swr_ctx = swr_ctx;
-            self.fifo = fifo;
         }
         Ok(())
     }
 
     /// Returns true if we should process audio frame from FIFO
     /// false if nothing to process this frame
-    unsafe fn process_audio_frame(&mut self, frame: *mut AVFrame) -> Result<bool, Error> {
+    unsafe fn process_audio_frame(
+        &mut self,
+        frame: *mut AVFrame,
+    ) -> Result<Option<*mut AVFrame>, Error> {
+        if self.swr_ctx.is_null() {
+            // no re-sampler, return input frame
+            return Ok(Some(frame));
+        }
+
         let in_samples = (*frame).nb_samples;
-        let mut dst_samples: *mut *mut u8 = ptr::null_mut();
+        let out_samples = av_rescale_rnd(
+            swr_get_delay(self.swr_ctx, (*frame).sample_rate as i64) + in_samples as i64,
+            (*self.ctx).sample_rate as i64,
+            (*frame).sample_rate as i64,
+            AV_ROUND_UP,
+        ) as libc::c_int;
+
+        let mut out_frame = self.new_frame();
+        (*out_frame).nb_samples = out_samples;
+
+        let ret = swr_convert_frame(self.swr_ctx, out_frame, frame);
+        if ret < 0 {
+            av_frame_free(&mut out_frame);
+            return Err(Error::msg(get_ffmpeg_error_msg(ret)));
+        }
+
+        let ret = av_audio_fifo_write(
+            self.fifo,
+            (*out_frame).extended_data as *const *mut libc::c_void,
+            (*out_frame).nb_samples,
+        );
+        if ret < 0 {
+            av_frame_free(&mut out_frame);
+            return Err(Error::msg(get_ffmpeg_error_msg(ret)));
+        }
+
+        av_frame_free(&mut out_frame);
+
+        let buff = av_audio_fifo_size(self.fifo);
+        return if buff < (*self.ctx).frame_size {
+            Ok(None)
+        } else {
+            let out_frame = self.read_fifo_frame()?;
+            (*out_frame).opaque = (*frame).opaque;
+            Ok(Some(out_frame))
+        };
+    }
+
+    unsafe fn read_fifo_frame(&mut self) -> Result<*mut AVFrame, Error> {
+        let mut out_frame = self.new_frame();
+
         let ret = av_samples_alloc_array_and_samples(
-            &mut dst_samples,
+            &mut (*out_frame).extended_data,
             ptr::null_mut(),
-            2,
-            in_samples,
-            (*self.ctx).sample_fmt,
+            (*out_frame).ch_layout.nb_channels,
+            (*out_frame).nb_samples,
+            transmute((*out_frame).format),
             0,
         );
         if ret < 0 {
-            return Err(Error::msg(get_ffmpeg_error_msg(ret)));
-        }
-
-        // resample audio
-        let ret = swr_convert(
-            self.swr_ctx,
-            dst_samples,
-            in_samples,
-            (*frame).extended_data as *const *const u8,
-            in_samples,
-        );
-        if ret < 0 {
-            return Err(Error::msg(get_ffmpeg_error_msg(ret)));
-        }
-
-        // push resampled audio into fifo
-        let ret = av_audio_fifo_realloc(self.fifo, av_audio_fifo_size(self.fifo) + in_samples);
-        if ret < 0 {
-            return Err(Error::msg(get_ffmpeg_error_msg(ret)));
-        }
-        if av_audio_fifo_write(
-            self.fifo,
-            dst_samples as *const *mut libc::c_void,
-            in_samples,
-        ) < in_samples
-        {
-            return Err(Error::msg("Failed to write samples to FIFO"));
-        }
-
-        if !dst_samples.is_null() {
-            av_freep(dst_samples.add(0) as *mut libc::c_void);
-        }
-
-        let buffered = av_audio_fifo_size(self.fifo);
-        Ok(buffered >= (*self.ctx).frame_size)
-    }
-
-    unsafe fn get_fifo_frame(&mut self) -> Result<*mut AVFrame, Error> {
-        let mut frame = av_frame_alloc();
-        let frame_size = (*self.ctx).frame_size.min(av_audio_fifo_size(self.fifo));
-        (*frame).nb_samples = frame_size;
-        av_channel_layout_copy(&mut (*frame).ch_layout, &(*self.ctx).ch_layout);
-        (*frame).format = (*self.ctx).sample_fmt as libc::c_int;
-        (*frame).sample_rate = (*self.ctx).sample_rate;
-
-        let ret = av_frame_get_buffer(frame, 0);
-        if ret < 0 {
+            av_frame_free(&mut out_frame);
             return Err(Error::msg(get_ffmpeg_error_msg(ret)));
         }
 
         let ret = av_audio_fifo_read(
             self.fifo,
-            ptr::addr_of_mut!((*frame).data) as *const *mut libc::c_void,
-            frame_size,
+            (*out_frame).extended_data as *const *mut libc::c_void,
+            (*out_frame).nb_samples,
         );
-        if ret < frame_size {
-            av_frame_free(&mut frame);
-            return Err(Error::msg("Failed to read frame from FIFO"));
+        if ret < 0 {
+            av_frame_free(&mut out_frame);
+            return Err(Error::msg(get_ffmpeg_error_msg(ret)));
         }
 
-        Ok(frame)
+        Ok(out_frame)
+    }
+
+    unsafe fn new_frame(&self) -> *mut AVFrame {
+        let mut out_frame = av_frame_alloc();
+        (*out_frame).nb_samples = (*self.ctx).frame_size;
+        av_channel_layout_copy(&mut (*out_frame).ch_layout, &(*self.ctx).ch_layout);
+        (*out_frame).format = (*self.ctx).sample_fmt as libc::c_int;
+        (*out_frame).sample_rate = (*self.ctx).sample_rate;
+        (*out_frame).time_base = (*self.ctx).time_base;
+        out_frame
     }
 
     unsafe fn process_frame(&mut self, frame: *mut AVFrame) -> Result<(), Error> {
@@ -204,19 +241,15 @@ where
         assert_eq!(var_id, self.variant.id);
 
         self.setup_encoder(frame)?;
-        if !self.process_audio_frame(frame)? {
+        let mut frame = self.process_audio_frame(frame)?;
+        if frame.is_none() {
             return Ok(());
         }
-
-        // read audio from FIFO
-        let fifo_frame = self.get_fifo_frame()?;
-
-        // copy pointer to input stream
-        (*fifo_frame).opaque = (*frame).opaque;
-        let frame = fifo_frame;
+        let mut frame = frame.unwrap();
 
         let mut ret = avcodec_send_frame(self.ctx, frame);
         if ret < 0 && ret != AVERROR(EAGAIN) {
+            av_frame_free(&mut frame);
             return Err(Error::msg(get_ffmpeg_error_msg(ret)));
         }
 
@@ -224,6 +257,7 @@ where
             let mut pkt = av_packet_alloc();
             ret = avcodec_receive_packet(self.ctx, pkt);
             if ret < 0 {
+                av_frame_free(&mut frame);
                 av_packet_free(&mut pkt);
                 if ret == AVERROR(EAGAIN) {
                     return Ok(());
@@ -231,13 +265,14 @@ where
                 return Err(Error::msg(get_ffmpeg_error_msg(ret)));
             }
 
-            set_encoded_pkt_timing(self.ctx, pkt, frame);
+            set_encoded_pkt_timing(self.ctx, pkt, &mut self.pts, &self.variant);
             (*pkt).opaque = self.ctx as *mut libc::c_void;
             (*pkt).opaque_ref = av_buffer_ref(self.var_id_ref);
             self.chan_out
-                .send(PipelinePayload::AvPacket("Encoder packet".to_owned(), pkt))?;
+                .send(PipelinePayload::AvPacket("Audio Encoder packet".to_owned(), pkt))?;
         }
 
+        av_frame_free(&mut frame);
         Ok(())
     }
 }
