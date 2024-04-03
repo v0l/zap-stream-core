@@ -12,6 +12,7 @@ use crate::demux::info::{DemuxStreamInfo, StreamChannelType};
 use crate::egress::EgressConfig;
 use crate::egress::hls::HlsEgress;
 use crate::egress::mpegts::MPEGTSEgress;
+use crate::egress::recorder::RecorderEgress;
 use crate::encode::audio::AudioEncoder;
 use crate::encode::video::VideoEncoder;
 use crate::pipeline::{EgressType, PipelineConfig, PipelinePayload, PipelineProcessor};
@@ -129,6 +130,17 @@ impl PipelineRunner {
                 EgressType::MPEGTS(cfg) => {
                     let (egress_tx, egress_rx) = unbounded_channel();
                     self.egress.push(Box::new(MPEGTSEgress::new(
+                        egress_rx,
+                        self.config.id,
+                        cfg.clone(),
+                    )));
+                    for x in self.add_egress_variants(cfg, egress_tx) {
+                        self.encoders.push(x);
+                    }
+                }
+                EgressType::Recorder(cfg) => {
+                    let (egress_tx, egress_rx) = unbounded_channel();
+                    self.egress.push(Box::new(RecorderEgress::new(
                         egress_rx,
                         self.config.id,
                         cfg.clone(),

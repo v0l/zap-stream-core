@@ -3,14 +3,14 @@ use std::ptr;
 
 use anyhow::Error;
 use ffmpeg_sys_next::{
-    av_buffer_ref, av_packet_alloc, av_packet_free, av_packet_rescale_ts, avcodec_alloc_context3,
-    avcodec_find_encoder, avcodec_open2, avcodec_receive_packet, avcodec_send_frame, AVBufferRef,
-    AVCodec, AVCodecContext, AVFrame, AVStream, AVERROR,
+    av_buffer_ref, av_packet_alloc, av_packet_free, AVBufferRef,
+    AVCodec, avcodec_alloc_context3, avcodec_find_encoder, avcodec_open2, avcodec_receive_packet,
+    avcodec_send_frame, AVCodecContext, AVERROR, AVFrame, AVStream,
 };
 use libc::EAGAIN;
 use tokio::sync::mpsc::UnboundedSender;
-use crate::encode::set_encoded_pkt_timing;
 
+use crate::encode::set_encoded_pkt_timing;
 use crate::ipc::Rx;
 use crate::pipeline::{PipelinePayload, PipelineProcessor};
 use crate::utils::{get_ffmpeg_error_msg, id_ref_to_uuid, video_variant_id_ref};
@@ -80,8 +80,8 @@ where
     unsafe fn process_frame(&mut self, frame: *mut AVFrame) -> Result<(), Error> {
         let var_id = id_ref_to_uuid((*frame).opaque_ref)?;
         assert_eq!(var_id, self.variant.id);
-
         self.setup_encoder(frame)?;
+        let in_stream = (*frame).opaque as *mut AVStream;
 
         let mut ret = avcodec_send_frame(self.ctx, frame);
         if ret < 0 && ret != AVERROR(EAGAIN) {
@@ -99,12 +99,14 @@ where
                 return Err(Error::msg(get_ffmpeg_error_msg(ret)));
             }
 
-            set_encoded_pkt_timing(self.ctx, pkt, &mut self.pts, &self.variant);
+            set_encoded_pkt_timing(self.ctx, pkt, in_stream, &mut self.pts, &self.variant);
             (*pkt).opaque = self.ctx as *mut libc::c_void;
             (*pkt).opaque_ref = av_buffer_ref(self.var_id_ref);
             assert_ne!((*pkt).data, ptr::null_mut());
-            self.chan_out
-                .send(PipelinePayload::AvPacket("Video Encoder packet".to_owned(), pkt))?;
+            self.chan_out.send(PipelinePayload::AvPacket(
+                "Video Encoder packet".to_owned(),
+                pkt,
+            ))?;
         }
 
         Ok(())

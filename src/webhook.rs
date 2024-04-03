@@ -68,7 +68,7 @@ impl Webhook {
                 bitrate: 320_000,
                 codec: 86018,
                 channels: 2,
-                sample_rate: 44_100,
+                sample_rate: 48_000,
                 sample_fmt: "s16".to_owned(),
             }));
             vars.push(VariantStream::Audio(AudioVariant {
@@ -78,7 +78,7 @@ impl Webhook {
                 bitrate: 220_000,
                 codec: 86018,
                 channels: 2,
-                sample_rate: 44_100,
+                sample_rate: 48_000,
                 sample_fmt: "s16".to_owned(),
             }));
         }
@@ -87,8 +87,8 @@ impl Webhook {
             id: Uuid::new_v4(),
             recording: vec![],
             egress: vec![
-                EgressType::HLS(EgressConfig {
-                    name: "HLS".to_owned(),
+                EgressType::Recorder(EgressConfig {
+                    name: "Recorder".to_owned(),
                     out_dir: self.config.output_dir.clone(),
                     variants: vars.clone(),
                 }),

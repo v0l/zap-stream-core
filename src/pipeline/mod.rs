@@ -17,6 +17,7 @@ pub enum EgressType {
     DASH,
     WHEP,
     MPEGTS(EgressConfig),
+    Recorder(EgressConfig),
 }
 
 impl Display for EgressType {
@@ -28,7 +29,8 @@ impl Display for EgressType {
                 EgressType::HLS(c) => format!("{}", c),
                 EgressType::DASH => "DASH".to_owned(),
                 EgressType::WHEP => "WHEP".to_owned(),
-                EgressType::MPEGTS(c) => format!("{}", c),
+                EgressType::MPEGTS(c) => format!("{}", c), 
+                EgressType::Recorder(c) => format!("{}", c),
             }
         )
     }

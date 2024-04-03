@@ -3,17 +3,9 @@ use std::mem::transmute;
 use std::ptr;
 
 use anyhow::Error;
-use ffmpeg_sys_next::{
-    av_audio_fifo_alloc, av_audio_fifo_free, av_audio_fifo_read, av_audio_fifo_realloc,
-    av_audio_fifo_size, av_audio_fifo_write, av_buffer_ref, av_buffer_unref,
-    av_channel_layout_copy, av_frame_alloc, av_frame_clone, av_frame_free, av_frame_get_buffer,
-    av_frame_unref, av_freep, av_get_sample_fmt_name, av_packet_alloc, av_packet_free,
-    av_rescale_rnd, av_samples_alloc, av_samples_alloc_array_and_samples, AVAudioFifo,
-    AVBufferRef, AVCodec, avcodec_alloc_context3, avcodec_free_context,
-    avcodec_open2, avcodec_receive_packet, avcodec_send_frame, AVCodecContext, AVERROR, AVFrame,
-    swr_alloc_set_opts2, swr_convert, swr_convert_frame, swr_free, swr_get_delay, swr_init, SwrContext,
-};
+use ffmpeg_sys_next::{av_audio_fifo_alloc, av_audio_fifo_free, av_audio_fifo_read, av_audio_fifo_realloc, av_audio_fifo_size, av_audio_fifo_write, av_buffer_ref, av_buffer_unref, av_channel_layout_copy, av_frame_alloc, av_frame_clone, av_frame_free, av_frame_get_buffer, av_frame_unref, av_freep, av_get_sample_fmt_name, av_packet_alloc, av_packet_free, av_rescale_q, av_rescale_rnd, av_samples_alloc, av_samples_alloc_array_and_samples, AVAudioFifo, AVBufferRef, AVCodec, avcodec_alloc_context3, avcodec_free_context, avcodec_open2, avcodec_parameters_from_context, avcodec_receive_packet, avcodec_send_frame, AVCodecContext, AVERROR, AVFrame, AVStream, swr_alloc_set_opts2, swr_config_frame, swr_convert, swr_convert_frame, swr_free, swr_get_delay, swr_init, SwrContext};
 use ffmpeg_sys_next::AVRounding::AV_ROUND_UP;
+use ffmpeg_sys_next::AVSampleFormat::AV_SAMPLE_FMT_S16;
 use libc::EAGAIN;
 use log::info;
 use tokio::sync::mpsc::UnboundedSender;
@@ -141,6 +133,26 @@ where
                 return Err(Error::msg(get_ffmpeg_error_msg(ret)));
             }
 
+            // copy start time
+            let in_stream = (*frame).opaque as *mut AVStream;
+            if (*in_stream).start_time > 0 {
+                self.pts = av_rescale_q(
+                    (*in_stream).start_time,
+                    (*in_stream).time_base,
+                    (*ctx).time_base,
+                );
+                info!("Set start pts to {}", self.pts);
+            }
+
+            // copy channel layout from codec
+            let mut px = (*encoder).ch_layouts;
+            while !px.is_null() {
+                if (*px).nb_channels as u16 == self.variant.channels {
+                    av_channel_layout_copy(&mut (*ctx).ch_layout, px);
+                    break;
+                }
+                px = px.add(1);
+            }
             self.ctx = ctx;
             self.codec = encoder;
         }
@@ -158,23 +170,15 @@ where
             return Ok(Some(frame));
         }
 
-        let in_samples = (*frame).nb_samples;
-        let out_samples = av_rescale_rnd(
-            swr_get_delay(self.swr_ctx, (*frame).sample_rate as i64) + in_samples as i64,
-            (*self.ctx).sample_rate as i64,
-            (*frame).sample_rate as i64,
-            AV_ROUND_UP,
-        ) as libc::c_int;
-
         let mut out_frame = self.new_frame();
-        (*out_frame).nb_samples = out_samples;
-
         let ret = swr_convert_frame(self.swr_ctx, out_frame, frame);
         if ret < 0 {
             av_frame_free(&mut out_frame);
             return Err(Error::msg(get_ffmpeg_error_msg(ret)));
         }
 
+        // skip fifo
+        return Ok(Some(out_frame));
         let ret = av_audio_fifo_write(
             self.fifo,
             (*out_frame).extended_data as *const *mut libc::c_void,
@@ -184,7 +188,16 @@ where
             av_frame_free(&mut out_frame);
             return Err(Error::msg(get_ffmpeg_error_msg(ret)));
         }
+        if ret != (*out_frame).nb_samples {
+            av_frame_free(&mut out_frame);
+            return Err(Error::msg(format!(
+                "FIFO write {} != {}",
+                ret,
+                (*out_frame).nb_samples
+            )));
+        }
 
+        //info!("Resampled {}->{} (wrote={})", in_samples, (*out_frame).nb_samples, ret);
         av_frame_free(&mut out_frame);
 
         let buff = av_audio_fifo_size(self.fifo);
@@ -223,6 +236,11 @@ where
             return Err(Error::msg(get_ffmpeg_error_msg(ret)));
         }
 
+        assert_eq!(
+            ret,
+            (*out_frame).nb_samples,
+            "Read wrong number of samples from FIFO"
+        );
         Ok(out_frame)
     }
 
@@ -239,6 +257,8 @@ where
     unsafe fn process_frame(&mut self, frame: *mut AVFrame) -> Result<(), Error> {
         let var_id = id_ref_to_uuid((*frame).opaque_ref)?;
         assert_eq!(var_id, self.variant.id);
+
+        let in_stream = (*frame).opaque as *mut AVStream;
 
         self.setup_encoder(frame)?;
         let mut frame = self.process_audio_frame(frame)?;
@@ -264,12 +284,13 @@ where
                 }
                 return Err(Error::msg(get_ffmpeg_error_msg(ret)));
             }
-
-            set_encoded_pkt_timing(self.ctx, pkt, &mut self.pts, &self.variant);
+            set_encoded_pkt_timing(self.ctx, pkt, in_stream, &mut self.pts, &self.variant);
             (*pkt).opaque = self.ctx as *mut libc::c_void;
             (*pkt).opaque_ref = av_buffer_ref(self.var_id_ref);
-            self.chan_out
-                .send(PipelinePayload::AvPacket("Audio Encoder packet".to_owned(), pkt))?;
+            self.chan_out.send(PipelinePayload::AvPacket(
+                "Audio Encoder packet".to_owned(),
+                pkt,
+            ))?;
         }
 
         av_frame_free(&mut frame);

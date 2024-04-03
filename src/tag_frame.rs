@@ -1,5 +1,5 @@
 use anyhow::Error;
-use ffmpeg_sys_next::{av_buffer_ref, av_frame_clone, av_frame_copy_props, AVBufferRef};
+use ffmpeg_sys_next::{av_buffer_ref, AVBufferRef};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::ipc::Rx;
@@ -19,8 +19,8 @@ unsafe impl<T> Send for TagFrame<T> {}
 unsafe impl<T> Sync for TagFrame<T> {}
 
 impl<TRecv> TagFrame<TRecv>
-    where
-        TRecv: Rx<PipelinePayload>,
+where
+    TRecv: Rx<PipelinePayload>,
 {
     pub fn new(
         var: VariantStream,
@@ -38,24 +38,19 @@ impl<TRecv> TagFrame<TRecv>
 }
 
 impl<TRecv> PipelineProcessor for TagFrame<TRecv>
-    where
-        TRecv: Rx<PipelinePayload>,
+where
+    TRecv: Rx<PipelinePayload>,
 {
     fn process(&mut self) -> Result<(), Error> {
         while let Ok(pkg) = self.chan_in.try_recv_next() {
-            match pkg {
-                PipelinePayload::AvFrame(ref tag, frm, idx) => unsafe {
-                    if idx == self.variant.src_index() {
-                        let new_frame = av_frame_clone(frm);
-                        av_frame_copy_props(new_frame, frm);
-                        (*new_frame).opaque = (*frm).opaque;
-                        (*new_frame).opaque_ref = av_buffer_ref(self.var_id_ref);
-                        self.chan_out
-                            .send(PipelinePayload::AvFrame(tag.clone(), new_frame, idx))?;
+            if let PipelinePayload::AvFrame(_, pkt, idx) = &pkg {
+                if *idx == self.variant.src_index() {
+                    unsafe {
+                        (**pkt).opaque_ref = av_buffer_ref(self.var_id_ref);
                     }
-                },
-                _ => return Err(Error::msg("Payload not supported")),
-            };
+                    self.chan_out.send(pkg)?;
+                }
+            }
         }
         Ok(())
     }

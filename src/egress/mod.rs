@@ -2,8 +2,7 @@ use std::fmt::{Display, Formatter};
 use std::ptr;
 
 use anyhow::Error;
-use ffmpeg_sys_next::{av_dump_format, avformat_new_stream, AVFormatContext, AVPacket};
-use log::info;
+use ffmpeg_sys_next::{av_packet_rescale_ts, avformat_new_stream, AVFormatContext, AVPacket};
 use serde::{Deserialize, Serialize};
 
 use crate::utils::id_ref_to_uuid;
@@ -12,6 +11,7 @@ use crate::variant::{VariantStream, VariantStreamType};
 pub mod hls;
 pub mod http;
 pub mod mpegts;
+pub mod recorder;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EgressConfig {
@@ -61,11 +61,10 @@ pub unsafe fn map_variants_to_streams(
             }
         }
     }
-
-    av_dump_format(ctx, 0, ptr::null(), 1);
     Ok(())
 }
 
+/// Get variant of this packet
 pub unsafe fn get_pkt_variant(
     vars: &Vec<VariantStream>,
     pkt: *mut AVPacket,
@@ -81,6 +80,7 @@ pub unsafe fn get_pkt_variant(
     Ok(variant.unwrap())
 }
 
+/// Update packet stream index to match muxer stream
 pub unsafe fn update_pkt_for_muxer(
     ctx: *mut AVFormatContext,
     pkt: *mut AVPacket,
@@ -91,4 +91,7 @@ pub unsafe fn update_pkt_for_muxer(
     if idx != (*pkt).stream_index {
         (*pkt).stream_index = idx;
     }
+    // match stream timebase in muxer
+    av_packet_rescale_ts(pkt, var.time_base(), (*stream).time_base);
+    (*pkt).time_base = (*stream).time_base;
 }

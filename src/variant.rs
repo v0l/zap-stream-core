@@ -313,7 +313,7 @@ impl VariantStreamType for AudioVariant {
     fn time_base(&self) -> AVRational {
         AVRational {
             num: 1,
-            den: self.sample_rate as libc::c_int,
+            den: 90_000,
         }
     }
 
@@ -347,15 +347,11 @@ impl VariantStreamType for AudioVariant {
         (*params).bit_rate = self.bitrate as i64;
         (*params).sample_rate = self.sample_rate as libc::c_int;
         (*params).ch_layout = self.channel_layout();
+        (*params).frame_size = 1024;
     }
 
     unsafe fn to_stream(&self, stream: *mut AVStream) {
         (*stream).time_base = self.time_base();
-        (*stream).r_frame_rate = AVRational {
-            num: (*stream).time_base.den,
-            den: (*stream).time_base.num,
-        };
-
         self.to_codec_params((*stream).codecpar);
     }
 }

@@ -1,27 +1,22 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::{Display, Formatter};
 use std::mem::transmute;
 use std::ptr;
 
 use anyhow::Error;
+use ffmpeg_sys_next::{AV_CH_LAYOUT_STEREO, av_channel_layout_copy, av_dump_format, av_get_sample_fmt, av_interleaved_write_frame, av_opt_set, av_packet_clone, av_packet_copy_props, AVChannelLayout, AVChannelLayout__bindgen_ty_1, avcodec_find_encoder, avcodec_parameters_from_context, avcodec_parameters_to_context, AVCodecContext, avformat_alloc_output_context2, avformat_free_context, avformat_new_stream, avformat_write_header, AVFormatContext, AVPacket, AVRational};
 use ffmpeg_sys_next::AVChannelOrder::AV_CHANNEL_ORDER_NATIVE;
 use ffmpeg_sys_next::AVColorSpace::AVCOL_SPC_BT709;
 use ffmpeg_sys_next::AVMediaType::{AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_VIDEO};
 use ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV420P;
-use ffmpeg_sys_next::{
-    av_dump_format, av_get_sample_fmt, av_interleaved_write_frame, av_opt_set,
-    avcodec_find_encoder, avcodec_parameters_from_context, avformat_alloc_output_context2,
-    avformat_free_context, avformat_new_stream, avformat_write_header, AVChannelLayout,
-    AVChannelLayout__bindgen_ty_1, AVCodecContext, AVFormatContext, AVPacket, AVRational,
-    AV_CH_LAYOUT_STEREO,
-};
+use futures_util::SinkExt;
 use itertools::Itertools;
 use log::info;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedReceiver;
 use uuid::Uuid;
 
-use crate::egress::{map_variants_to_streams, EgressConfig, update_pkt_for_muxer, get_pkt_variant};
+use crate::egress::{EgressConfig, get_pkt_variant, map_variants_to_streams, update_pkt_for_muxer};
 use crate::encode::dump_pkt_info;
 use crate::pipeline::{PipelinePayload, PipelineProcessor};
 use crate::utils::{get_ffmpeg_error_msg, id_ref_to_uuid};
@@ -32,6 +27,9 @@ pub struct HlsEgress {
     config: EgressConfig,
     ctx: *mut AVFormatContext,
     chan_in: UnboundedReceiver<PipelinePayload>,
+    stream_init: HashSet<usize>,
+    init: bool,
+    packet_buffer: VecDeque<PipelinePayload>,
 }
 
 unsafe impl Send for HlsEgress {}
@@ -58,6 +56,9 @@ impl HlsEgress {
             config,
             ctx: ptr::null_mut(),
             chan_in,
+            init: false,
+            stream_init: HashSet::new(),
+            packet_buffer: VecDeque::new(),
         }
     }
 
@@ -75,7 +76,6 @@ impl HlsEgress {
         if ret < 0 {
             return Err(Error::msg(get_ffmpeg_error_msg(ret)));
         }
-
         av_opt_set(
             (*ctx).priv_data,
             "hls_segment_filename\0".as_ptr() as *const libc::c_char,
@@ -146,26 +146,61 @@ impl HlsEgress {
 
         map_variants_to_streams(ctx, &mut self.config.variants)?;
 
-        let ret = avformat_write_header(ctx, ptr::null_mut());
-        if ret < 0 {
-            return Err(Error::msg(get_ffmpeg_error_msg(ret)));
-        }
-
         self.ctx = ctx;
         Ok(())
     }
 
-    unsafe fn process_pkt(&mut self, pkt: *mut AVPacket) -> Result<(), Error> {
+    unsafe fn process_pkt_internal(&mut self, pkt: *mut AVPacket) -> Result<(), Error> {
         let variant = get_pkt_variant(&self.config.variants, pkt)?;
         update_pkt_for_muxer(self.ctx, pkt, &variant);
-
         //dump_pkt_info(pkt);
         let ret = av_interleaved_write_frame(self.ctx, pkt);
         if ret < 0 {
             return Err(Error::msg(get_ffmpeg_error_msg(ret)));
         }
-
         Ok(())
+    }
+
+    unsafe fn process_pkt(&mut self, pkt: *mut AVPacket) -> Result<(), Error> {
+        let variant = get_pkt_variant(&self.config.variants, pkt)?;
+        if !self.stream_init.contains(&variant.dst_index()) {
+            let encoder_ctx = (*pkt).opaque as *mut AVCodecContext;
+            let out_stream = *(*self.ctx).streams.add(variant.dst_index());
+            avcodec_parameters_from_context((*out_stream).codecpar, encoder_ctx);
+            self.stream_init.insert(variant.dst_index());
+        }
+        if !self.init {
+            let pkt_clone = av_packet_clone(pkt);
+            av_packet_copy_props(pkt_clone, pkt);
+            self.packet_buffer.push_back(PipelinePayload::AvPacket(
+                "Buffered Muxer Packet".to_string(),
+                pkt_clone,
+            ));
+        }
+
+        if !self.init && self.stream_init.len() == self.config.variants.len() {
+            let ret = avformat_write_header(self.ctx, ptr::null_mut());
+            if ret < 0 {
+                return Err(Error::msg(get_ffmpeg_error_msg(ret)));
+            }
+
+            av_dump_format(self.ctx, 0, ptr::null(), 1);
+            self.init = true;
+            // push in pkts from buffer
+            while let Some(pkt) = self.packet_buffer.pop_front() {
+                match pkt {
+                    PipelinePayload::AvPacket(_, pkt) => {
+                        self.process_pkt_internal(pkt)?;
+                    }
+                    _ => return Err(Error::msg("")),
+                }
+            }
+            return Ok(());
+        } else if !self.init {
+            return Ok(());
+        }
+
+        self.process_pkt_internal(pkt)
     }
 }
 

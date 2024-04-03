@@ -151,12 +151,6 @@ impl Demuxer {
             return Err(Error::msg(msg));
         }
         let stream = *(*self.ctx).streams.add((*pkt).stream_index as usize);
-        if (*pkt).time_base.num == 0 {
-            (*pkt).time_base = (*stream).time_base;
-        }
-        if (*stream).start_time > 0 && (*pkt).pts != AV_NOPTS_VALUE {
-            (*pkt).pts -= (*stream).start_time;
-        }
         (*pkt).opaque = stream as *mut libc::c_void;
 
         let pkg = PipelinePayload::AvPacket("Demuxer packet".to_owned(), pkt);
