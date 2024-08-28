@@ -41,19 +41,6 @@ impl Webhook {
                 level: 51,
                 keyframe_interval: 2,
             }));
-            vars.push(VariantStream::Video(VideoVariant {
-                id: Uuid::new_v4(),
-                src_index: video_src.index,
-                dst_index: 1,
-                width: 640,
-                height: 360,
-                fps: video_src.fps as u16,
-                bitrate: 1_000_000,
-                codec: 27,
-                profile: 100,
-                level: 51,
-                keyframe_interval: 2,
-            }));
         }
 
         if let Some(audio_src) = stream_info
@@ -71,32 +58,22 @@ impl Webhook {
                 sample_rate: 48_000,
                 sample_fmt: "s16".to_owned(),
             }));
-            vars.push(VariantStream::Audio(AudioVariant {
-                id: Uuid::new_v4(),
-                src_index: audio_src.index,
-                dst_index: 1,
-                bitrate: 220_000,
-                codec: 86018,
-                channels: 2,
-                sample_rate: 48_000,
-                sample_fmt: "s16".to_owned(),
-            }));
         }
 
         PipelineConfig {
             id: Uuid::new_v4(),
             recording: vec![],
             egress: vec![
-                EgressType::Recorder(EgressConfig {
-                    name: "Recorder".to_owned(),
-                    out_dir: self.config.output_dir.clone(),
-                    variants: vars.clone(),
-                }),
-                /*EgressType::MPEGTS(EgressConfig {
-                    name: "MPEGTS".to_owned(),
+                /*EgressType::Recorder(EgressConfig {
+                    name: "REC".to_owned(),
                     out_dir: self.config.output_dir.clone(),
                     variants: vars.clone(),
                 }),*/
+                EgressType::HLS(EgressConfig {
+                    name: "HLS".to_owned(),
+                    out_dir: self.config.output_dir.clone(),
+                    variants: vars.clone(),
+                }),
             ],
         }
     }

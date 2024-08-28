@@ -64,6 +64,11 @@ async fn main() -> anyhow::Result<()> {
         "0.0.0.0:8080".to_owned(),
         settings.clone(),
     )));
+    listeners.push(tokio::spawn(ingress::file::listen(
+        "/home/kieran/high_flight.mp4".parse().unwrap(),
+        builder.clone(),
+    )));
+    //listeners.push(tokio::spawn(ingress::test::listen(builder.clone())));
 
     for handle in listeners {
         if let Err(e) = handle.await {

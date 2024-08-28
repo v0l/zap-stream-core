@@ -1,11 +1,16 @@
+use std::io::Read;
 use std::ptr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Error;
-use bytes::Bytes;
-use ffmpeg_sys_next::*;
+use bytes::{BufMut, Bytes};
 use ffmpeg_sys_next::AVMediaType::{AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_VIDEO};
+use ffmpeg_sys_next::*;
+use log::{info, warn};
+use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::Mutex;
 use tokio::time::Instant;
 
 use crate::demux::info::{DemuxStreamInfo, StreamChannelType, StreamInfoChannel};
@@ -25,34 +30,53 @@ pub mod info;
 ///
 pub(crate) struct Demuxer {
     ctx: *mut AVFormatContext,
-    chan_in: UnboundedReceiver<Bytes>,
     chan_out: UnboundedSender<PipelinePayload>,
     started: Instant,
+    state: DemuxerBuffer,
 }
 
 unsafe impl Send for Demuxer {}
 
 unsafe impl Sync for Demuxer {}
 
+struct DemuxerBuffer {
+    pub chan_in: UnboundedReceiver<Bytes>,
+    pub buffer: bytes::BytesMut,
+}
+
 unsafe extern "C" fn read_data(
     opaque: *mut libc::c_void,
     buffer: *mut libc::c_uchar,
     size: libc::c_int,
 ) -> libc::c_int {
-    let chan = opaque as *mut UnboundedReceiver<Bytes>;
-    if let Some(data) = (*chan).blocking_recv() {
-        let buff_len = data.len();
-        assert!(size as usize >= buff_len);
-        if buff_len > 0 {
-            memcpy(
-                buffer as *mut libc::c_void,
-                data.as_ptr() as *const libc::c_void,
-                buff_len as libc::c_ulonglong,
-            );
+    let state = opaque as *mut DemuxerBuffer;
+    loop {
+        match (*state).chan_in.try_recv() {
+            Ok(data) => {
+                if data.len() > 0 {
+                    (*state).buffer.put(data);
+                }
+                if (*state).buffer.len() >= size as usize {
+                    let buf_take = (*state).buffer.split_to(size as usize);
+                    memcpy(
+                        buffer as *mut libc::c_void,
+                        buf_take.as_ptr() as *const libc::c_void,
+                        buf_take.len() as libc::c_ulonglong,
+                    );
+                    return size;
+                } else {
+                    continue;
+                }
+            }
+            Err(e) => match e {
+                TryRecvError::Empty => {
+                }
+                TryRecvError::Disconnected => {
+                    warn!("EOF");
+                    return AVERROR_EOF;
+                }
+            },
         }
-        buff_len as libc::c_int
-    } else {
-        AVERROR_EOF
     }
 }
 
@@ -67,18 +91,22 @@ impl Demuxer {
 
             Self {
                 ctx: ps,
-                chan_in,
                 chan_out,
+                state: DemuxerBuffer {
+                    chan_in,
+                    buffer: bytes::BytesMut::new(),
+                },
                 started: Instant::now(),
             }
         }
     }
 
     unsafe fn probe_input(&mut self) -> Result<DemuxStreamInfo, Error> {
-        let buf_ptr = ptr::from_mut(&mut self.chan_in) as *mut libc::c_void;
+        const BUFFER_SIZE: usize = 4096;
+        let buf_ptr = ptr::from_mut(&mut self.state) as *mut libc::c_void;
         let pb = avio_alloc_context(
-            av_mallocz(4096) as *mut libc::c_uchar,
-            4096,
+            av_mallocz(BUFFER_SIZE) as *mut libc::c_uchar,
+            BUFFER_SIZE as libc::c_int,
             0,
             buf_ptr,
             Some(read_data),

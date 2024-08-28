@@ -3,7 +3,11 @@ use std::collections::HashSet;
 use std::fmt::Display;
 
 use anyhow::Error;
-use ffmpeg_sys_next::{av_dump_format, av_guess_format, av_interleaved_write_frame, av_strdup, avformat_alloc_context, avformat_alloc_output_context2, avformat_free_context, avformat_write_header, AVFormatContext, AVIO_FLAG_READ_WRITE, avio_flush, avio_open2, AVPacket};
+use ffmpeg_sys_next::{
+    av_dump_format, av_guess_format, av_interleaved_write_frame, av_strdup, avformat_alloc_context
+    , avformat_free_context,
+    AVFormatContext, AVIO_FLAG_READ_WRITE, avio_open2, AVPacket,
+};
 use tokio::sync::mpsc::UnboundedReceiver;
 use uuid::Uuid;
 
@@ -54,11 +58,11 @@ impl RecorderEgress {
         }
         let base = format!("{}/{}", self.config.out_dir, self.id);
 
-        let out_file = format!("{}/recording.mkv\0", base).as_ptr() as *const libc::c_char;
+        let out_file = format!("{}/recording.mkv\0", base);
         fs::create_dir_all(base.clone())?;
         let ret = avio_open2(
             &mut (*ctx).pb,
-            out_file,
+            out_file.as_ptr() as *const libc::c_char,
             AVIO_FLAG_READ_WRITE,
             ptr::null(),
             ptr::null_mut(),
@@ -68,16 +72,16 @@ impl RecorderEgress {
         }
         (*ctx).oformat = av_guess_format(
             "matroska\0".as_ptr() as *const libc::c_char,
-            out_file,
+            out_file.as_ptr() as *const libc::c_char,
             ptr::null(),
         );
         if (*ctx).oformat.is_null() {
             return Err(Error::msg("Output format not found"));
         }
-        (*ctx).url = av_strdup(out_file);
+        (*ctx).url = av_strdup(out_file.as_ptr() as *const libc::c_char);
         map_variants_to_streams(ctx, &mut self.config.variants)?;
 
-        let ret = avformat_write_header(ctx, ptr::null_mut());
+        //let ret = avformat_write_header(ctx, ptr::null_mut());
         if ret < 0 {
             return Err(Error::msg(get_ffmpeg_error_msg(ret)));
         }
