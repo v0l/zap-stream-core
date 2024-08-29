@@ -1,16 +1,13 @@
-use std::io::Read;
 use std::ptr;
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Error;
 use bytes::{BufMut, Bytes};
 use ffmpeg_sys_next::*;
 use ffmpeg_sys_next::AVMediaType::{AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_VIDEO};
-use log::{info, warn};
+use log::warn;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::mpsc::error::TryRecvError;
-use tokio::sync::Mutex;
 use tokio::time::Instant;
 
 use crate::demux::info::{DemuxStreamInfo, StreamChannelType, StreamInfoChannel};
@@ -53,7 +50,7 @@ unsafe extern "C" fn read_data(
     loop {
         match (*state).chan_in.try_recv() {
             Ok(data) => {
-                if data.len() > 0 {
+                if !data.is_empty() {
                     (*state).buffer.put(data);
                 }
                 if (*state).buffer.len() >= size as usize {

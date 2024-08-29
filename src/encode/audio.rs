@@ -3,24 +3,20 @@ use std::mem::transmute;
 use std::ptr;
 
 use anyhow::Error;
-use ffmpeg_sys_next::AVRounding::AV_ROUND_UP;
-use ffmpeg_sys_next::AVSampleFormat::AV_SAMPLE_FMT_S16;
 use ffmpeg_sys_next::{
-    av_audio_fifo_alloc, av_audio_fifo_free, av_audio_fifo_read, av_audio_fifo_realloc,
-    av_audio_fifo_size, av_audio_fifo_write, av_buffer_ref, av_buffer_unref,
-    av_channel_layout_copy, av_frame_alloc, av_frame_clone, av_frame_free, av_frame_get_buffer,
-    av_frame_unref, av_freep, av_get_sample_fmt_name, av_packet_alloc, av_packet_free,
-    av_rescale_q, av_rescale_rnd, av_samples_alloc, av_samples_alloc_array_and_samples,
-    avcodec_alloc_context3, avcodec_free_context, avcodec_open2, avcodec_parameters_from_context,
-    avcodec_receive_packet, avcodec_send_frame, swr_alloc_set_opts2, swr_config_frame, swr_convert,
-    swr_convert_frame, swr_free, swr_get_delay, swr_init, AVAudioFifo, AVBufferRef, AVCodec,
-    AVCodecContext, AVFrame, AVStream, SwrContext, AVERROR,
+    av_audio_fifo_alloc, av_audio_fifo_free, av_audio_fifo_read,
+    av_audio_fifo_size, av_audio_fifo_write,
+    av_channel_layout_copy, av_frame_alloc, av_frame_free, av_get_sample_fmt_name, av_packet_alloc, av_packet_free, av_samples_alloc_array_and_samples,
+    avcodec_alloc_context3, avcodec_free_context, avcodec_open2,
+    avcodec_receive_packet, avcodec_send_frame, swr_alloc_set_opts2,
+    swr_convert_frame, swr_free, swr_init, AVAudioFifo, AVCodec,
+    AVCodecContext, AVFrame, SwrContext, AVERROR,
 };
 use libc::EAGAIN;
 use log::info;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::encode::{dump_pkt_info, set_encoded_pkt_timing};
+use crate::encode::set_encoded_pkt_timing;
 use crate::ipc::Rx;
 use crate::pipeline::{AVFrameSource, AVPacketSource, PipelinePayload, PipelineProcessor};
 use crate::utils::get_ffmpeg_error_msg;
@@ -206,12 +202,12 @@ where
         av_frame_free(&mut out_frame);
 
         let buff = av_audio_fifo_size(self.fifo);
-        return if buff < (*self.ctx).frame_size {
+        if buff < (*self.ctx).frame_size {
             Ok(None)
         } else {
             let out_frame = self.read_fifo_frame()?;
             Ok(Some(out_frame))
-        };
+        }
     }
 
     unsafe fn read_fifo_frame(&mut self) -> Result<*mut AVFrame, Error> {
@@ -249,7 +245,7 @@ where
     }
 
     unsafe fn new_frame(&self) -> *mut AVFrame {
-        let mut out_frame = av_frame_alloc();
+        let out_frame = av_frame_alloc();
         (*out_frame).nb_samples = (*self.ctx).frame_size;
         av_channel_layout_copy(&mut (*out_frame).ch_layout, &(*self.ctx).ch_layout);
         (*out_frame).format = (*self.ctx).sample_fmt as libc::c_int;
@@ -268,7 +264,7 @@ where
         };
 
         self.setup_encoder(frame)?;
-        let mut frame = self.process_audio_frame(frame)?;
+        let frame = self.process_audio_frame(frame)?;
         if frame.is_none() {
             return Ok(());
         }

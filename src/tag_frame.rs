@@ -1,5 +1,4 @@
 use anyhow::Error;
-use ffmpeg_sys_next::AVBufferRef;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::ipc::Rx;

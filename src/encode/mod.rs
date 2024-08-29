@@ -1,8 +1,7 @@
-use std::ptr;
 
 use ffmpeg_sys_next::{
-    AV_LOG_INFO, AV_NOPTS_VALUE, av_packet_rescale_ts, av_pkt_dump_log2, AV_PKT_FLAG_KEY, av_q2d,
-    av_rescale_q, AVCodecContext, AVFrame, AVPacket, AVRational, AVStream,
+    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY,
+    av_rescale_q, AVCodecContext, AVPacket, AVStream,
 };
 use ffmpeg_sys_next::AVMediaType::{AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_VIDEO};
 use log::info;

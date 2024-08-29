@@ -3,7 +3,7 @@ use std::ptr;
 
 use anyhow::Error;
 use ffmpeg_sys_next::{
-    av_frame_alloc, av_frame_copy_props, AVBufferRef, AVFrame, SWS_BILINEAR,
+    av_frame_alloc, av_frame_copy_props, AVFrame, SWS_BILINEAR,
     sws_freeContext, sws_getContext, sws_scale_frame, SwsContext,
 };
 use tokio::sync::broadcast;

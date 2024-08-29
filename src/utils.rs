@@ -1,10 +1,7 @@
 use std::ffi::CStr;
 
-use anyhow::Error;
-use ffmpeg_sys_next::{av_buffer_allocz, av_make_error_string, AVBufferRef, memcpy};
-use uuid::{Bytes, Uuid};
+use ffmpeg_sys_next::av_make_error_string;
 
-use crate::variant::{AudioVariant, VariantStream, VideoVariant};
 
 pub fn get_ffmpeg_error_msg(ret: libc::c_int) -> String {
     unsafe {

@@ -1,30 +1,19 @@
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::fmt::{Display, Formatter};
-use std::mem::transmute;
 use std::ptr;
 
 use anyhow::Error;
 use ffmpeg_sys_next::{
-    AV_CH_LAYOUT_STEREO, av_channel_layout_copy, av_dump_format, av_get_sample_fmt,
+    av_dump_format,
     av_interleaved_write_frame, av_opt_set, av_packet_clone, av_packet_copy_props,
-    AVChannelLayout, AVChannelLayout__bindgen_ty_1, avcodec_find_encoder,
-    avcodec_parameters_from_context, avcodec_parameters_to_context, AVCodecContext, avformat_alloc_output_context2,
-    avformat_free_context, avformat_new_stream, avformat_write_header, AVFormatContext, AVPacket,
-    AVRational,
+    avcodec_parameters_from_context, avformat_alloc_output_context2,
+    avformat_free_context, avformat_write_header, AVFormatContext, AVPacket,
 };
-use ffmpeg_sys_next::AVChannelOrder::AV_CHANNEL_ORDER_NATIVE;
-use ffmpeg_sys_next::AVColorSpace::AVCOL_SPC_BT709;
-use ffmpeg_sys_next::AVMediaType::{AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_VIDEO};
-use ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV420P;
-use futures_util::SinkExt;
 use itertools::Itertools;
 use log::info;
-use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedReceiver;
 use uuid::Uuid;
 
 use crate::egress::{EgressConfig, map_variants_to_streams};
-use crate::encode::dump_pkt_info;
 use crate::pipeline::{AVPacketSource, PipelinePayload, PipelineProcessor};
 use crate::utils::get_ffmpeg_error_msg;
 use crate::variant::{VariantStream, VariantStreamType};

@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::fmt::Display;
 use std::{fs, ptr};
 
 use anyhow::Error;
@@ -52,7 +51,7 @@ impl RecorderEgress {
     }
 
     unsafe fn setup_muxer(&mut self) -> Result<(), Error> {
-        let mut ctx = avformat_alloc_context();
+        let ctx = avformat_alloc_context();
         if ctx.is_null() {
             return Err(Error::msg("Failed to create muxer context"));
         }
