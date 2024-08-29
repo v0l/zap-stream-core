@@ -5,16 +5,16 @@ use std::time::Duration;
 
 use anyhow::Error;
 use bytes::{BufMut, Bytes};
-use ffmpeg_sys_next::AVMediaType::{AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_VIDEO};
 use ffmpeg_sys_next::*;
+use ffmpeg_sys_next::AVMediaType::{AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_VIDEO};
 use log::{info, warn};
-use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
 use crate::demux::info::{DemuxStreamInfo, StreamChannelType, StreamInfoChannel};
-use crate::pipeline::PipelinePayload;
+use crate::pipeline::{AVPacketSource, PipelinePayload};
 use crate::utils::get_ffmpeg_error_msg;
 
 pub mod info;
@@ -69,8 +69,7 @@ unsafe extern "C" fn read_data(
                 }
             }
             Err(e) => match e {
-                TryRecvError::Empty => {
-                }
+                TryRecvError::Empty => {}
                 TryRecvError::Disconnected => {
                     warn!("EOF");
                     return AVERROR_EOF;
@@ -179,9 +178,10 @@ impl Demuxer {
             return Err(Error::msg(msg));
         }
         let stream = *(*self.ctx).streams.add((*pkt).stream_index as usize);
-        (*pkt).opaque = stream as *mut libc::c_void;
-
-        let pkg = PipelinePayload::AvPacket("Demuxer packet".to_owned(), pkt);
+        let pkg = PipelinePayload::AvPacket(
+            pkt,
+            AVPacketSource::Demuxer(stream),
+        );
         self.chan_out.send(pkg)?;
         Ok(())
     }

@@ -1,3 +1,4 @@
+use crate::tag_frame::TagFrame;
 use std::ops::Add;
 use std::time::{Duration, Instant};
 
@@ -11,13 +12,11 @@ use crate::demux::Demuxer;
 use crate::demux::info::{DemuxStreamInfo, StreamChannelType};
 use crate::egress::EgressConfig;
 use crate::egress::hls::HlsEgress;
-use crate::egress::mpegts::MPEGTSEgress;
 use crate::egress::recorder::RecorderEgress;
 use crate::encode::audio::AudioEncoder;
 use crate::encode::video::VideoEncoder;
 use crate::pipeline::{EgressType, PipelineConfig, PipelinePayload, PipelineProcessor};
 use crate::scale::Scaler;
-use crate::tag_frame::TagFrame;
 use crate::variant::VariantStream;
 use crate::webhook::Webhook;
 
@@ -119,17 +118,6 @@ impl PipelineRunner {
                 EgressType::HLS(cfg) => {
                     let (egress_tx, egress_rx) = unbounded_channel();
                     self.egress.push(Box::new(HlsEgress::new(
-                        egress_rx,
-                        self.config.id,
-                        cfg.clone(),
-                    )));
-                    for x in self.add_egress_variants(cfg, egress_tx) {
-                        self.encoders.push(x);
-                    }
-                }
-                EgressType::MPEGTS(cfg) => {
-                    let (egress_tx, egress_rx) = unbounded_channel();
-                    self.egress.push(Box::new(MPEGTSEgress::new(
                         egress_rx,
                         self.config.id,
                         cfg.clone(),

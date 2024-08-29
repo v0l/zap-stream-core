@@ -2,15 +2,13 @@ use std::fmt::{Display, Formatter};
 use std::ptr;
 
 use anyhow::Error;
-use ffmpeg_sys_next::{av_packet_rescale_ts, avformat_new_stream, AVFormatContext, AVPacket};
+use ffmpeg_sys_next::{avformat_new_stream, AVFormatContext};
 use serde::{Deserialize, Serialize};
 
-use crate::utils::id_ref_to_uuid;
 use crate::variant::{VariantStream, VariantStreamType};
 
 pub mod hls;
 pub mod http;
-pub mod mpegts;
 pub mod recorder;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -62,36 +60,4 @@ pub unsafe fn map_variants_to_streams(
         }
     }
     Ok(())
-}
-
-/// Get variant of this packet
-pub unsafe fn get_pkt_variant(
-    vars: &Vec<VariantStream>,
-    pkt: *mut AVPacket,
-) -> Result<&VariantStream, Error> {
-    let variant_id = id_ref_to_uuid((*pkt).opaque_ref)?;
-    let variant = vars.iter().find(|v| v.id() == variant_id);
-    if variant.is_none() {
-        return Err(Error::msg(format!(
-            "No stream found with id={:?}",
-            variant_id
-        )));
-    }
-    Ok(variant.unwrap())
-}
-
-/// Update packet stream index to match muxer stream
-pub unsafe fn update_pkt_for_muxer(
-    ctx: *mut AVFormatContext,
-    pkt: *mut AVPacket,
-    var: &VariantStream,
-) {
-    let stream = *(*ctx).streams.add(var.dst_index());
-    let idx = (*stream).index;
-    if idx != (*pkt).stream_index {
-        (*pkt).stream_index = idx;
-    }
-    // match stream timebase in muxer
-    av_packet_rescale_ts(pkt, var.time_base(), (*stream).time_base);
-    (*pkt).time_base = (*stream).time_base;
 }

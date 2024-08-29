@@ -1,5 +1,5 @@
 use futures_util::{StreamExt, TryStreamExt};
-use log::{info, warn};
+use log::{error, info, warn};
 use srt_tokio::SrtListener;
 use tokio::sync::mpsc::unbounded_channel;
 
@@ -21,7 +21,7 @@ pub async fn listen(addr: String, builder: PipelineBuilder) -> Result<(), anyhow
         if let Ok(mut pipeline) = builder.build_for(info, rx).await {
             std::thread::spawn(move || loop {
                 if let Err(e) = pipeline.run() {
-                    warn!("Pipeline error: {}\n{}", e, e.backtrace());
+                    error!("Pipeline error: {}\n{}", e, e.backtrace());
                     break;
                 }
             });

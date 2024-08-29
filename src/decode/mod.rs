@@ -3,15 +3,15 @@ use std::ptr;
 
 use anyhow::Error;
 use ffmpeg_sys_next::{
-    av_frame_alloc, AVCodec, avcodec_alloc_context3,
-    avcodec_find_decoder, avcodec_free_context, avcodec_open2, avcodec_parameters_to_context,
-    avcodec_receive_frame, avcodec_send_packet, AVCodecContext, AVERROR, AVERROR_EOF, AVPacket, AVStream,
+    av_frame_alloc, AVCodec, avcodec_alloc_context3, avcodec_find_decoder,
+    avcodec_free_context, avcodec_open2, avcodec_parameters_to_context, avcodec_receive_frame,
+    avcodec_send_packet, AVCodecContext, AVERROR, AVERROR_EOF, AVPacket,
 };
 use ffmpeg_sys_next::AVPictureType::AV_PICTURE_TYPE_NONE;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use crate::pipeline::PipelinePayload;
+use crate::pipeline::{AVFrameSource, AVPacketSource, PipelinePayload};
 
 struct CodecContext {
     pub context: *mut AVCodecContext,
@@ -50,9 +50,17 @@ impl Decoder {
         }
     }
 
-    pub unsafe fn decode_pkt(&mut self, pkt: *mut AVPacket) -> Result<usize, Error> {
+    pub unsafe fn decode_pkt(
+        &mut self,
+        pkt: *mut AVPacket,
+        src: &AVPacketSource,
+    ) -> Result<usize, Error> {
         let stream_index = (*pkt).stream_index;
-        let stream = (*pkt).opaque as *mut AVStream;
+        let stream = match src {
+            AVPacketSource::Demuxer(s) => *s,
+            _ => return Err(Error::msg(format!("Cannot decode packet from: {:?}", src))),
+        };
+
         assert_eq!(
             stream_index,
             (*stream).index,
@@ -101,11 +109,9 @@ impl Decoder {
                 }
                 // reset picture type, not to confuse the encoder
                 (*frame).pict_type = AV_PICTURE_TYPE_NONE;
-                (*frame).opaque = stream as *mut libc::c_void;
                 self.chan_out.send(PipelinePayload::AvFrame(
-                    "Decoder frame".to_owned(),
                     frame,
-                    stream_index as usize,
+                    AVFrameSource::Decoder(stream),
                 ))?;
                 frames += 1;
             }
@@ -116,9 +122,9 @@ impl Decoder {
 
     pub fn process(&mut self) -> Result<usize, Error> {
         if let Ok(pkg) = self.chan_in.try_recv() {
-            return if let PipelinePayload::AvPacket(_, pkt) = pkg {
+            return if let PipelinePayload::AvPacket(pkt, ref src) = pkg {
                 unsafe {
-                    let frames = self.decode_pkt(pkt)?;
+                    let frames = self.decode_pkt(pkt, src)?;
                     Ok(frames)
                 }
             } else {

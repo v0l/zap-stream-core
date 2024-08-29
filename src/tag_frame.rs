@@ -1,17 +1,15 @@
 use anyhow::Error;
-use ffmpeg_sys_next::{av_buffer_ref, AVBufferRef};
+use ffmpeg_sys_next::AVBufferRef;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::ipc::Rx;
-use crate::pipeline::{PipelinePayload, PipelineProcessor};
-use crate::utils::variant_id_ref;
+use crate::pipeline::{AVFrameSource, PipelinePayload, PipelineProcessor};
 use crate::variant::{VariantStream, VariantStreamType};
 
 pub struct TagFrame<TRecv> {
     variant: VariantStream,
     chan_in: TRecv,
     chan_out: UnboundedSender<PipelinePayload>,
-    var_id_ref: *mut AVBufferRef,
 }
 
 unsafe impl<T> Send for TagFrame<T> {}
@@ -27,10 +25,8 @@ where
         chan_in: TRecv,
         chan_out: UnboundedSender<PipelinePayload>,
     ) -> Self {
-        let id_ref = variant_id_ref(&var).unwrap();
         Self {
             variant: var,
-            var_id_ref: id_ref,
             chan_in,
             chan_out,
         }
@@ -43,11 +39,12 @@ where
 {
     fn process(&mut self) -> Result<(), Error> {
         while let Ok(pkg) = self.chan_in.try_recv_next() {
-            if let PipelinePayload::AvFrame(_, pkt, idx) = &pkg {
-                if *idx == self.variant.src_index() {
-                    unsafe {
-                        (**pkt).opaque_ref = av_buffer_ref(self.var_id_ref);
-                    }
+            if let PipelinePayload::AvFrame(_, src) = &pkg {
+                let idx = match &src {
+                    AVFrameSource::Decoder(s) => unsafe { (**s).index },
+                    _ => return Err(Error::msg(format!("Cannot process frame from: {:?}", src))),
+                };
+                if self.variant.src_index() == idx as usize {
                     self.chan_out.send(pkg)?;
                 }
             }

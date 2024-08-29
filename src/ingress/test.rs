@@ -45,7 +45,7 @@ pub async fn listen(builder: PipelineBuilder) -> Result<(), anyhow::Error> {
         if let Ok(mut pl) = builder.build_for(info, rx).await {
             std::thread::spawn(move || loop {
                 if let Err(e) = pl.run() {
-                    warn!("Pipeline error: {}", e.backtrace());
+                    error!("Pipeline error: {}\n{}", e, e.backtrace());
                     break;
                 }
             });

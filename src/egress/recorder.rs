@@ -1,19 +1,19 @@
-use std::{fs, ptr};
 use std::collections::HashSet;
 use std::fmt::Display;
+use std::{fs, ptr};
 
 use anyhow::Error;
 use ffmpeg_sys_next::{
-    av_dump_format, av_guess_format, av_interleaved_write_frame, av_strdup, avformat_alloc_context
-    , avformat_free_context,
-    AVFormatContext, AVIO_FLAG_READ_WRITE, avio_open2, AVPacket,
+    av_dump_format, av_guess_format, av_interleaved_write_frame, av_strdup, avformat_alloc_context,
+    avformat_free_context, avio_open2, AVFormatContext, AVPacket, AVIO_FLAG_READ_WRITE,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 use uuid::Uuid;
 
-use crate::egress::{EgressConfig, get_pkt_variant, map_variants_to_streams, update_pkt_for_muxer};
-use crate::pipeline::{PipelinePayload, PipelineProcessor};
+use crate::egress::{map_variants_to_streams, EgressConfig};
+use crate::pipeline::{AVPacketSource, PipelinePayload, PipelineProcessor};
 use crate::utils::get_ffmpeg_error_msg;
+use crate::variant::VariantStreamType;
 
 pub struct RecorderEgress {
     id: Uuid,
@@ -90,9 +90,16 @@ impl RecorderEgress {
         Ok(())
     }
 
-    unsafe fn process_pkt(&mut self, pkt: *mut AVPacket) -> Result<(), Error> {
-        let variant = get_pkt_variant(&self.config.variants, pkt)?;
-        update_pkt_for_muxer(self.ctx, pkt, &variant);
+    unsafe fn process_pkt(
+        &mut self,
+        pkt: *mut AVPacket,
+        src: &AVPacketSource,
+    ) -> Result<(), Error> {
+        let variant = match src {
+            AVPacketSource::Encoder(v) => v,
+            _ => return Err(Error::msg(format!("Cannot mux packet from {:?}", src))),
+        };
+        (*pkt).stream_index = variant.dst_index() as libc::c_int;
 
         let ret = av_interleaved_write_frame(self.ctx, pkt);
         if ret < 0 {
@@ -107,11 +114,11 @@ impl PipelineProcessor for RecorderEgress {
     fn process(&mut self) -> Result<(), Error> {
         while let Ok(pkg) = self.chan_in.try_recv() {
             match pkg {
-                PipelinePayload::AvPacket(_, pkt) => unsafe {
+                PipelinePayload::AvPacket(pkt, ref src) => unsafe {
                     if self.ctx.is_null() {
                         self.setup_muxer()?;
                     }
-                    self.process_pkt(pkt)?;
+                    self.process_pkt(pkt, src)?;
                 },
                 _ => return Err(Error::msg("Payload not supported")),
             }

@@ -1,7 +1,10 @@
 use std::fmt::{Display, Formatter};
 
 use anyhow::Error;
-use ffmpeg_sys_next::{av_frame_clone, av_frame_copy_props, av_frame_free, av_packet_clone, av_packet_copy_props, av_packet_free, AVFrame, AVPacket};
+use ffmpeg_sys_next::{
+    av_frame_clone, av_frame_copy_props, av_frame_free, av_packet_clone, av_packet_copy_props,
+    av_packet_free, AVCodecContext, AVFrame, AVPacket, AVStream,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::demux::info::DemuxStreamInfo;
@@ -29,7 +32,7 @@ impl Display for EgressType {
                 EgressType::HLS(c) => format!("{}", c),
                 EgressType::DASH => "DASH".to_owned(),
                 EgressType::WHEP => "WHEP".to_owned(),
-                EgressType::MPEGTS(c) => format!("{}", c), 
+                EgressType::MPEGTS(c) => format!("{}", c),
                 EgressType::Recorder(c) => format!("{}", c),
             }
         )
@@ -62,6 +65,24 @@ impl Display for PipelineConfig {
     }
 }
 
+#[derive(Debug, PartialEq, Clone)]
+pub enum AVPacketSource {
+    /// AVPacket from demuxer
+    Demuxer(*mut AVStream),
+    /// AVPacket from an encoder
+    Encoder(VariantStream),
+    /// AVPacket from muxer
+    Muxer(VariantStream),
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum AVFrameSource {
+    /// ACPacket from decoder source stream
+    Decoder(*mut AVStream),
+    /// AVPacket from frame scaler step
+    Scaler(*mut AVStream),
+}
+
 #[derive(Debug, PartialEq)]
 pub enum PipelinePayload {
     /// No output
@@ -69,11 +90,13 @@ pub enum PipelinePayload {
     /// Raw bytes from ingress
     Bytes(bytes::Bytes),
     /// FFMpeg AVPacket
-    AvPacket(String, *mut AVPacket),
+    AvPacket(*mut AVPacket, AVPacketSource),
     /// FFMpeg AVFrame
-    AvFrame(String, *mut AVFrame, usize),
+    AvFrame(*mut AVFrame, AVFrameSource),
     /// Information about the input stream
     SourceInfo(DemuxStreamInfo),
+    /// Information about an encoder in this pipeline
+    EncoderInfo(VariantStream, *const AVCodecContext),
 }
 
 unsafe impl Send for PipelinePayload {}
@@ -85,19 +108,20 @@ impl Clone for PipelinePayload {
         match self {
             PipelinePayload::Empty => PipelinePayload::Empty,
             PipelinePayload::Bytes(b) => PipelinePayload::Bytes(b.clone()),
-            PipelinePayload::AvPacket(t, p) => unsafe {
+            PipelinePayload::AvPacket(p, v) => unsafe {
                 assert!(!(**p).data.is_null(), "Cannot clone empty packet");
                 let new_pkt = av_packet_clone(*p);
                 av_packet_copy_props(new_pkt, *p);
-                PipelinePayload::AvPacket(t.clone(), new_pkt)
+                PipelinePayload::AvPacket(new_pkt, v.clone())
             },
-            PipelinePayload::AvFrame(t, p, idx) => unsafe {
+            PipelinePayload::AvFrame(p, v) => unsafe {
                 assert!(!(**p).extended_data.is_null(), "Cannot clone empty frame");
                 let new_frame = av_frame_clone(*p);
                 av_frame_copy_props(new_frame, *p);
-                PipelinePayload::AvFrame(t.clone(), new_frame, *idx)
+                PipelinePayload::AvFrame(new_frame, v.clone())
             },
             PipelinePayload::SourceInfo(i) => PipelinePayload::SourceInfo(i.clone()),
+            PipelinePayload::EncoderInfo(v, s) => PipelinePayload::EncoderInfo(v.clone(), *s),
         }
     }
 }
@@ -105,15 +129,13 @@ impl Clone for PipelinePayload {
 impl Drop for PipelinePayload {
     fn drop(&mut self) {
         match self {
-            PipelinePayload::Empty => {}
-            PipelinePayload::Bytes(_) => {}
-            PipelinePayload::AvPacket(_, p) => unsafe {
+            PipelinePayload::AvPacket(p, _) => unsafe {
                 av_packet_free(p);
             },
-            PipelinePayload::AvFrame(_, p, _) => unsafe {
+            PipelinePayload::AvFrame(p, _) => unsafe {
                 av_frame_free(p);
             },
-            PipelinePayload::SourceInfo(_) => {}
+            _ => {}
         }
     }
 }

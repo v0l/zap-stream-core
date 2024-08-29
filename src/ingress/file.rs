@@ -43,7 +43,7 @@ pub async fn listen(path: PathBuf, builder: PipelineBuilder) -> Result<(), anyho
         if let Ok(mut pl) = builder.build_for(info, rx).await {
             std::thread::spawn(move || loop {
                 if let Err(e) = pl.run() {
-                    warn!("Pipeline error: {}", e.backtrace());
+                    error!("Pipeline error: {}\n{}", e, e.backtrace());
                     break;
                 }
             });
@@ -53,7 +53,10 @@ pub async fn listen(path: PathBuf, builder: PipelineBuilder) -> Result<(), anyho
                 loop {
                     if let Ok(r) = stream.read(&mut buf).await {
                         if r > 0 {
-                            tx.send(bytes::Bytes::copy_from_slice(&buf[..r])).unwrap();
+                            if let Err(e) = tx.send(bytes::Bytes::copy_from_slice(&buf[..r])) {
+                                error!("Failed to send file: {}", e);
+                                break;
+                            }
                         } else {
                             break;
                         }

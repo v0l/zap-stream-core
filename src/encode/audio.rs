@@ -3,18 +3,28 @@ use std::mem::transmute;
 use std::ptr;
 
 use anyhow::Error;
-use ffmpeg_sys_next::{av_audio_fifo_alloc, av_audio_fifo_free, av_audio_fifo_read, av_audio_fifo_realloc, av_audio_fifo_size, av_audio_fifo_write, av_buffer_ref, av_buffer_unref, av_channel_layout_copy, av_frame_alloc, av_frame_clone, av_frame_free, av_frame_get_buffer, av_frame_unref, av_freep, av_get_sample_fmt_name, av_packet_alloc, av_packet_free, av_rescale_q, av_rescale_rnd, av_samples_alloc, av_samples_alloc_array_and_samples, AVAudioFifo, AVBufferRef, AVCodec, avcodec_alloc_context3, avcodec_free_context, avcodec_open2, avcodec_parameters_from_context, avcodec_receive_packet, avcodec_send_frame, AVCodecContext, AVERROR, AVFrame, AVStream, swr_alloc_set_opts2, swr_config_frame, swr_convert, swr_convert_frame, swr_free, swr_get_delay, swr_init, SwrContext};
 use ffmpeg_sys_next::AVRounding::AV_ROUND_UP;
 use ffmpeg_sys_next::AVSampleFormat::AV_SAMPLE_FMT_S16;
+use ffmpeg_sys_next::{
+    av_audio_fifo_alloc, av_audio_fifo_free, av_audio_fifo_read, av_audio_fifo_realloc,
+    av_audio_fifo_size, av_audio_fifo_write, av_buffer_ref, av_buffer_unref,
+    av_channel_layout_copy, av_frame_alloc, av_frame_clone, av_frame_free, av_frame_get_buffer,
+    av_frame_unref, av_freep, av_get_sample_fmt_name, av_packet_alloc, av_packet_free,
+    av_rescale_q, av_rescale_rnd, av_samples_alloc, av_samples_alloc_array_and_samples,
+    avcodec_alloc_context3, avcodec_free_context, avcodec_open2, avcodec_parameters_from_context,
+    avcodec_receive_packet, avcodec_send_frame, swr_alloc_set_opts2, swr_config_frame, swr_convert,
+    swr_convert_frame, swr_free, swr_get_delay, swr_init, AVAudioFifo, AVBufferRef, AVCodec,
+    AVCodecContext, AVFrame, AVStream, SwrContext, AVERROR,
+};
 use libc::EAGAIN;
 use log::info;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::encode::{dump_pkt_info, set_encoded_pkt_timing};
 use crate::ipc::Rx;
-use crate::pipeline::{PipelinePayload, PipelineProcessor};
-use crate::utils::{audio_variant_id_ref, get_ffmpeg_error_msg, id_ref_to_uuid};
-use crate::variant::{AudioVariant, VariantStreamType};
+use crate::pipeline::{AVFrameSource, AVPacketSource, PipelinePayload, PipelineProcessor};
+use crate::utils::get_ffmpeg_error_msg;
+use crate::variant::{AudioVariant, VariantStream, VariantStreamType};
 
 pub struct AudioEncoder<T> {
     variant: AudioVariant,
@@ -24,8 +34,8 @@ pub struct AudioEncoder<T> {
     fifo: *mut AVAudioFifo,
     chan_in: T,
     chan_out: UnboundedSender<PipelinePayload>,
-    var_id_ref: *mut AVBufferRef,
     pts: i64,
+    frame_pts: i64,
 }
 
 unsafe impl<T> Send for AudioEncoder<T> {}
@@ -38,7 +48,6 @@ impl<T> Drop for AudioEncoder<T> {
             swr_free(&mut self.swr_ctx);
             av_audio_fifo_free(self.fifo);
             avcodec_free_context(&mut self.ctx);
-            av_buffer_unref(&mut self.var_id_ref);
         }
     }
 }
@@ -52,7 +61,6 @@ where
         chan_out: UnboundedSender<PipelinePayload>,
         variant: AudioVariant,
     ) -> Self {
-        let id_ref = audio_variant_id_ref(&variant);
         Self {
             ctx: ptr::null_mut(),
             codec: ptr::null(),
@@ -61,8 +69,8 @@ where
             variant,
             chan_in,
             chan_out,
-            var_id_ref: id_ref,
             pts: 0,
+            frame_pts: 0,
         }
     }
 
@@ -86,11 +94,13 @@ where
                 || (*ctx).ch_layout.nb_channels != (*frame).ch_layout.nb_channels
             {
                 info!(
-                    "Setup audio resampler: {}@{}->{}@{}",
+                    "Setup audio resampler: {}.{}@{} -> {}.{}@{}",
+                    (*frame).ch_layout.nb_channels,
                     CStr::from_ptr(av_get_sample_fmt_name(transmute((*frame).format)))
                         .to_str()
                         .unwrap(),
                     (*frame).sample_rate,
+                    (*ctx).ch_layout.nb_channels,
                     CStr::from_ptr(av_get_sample_fmt_name((*ctx).sample_fmt))
                         .to_str()
                         .unwrap(),
@@ -133,17 +143,6 @@ where
                 return Err(Error::msg(get_ffmpeg_error_msg(ret)));
             }
 
-            // copy start time
-            let in_stream = (*frame).opaque as *mut AVStream;
-            if (*in_stream).start_time > 0 {
-                self.pts = av_rescale_q(
-                    (*in_stream).start_time,
-                    (*in_stream).time_base,
-                    (*ctx).time_base,
-                );
-                info!("Set start pts to {}", self.pts);
-            }
-
             // copy channel layout from codec
             let mut px = (*encoder).ch_layouts;
             while !px.is_null() {
@@ -153,6 +152,12 @@ where
                 }
                 px = px.add(1);
             }
+
+            // let downstream steps know about the encoder
+            self.chan_out.send(PipelinePayload::EncoderInfo(
+                VariantStream::Audio(self.variant.clone()),
+                ctx,
+            ))?;
             self.ctx = ctx;
             self.codec = encoder;
         }
@@ -205,7 +210,6 @@ where
             Ok(None)
         } else {
             let out_frame = self.read_fifo_frame()?;
-            (*out_frame).opaque = (*frame).opaque;
             Ok(Some(out_frame))
         };
     }
@@ -250,15 +254,18 @@ where
         av_channel_layout_copy(&mut (*out_frame).ch_layout, &(*self.ctx).ch_layout);
         (*out_frame).format = (*self.ctx).sample_fmt as libc::c_int;
         (*out_frame).sample_rate = (*self.ctx).sample_rate;
-        (*out_frame).time_base = (*self.ctx).time_base;
         out_frame
     }
 
-    unsafe fn process_frame(&mut self, frame: *mut AVFrame) -> Result<(), Error> {
-        let var_id = id_ref_to_uuid((*frame).opaque_ref)?;
-        assert_eq!(var_id, self.variant.id);
-
-        let in_stream = (*frame).opaque as *mut AVStream;
+    unsafe fn process_frame(
+        &mut self,
+        frame: *mut AVFrame,
+        src: &AVFrameSource,
+    ) -> Result<(), Error> {
+        let in_stream = match src {
+            AVFrameSource::Decoder(s) => *s,
+            AVFrameSource::Scaler(s) => *s,
+        };
 
         self.setup_encoder(frame)?;
         let mut frame = self.process_audio_frame(frame)?;
@@ -266,6 +273,9 @@ where
             return Ok(());
         }
         let mut frame = frame.unwrap();
+
+        (*frame).pts = self.frame_pts;
+        self.frame_pts += (*frame).nb_samples as i64;
 
         let mut ret = avcodec_send_frame(self.ctx, frame);
         if ret < 0 && ret != AVERROR(EAGAIN) {
@@ -285,11 +295,9 @@ where
                 return Err(Error::msg(get_ffmpeg_error_msg(ret)));
             }
             set_encoded_pkt_timing(self.ctx, pkt, in_stream, &mut self.pts, &self.variant);
-            (*pkt).opaque = self.ctx as *mut libc::c_void;
-            (*pkt).opaque_ref = av_buffer_ref(self.var_id_ref);
             self.chan_out.send(PipelinePayload::AvPacket(
-                "Audio Encoder packet".to_owned(),
                 pkt,
+                AVPacketSource::Encoder(VariantStream::Audio(self.variant.clone())),
             ))?;
         }
 
@@ -305,9 +313,15 @@ where
     fn process(&mut self) -> Result<(), Error> {
         while let Ok(pkg) = self.chan_in.try_recv_next() {
             match pkg {
-                PipelinePayload::AvFrame(_, frm, idx) => unsafe {
-                    if self.variant.src_index == idx {
-                        self.process_frame(frm)?;
+                PipelinePayload::AvFrame(frm, ref src) => unsafe {
+                    let idx = match src {
+                        AVFrameSource::Decoder(s) => (**s).index,
+                        _ => {
+                            return Err(Error::msg(format!("Cannot process frame from: {:?}", src)))
+                        }
+                    };
+                    if self.variant.src_index == idx as usize {
+                        self.process_frame(frm, src)?;
                     }
                 },
                 _ => return Err(Error::msg("Payload not supported")),

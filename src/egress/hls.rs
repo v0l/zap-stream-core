@@ -4,7 +4,14 @@ use std::mem::transmute;
 use std::ptr;
 
 use anyhow::Error;
-use ffmpeg_sys_next::{AV_CH_LAYOUT_STEREO, av_channel_layout_copy, av_dump_format, av_get_sample_fmt, av_interleaved_write_frame, av_opt_set, av_packet_clone, av_packet_copy_props, AVChannelLayout, AVChannelLayout__bindgen_ty_1, avcodec_find_encoder, avcodec_parameters_from_context, avcodec_parameters_to_context, AVCodecContext, avformat_alloc_output_context2, avformat_free_context, avformat_new_stream, avformat_write_header, AVFormatContext, AVPacket, AVRational};
+use ffmpeg_sys_next::{
+    AV_CH_LAYOUT_STEREO, av_channel_layout_copy, av_dump_format, av_get_sample_fmt,
+    av_interleaved_write_frame, av_opt_set, av_packet_clone, av_packet_copy_props,
+    AVChannelLayout, AVChannelLayout__bindgen_ty_1, avcodec_find_encoder,
+    avcodec_parameters_from_context, avcodec_parameters_to_context, AVCodecContext, avformat_alloc_output_context2,
+    avformat_free_context, avformat_new_stream, avformat_write_header, AVFormatContext, AVPacket,
+    AVRational,
+};
 use ffmpeg_sys_next::AVChannelOrder::AV_CHANNEL_ORDER_NATIVE;
 use ffmpeg_sys_next::AVColorSpace::AVCOL_SPC_BT709;
 use ffmpeg_sys_next::AVMediaType::{AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_VIDEO};
@@ -16,10 +23,10 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedReceiver;
 use uuid::Uuid;
 
-use crate::egress::{EgressConfig, get_pkt_variant, map_variants_to_streams, update_pkt_for_muxer};
+use crate::egress::{EgressConfig, map_variants_to_streams};
 use crate::encode::dump_pkt_info;
-use crate::pipeline::{PipelinePayload, PipelineProcessor};
-use crate::utils::{get_ffmpeg_error_msg, id_ref_to_uuid};
+use crate::pipeline::{AVPacketSource, PipelinePayload, PipelineProcessor};
+use crate::utils::get_ffmpeg_error_msg;
 use crate::variant::{VariantStream, VariantStreamType};
 
 pub struct HlsEgress {
@@ -150,9 +157,17 @@ impl HlsEgress {
         Ok(())
     }
 
-    unsafe fn process_pkt_internal(&mut self, pkt: *mut AVPacket) -> Result<(), Error> {
-        let variant = get_pkt_variant(&self.config.variants, pkt)?;
-        update_pkt_for_muxer(self.ctx, pkt, &variant);
+    unsafe fn process_pkt_internal(
+        &mut self,
+        pkt: *mut AVPacket,
+        src: &AVPacketSource,
+    ) -> Result<(), Error> {
+        let variant = match src {
+            AVPacketSource::Encoder(v) => v,
+            _ => return Err(Error::msg(format!("Cannot mux packet from {:?}", src))),
+        };
+        (*pkt).stream_index = variant.dst_index() as libc::c_int;
+
         //dump_pkt_info(pkt);
         let ret = av_interleaved_write_frame(self.ctx, pkt);
         if ret < 0 {
@@ -161,20 +176,21 @@ impl HlsEgress {
         Ok(())
     }
 
-    unsafe fn process_pkt(&mut self, pkt: *mut AVPacket) -> Result<(), Error> {
-        let variant = get_pkt_variant(&self.config.variants, pkt)?;
-        if !self.stream_init.contains(&variant.dst_index()) {
-            let encoder_ctx = (*pkt).opaque as *mut AVCodecContext;
-            let out_stream = *(*self.ctx).streams.add(variant.dst_index());
-            avcodec_parameters_from_context((*out_stream).codecpar, encoder_ctx);
-            self.stream_init.insert(variant.dst_index());
-        }
+    unsafe fn process_pkt(
+        &mut self,
+        pkt: *mut AVPacket,
+        src: &AVPacketSource,
+    ) -> Result<(), Error> {
+        let variant = match &src {
+            AVPacketSource::Encoder(v) => v,
+            _ => return Err(Error::msg(format!("Cannot mux packet from {:?}", src))),
+        };
         if !self.init {
             let pkt_clone = av_packet_clone(pkt);
             av_packet_copy_props(pkt_clone, pkt);
             self.packet_buffer.push_back(PipelinePayload::AvPacket(
-                "Buffered Muxer Packet".to_string(),
                 pkt_clone,
+                AVPacketSource::Muxer(variant.clone()),
             ));
         }
 
@@ -189,8 +205,8 @@ impl HlsEgress {
             // push in pkts from buffer
             while let Some(pkt) = self.packet_buffer.pop_front() {
                 match pkt {
-                    PipelinePayload::AvPacket(_, pkt) => {
-                        self.process_pkt_internal(pkt)?;
+                    PipelinePayload::AvPacket(pkt, ref src) => {
+                        self.process_pkt_internal(pkt, src)?;
                     }
                     _ => return Err(Error::msg("")),
                 }
@@ -200,7 +216,7 @@ impl HlsEgress {
             return Ok(());
         }
 
-        self.process_pkt_internal(pkt)
+        self.process_pkt_internal(pkt, src)
     }
 }
 
@@ -208,13 +224,20 @@ impl PipelineProcessor for HlsEgress {
     fn process(&mut self) -> Result<(), Error> {
         while let Ok(pkg) = self.chan_in.try_recv() {
             match pkg {
-                PipelinePayload::AvPacket(_, pkt) => unsafe {
+                PipelinePayload::AvPacket(pkt, ref src) => unsafe {
+                    self.process_pkt(pkt, src)?;
+                },
+                PipelinePayload::EncoderInfo(ref var, ctx) => unsafe {
                     if self.ctx.is_null() {
                         self.setup_muxer()?;
                     }
-                    self.process_pkt(pkt)?;
+                    if !self.stream_init.contains(&var.dst_index()) {
+                        let out_stream = *(*self.ctx).streams.add(var.dst_index());
+                        avcodec_parameters_from_context((*out_stream).codecpar, ctx);
+                        self.stream_init.insert(var.dst_index());
+                    }
                 },
-                _ => return Err(Error::msg("Payload not supported")),
+                _ => return Err(Error::msg(format!("Payload not supported: {:?}", pkg))),
             }
         }
         Ok(())

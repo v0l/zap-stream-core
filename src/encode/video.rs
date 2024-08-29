@@ -3,18 +3,18 @@ use std::ptr;
 
 use anyhow::Error;
 use ffmpeg_sys_next::{
-    av_buffer_ref, av_packet_alloc, av_packet_free, AVBufferRef,
-    AVCodec, avcodec_alloc_context3, avcodec_find_encoder, avcodec_open2, avcodec_receive_packet,
-    avcodec_send_frame, AVCodecContext, AVERROR, AVFrame, AVStream,
+    av_packet_alloc, av_packet_free, AVCodec, avcodec_alloc_context3, avcodec_find_encoder,
+    avcodec_open2, avcodec_receive_packet, avcodec_send_frame, AVCodecContext, AVERROR,
+    AVFrame,
 };
 use libc::EAGAIN;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::encode::set_encoded_pkt_timing;
 use crate::ipc::Rx;
-use crate::pipeline::{PipelinePayload, PipelineProcessor};
-use crate::utils::{get_ffmpeg_error_msg, id_ref_to_uuid, video_variant_id_ref};
-use crate::variant::{VariantStreamType, VideoVariant};
+use crate::pipeline::{AVFrameSource, AVPacketSource, PipelinePayload, PipelineProcessor};
+use crate::utils::get_ffmpeg_error_msg;
+use crate::variant::{VariantStream, VariantStreamType, VideoVariant};
 
 pub struct VideoEncoder<T> {
     variant: VideoVariant,
@@ -22,7 +22,6 @@ pub struct VideoEncoder<T> {
     codec: *const AVCodec,
     chan_in: T,
     chan_out: UnboundedSender<PipelinePayload>,
-    var_id_ref: *mut AVBufferRef,
     pts: i64,
 }
 
@@ -39,14 +38,12 @@ where
         chan_out: UnboundedSender<PipelinePayload>,
         variant: VideoVariant,
     ) -> Self {
-        let id_ref = video_variant_id_ref(&variant);
         Self {
             ctx: ptr::null_mut(),
             codec: ptr::null(),
             variant,
             chan_in,
             chan_out,
-            var_id_ref: id_ref,
             pts: 0,
         }
     }
@@ -71,17 +68,29 @@ where
                 return Err(Error::msg(get_ffmpeg_error_msg(ret)));
             }
 
+            // let downstream steps know about the encoder
+            self.chan_out.send(PipelinePayload::EncoderInfo(
+                VariantStream::Video(self.variant.clone()),
+                ctx,
+            ))?;
+
             self.ctx = ctx;
             self.codec = encoder;
         }
         Ok(())
     }
 
-    unsafe fn process_frame(&mut self, frame: *mut AVFrame) -> Result<(), Error> {
-        let var_id = id_ref_to_uuid((*frame).opaque_ref)?;
-        assert_eq!(var_id, self.variant.id);
+    unsafe fn process_frame(
+        &mut self,
+        frame: *mut AVFrame,
+        src: &AVFrameSource,
+    ) -> Result<(), Error> {
+        let in_stream = match src {
+            AVFrameSource::Decoder(s) => *s,
+            AVFrameSource::Scaler(s) => *s,
+        };
+
         self.setup_encoder(frame)?;
-        let in_stream = (*frame).opaque as *mut AVStream;
 
         let mut ret = avcodec_send_frame(self.ctx, frame);
         if ret < 0 && ret != AVERROR(EAGAIN) {
@@ -100,12 +109,10 @@ where
             }
 
             set_encoded_pkt_timing(self.ctx, pkt, in_stream, &mut self.pts, &self.variant);
-            (*pkt).opaque = self.ctx as *mut libc::c_void;
-            (*pkt).opaque_ref = av_buffer_ref(self.var_id_ref);
             assert_ne!((*pkt).data, ptr::null_mut());
             self.chan_out.send(PipelinePayload::AvPacket(
-                "Video Encoder packet".to_owned(),
                 pkt,
+                AVPacketSource::Encoder(VariantStream::Video(self.variant.clone())),
             ))?;
         }
 
@@ -120,9 +127,15 @@ where
     fn process(&mut self) -> Result<(), Error> {
         while let Ok(pkg) = self.chan_in.try_recv_next() {
             match pkg {
-                PipelinePayload::AvFrame(_, frm, idx) => unsafe {
-                    if self.variant.src_index == idx {
-                        self.process_frame(frm)?;
+                PipelinePayload::AvFrame(frm, ref src) => unsafe {
+                    let idx = match src {
+                        AVFrameSource::Decoder(s) => (**s).index,
+                        _ => {
+                            return Err(Error::msg(format!("Cannot process frame from: {:?}", src)))
+                        }
+                    };
+                    if self.variant.src_index == idx as usize {
+                        self.process_frame(frm, src)?;
                     }
                 },
                 _ => return Err(Error::msg("Payload not supported")),
