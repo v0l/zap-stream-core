@@ -64,16 +64,16 @@ impl Webhook {
             id: Uuid::new_v4(),
             recording: vec![],
             egress: vec![
-                EgressType::Recorder(EgressConfig {
+                /*EgressType::Recorder(EgressConfig {
                     name: "REC".to_owned(),
                     out_dir: self.config.output_dir.clone(),
                     variants: vars.clone(),
-                }),
-                /*EgressType::HLS(EgressConfig {
+                }),*/
+                EgressType::HLS(EgressConfig {
                     name: "HLS".to_owned(),
                     out_dir: self.config.output_dir.clone(),
                     variants: vars.clone(),
-                }),*/
+                }),
             ],
         }
     }

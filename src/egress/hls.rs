@@ -157,6 +157,12 @@ impl HlsEgress {
                 .iter()
                 .find(|x| x.id() == *v)
                 .ok_or(Error::msg("Variant does not exist"))?,
+            AVPacketSource::Muxer(v) => self
+                .config
+                .variants
+                .iter()
+                .find(|x| x.id() == *v)
+                .ok_or(Error::msg("Variant does not exist"))?,
             _ => return Err(Error::msg(format!("Cannot mux packet from {:?}", src))),
         };
         (*pkt).stream_index = variant.dst_index() as libc::c_int;
@@ -176,6 +182,7 @@ impl HlsEgress {
     ) -> Result<(), Error> {
         let variant = match &src {
             AVPacketSource::Encoder(v) => v,
+            AVPacketSource::Muxer(v) => v,
             _ => return Err(Error::msg(format!("Cannot mux packet from {:?}", src))),
         };
         if !self.init {

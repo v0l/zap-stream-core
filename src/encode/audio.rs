@@ -3,14 +3,7 @@ use std::mem::transmute;
 use std::ptr;
 
 use anyhow::Error;
-use ffmpeg_sys_next::{
-    av_audio_fifo_alloc, av_audio_fifo_free, av_audio_fifo_read, av_audio_fifo_size,
-    av_audio_fifo_write, av_channel_layout_copy, av_frame_alloc, av_frame_free,
-    av_get_sample_fmt_name, av_packet_alloc, av_packet_free, av_samples_alloc_array_and_samples,
-    AVAudioFifo, AVCodec, avcodec_alloc_context3, avcodec_free_context,
-    avcodec_open2, avcodec_receive_packet, avcodec_send_frame, AVCodecContext, AVERROR, AVFrame,
-    AVRational, swr_alloc_set_opts2, swr_convert_frame, swr_free, swr_init, SwrContext,
-};
+use ffmpeg_sys_next::{av_audio_fifo_alloc, av_audio_fifo_free, av_audio_fifo_read, av_audio_fifo_size, av_audio_fifo_write, av_channel_layout_copy, av_frame_alloc, av_frame_free, av_get_sample_fmt_name, av_packet_alloc, av_packet_free, av_packet_rescale_ts, av_samples_alloc_array_and_samples, AVAudioFifo, AVCodec, avcodec_alloc_context3, avcodec_free_context, avcodec_open2, avcodec_receive_packet, avcodec_send_frame, AVCodecContext, AVERROR, AVFrame, AVRational, swr_alloc_set_opts2, swr_convert_frame, swr_free, swr_init, SwrContext};
 use libc::EAGAIN;
 use log::info;
 use tokio::sync::mpsc::UnboundedSender;
@@ -259,6 +252,11 @@ where
             return Ok(());
         }
         let mut frame = frame.unwrap();
+
+        // examples do it like this
+        (*frame).pts = self.pts;
+        self.pts += (*frame).nb_samples as i64;
+
         let mut ret = avcodec_send_frame(self.ctx, frame);
         if ret < 0 && ret != AVERROR(EAGAIN) {
             av_frame_free(&mut frame);
@@ -277,7 +275,8 @@ where
                 return Err(Error::msg(get_ffmpeg_error_msg(ret)));
             }
 
-            set_encoded_pkt_timing(self.ctx, pkt, in_tb, &mut self.pts, &self.variant);
+            //set_encoded_pkt_timing(self.ctx, pkt, in_tb, &mut self.pts, &self.variant);
+            av_packet_rescale_ts(pkt, *in_tb, self.variant.time_base());
             self.chan_out.send(PipelinePayload::AvPacket(
                 pkt,
                 AVPacketSource::Encoder(self.variant.id()),

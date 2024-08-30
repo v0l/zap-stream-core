@@ -1,10 +1,11 @@
 use std::{ptr, slice};
 use std::mem::transmute;
 use std::ops::Add;
+use std::time::{Duration, SystemTime};
 
 use ffmpeg_sys_next::{
     av_frame_alloc, av_frame_copy_props, av_frame_free, av_frame_get_buffer, av_packet_alloc,
-    av_packet_free, AV_PROFILE_H264_MAIN, avcodec_alloc_context3, avcodec_find_encoder,
+    av_packet_free, AV_PROFILE_H264_MAIN, av_q2d, avcodec_alloc_context3, avcodec_find_encoder,
     avcodec_open2, avcodec_receive_packet, avcodec_send_frame, AVERROR, AVRational,
     EAGAIN, SWS_BILINEAR, sws_getContext, sws_scale_frame,
 };
@@ -15,6 +16,7 @@ use ffmpeg_sys_next::AVPixelFormat::{AV_PIX_FMT_RGBA, AV_PIX_FMT_YUV420P};
 use fontdue::layout::{CoordinateSystem, Layout, TextStyle};
 use libc::memcpy;
 use log::{error, info};
+use tokio::runtime::Runtime;
 use tokio::sync::mpsc::unbounded_channel;
 
 use crate::ingress::ConnectionInfo;
@@ -27,15 +29,16 @@ pub async fn listen(builder: PipelineBuilder) -> Result<(), anyhow::Error> {
     const HEIGHT: libc::c_int = 1080;
     const FPS: libc::c_int = 25;
 
-    tokio::spawn(async move {
+    std::thread::spawn(move || {
         let (tx, rx) = unbounded_channel();
         let info = ConnectionInfo {
             ip_addr: "".to_owned(),
             endpoint: "test-pattern".to_owned(),
         };
 
-        if let Ok(mut pl) = builder.build_for(info, rx).await {
-            std::thread::spawn(move || loop {
+        let rt = Runtime::new().unwrap();
+        if let Ok(mut pl) = rt.block_on(builder.build_for(info, rx)) {
+            let pipeline = std::thread::spawn(move || loop {
                 if let Err(e) = pl.run() {
                     error!("Pipeline error: {}\n{}", e, e.backtrace());
                     break;
@@ -91,6 +94,7 @@ pub async fn listen(builder: PipelineBuilder) -> Result<(), anyhow::Error> {
                 let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
                 let fonts = &[&scp];
 
+                let start = SystemTime::now();
                 let mut frame_number: u64 = 0;
                 loop {
                     frame_number += 1;
@@ -151,8 +155,22 @@ pub async fn listen(builder: PipelineBuilder) -> Result<(), anyhow::Error> {
                         ));
                         if let Err(e) = tx.send(buf) {
                             error!("Failed to send test pkt: {}", e);
-                            return;
+
+                            pipeline.join().unwrap();
+                            return ;
                         }
+                    }
+                    let stream_time = Duration::from_secs_f64(
+                        frame_number as libc::c_double * av_q2d((*enc_ctx).time_base),
+                    );
+                    let real_time = SystemTime::now().duration_since(start).unwrap();
+                    let wait_time = if stream_time > real_time {
+                        stream_time - real_time
+                    } else {
+                        Duration::new(0, 0)
+                    };
+                    if !wait_time.is_zero() {
+                        std::thread::sleep(wait_time);
                     }
                 }
             }

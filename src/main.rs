@@ -65,7 +65,7 @@ async fn main() -> anyhow::Result<()> {
         settings.clone(),
     )));
     /*listeners.push(tokio::spawn(ingress::file::listen(
-        "/home/kieran/high_flight.mp4".parse().unwrap(),
+        "/home/kieran/waypoint_flight.mp4".parse().unwrap(),
         builder.clone(),
     )));*/
     listeners.push(tokio::spawn(ingress::test::listen(builder.clone())));

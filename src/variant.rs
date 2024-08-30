@@ -91,7 +91,7 @@ impl VariantStreamType for VariantStream {
 }
 
 /// Information related to variant streams for a given egress
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub struct VideoVariant {
     /// Unique ID of this variant
     pub id: Uuid,
@@ -311,7 +311,7 @@ impl VariantStreamType for AudioVariant {
     fn time_base(&self) -> AVRational {
         AVRational {
             num: 1,
-            den: 90_000,
+            den: self.sample_rate as libc::c_int,
         }
     }
 
@@ -345,7 +345,7 @@ impl VariantStreamType for AudioVariant {
         (*params).bit_rate = self.bitrate as i64;
         (*params).sample_rate = self.sample_rate as libc::c_int;
         (*params).ch_layout = self.channel_layout();
-        (*params).frame_size = 1024;
+        (*params).frame_size = 1024; //TODO: fix this
     }
 
     unsafe fn to_stream(&self, stream: *mut AVStream) {

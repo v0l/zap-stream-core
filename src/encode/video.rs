@@ -2,15 +2,11 @@ use std::mem::transmute;
 use std::ptr;
 
 use anyhow::Error;
-use ffmpeg_sys_next::{
-    av_packet_alloc, av_packet_free, AVCodec, avcodec_alloc_context3, avcodec_find_encoder,
-    avcodec_open2, avcodec_receive_packet, avcodec_send_frame, AVCodecContext, AVERROR, AVFrame,
-    AVRational,
-};
+use ffmpeg_sys_next::{av_packet_alloc, av_packet_free, av_packet_rescale_ts, AVCodec, avcodec_alloc_context3, avcodec_find_encoder, avcodec_open2, avcodec_receive_packet, avcodec_send_frame, AVCodecContext, AVERROR, AVFrame, AVRational};
 use libc::EAGAIN;
 use tokio::sync::mpsc::UnboundedSender;
+use crate::encode::dump_pkt_info;
 
-use crate::encode::set_encoded_pkt_timing;
 use crate::ipc::Rx;
 use crate::pipeline::{AVFrameSource, AVPacketSource, PipelinePayload, PipelineProcessor};
 use crate::utils::get_ffmpeg_error_msg;
@@ -83,6 +79,9 @@ where
         frame: *mut AVFrame,
         in_tb: &AVRational,
     ) -> Result<(), Error> {
+        (*frame).pts = self.pts;
+        self.pts += (*frame).duration;
+
         let mut ret = avcodec_send_frame(self.ctx, frame);
         if ret < 0 && ret != AVERROR(EAGAIN) {
             return Err(Error::msg(get_ffmpeg_error_msg(ret)));
@@ -99,7 +98,8 @@ where
                 return Err(Error::msg(get_ffmpeg_error_msg(ret)));
             }
 
-            set_encoded_pkt_timing(self.ctx, pkt, in_tb, &mut self.pts, &self.variant);
+            //set_encoded_pkt_timing(self.ctx, pkt, in_tb, &mut self.pts, &self.variant);
+            av_packet_rescale_ts(pkt, *in_tb, self.variant.time_base());
             //dump_pkt_info(pkt);
             self.chan_out.send(PipelinePayload::AvPacket(
                 pkt,

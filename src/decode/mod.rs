@@ -2,16 +2,14 @@ use std::collections::HashMap;
 use std::ptr;
 
 use anyhow::Error;
-use ffmpeg_sys_next::{
-    av_frame_alloc, AVCodec, avcodec_alloc_context3, avcodec_find_decoder,
-    avcodec_free_context, avcodec_open2, avcodec_parameters_to_context, avcodec_receive_frame,
-    avcodec_send_packet, AVCodecContext, AVERROR, AVERROR_EOF, AVPacket,
-};
+use ffmpeg_sys_next::{av_frame_alloc, AVCodec, avcodec_alloc_context3, avcodec_find_decoder, avcodec_free_context, avcodec_open2, avcodec_parameters_copy, avcodec_parameters_to_context, avcodec_receive_frame, avcodec_send_packet, AVCodecContext, AVERROR, AVERROR_EOF, AVPacket};
 use ffmpeg_sys_next::AVPictureType::AV_PICTURE_TYPE_NONE;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc::UnboundedReceiver;
 
+use crate::encode::set_encoded_pkt_timing;
 use crate::pipeline::{AVFrameSource, AVPacketSource, PipelinePayload};
+use crate::variant::{VariantStream, VideoVariant};
 
 struct CodecContext {
     pub context: *mut AVCodecContext,
@@ -32,6 +30,7 @@ pub struct Decoder {
     chan_in: UnboundedReceiver<PipelinePayload>,
     chan_out: broadcast::Sender<PipelinePayload>,
     codecs: HashMap<i32, CodecContext>,
+    pts: i64,
 }
 
 unsafe impl Send for Decoder {}
@@ -47,6 +46,7 @@ impl Decoder {
             chan_in,
             chan_out,
             codecs: HashMap::new(),
+            pts: 0,
         }
     }
 
@@ -83,9 +83,10 @@ impl Decoder {
             if context.is_null() {
                 return Err(Error::msg("Failed to alloc context"));
             }
-            if avcodec_parameters_to_context(context, codec_par) != 0 {
+            if avcodec_parameters_to_context(context, (*stream).codecpar) != 0 {
                 return Err(Error::msg("Failed to copy codec parameters to context"));
             }
+            (*context).pkt_timebase = (*stream).time_base;
             if avcodec_open2(context, codec, ptr::null_mut()) < 0 {
                 return Err(Error::msg("Failed to open codec"));
             }
@@ -108,7 +109,6 @@ impl Decoder {
                     return Err(Error::msg(format!("Failed to decode {}", ret)));
                 }
 
-                (*frame).pts = (*frame).best_effort_timestamp;
                 (*frame).pict_type = AV_PICTURE_TYPE_NONE; // encoder prints warnings
                 self.chan_out.send(PipelinePayload::AvFrame(
                     frame,

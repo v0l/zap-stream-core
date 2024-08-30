@@ -1,7 +1,7 @@
 use ffmpeg_sys_next::{
-    AV_NOPTS_VALUE, av_packet_rescale_ts, AV_PKT_FLAG_KEY, AVCodecContext, AVPacket,
-    AVRational,
+    AV_NOPTS_VALUE, av_packet_rescale_ts, AV_PKT_FLAG_KEY, AVCodecContext, AVPacket, AVRational,
 };
+use ffmpeg_sys_next::AVMediaType::AVMEDIA_TYPE_VIDEO;
 use log::info;
 
 use crate::variant::VariantStreamType;
@@ -22,8 +22,8 @@ pub unsafe fn set_encoded_pkt_timing<TVar>(
     let out_tb = (*ctx).time_base;
 
     (*pkt).stream_index = var.dst_index() as libc::c_int;
-    if (*pkt).duration == 0 {
-        let tb_sec = out_tb.den as i64 / out_tb.num as i64;
+    if (*pkt).duration <= 0 && (*ctx).codec_type == AVMEDIA_TYPE_VIDEO {
+        let tb_sec = in_tb.den as i64 / in_tb.num as i64;
         let fps = (*ctx).framerate.num as i64 * (*ctx).framerate.den as i64;
         (*pkt).duration = tb_sec / if fps == 0 { 1 } else { fps }
     }
