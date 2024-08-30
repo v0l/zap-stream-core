@@ -19,7 +19,7 @@ use crate::encode::set_encoded_pkt_timing;
 use crate::ipc::Rx;
 use crate::pipeline::{AVFrameSource, AVPacketSource, PipelinePayload, PipelineProcessor};
 use crate::utils::get_ffmpeg_error_msg;
-use crate::variant::{AudioVariant, VariantStream, VariantStreamType};
+use crate::variant::{AudioVariant, VariantStreamType};
 
 pub struct AudioEncoder<T> {
     variant: AudioVariant,

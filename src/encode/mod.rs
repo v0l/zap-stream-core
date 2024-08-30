@@ -1,8 +1,7 @@
 use ffmpeg_sys_next::{
-    AV_NOPTS_VALUE, av_packet_rescale_ts, AV_PKT_FLAG_KEY, av_rescale_q, AVCodecContext, AVPacket,
-    AVRational, AVStream,
+    AV_NOPTS_VALUE, av_packet_rescale_ts, AV_PKT_FLAG_KEY, AVCodecContext, AVPacket,
+    AVRational,
 };
-use ffmpeg_sys_next::AVMediaType::{AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_VIDEO};
 use log::info;
 
 use crate::variant::VariantStreamType;

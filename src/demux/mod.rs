@@ -5,7 +5,6 @@ use anyhow::Error;
 use bytes::{BufMut, Bytes};
 use ffmpeg_sys_next::*;
 use ffmpeg_sys_next::AVMediaType::{AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_VIDEO};
-use log::warn;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::time::Instant;

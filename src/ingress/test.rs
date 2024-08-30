@@ -1,23 +1,21 @@
 use std::{ptr, slice};
 use std::mem::transmute;
 use std::ops::Add;
-use std::time::{Duration, SystemTime};
 
 use ffmpeg_sys_next::{
     av_frame_alloc, av_frame_copy_props, av_frame_free, av_frame_get_buffer, av_packet_alloc,
-    av_packet_free, AV_PROFILE_H264_MAIN, av_q2d, avcodec_alloc_context3, avcodec_find_encoder,
+    av_packet_free, AV_PROFILE_H264_MAIN, avcodec_alloc_context3, avcodec_find_encoder,
     avcodec_open2, avcodec_receive_packet, avcodec_send_frame, AVERROR, AVRational,
     EAGAIN, SWS_BILINEAR, sws_getContext, sws_scale_frame,
 };
 use ffmpeg_sys_next::AVCodecID::AV_CODEC_ID_H264;
 use ffmpeg_sys_next::AVColorSpace::{AVCOL_SPC_BT709, AVCOL_SPC_RGB};
 use ffmpeg_sys_next::AVPictureType::AV_PICTURE_TYPE_NONE;
-use ffmpeg_sys_next::AVPixelFormat::{AV_PIX_FMT_RGB24, AV_PIX_FMT_RGBA, AV_PIX_FMT_YUV420P};
+use ffmpeg_sys_next::AVPixelFormat::{AV_PIX_FMT_RGBA, AV_PIX_FMT_YUV420P};
 use fontdue::layout::{CoordinateSystem, Layout, TextStyle};
 use libc::memcpy;
 use log::{error, info};
 use tokio::sync::mpsc::unbounded_channel;
-use usvg::{Font, Node};
 
 use crate::ingress::ConnectionInfo;
 use crate::pipeline::builder::PipelineBuilder;

@@ -183,7 +183,7 @@ impl HlsEgress {
             av_packet_copy_props(pkt_clone, pkt);
             self.packet_buffer.push_back(PipelinePayload::AvPacket(
                 pkt_clone,
-                AVPacketSource::Muxer(variant.clone()),
+                AVPacketSource::Muxer(*variant),
             ));
         }
 

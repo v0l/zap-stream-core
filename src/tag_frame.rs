@@ -2,8 +2,8 @@ use anyhow::Error;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::ipc::Rx;
-use crate::pipeline::{AVFrameSource, AVPacketSource, PipelinePayload, PipelineProcessor};
-use crate::variant::{VariantStream, VariantStreamType};
+use crate::pipeline::{PipelinePayload, PipelineProcessor};
+use crate::variant::VariantStream;
 
 pub struct TagFrame<TRecv> {
     variant: VariantStream,

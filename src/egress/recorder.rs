@@ -3,10 +3,8 @@ use std::{fs, ptr};
 
 use anyhow::Error;
 use ffmpeg_sys_next::{
-    av_dict_set, av_dump_format, av_guess_format, av_interleaved_write_frame, av_malloc,
-    av_mallocz, av_opt_set, av_packet_rescale_ts, av_strdup, av_write_trailer,
-    avformat_alloc_context, avformat_alloc_output_context2, avformat_free_context, avio_open,
-    avio_open2, AVDictionary, AVFormatContext, AVPacket, AVIO_FLAG_WRITE, AV_DICT_APPEND,
+    av_dump_format, av_interleaved_write_frame, av_opt_set, avformat_alloc_output_context2, avformat_free_context,
+    avio_open2, AVFormatContext, AVPacket, AVIO_FLAG_WRITE,
 };
 use ffmpeg_sys_next::{
     avcodec_parameters_from_context, avformat_write_header, AVFMT_GLOBALHEADER,
@@ -17,8 +15,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use uuid::Uuid;
 
 use crate::egress::{map_variants_to_streams, EgressConfig};
-use crate::encode::{dump_pkt_info, set_encoded_pkt_timing};
-use crate::pipeline::{AVPacketSource, PipelinePayload, PipelineProcessor};
+use crate::pipeline::{PipelinePayload, PipelineProcessor};
 use crate::utils::get_ffmpeg_error_msg;
 use crate::variant::VariantStreamType;
 

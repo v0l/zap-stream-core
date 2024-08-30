@@ -10,7 +10,6 @@ use ffmpeg_sys_next::{
 };
 use ffmpeg_sys_next::AVChannelOrder::AV_CHANNEL_ORDER_NATIVE;
 use ffmpeg_sys_next::AVCodecID::{AV_CODEC_ID_AAC, AV_CODEC_ID_H264};
-use ffmpeg_sys_next::AVColorRange::AVCOL_RANGE_MPEG;
 use ffmpeg_sys_next::AVColorSpace::AVCOL_SPC_BT709;
 use ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use serde::{Deserialize, Serialize};

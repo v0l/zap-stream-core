@@ -126,7 +126,7 @@ impl Clone for PipelinePayload {
                 PipelinePayload::AvFrame(new_frame, v.clone())
             },
             PipelinePayload::SourceInfo(i) => PipelinePayload::SourceInfo(i.clone()),
-            PipelinePayload::EncoderInfo(v, s) => PipelinePayload::EncoderInfo(v.clone(), *s),
+            PipelinePayload::EncoderInfo(v, s) => PipelinePayload::EncoderInfo(*v, *s),
             PipelinePayload::Flush => PipelinePayload::Flush,
         }
     }
