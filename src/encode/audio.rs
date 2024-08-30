@@ -4,13 +4,12 @@ use std::ptr;
 
 use anyhow::Error;
 use ffmpeg_sys_next::{
-    av_audio_fifo_alloc, av_audio_fifo_free, av_audio_fifo_read,
-    av_audio_fifo_size, av_audio_fifo_write,
-    av_channel_layout_copy, av_frame_alloc, av_frame_free, av_get_sample_fmt_name, av_packet_alloc, av_packet_free, av_samples_alloc_array_and_samples,
-    avcodec_alloc_context3, avcodec_free_context, avcodec_open2,
-    avcodec_receive_packet, avcodec_send_frame, swr_alloc_set_opts2,
-    swr_convert_frame, swr_free, swr_init, AVAudioFifo, AVCodec,
-    AVCodecContext, AVFrame, SwrContext, AVERROR,
+    av_audio_fifo_alloc, av_audio_fifo_free, av_audio_fifo_read, av_audio_fifo_size,
+    av_audio_fifo_write, av_channel_layout_copy, av_frame_alloc, av_frame_free,
+    av_get_sample_fmt_name, av_packet_alloc, av_packet_free, av_samples_alloc_array_and_samples,
+    AVAudioFifo, AVCodec, avcodec_alloc_context3, avcodec_free_context,
+    avcodec_open2, avcodec_receive_packet, avcodec_send_frame, AVCodecContext, AVERROR, AVFrame,
+    AVRational, swr_alloc_set_opts2, swr_convert_frame, swr_free, swr_init, SwrContext,
 };
 use libc::EAGAIN;
 use log::info;
@@ -31,7 +30,6 @@ pub struct AudioEncoder<T> {
     chan_in: T,
     chan_out: UnboundedSender<PipelinePayload>,
     pts: i64,
-    frame_pts: i64,
 }
 
 unsafe impl<T> Send for AudioEncoder<T> {}
@@ -66,7 +64,6 @@ where
             chan_in,
             chan_out,
             pts: 0,
-            frame_pts: 0,
         }
     }
 
@@ -150,10 +147,8 @@ where
             }
 
             // let downstream steps know about the encoder
-            self.chan_out.send(PipelinePayload::EncoderInfo(
-                VariantStream::Audio(self.variant.clone()),
-                ctx,
-            ))?;
+            self.chan_out
+                .send(PipelinePayload::EncoderInfo(self.variant.id(), ctx))?;
             self.ctx = ctx;
             self.codec = encoder;
         }
@@ -256,23 +251,14 @@ where
     unsafe fn process_frame(
         &mut self,
         frame: *mut AVFrame,
-        src: &AVFrameSource,
+        in_tb: &AVRational,
     ) -> Result<(), Error> {
-        let in_stream = match src {
-            AVFrameSource::Decoder(s) => *s,
-            AVFrameSource::Scaler(s) => *s,
-        };
-
         self.setup_encoder(frame)?;
         let frame = self.process_audio_frame(frame)?;
         if frame.is_none() {
             return Ok(());
         }
         let mut frame = frame.unwrap();
-
-        (*frame).pts = self.frame_pts;
-        self.frame_pts += (*frame).nb_samples as i64;
-
         let mut ret = avcodec_send_frame(self.ctx, frame);
         if ret < 0 && ret != AVERROR(EAGAIN) {
             av_frame_free(&mut frame);
@@ -290,10 +276,11 @@ where
                 }
                 return Err(Error::msg(get_ffmpeg_error_msg(ret)));
             }
-            set_encoded_pkt_timing(self.ctx, pkt, in_stream, &mut self.pts, &self.variant);
+
+            set_encoded_pkt_timing(self.ctx, pkt, in_tb, &mut self.pts, &self.variant);
             self.chan_out.send(PipelinePayload::AvPacket(
                 pkt,
-                AVPacketSource::Encoder(VariantStream::Audio(self.variant.clone())),
+                AVPacketSource::Encoder(self.variant.id()),
             ))?;
         }
 
@@ -310,15 +297,18 @@ where
         while let Ok(pkg) = self.chan_in.try_recv_next() {
             match pkg {
                 PipelinePayload::AvFrame(frm, ref src) => unsafe {
-                    let idx = match src {
-                        AVFrameSource::Decoder(s) => (**s).index,
+                    let in_stream = match src {
+                        AVFrameSource::Decoder(s) => *s,
                         _ => {
                             return Err(Error::msg(format!("Cannot process frame from: {:?}", src)))
                         }
                     };
-                    if self.variant.src_index == idx as usize {
-                        self.process_frame(frm, src)?;
+                    if self.variant.src_index == (*in_stream).index as usize {
+                        self.process_frame(frm, &(*in_stream).time_base)?;
                     }
+                },
+                PipelinePayload::Flush => unsafe {
+                    self.process_frame(ptr::null_mut(), &AVRational { num: 0, den: 1 })?;
                 },
                 _ => return Err(Error::msg("Payload not supported")),
             }

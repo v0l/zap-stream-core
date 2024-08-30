@@ -26,7 +26,7 @@ pub async fn listen(path: PathBuf, builder: PipelineBuilder) -> Result<(), anyho
             });
 
             if let Ok(mut stream) = tokio::fs::File::open(path).await {
-                let mut buf = [0u8; 1500];
+                let mut buf = [0u8; 4096];
                 loop {
                     if let Ok(r) = stream.read(&mut buf).await {
                         if r > 0 {

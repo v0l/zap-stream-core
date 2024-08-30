@@ -1,7 +1,6 @@
-
 use ffmpeg_sys_next::{
-    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY,
-    av_rescale_q, AVCodecContext, AVPacket, AVStream,
+    AV_NOPTS_VALUE, av_packet_rescale_ts, AV_PKT_FLAG_KEY, av_rescale_q, AVCodecContext, AVPacket,
+    AVRational, AVStream,
 };
 use ffmpeg_sys_next::AVMediaType::{AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_VIDEO};
 use log::info;
@@ -15,38 +14,29 @@ pub mod video;
 pub unsafe fn set_encoded_pkt_timing<TVar>(
     ctx: *mut AVCodecContext,
     pkt: *mut AVPacket,
-    in_stream: *mut AVStream,
+    in_tb: &AVRational,
     pts: &mut i64,
     var: &TVar,
 ) where
     TVar: VariantStreamType,
 {
-    let tb = (*ctx).time_base;
+    let out_tb = (*ctx).time_base;
 
     (*pkt).stream_index = var.dst_index() as libc::c_int;
-    (*pkt).time_base = var.time_base();
-    let duration = if (*pkt).duration == 0 {
-        let tb_sec = tb.den as i64 / tb.num as i64;
+    if (*pkt).duration == 0 {
+        let tb_sec = out_tb.den as i64 / out_tb.num as i64;
         let fps = (*ctx).framerate.num as i64 * (*ctx).framerate.den as i64;
-        tb_sec / if fps == 0 { 1 } else { fps }
-    } else {
-        av_rescale_q((*pkt).duration, (*in_stream).time_base, tb)
-    };
-
-    if (*ctx).codec_type == AVMEDIA_TYPE_VIDEO || (*ctx).codec_type == AVMEDIA_TYPE_AUDIO {
-        (*pkt).duration = duration;
+        (*pkt).duration = tb_sec / if fps == 0 { 1 } else { fps }
     }
 
+    av_packet_rescale_ts(pkt, *in_tb, out_tb);
+    (*pkt).time_base = var.time_base();
+    (*pkt).pos = -1;
     if (*pkt).pts == AV_NOPTS_VALUE {
         (*pkt).pts = *pts;
-        *pts += duration;
-    } else {
-        (*pkt).pts = av_rescale_q((*pkt).pts, (*in_stream).time_base, tb);
-        *pts = (*pkt).pts;
+        *pts += (*pkt).duration;
     }
-    if (*pkt).dts != AV_NOPTS_VALUE {
-        (*pkt).dts = av_rescale_q((*pkt).dts, (*in_stream).time_base, tb);
-    } else {
+    if (*pkt).dts == AV_NOPTS_VALUE {
         (*pkt).dts = (*pkt).pts;
     }
 }

@@ -246,10 +246,9 @@ impl VariantStreamType for VideoVariant {
         let key_frames = self.fps * self.keyframe_interval;
         (*ctx).gop_size = key_frames as libc::c_int;
         (*ctx).keyint_min = key_frames as libc::c_int;
-        (*ctx).max_b_frames = 1;
+        (*ctx).max_b_frames = 3;
         (*ctx).pix_fmt = AV_PIX_FMT_YUV420P;
         (*ctx).colorspace = AVCOL_SPC_BT709;
-        (*ctx).color_range = AVCOL_RANGE_MPEG;
         if (*codec).id == AV_CODEC_ID_H264 {
             av_opt_set(
                 (*ctx).priv_data,

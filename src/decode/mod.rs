@@ -107,8 +107,9 @@ impl Decoder {
                     }
                     return Err(Error::msg(format!("Failed to decode {}", ret)));
                 }
-                // reset picture type, not to confuse the encoder
-                (*frame).pict_type = AV_PICTURE_TYPE_NONE;
+
+                (*frame).pts = (*frame).best_effort_timestamp;
+                (*frame).pict_type = AV_PICTURE_TYPE_NONE; // encoder prints warnings
                 self.chan_out.send(PipelinePayload::AvFrame(
                     frame,
                     AVFrameSource::Decoder(stream),

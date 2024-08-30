@@ -3,14 +3,14 @@ use std::ptr;
 
 use anyhow::Error;
 use ffmpeg_sys_next::{
-    av_frame_alloc, av_frame_copy_props, AVFrame, SWS_BILINEAR,
-    sws_freeContext, sws_getContext, sws_scale_frame, SwsContext,
+    av_frame_alloc, av_frame_copy_props, AVFrame, SWS_BILINEAR, sws_freeContext, sws_getContext,
+    sws_scale_frame, SwsContext,
 };
 use tokio::sync::broadcast;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::pipeline::{AVFrameSource, PipelinePayload, PipelineProcessor};
-use crate::utils::{get_ffmpeg_error_msg};
+use crate::utils::get_ffmpeg_error_msg;
 use crate::variant::VideoVariant;
 
 pub struct Scaler {
@@ -105,6 +105,10 @@ impl PipelineProcessor for Scaler {
                         self.process_frame(frm, src)?;
                     }
                 },
+                PipelinePayload::Flush => {
+                    // pass flush to next step
+                    self.chan_out.send(PipelinePayload::Flush)?;
+                }
                 _ => return Err(Error::msg("Payload not supported payload")),
             }
         }

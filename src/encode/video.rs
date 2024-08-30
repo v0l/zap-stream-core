@@ -4,17 +4,17 @@ use std::ptr;
 use anyhow::Error;
 use ffmpeg_sys_next::{
     av_packet_alloc, av_packet_free, AVCodec, avcodec_alloc_context3, avcodec_find_encoder,
-    avcodec_open2, avcodec_receive_packet, avcodec_send_frame, AVCodecContext, AVERROR,
-    AVFrame,
+    avcodec_open2, avcodec_receive_packet, avcodec_send_frame, AVCodecContext, AVERROR, AVFrame,
+    AVRational,
 };
 use libc::EAGAIN;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::encode::set_encoded_pkt_timing;
+use crate::encode::{dump_pkt_info, set_encoded_pkt_timing};
 use crate::ipc::Rx;
 use crate::pipeline::{AVFrameSource, AVPacketSource, PipelinePayload, PipelineProcessor};
 use crate::utils::get_ffmpeg_error_msg;
-use crate::variant::{VariantStream, VariantStreamType, VideoVariant};
+use crate::variant::{VariantStreamType, VideoVariant};
 
 pub struct VideoEncoder<T> {
     variant: VideoVariant,
@@ -48,7 +48,7 @@ where
         }
     }
 
-    unsafe fn setup_encoder(&mut self, frame: *mut AVFrame) -> Result<(), Error> {
+    unsafe fn setup_encoder(&mut self) -> Result<(), Error> {
         if self.ctx.is_null() {
             let codec = self.variant.codec;
             let encoder = avcodec_find_encoder(transmute(codec as i32));
@@ -69,10 +69,8 @@ where
             }
 
             // let downstream steps know about the encoder
-            self.chan_out.send(PipelinePayload::EncoderInfo(
-                VariantStream::Video(self.variant.clone()),
-                ctx,
-            ))?;
+            self.chan_out
+                .send(PipelinePayload::EncoderInfo(self.variant.id(), ctx))?;
 
             self.ctx = ctx;
             self.codec = encoder;
@@ -83,15 +81,8 @@ where
     unsafe fn process_frame(
         &mut self,
         frame: *mut AVFrame,
-        src: &AVFrameSource,
+        in_tb: &AVRational,
     ) -> Result<(), Error> {
-        let in_stream = match src {
-            AVFrameSource::Decoder(s) => *s,
-            AVFrameSource::Scaler(s) => *s,
-        };
-
-        self.setup_encoder(frame)?;
-
         let mut ret = avcodec_send_frame(self.ctx, frame);
         if ret < 0 && ret != AVERROR(EAGAIN) {
             return Err(Error::msg(get_ffmpeg_error_msg(ret)));
@@ -108,11 +99,11 @@ where
                 return Err(Error::msg(get_ffmpeg_error_msg(ret)));
             }
 
-            set_encoded_pkt_timing(self.ctx, pkt, in_stream, &mut self.pts, &self.variant);
-            assert_ne!((*pkt).data, ptr::null_mut());
+            set_encoded_pkt_timing(self.ctx, pkt, in_tb, &mut self.pts, &self.variant);
+            //dump_pkt_info(pkt);
             self.chan_out.send(PipelinePayload::AvPacket(
                 pkt,
-                AVPacketSource::Encoder(VariantStream::Video(self.variant.clone())),
+                AVPacketSource::Encoder(self.variant.id()),
             ))?;
         }
 
@@ -125,18 +116,24 @@ where
     TRecv: Rx<PipelinePayload>,
 {
     fn process(&mut self) -> Result<(), Error> {
+        unsafe {
+            self.setup_encoder()?;
+        }
         while let Ok(pkg) = self.chan_in.try_recv_next() {
             match pkg {
                 PipelinePayload::AvFrame(frm, ref src) => unsafe {
-                    let idx = match src {
-                        AVFrameSource::Decoder(s) => (**s).index,
+                    let in_stream = match src {
+                        AVFrameSource::Decoder(s) => *s,
                         _ => {
                             return Err(Error::msg(format!("Cannot process frame from: {:?}", src)))
                         }
                     };
-                    if self.variant.src_index == idx as usize {
-                        self.process_frame(frm, src)?;
+                    if self.variant.src_index == (*in_stream).index as usize {
+                        self.process_frame(frm, &(*in_stream).time_base)?;
                     }
+                },
+                PipelinePayload::Flush => unsafe {
+                    self.process_frame(ptr::null_mut(), &AVRational { num: 0, den: 1 })?;
                 },
                 _ => return Err(Error::msg("Payload not supported")),
             }

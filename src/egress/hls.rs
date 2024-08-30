@@ -3,10 +3,9 @@ use std::ptr;
 
 use anyhow::Error;
 use ffmpeg_sys_next::{
-    av_dump_format,
-    av_interleaved_write_frame, av_opt_set, av_packet_clone, av_packet_copy_props,
-    avcodec_parameters_from_context, avformat_alloc_output_context2,
-    avformat_free_context, avformat_write_header, AVFormatContext, AVPacket,
+    av_dump_format, av_interleaved_write_frame, av_opt_set, av_packet_clone, av_packet_copy_props,
+    avcodec_parameters_from_context, avformat_alloc_output_context2, avformat_free_context,
+    avformat_write_header, AVFormatContext, AVPacket,
 };
 use itertools::Itertools;
 use log::info;
@@ -23,7 +22,7 @@ pub struct HlsEgress {
     config: EgressConfig,
     ctx: *mut AVFormatContext,
     chan_in: UnboundedReceiver<PipelinePayload>,
-    stream_init: HashSet<usize>,
+    stream_init: HashSet<Uuid>,
     init: bool,
     packet_buffer: VecDeque<PipelinePayload>,
 }
@@ -152,7 +151,12 @@ impl HlsEgress {
         src: &AVPacketSource,
     ) -> Result<(), Error> {
         let variant = match src {
-            AVPacketSource::Encoder(v) => v,
+            AVPacketSource::Encoder(v) => self
+                .config
+                .variants
+                .iter()
+                .find(|x| x.id() == *v)
+                .ok_or(Error::msg("Variant does not exist"))?,
             _ => return Err(Error::msg(format!("Cannot mux packet from {:?}", src))),
         };
         (*pkt).stream_index = variant.dst_index() as libc::c_int;
@@ -220,10 +224,16 @@ impl PipelineProcessor for HlsEgress {
                     if self.ctx.is_null() {
                         self.setup_muxer()?;
                     }
-                    if !self.stream_init.contains(&var.dst_index()) {
-                        let out_stream = *(*self.ctx).streams.add(var.dst_index());
+                    if !self.stream_init.contains(var) {
+                        let variant = self
+                            .config
+                            .variants
+                            .iter()
+                            .find(|x| x.id() == *var)
+                            .ok_or(Error::msg("Variant does not exist"))?;
+                        let out_stream = *(*self.ctx).streams.add(variant.dst_index());
                         avcodec_parameters_from_context((*out_stream).codecpar, ctx);
-                        self.stream_init.insert(var.dst_index());
+                        self.stream_init.insert(*var);
                     }
                 },
                 _ => return Err(Error::msg(format!("Payload not supported: {:?}", pkg))),

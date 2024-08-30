@@ -68,7 +68,6 @@ unsafe extern "C" fn read_data(
             Err(e) => match e {
                 TryRecvError::Empty => {}
                 TryRecvError::Disconnected => {
-                    warn!("EOF");
                     return AVERROR_EOF;
                 }
             },
@@ -168,17 +167,15 @@ impl Demuxer {
         let pkt: *mut AVPacket = av_packet_alloc();
         let ret = av_read_frame(self.ctx, pkt);
         if ret == AVERROR_EOF {
-            return Err(Error::msg("Stream EOF"));
+            self.chan_out.send(PipelinePayload::Flush)?;
+            return Ok(());
         }
         if ret < 0 {
             let msg = get_ffmpeg_error_msg(ret);
             return Err(Error::msg(msg));
         }
         let stream = *(*self.ctx).streams.add((*pkt).stream_index as usize);
-        let pkg = PipelinePayload::AvPacket(
-            pkt,
-            AVPacketSource::Demuxer(stream),
-        );
+        let pkg = PipelinePayload::AvPacket(pkt, AVPacketSource::Demuxer(stream));
         self.chan_out.send(pkg)?;
         Ok(())
     }

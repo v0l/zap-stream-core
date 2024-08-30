@@ -6,6 +6,7 @@ use ffmpeg_sys_next::{
     av_packet_free, AVCodecContext, AVFrame, AVPacket, AVStream,
 };
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::demux::info::DemuxStreamInfo;
 use crate::egress::EgressConfig;
@@ -70,9 +71,9 @@ pub enum AVPacketSource {
     /// AVPacket from demuxer
     Demuxer(*mut AVStream),
     /// AVPacket from an encoder
-    Encoder(VariantStream),
+    Encoder(Uuid),
     /// AVPacket from muxer
-    Muxer(VariantStream),
+    Muxer(Uuid),
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -81,6 +82,8 @@ pub enum AVFrameSource {
     Decoder(*mut AVStream),
     /// AVPacket from frame scaler step
     Scaler(*mut AVStream),
+    /// Flush frame (empty)
+    Flush,
 }
 
 #[derive(Debug, PartialEq)]
@@ -96,7 +99,9 @@ pub enum PipelinePayload {
     /// Information about the input stream
     SourceInfo(DemuxStreamInfo),
     /// Information about an encoder in this pipeline
-    EncoderInfo(VariantStream, *const AVCodecContext),
+    EncoderInfo(Uuid, *const AVCodecContext),
+    /// Flush pipeline
+    Flush,
 }
 
 unsafe impl Send for PipelinePayload {}
@@ -122,6 +127,7 @@ impl Clone for PipelinePayload {
             },
             PipelinePayload::SourceInfo(i) => PipelinePayload::SourceInfo(i.clone()),
             PipelinePayload::EncoderInfo(v, s) => PipelinePayload::EncoderInfo(v.clone(), *s),
+            PipelinePayload::Flush => PipelinePayload::Flush,
         }
     }
 }
