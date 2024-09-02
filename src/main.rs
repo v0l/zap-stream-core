@@ -1,5 +1,6 @@
 use std::ffi::CStr;
 
+use clap::Parser;
 use config::Config;
 use log::{error, info};
 use url::Url;
@@ -24,10 +25,23 @@ mod utils;
 mod variant;
 mod webhook;
 
+#[derive(Parser, Debug)]
+struct Args {
+    /// Add file input at startup
+    #[arg(long)]
+    file: Option<String>,
+
+    /// Add input test pattern at startup
+    #[arg(long)]
+    test_pattern: bool,
+}
+
 /// Test:  ffmpeg -re -f lavfi -i testsrc -g 2 -r 30 -pix_fmt yuv420p -s 1280x720 -c:v h264 -b:v 2000k -f mpegts srt://localhost:3333
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     pretty_env_logger::init();
+
+    let args = Args::parse();
 
     unsafe {
         //ffmpeg_sys_next::av_log_set_level(ffmpeg_sys_next::AV_LOG_DEBUG);
@@ -64,11 +78,16 @@ async fn main() -> anyhow::Result<()> {
         "0.0.0.0:8080".to_owned(),
         settings.clone(),
     )));
-    /*listeners.push(tokio::spawn(ingress::file::listen(
-        "/home/kieran/waypoint_flight.mp4".parse().unwrap(),
-        builder.clone(),
-    )));*/
-    listeners.push(tokio::spawn(ingress::test::listen(builder.clone())));
+
+    if let Some(p) = args.file {
+        listeners.push(tokio::spawn(ingress::file::listen(
+            p.parse().unwrap(),
+            builder.clone(),
+        )));
+    }
+    if args.test_pattern {
+        listeners.push(tokio::spawn(ingress::test::listen(builder.clone())));
+    }
 
     for handle in listeners {
         if let Err(e) = handle.await {

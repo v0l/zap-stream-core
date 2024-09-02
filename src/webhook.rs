@@ -1,3 +1,4 @@
+use ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use uuid::Uuid;
 
 use crate::demux::info::{DemuxStreamInfo, StreamChannelType};
@@ -40,6 +41,7 @@ impl Webhook {
                 profile: 100,
                 level: 51,
                 keyframe_interval: 2,
+                pixel_format: AV_PIX_FMT_YUV420P as u32
             }));
         }
 

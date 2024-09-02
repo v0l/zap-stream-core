@@ -1,30 +1,32 @@
+use std::ffi::CStr;
 use std::mem::transmute;
 use std::ptr;
 
 use anyhow::Error;
 use ffmpeg_sys_next::{
-    av_frame_alloc, av_frame_copy_props, AVFrame, SWS_BILINEAR, sws_freeContext, sws_getContext,
-    sws_scale_frame, SwsContext,
+    av_frame_alloc, av_frame_copy_props, av_get_pix_fmt_name, AVFrame,
+    SWS_BILINEAR, sws_freeContext, sws_getContext, sws_scale_frame, SwsContext,
 };
-use tokio::sync::broadcast;
+use log::info;
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::ipc::Rx;
 use crate::pipeline::{AVFrameSource, PipelinePayload, PipelineProcessor};
 use crate::utils::get_ffmpeg_error_msg;
 use crate::variant::VideoVariant;
 
-pub struct Scaler {
+pub struct Scaler<T> {
     variant: VideoVariant,
     ctx: *mut SwsContext,
-    chan_in: broadcast::Receiver<PipelinePayload>,
+    chan_in: T,
     chan_out: UnboundedSender<PipelinePayload>,
 }
 
-unsafe impl Send for Scaler {}
+unsafe impl<TRecv> Send for Scaler<TRecv> {}
 
-unsafe impl Sync for Scaler {}
+unsafe impl<TRecv> Sync for Scaler<TRecv> {}
 
-impl Drop for Scaler {
+impl<TRecv> Drop for Scaler<TRecv> {
     fn drop(&mut self) {
         unsafe {
             sws_freeContext(self.ctx);
@@ -33,9 +35,12 @@ impl Drop for Scaler {
     }
 }
 
-impl Scaler {
+impl<TRecv> Scaler<TRecv>
+where
+    TRecv: Rx<PipelinePayload>,
+{
     pub fn new(
-        chan_in: broadcast::Receiver<PipelinePayload>,
+        chan_in: TRecv,
         chan_out: UnboundedSender<PipelinePayload>,
         variant: VideoVariant,
     ) -> Self {
@@ -52,8 +57,6 @@ impl Scaler {
         frame: *mut AVFrame,
         src: &AVFrameSource,
     ) -> Result<(), Error> {
-        let dst_fmt = transmute((*frame).format);
-
         if self.ctx.is_null() {
             let ctx = sws_getContext(
                 (*frame).width,
@@ -61,7 +64,7 @@ impl Scaler {
                 transmute((*frame).format),
                 self.variant.width as libc::c_int,
                 self.variant.height as libc::c_int,
-                dst_fmt,
+                transmute(self.variant.pixel_format),
                 SWS_BILINEAR,
                 ptr::null_mut(),
                 ptr::null_mut(),
@@ -70,6 +73,19 @@ impl Scaler {
             if ctx.is_null() {
                 return Err(Error::msg("Failed to create scalar context"));
             }
+            info!(
+                "Scalar config: {}x{}@{} => {}x{}@{}",
+                (*frame).width,
+                (*frame).height,
+                CStr::from_ptr(av_get_pix_fmt_name(transmute((*frame).format)))
+                    .to_str()
+                    .unwrap(),
+                self.variant.width,
+                self.variant.height,
+                CStr::from_ptr(av_get_pix_fmt_name(transmute(self.variant.pixel_format)))
+                    .to_str()
+                    .unwrap()
+            );
             self.ctx = ctx;
         }
 
@@ -90,18 +106,22 @@ impl Scaler {
     }
 }
 
-impl PipelineProcessor for Scaler {
+impl<TRecv> PipelineProcessor for Scaler<TRecv>
+where
+    TRecv: Rx<PipelinePayload>,
+{
     fn process(&mut self) -> Result<(), Error> {
-        while let Ok(pkg) = self.chan_in.try_recv() {
+        while let Ok(pkg) = self.chan_in.try_recv_next() {
             match pkg {
                 PipelinePayload::AvFrame(frm, ref src) => unsafe {
                     let idx = match src {
-                        AVFrameSource::Decoder(s) => (**s).index,
+                        AVFrameSource::Decoder(s) => (**s).index as usize,
+                        AVFrameSource::None(s) => *s,
                         _ => {
                             return Err(Error::msg(format!("Cannot process frame from: {:?}", src)))
                         }
                     };
-                    if self.variant.src_index == idx as usize {
+                    if self.variant.src_index == idx {
                         self.process_frame(frm, src)?;
                     }
                 },

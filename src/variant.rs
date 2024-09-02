@@ -125,6 +125,9 @@ pub struct VideoVariant {
 
     /// Keyframe interval in seconds
     pub keyframe_interval: u16,
+
+    /// Pixel Format
+    pub pixel_format: u32,
 }
 
 impl Display for VideoVariant {

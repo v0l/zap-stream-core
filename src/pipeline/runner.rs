@@ -1,4 +1,4 @@
-use crate::tag_frame::TagFrame;
+use std::ops::Sub;
 use std::time::Instant;
 
 use anyhow::Error;
@@ -16,6 +16,7 @@ use crate::encode::audio::AudioEncoder;
 use crate::encode::video::VideoEncoder;
 use crate::pipeline::{EgressType, PipelineConfig, PipelinePayload, PipelineProcessor};
 use crate::scale::Scaler;
+use crate::tag_frame::TagFrame;
 use crate::variant::VariantStream;
 use crate::webhook::Webhook;
 
@@ -60,30 +61,11 @@ impl PipelineRunner {
     }
 
     pub fn run(&mut self) -> Result<(), Error> {
-        /*if let Some(info) = &self.stream_info {
-            if let Some(v_stream) = info
-                .channels
-                .iter()
-                .find(|s| s.channel_type == StreamChannelType::Video)
-            {
-                let duration = self.frame_no as f64 / v_stream.fps as f64;
-                let target_time = self.started.add(Duration::from_secs_f64(duration));
-                let now = Instant::now();
-                if now < target_time {
-                    let poll_sleep = target_time - now;
-                    std::thread::sleep(poll_sleep);
-                }
-            }
-        }*/
         if let Some(cfg) = self.demuxer.process()? {
             self.configure_pipeline(cfg)?;
         }
         let frames = self.decoder.process()?;
-        if let Some(v) = self.frame_no.checked_add(frames as u64) {
-            self.frame_no = v;
-        } else {
-            panic!("Frame number overflowed, maybe you need a bigger number!");
-        }
+        self.frame_no += frames as u64;
 
         // (scalar)-encoder chains
         for sw in &mut self.encoders {
@@ -94,6 +76,13 @@ impl PipelineRunner {
         // egress outputs
         for eg in &mut self.egress {
             eg.process()?;
+        }
+
+        let elapsed = Instant::now().sub(self.started).as_secs_f32();
+        if elapsed >= 2f32 {
+            info!("Average fps: {:.2}", self.frame_no as f32 / elapsed);
+            self.started = Instant::now();
+            self.frame_no = 0;
         }
         Ok(())
     }

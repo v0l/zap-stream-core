@@ -2,14 +2,12 @@ use std::collections::HashMap;
 use std::ptr;
 
 use anyhow::Error;
-use ffmpeg_sys_next::{av_frame_alloc, AVCodec, avcodec_alloc_context3, avcodec_find_decoder, avcodec_free_context, avcodec_open2, avcodec_parameters_copy, avcodec_parameters_to_context, avcodec_receive_frame, avcodec_send_packet, AVCodecContext, AVERROR, AVERROR_EOF, AVPacket};
+use ffmpeg_sys_next::{av_frame_alloc, AVCodec, avcodec_alloc_context3, avcodec_find_decoder, avcodec_free_context, avcodec_open2, avcodec_parameters_to_context, avcodec_receive_frame, avcodec_send_packet, AVCodecContext, AVERROR, AVERROR_EOF, AVPacket};
 use ffmpeg_sys_next::AVPictureType::AV_PICTURE_TYPE_NONE;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use crate::encode::set_encoded_pkt_timing;
 use crate::pipeline::{AVFrameSource, AVPacketSource, PipelinePayload};
-use crate::variant::{VariantStream, VideoVariant};
 
 struct CodecContext {
     pub context: *mut AVCodecContext,

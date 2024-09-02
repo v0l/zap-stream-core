@@ -8,7 +8,6 @@ use libc::EAGAIN;
 use log::info;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::encode::set_encoded_pkt_timing;
 use crate::ipc::Rx;
 use crate::pipeline::{AVFrameSource, AVPacketSource, PipelinePayload, PipelineProcessor};
 use crate::utils::get_ffmpeg_error_msg;

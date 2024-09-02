@@ -2,10 +2,13 @@ use std::mem::transmute;
 use std::ptr;
 
 use anyhow::Error;
-use ffmpeg_sys_next::{av_packet_alloc, av_packet_free, av_packet_rescale_ts, AVCodec, avcodec_alloc_context3, avcodec_find_encoder, avcodec_open2, avcodec_receive_packet, avcodec_send_frame, AVCodecContext, AVERROR, AVFrame, AVRational};
+use ffmpeg_sys_next::{
+    av_packet_alloc, av_packet_free, av_packet_rescale_ts, AVCodec,
+    avcodec_alloc_context3, avcodec_find_encoder, avcodec_open2, avcodec_receive_packet, avcodec_send_frame,
+    AVCodecContext, AVERROR, AVFrame, AVRational,
+};
 use libc::EAGAIN;
 use tokio::sync::mpsc::UnboundedSender;
-use crate::encode::dump_pkt_info;
 
 use crate::ipc::Rx;
 use crate::pipeline::{AVFrameSource, AVPacketSource, PipelinePayload, PipelineProcessor};
@@ -122,14 +125,20 @@ where
         while let Ok(pkg) = self.chan_in.try_recv_next() {
             match pkg {
                 PipelinePayload::AvFrame(frm, ref src) => unsafe {
-                    let in_stream = match src {
-                        AVFrameSource::Decoder(s) => *s,
+                    let (in_stream, idx) = match src {
+                        AVFrameSource::Decoder(s) => (*s, (*(*s)).index as usize),
+                        AVFrameSource::None(s) => (ptr::null_mut(), *s),
                         _ => {
                             return Err(Error::msg(format!("Cannot process frame from: {:?}", src)))
                         }
                     };
-                    if self.variant.src_index == (*in_stream).index as usize {
-                        self.process_frame(frm, &(*in_stream).time_base)?;
+                    if self.variant.src_index == idx {
+                        let tb = if in_stream.is_null() {
+                            self.variant.time_base()
+                        } else {
+                            (*in_stream).time_base
+                        };
+                        self.process_frame(frm, &tb)?;
                     }
                 },
                 PipelinePayload::Flush => unsafe {

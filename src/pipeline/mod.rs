@@ -84,6 +84,8 @@ pub enum AVFrameSource {
     Scaler(*mut AVStream),
     /// Flush frame (empty)
     Flush,
+    /// No context provided, dst_stream manually matched
+    None(usize),
 }
 
 #[derive(Debug, PartialEq)]

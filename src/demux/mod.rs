@@ -10,7 +10,6 @@ use tokio::sync::mpsc::error::TryRecvError;
 use tokio::time::Instant;
 
 use crate::demux::info::{DemuxStreamInfo, StreamChannelType, StreamInfoChannel};
-use crate::encode::set_encoded_pkt_timing;
 use crate::pipeline::{AVPacketSource, PipelinePayload};
 use crate::utils::get_ffmpeg_error_msg;
 
