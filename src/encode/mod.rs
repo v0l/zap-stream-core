@@ -1,10 +1,10 @@
-use ffmpeg_sys_next::{
-    AV_NOPTS_VALUE, av_packet_rescale_ts, AV_PKT_FLAG_KEY, AVCodecContext, AVPacket, AVRational,
-};
 use ffmpeg_sys_next::AVMediaType::AVMEDIA_TYPE_VIDEO;
+use ffmpeg_sys_next::{
+    av_packet_rescale_ts, AVCodecContext, AVPacket, AVRational, AV_NOPTS_VALUE, AV_PKT_FLAG_KEY,
+};
 use log::info;
 
-use crate::variant::VariantStreamType;
+use crate::variant::{EncodedStream, StreamMapping};
 
 pub mod audio;
 pub mod video;
@@ -17,7 +17,7 @@ pub unsafe fn set_encoded_pkt_timing<TVar>(
     pts: &mut i64,
     var: &TVar,
 ) where
-    TVar: VariantStreamType,
+    TVar: EncodedStream + StreamMapping,
 {
     let out_tb = (*ctx).time_base;
 

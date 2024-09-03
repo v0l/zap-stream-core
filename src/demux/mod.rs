@@ -3,32 +3,24 @@ use std::time::Duration;
 
 use anyhow::Error;
 use bytes::{BufMut, Bytes};
-use ffmpeg_sys_next::*;
 use ffmpeg_sys_next::AVMediaType::{AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_VIDEO};
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use ffmpeg_sys_next::*;
 use tokio::sync::mpsc::error::TryRecvError;
+use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time::Instant;
 
-use crate::demux::info::{DemuxStreamInfo, StreamChannelType, StreamInfoChannel};
+use crate::demux::info::{DemuxerInfo, StreamChannelType, StreamInfoChannel};
 use crate::pipeline::{AVPacketSource, PipelinePayload};
+use crate::return_ffmpeg_error;
 use crate::utils::get_ffmpeg_error_msg;
 
 pub mod info;
 
-///
-/// Demuxer supports demuxing and decoding
-///
-/// | Type   | Value                         |
-/// | ------ | ----------------------------- |
-/// | Video  | H264, H265, VP8, VP9, AV1     |
-/// | Audio  | AAC, Opus                     |
-/// | Format | MPEG-TS                       |
-///
 pub(crate) struct Demuxer {
     ctx: *mut AVFormatContext,
-    chan_out: UnboundedSender<PipelinePayload>,
     started: Instant,
     state: DemuxerBuffer,
+    info: Option<DemuxerInfo>,
 }
 
 unsafe impl Send for Demuxer {}
@@ -75,27 +67,24 @@ unsafe extern "C" fn read_data(
 }
 
 impl Demuxer {
-    pub fn new(
-        chan_in: UnboundedReceiver<Bytes>,
-        chan_out: UnboundedSender<PipelinePayload>,
-    ) -> Self {
+    pub fn new(chan_in: UnboundedReceiver<Bytes>) -> Self {
         unsafe {
             let ps = avformat_alloc_context();
             (*ps).flags |= AVFMT_FLAG_CUSTOM_IO;
 
             Self {
                 ctx: ps,
-                chan_out,
                 state: DemuxerBuffer {
                     chan_in,
                     buffer: bytes::BytesMut::new(),
                 },
+                info: None,
                 started: Instant::now(),
             }
         }
     }
 
-    unsafe fn probe_input(&mut self) -> Result<DemuxStreamInfo, Error> {
+    unsafe fn probe_input(&mut self) -> Result<DemuxerInfo, Error> {
         const BUFFER_SIZE: usize = 4096;
         let buf_ptr = ptr::from_mut(&mut self.state) as *mut libc::c_void;
         let pb = avio_alloc_context(
@@ -115,10 +104,8 @@ impl Demuxer {
             ptr::null_mut(),
             ptr::null_mut(),
         );
-        if ret < 0 {
-            let msg = get_ffmpeg_error_msg(ret);
-            return Err(Error::msg(msg));
-        }
+        return_ffmpeg_error!(ret);
+
         if avformat_find_stream_info(self.ctx, ptr::null_mut()) < 0 {
             return Err(Error::msg("Could not find stream info"));
         }
@@ -135,6 +122,7 @@ impl Demuxer {
                 width: (*(*video_stream).codecpar).width as usize,
                 height: (*(*video_stream).codecpar).height as usize,
                 fps: av_q2d((*video_stream).avg_frame_rate) as f32,
+                format: (*(*video_stream).codecpar).format as usize
             });
         }
 
@@ -153,21 +141,22 @@ impl Demuxer {
                 width: (*(*audio_stream).codecpar).width as usize,
                 height: (*(*audio_stream).codecpar).height as usize,
                 fps: 0.0,
+                format: (*(*audio_stream).codecpar).format as usize
             });
         }
 
-        let info = DemuxStreamInfo {
+        let info = DemuxerInfo {
             channels: channel_infos,
+            ctx: self.ctx,
         };
         Ok(info)
     }
 
-    unsafe fn get_packet(&mut self) -> Result<(), Error> {
+    pub unsafe fn get_packet(&mut self) -> Result<PipelinePayload, Error> {
         let pkt: *mut AVPacket = av_packet_alloc();
         let ret = av_read_frame(self.ctx, pkt);
         if ret == AVERROR_EOF {
-            self.chan_out.send(PipelinePayload::Flush)?;
-            return Ok(());
+            return Ok(PipelinePayload::Flush);
         }
         if ret < 0 {
             let msg = get_ffmpeg_error_msg(ret);
@@ -175,21 +164,22 @@ impl Demuxer {
         }
         let stream = *(*self.ctx).streams.add((*pkt).stream_index as usize);
         let pkg = PipelinePayload::AvPacket(pkt, AVPacketSource::Demuxer(stream));
-        self.chan_out.send(pkg)?;
-        Ok(())
+        Ok(pkg)
     }
 
-    pub fn process(&mut self) -> Result<Option<DemuxStreamInfo>, Error> {
-        unsafe {
-            let score = (*self.ctx).probe_score;
-            if score < 30 {
+    /// Try probe input stream
+    pub fn try_probe(&mut self) -> Result<Option<DemuxerInfo>, Error> {
+        match &self.info {
+            None => {
                 if (Instant::now() - self.started) > Duration::from_millis(500) {
-                    return Ok(Some(self.probe_input()?));
+                    let inf = unsafe { self.probe_input()? };
+                    self.info = Some(inf.clone());
+                    Ok(Some(inf))
+                } else {
+                    Ok(None)
                 }
-                return Ok(None);
             }
-            self.get_packet()?;
-            Ok(None)
+            Some(i) => Ok(Some(i.clone())),
         }
     }
 }

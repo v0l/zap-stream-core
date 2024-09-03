@@ -20,7 +20,6 @@ mod ipc;
 mod pipeline;
 mod scale;
 mod settings;
-mod tag_frame;
 mod utils;
 mod variant;
 mod webhook;
@@ -81,7 +80,7 @@ async fn main() -> anyhow::Result<()> {
 
     if let Some(p) = args.file {
         listeners.push(tokio::spawn(ingress::file::listen(
-            p.parse().unwrap(),
+            p.parse()?,
             builder.clone(),
         )));
     }
@@ -96,4 +95,13 @@ async fn main() -> anyhow::Result<()> {
     }
     info!("Server closed");
     Ok(())
+}
+
+#[macro_export]
+macro_rules! return_ffmpeg_error {
+    ($x:expr) => {
+        if $x < 0 {
+                return Err(Error::msg(get_ffmpeg_error_msg($x)));
+            }
+    };
 }

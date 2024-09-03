@@ -19,9 +19,9 @@ impl PipelineBuilder {
         info: ConnectionInfo,
         recv: UnboundedReceiver<bytes::Bytes>,
     ) -> Result<PipelineRunner, anyhow::Error> {
-        self.webhook.start(info).await?;
         Ok(PipelineRunner::new(
             Default::default(),
+            info,
             self.webhook.clone(),
             recv,
         ))

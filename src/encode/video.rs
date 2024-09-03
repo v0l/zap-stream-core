@@ -3,85 +3,76 @@ use std::ptr;
 
 use anyhow::Error;
 use ffmpeg_sys_next::{
-    av_packet_alloc, av_packet_free, av_packet_rescale_ts, AVCodec,
-    avcodec_alloc_context3, avcodec_find_encoder, avcodec_open2, avcodec_receive_packet, avcodec_send_frame,
-    AVCodecContext, AVERROR, AVFrame, AVRational,
+    av_packet_alloc, av_packet_free, av_packet_rescale_ts, avcodec_alloc_context3,
+    avcodec_find_encoder, avcodec_open2, avcodec_receive_packet, avcodec_send_frame, AVCodec,
+    AVCodecContext, AVFrame, AVRational, AVERROR,
 };
 use libc::EAGAIN;
-use tokio::sync::mpsc::UnboundedSender;
 
-use crate::ipc::Rx;
 use crate::pipeline::{AVFrameSource, AVPacketSource, PipelinePayload, PipelineProcessor};
+use crate::return_ffmpeg_error;
 use crate::utils::get_ffmpeg_error_msg;
-use crate::variant::{VariantStreamType, VideoVariant};
+use crate::variant::video::VideoVariant;
+use crate::variant::{EncodedStream, StreamMapping};
 
-pub struct VideoEncoder<T> {
+pub struct VideoEncoder {
     variant: VideoVariant,
     ctx: *mut AVCodecContext,
     codec: *const AVCodec,
-    chan_in: T,
-    chan_out: UnboundedSender<PipelinePayload>,
     pts: i64,
 }
 
-unsafe impl<T> Send for VideoEncoder<T> {}
+unsafe impl Send for VideoEncoder {}
 
-unsafe impl<T> Sync for VideoEncoder<T> {}
+unsafe impl Sync for VideoEncoder {}
 
-impl<TRecv> VideoEncoder<TRecv>
-where
-    TRecv: Rx<PipelinePayload>,
-{
-    pub fn new(
-        chan_in: TRecv,
-        chan_out: UnboundedSender<PipelinePayload>,
-        variant: VideoVariant,
-    ) -> Self {
+impl VideoEncoder {
+    pub fn new(variant: VideoVariant) -> Self {
         Self {
             ctx: ptr::null_mut(),
             codec: ptr::null(),
             variant,
-            chan_in,
-            chan_out,
             pts: 0,
         }
     }
 
-    unsafe fn setup_encoder(&mut self) -> Result<(), Error> {
-        if self.ctx.is_null() {
-            let codec = self.variant.codec;
-            let encoder = avcodec_find_encoder(transmute(codec as i32));
-            if encoder.is_null() {
-                return Err(Error::msg("Encoder not found"));
-            }
-
-            let ctx = avcodec_alloc_context3(encoder);
-            if ctx.is_null() {
-                return Err(Error::msg("Failed to allocate encoder context"));
-            }
-
-            self.variant.to_codec_context(ctx);
-
-            let ret = avcodec_open2(ctx, encoder, ptr::null_mut());
-            if ret < 0 {
-                return Err(Error::msg(get_ffmpeg_error_msg(ret)));
-            }
-
-            // let downstream steps know about the encoder
-            self.chan_out
-                .send(PipelinePayload::EncoderInfo(self.variant.id(), ctx))?;
-
-            self.ctx = ctx;
-            self.codec = encoder;
+    unsafe fn setup_encoder(&mut self) -> Result<Option<PipelinePayload>, Error> {
+        if !self.ctx.is_null() {
+            return Ok(None);
         }
-        Ok(())
+
+        let codec = self.variant.codec;
+        let encoder = avcodec_find_encoder(transmute(codec as i32));
+        if encoder.is_null() {
+            return Err(Error::msg("Encoder not found"));
+        }
+
+        let ctx = avcodec_alloc_context3(encoder);
+        if ctx.is_null() {
+            return Err(Error::msg("Failed to allocate encoder context"));
+        }
+
+        self.variant.to_codec_context(ctx);
+
+        let ret = avcodec_open2(ctx, encoder, ptr::null_mut());
+        return_ffmpeg_error!(ret);
+
+        self.ctx = ctx;
+        self.codec = encoder;
+        Ok(Some(PipelinePayload::EncoderInfo(self.variant.id(), ctx)))
     }
 
     unsafe fn process_frame(
         &mut self,
         frame: *mut AVFrame,
         in_tb: &AVRational,
-    ) -> Result<(), Error> {
+    ) -> Result<Vec<PipelinePayload>, Error> {
+        let mut pkgs = Vec::new();
+
+        if let Some(ei) = self.setup_encoder()? {
+            pkgs.push(ei);
+        }
+
         (*frame).pts = self.pts;
         self.pts += (*frame).duration;
 
@@ -96,7 +87,7 @@ where
             if ret != 0 {
                 av_packet_free(&mut pkt);
                 if ret == AVERROR(EAGAIN) {
-                    return Ok(());
+                    break;
                 }
                 return Err(Error::msg(get_ffmpeg_error_msg(ret)));
             }
@@ -104,49 +95,40 @@ where
             //set_encoded_pkt_timing(self.ctx, pkt, in_tb, &mut self.pts, &self.variant);
             av_packet_rescale_ts(pkt, *in_tb, self.variant.time_base());
             //dump_pkt_info(pkt);
-            self.chan_out.send(PipelinePayload::AvPacket(
+            pkgs.push(PipelinePayload::AvPacket(
                 pkt,
                 AVPacketSource::Encoder(self.variant.id()),
-            ))?;
+            ));
         }
 
-        Ok(())
+        Ok(pkgs)
     }
 }
 
-impl<TRecv> PipelineProcessor for VideoEncoder<TRecv>
-where
-    TRecv: Rx<PipelinePayload>,
-{
-    fn process(&mut self) -> Result<(), Error> {
-        unsafe {
-            self.setup_encoder()?;
-        }
-        while let Ok(pkg) = self.chan_in.try_recv_next() {
-            match pkg {
-                PipelinePayload::AvFrame(frm, ref src) => unsafe {
-                    let (in_stream, idx) = match src {
-                        AVFrameSource::Decoder(s) => (*s, (*(*s)).index as usize),
-                        AVFrameSource::None(s) => (ptr::null_mut(), *s),
-                        _ => {
-                            return Err(Error::msg(format!("Cannot process frame from: {:?}", src)))
-                        }
+impl PipelineProcessor for VideoEncoder {
+    fn process(&mut self, pkg: PipelinePayload) -> Result<Vec<PipelinePayload>, Error> {
+        match pkg {
+            PipelinePayload::AvFrame(frm, ref src) => unsafe {
+                let (in_stream, idx) = match src {
+                    AVFrameSource::Decoder(s) => (*s, (*(*s)).index as usize),
+                    AVFrameSource::None(s) => (ptr::null_mut(), *s),
+                    _ => return Err(Error::msg(format!("Cannot process frame from: {:?}", src))),
+                };
+                if self.variant.src_index() == idx {
+                    let tb = if in_stream.is_null() {
+                        self.variant.time_base()
+                    } else {
+                        (*in_stream).time_base
                     };
-                    if self.variant.src_index == idx {
-                        let tb = if in_stream.is_null() {
-                            self.variant.time_base()
-                        } else {
-                            (*in_stream).time_base
-                        };
-                        self.process_frame(frm, &tb)?;
-                    }
-                },
-                PipelinePayload::Flush => unsafe {
-                    self.process_frame(ptr::null_mut(), &AVRational { num: 0, den: 1 })?;
-                },
-                _ => return Err(Error::msg("Payload not supported")),
-            }
+                    self.process_frame(frm, &tb)
+                } else {
+                    Ok(vec![])
+                }
+            },
+            PipelinePayload::Flush => unsafe {
+                self.process_frame(ptr::null_mut(), &AVRational { num: 0, den: 1 })
+            },
+            _ => Err(Error::msg("Payload not supported")),
         }
-        Ok(())
     }
 }

@@ -9,8 +9,8 @@ pub trait Rx<T> {
 
 #[async_trait]
 impl<T> Rx<T> for tokio::sync::mpsc::UnboundedReceiver<T>
-    where
-        T: Send + Sync,
+where
+    T: Send + Sync,
 {
     async fn recv(&mut self) -> Result<T, Error> {
         self.recv().await.ok_or(Error::msg("recv error"))
@@ -23,8 +23,8 @@ impl<T> Rx<T> for tokio::sync::mpsc::UnboundedReceiver<T>
 
 #[async_trait]
 impl<T> Rx<T> for tokio::sync::broadcast::Receiver<T>
-    where
-        T: Send + Sync + Clone,
+where
+    T: Send + Sync + Clone,
 {
     async fn recv(&mut self) -> Result<T, Error> {
         Ok(self.recv().await?)

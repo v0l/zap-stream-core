@@ -1,11 +1,14 @@
 use std::collections::HashMap;
+use std::ffi::CStr;
 use std::ptr;
 
 use anyhow::Error;
-use ffmpeg_sys_next::{av_frame_alloc, AVCodec, avcodec_alloc_context3, avcodec_find_decoder, avcodec_free_context, avcodec_open2, avcodec_parameters_to_context, avcodec_receive_frame, avcodec_send_packet, AVCodecContext, AVERROR, AVERROR_EOF, AVPacket};
 use ffmpeg_sys_next::AVPictureType::AV_PICTURE_TYPE_NONE;
-use tokio::sync::broadcast;
-use tokio::sync::mpsc::UnboundedReceiver;
+use ffmpeg_sys_next::{
+    av_frame_alloc, avcodec_alloc_context3, avcodec_find_decoder, avcodec_free_context,
+    avcodec_get_name, avcodec_open2, avcodec_parameters_to_context, avcodec_receive_frame,
+    avcodec_send_packet, AVCodec, AVCodecContext, AVPacket, AVERROR, AVERROR_EOF,
+};
 
 use crate::pipeline::{AVFrameSource, AVPacketSource, PipelinePayload};
 
@@ -25,8 +28,6 @@ impl Drop for CodecContext {
 }
 
 pub struct Decoder {
-    chan_in: UnboundedReceiver<PipelinePayload>,
-    chan_out: broadcast::Sender<PipelinePayload>,
     codecs: HashMap<i32, CodecContext>,
     pts: i64,
 }
@@ -36,13 +37,8 @@ unsafe impl Send for Decoder {}
 unsafe impl Sync for Decoder {}
 
 impl Decoder {
-    pub fn new(
-        chan_in: UnboundedReceiver<PipelinePayload>,
-        chan_out: broadcast::Sender<PipelinePayload>,
-    ) -> Self {
+    pub fn new() -> Self {
         Self {
-            chan_in,
-            chan_out,
             codecs: HashMap::new(),
             pts: 0,
         }
@@ -52,7 +48,7 @@ impl Decoder {
         &mut self,
         pkt: *mut AVPacket,
         src: &AVPacketSource,
-    ) -> Result<usize, Error> {
+    ) -> Result<Vec<PipelinePayload>, Error> {
         let stream_index = (*pkt).stream_index;
         let stream = match src {
             AVPacketSource::Demuxer(s) => *s,
@@ -75,7 +71,11 @@ impl Decoder {
         if let std::collections::hash_map::Entry::Vacant(e) = self.codecs.entry(stream_index) {
             let codec = avcodec_find_decoder((*codec_par).codec_id);
             if codec.is_null() {
-                return Err(Error::msg("Failed to find codec"));
+                return Err(Error::msg(format!(
+                    "Failed to find codec: {}",
+                    CStr::from_ptr(avcodec_get_name((*codec_par).codec_id))
+                        .to_str()?
+                )));
             }
             let context = avcodec_alloc_context3(ptr::null());
             if context.is_null() {
@@ -96,7 +96,7 @@ impl Decoder {
                 return Err(Error::msg(format!("Failed to decode packet {}", ret)));
             }
 
-            let mut frames = 0;
+            let mut pkgs = Vec::new();
             while ret >= 0 {
                 let frame = av_frame_alloc();
                 ret = avcodec_receive_frame(ctx.context, frame);
@@ -108,28 +108,22 @@ impl Decoder {
                 }
 
                 (*frame).pict_type = AV_PICTURE_TYPE_NONE; // encoder prints warnings
-                self.chan_out.send(PipelinePayload::AvFrame(
+                pkgs.push(PipelinePayload::AvFrame(
                     frame,
                     AVFrameSource::Decoder(stream),
-                ))?;
-                frames += 1;
+                ));
             }
-            return Ok(frames);
+            Ok(pkgs)
+        } else {
+            Ok(vec![])
         }
-        Ok(0)
     }
 
-    pub fn process(&mut self) -> Result<usize, Error> {
-        if let Ok(pkg) = self.chan_in.try_recv() {
-            return if let PipelinePayload::AvPacket(pkt, ref src) = pkg {
-                unsafe {
-                    let frames = self.decode_pkt(pkt, src)?;
-                    Ok(frames)
-                }
-            } else {
-                Err(Error::msg("Payload not supported"))
-            };
+    pub fn process(&mut self, pkg: PipelinePayload) -> Result<Vec<PipelinePayload>, Error> {
+        if let PipelinePayload::AvPacket(pkt, ref src) = pkg {
+            unsafe { self.decode_pkt(pkt, src) }
+        } else {
+            Err(Error::msg("Payload not supported"))
         }
-        Ok(0)
     }
 }

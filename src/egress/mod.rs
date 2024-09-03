@@ -1,11 +1,11 @@
 use std::fmt::{Display, Formatter};
 use std::ptr;
 
+use crate::variant::{StreamMapping, VariantStream};
 use anyhow::Error;
 use ffmpeg_sys_next::{avformat_new_stream, AVFormatContext};
 use serde::{Deserialize, Serialize};
-
-use crate::variant::{VariantStream, VariantStreamType};
+use uuid::Uuid;
 
 pub mod hls;
 pub mod http;
@@ -15,7 +15,8 @@ pub mod recorder;
 pub struct EgressConfig {
     pub name: String,
     pub out_dir: String,
-    pub variants: Vec<VariantStream>,
+    /// Which variants will be used in this muxer
+    pub variants: Vec<Uuid>,
 }
 
 impl Display for EgressConfig {
@@ -33,31 +34,18 @@ impl Display for EgressConfig {
 
 pub unsafe fn map_variants_to_streams(
     ctx: *mut AVFormatContext,
-    variants: &mut Vec<VariantStream>,
+    variants: &Vec<VariantStream>,
 ) -> Result<(), Error> {
     for var in variants {
-        match var {
-            VariantStream::Video(vs) => {
-                let stream = avformat_new_stream(ctx, ptr::null());
-                if stream.is_null() {
-                    return Err(Error::msg("Failed to add stream to output"));
-                }
-
-                // overwrite dst_index to match output stream
-                vs.dst_index = (*stream).index as usize;
-                vs.to_stream(stream);
-            }
-            VariantStream::Audio(va) => {
-                let stream = avformat_new_stream(ctx, ptr::null());
-                if stream.is_null() {
-                    return Err(Error::msg("Failed to add stream to output"));
-                }
-
-                // overwrite dst_index to match output stream
-                va.dst_index = (*stream).index as usize;
-                va.to_stream(stream);
-            }
+        let stream = avformat_new_stream(ctx, ptr::null());
+        if stream.is_null() {
+            return Err(Error::msg("Failed to add stream to output"));
         }
+
+        // replace stream index value with variant dst_index
+        (*stream).index = var.dst_index() as libc::c_int;
+
+        var.to_stream(stream);
     }
     Ok(())
 }

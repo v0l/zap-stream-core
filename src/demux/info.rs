@@ -1,13 +1,17 @@
+use crate::fraction::Fraction;
+use ffmpeg_sys_next::AVFormatContext;
 use std::fmt::{Display, Formatter};
 
-use crate::fraction::Fraction;
-
 #[derive(Clone, Debug, PartialEq)]
-pub struct DemuxStreamInfo {
+pub struct DemuxerInfo {
     pub channels: Vec<StreamInfoChannel>,
+    pub ctx: *const AVFormatContext,
 }
 
-impl Display for DemuxStreamInfo {
+unsafe impl Send for DemuxerInfo {}
+unsafe impl Sync for DemuxerInfo {}
+
+impl Display for DemuxerInfo {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "Demuxer Info:")?;
         for c in &self.channels {
@@ -43,6 +47,7 @@ pub struct StreamInfoChannel {
     pub width: usize,
     pub height: usize,
     pub fps: f32,
+    pub format: usize,
 }
 
 impl TryInto<Fraction> for StreamInfoChannel {
