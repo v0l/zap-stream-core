@@ -4,14 +4,16 @@ use std::ptr;
 
 use anyhow::Error;
 use ffmpeg_sys_next::{
-    av_dump_format, av_interleaved_write_frame, av_opt_set, avcodec_parameters_copy,
-    avcodec_parameters_from_context, avformat_alloc_output_context2, avformat_free_context, avformat_write_header, AVFormatContext, AVPacket, AVStream,
+    av_dump_format, av_interleaved_write_frame, av_opt_set, av_packet_rescale_ts,
+    avcodec_parameters_copy, avcodec_parameters_from_context, avformat_alloc_output_context2,
+    avformat_free_context, avformat_write_header, AVFormatContext, AVPacket, AVStream,
 };
 use itertools::Itertools;
 use log::info;
 use uuid::Uuid;
 
 use crate::egress::{map_variants_to_streams, EgressConfig};
+use crate::encode::dump_pkt_info;
 use crate::pipeline::{AVPacketSource, PipelinePayload, PipelineProcessor};
 use crate::return_ffmpeg_error;
 use crate::utils::get_ffmpeg_error_msg;
@@ -192,7 +194,6 @@ impl HlsEgress {
             0,
         );
 
-
         av_dump_format(self.ctx, 0, ptr::null(), 1);
         Ok(())
     }
@@ -203,15 +204,19 @@ impl HlsEgress {
     ) -> Result<(), Error> {
         let variant = match src {
             AVPacketSource::Encoder(v) => find_stream(&self.variants, v)?,
-            AVPacketSource::Demuxer(v) => self
-                .variants
-                .iter()
-                .find(|x| x.src_index() == (*(*v)).index as usize)
-                .ok_or(Error::msg("Demuxer packet didn't match any variant"))?,
+            AVPacketSource::Demuxer(v) => {
+                let var = self
+                    .variants
+                    .iter()
+                    .find(|x| x.src_index() == (*(*v)).index as usize)
+                    .ok_or(Error::msg("Demuxer packet didn't match any variant"))?;
+                let dst_stream = Self::get_dst_stream(self.ctx, var.dst_index());
+                av_packet_rescale_ts(pkt, (*(*v)).time_base, (*dst_stream).time_base);
+                var
+            }
         };
         (*pkt).stream_index = variant.dst_index() as libc::c_int;
 
-        //dump_pkt_info(pkt);
         let ret = av_interleaved_write_frame(self.ctx, pkt);
         return_ffmpeg_error!(ret);
         Ok(())
