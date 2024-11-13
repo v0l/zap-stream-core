@@ -1,10 +1,10 @@
 kind: pipeline
 type: kubernetes
 name: default
-
+concurrency:
+  limit: 1
 metadata:
   namespace: git
-
 steps:
   - name: build
     image: docker

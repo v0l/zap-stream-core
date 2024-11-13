@@ -1,6 +1,6 @@
 ARG IMAGE=rust:bookworm
 
-FROM $IMAGE as build
+FROM $IMAGE AS build
 WORKDIR /app/src
 ENV FFMPEG_DIR=/app/ffmpeg
 COPY . .
@@ -27,7 +27,7 @@ RUN git clone --depth=1 https://git.ffmpeg.org/ffmpeg.git && \
     make -j$(nproc) && make install
 RUN cargo install --path . --bin zap-stream-core --root /app/build
 
-FROM $IMAGE as runner
+FROM $IMAGE AS runner
 WORKDIR /app
 RUN apt update && \
     apt install -y libx264-164 && \
