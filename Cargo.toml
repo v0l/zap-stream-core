@@ -6,10 +6,10 @@ edition = "2021"
 [features]
 default = ["test-source"]
 srt = ["dep:srt-tokio"]
-test-source = ["dep:resvg", "dep:usvg", "dep:tiny-skia", "dep:fontdue"]
+test-source = ["dep:resvg", "dep:usvg", "dep:tiny-skia", "dep:fontdue", "dep:ringbuf"]
 
 [dependencies]
-ffmpeg-rs-raw = { git = "https://git.v0l.io/Kieran/ffmpeg-rs-raw.git", rev = "07a2c728883dff15961edbe1f8c6aa5e65cef293" }
+ffmpeg-rs-raw = { git = "https://git.v0l.io/Kieran/ffmpeg-rs-raw.git", rev = "6d443a24bcbe53c0a02a9dce3e41d22815229585" }
 
 tokio = { version = "1.36.0", features = ["rt", "rt-multi-thread", "macros"] }
 anyhow = { version = "^1.0.91", features = ["backtrace"] }
@@ -27,10 +27,12 @@ itertools = "0.13.0"
 rand = "0.8.5"
 clap = { version = "4.5.16", features = ["derive"] }
 warp = "0.3.7"
+libc = "0.2.162"
 
 srt-tokio = { version = "0.4.3", optional = true }
 resvg = { version = "0.44.0", optional = true }
 usvg = { version = "0.44.0", optional = true }
 tiny-skia = { version = "0.11.4", optional = true }
 fontdue = { version = "0.9.2", optional = true }
-libc = "0.2.162"
+ringbuf = { version = "0.4.7", optional = true }
+

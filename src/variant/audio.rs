@@ -71,7 +71,7 @@ impl TryInto<Encoder> for &AudioVariant {
                 .with_sample_rate(self.sample_rate as _)
                 .with_bitrate(self.bitrate as _)
                 .with_default_channel_layout(self.channels as _)
-                .with_sample_format(av_get_sample_fmt(cstr!(&self.sample_fmt)))
+                .with_sample_format(av_get_sample_fmt(cstr!(self.sample_fmt.as_bytes())))
                 .open(None)?;
 
             Ok(enc)

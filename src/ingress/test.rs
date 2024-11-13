@@ -8,14 +8,14 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::{AV_PIX_FMT_RGBA, AV_PIX
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
     av_frame_alloc, av_frame_get_buffer, AV_PROFILE_H264_MAIN,
 };
-use ffmpeg_rs_raw::{Encoder, Scaler};
+use ffmpeg_rs_raw::{Encoder, Muxer, Scaler};
 use fontdue::layout::{CoordinateSystem, Layout, TextStyle};
 use fontdue::Font;
 use log::info;
-use std::collections::VecDeque;
+use ringbuf::traits::{Observer, Split};
+use ringbuf::{HeapCons, HeapRb};
 use std::io::Read;
 use std::ops::Add;
-use std::slice;
 use std::time::{Duration, Instant};
 use tiny_skia::Pixmap;
 use warp::Buf;
@@ -35,11 +35,12 @@ pub async fn listen(settings: Settings) -> Result<()> {
 struct TestPatternSrc {
     encoder: Encoder,
     scaler: Scaler,
+    muxer: Muxer,
     background: Pixmap,
     font: [Font; 1],
     frame_no: u64,
     start: Instant,
-    buf: VecDeque<u8>,
+    reader: HeapCons<u8>,
 }
 
 unsafe impl Send for TestPatternSrc {}
@@ -69,18 +70,31 @@ impl TestPatternSrc {
         let font = include_bytes!("../../SourceCodePro-Regular.ttf") as &[u8];
         let font = Font::from_bytes(font, Default::default()).unwrap();
 
+        let buf = HeapRb::new(1024 * 1024);
+        let (writer, reader) = buf.split();
+
+        let muxer = unsafe {
+            let mut m = Muxer::builder()
+                .with_output_write(writer, Some("mpegts"), None)?
+                .with_stream_encoder(&encoder)?
+                .build()?;
+            m.open()?;
+            m
+        };
+
         Ok(Self {
             encoder,
             scaler,
+            muxer,
             background: pixmap,
             font: [font],
             frame_no: 0,
             start: Instant::now(),
-            buf: VecDeque::new(),
+            reader,
         })
     }
 
-    pub unsafe fn next_pkt(&mut self) -> Result<Vec<u8>> {
+    pub unsafe fn next_pkt(&mut self) -> Result<()> {
         let stream_time = Duration::from_secs_f64(self.frame_no as f64 / 30.0);
         let real_time = Instant::now().duration_since(self.start);
         let wait_time = if stream_time > real_time {
@@ -137,28 +151,24 @@ impl TestPatternSrc {
             }
         }
 
-        let mut ret = Vec::new();
         // scale/encode
         let frame = self
             .scaler
             .process_frame(src_frame, 1280, 720, AV_PIX_FMT_YUV420P)?;
         for pkt in self.encoder.encode_frame(frame)? {
-            let buf = slice::from_raw_parts((*pkt).data, (*pkt).size as usize);
-            ret.extend(buf);
+            self.muxer.write_packet(pkt)?;
         }
-        Ok(ret)
+        Ok(())
     }
 }
 
 impl Read for TestPatternSrc {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         unsafe {
-            while self.buf.len() < buf.len() {
-                let data = self.next_pkt().map_err(|e| std::io::Error::other(e))?;
-                self.buf.extend(data);
+            while self.reader.occupied_len() < buf.len() {
+                self.next_pkt().map_err(|e| std::io::Error::other(e))?;
             }
         }
-        self.buf.copy_to_slice(buf);
-        Ok(buf.len())
+        self.reader.read(buf)
     }
 }

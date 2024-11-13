@@ -89,7 +89,14 @@ impl PipelineRunner {
         let src_index = (*stream).index;
 
         // TODO: For copy streams, skip decoder
-        for frame in self.decoder.decode_pkt(pkt)? {
+        let frames = if let Ok(frames) = self.decoder.decode_pkt(pkt) {
+            frames
+        } else {
+            warn!("Error decoding frames");
+            return Ok(());
+        };
+
+        for frame in frames {
             self.frame_ctr += 1;
 
             // Copy frame from GPU if using hwaccel decoding
@@ -184,7 +191,7 @@ impl PipelineRunner {
                 VariantStream::Audio(a) => {
                     let enc = a.try_into()?;
                     let rs = Resample::new(
-                        av_get_sample_fmt(cstr!(&a.sample_fmt)),
+                        av_get_sample_fmt(cstr!(a.sample_fmt.as_bytes())),
                         a.sample_rate as _,
                         a.channels as _,
                     );

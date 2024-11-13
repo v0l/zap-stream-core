@@ -64,7 +64,9 @@ impl HlsEgress {
         opts.insert("hls_flags".to_string(), "delete_segments".to_string());
 
         let muxer = unsafe {
-            let mut m = Muxer::new().with_output(&base, Some("hls"), Some(opts))?;
+            let mut m = Muxer::builder()
+                .with_output_path(base.to_str().unwrap(), Some("hls"), Some(opts))?
+                .build()?;
             for e in encoded {
                 m.add_stream_encoder(e)?;
             }
