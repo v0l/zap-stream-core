@@ -20,10 +20,11 @@ RUN git clone --depth=1 https://git.ffmpeg.org/ffmpeg.git && \
     --disable-network \
     --enable-gpl \
     --enable-version3 \
+    --disable-postproc \
     --enable-libx264 \
     --disable-static \
     --enable-shared && \
-    make -j8 && make install
+    make -j$(nproc) && make install
 RUN cargo install --path . --root /app/build
 
 FROM $IMAGE as runner
