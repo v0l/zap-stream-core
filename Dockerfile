@@ -25,7 +25,7 @@ RUN git clone --depth=1 https://git.ffmpeg.org/ffmpeg.git && \
     --disable-static \
     --enable-shared && \
     make -j$(nproc) && make install
-RUN cargo install --path . --root /app/build
+RUN cargo install --path . --bin zap-stream-core --root /app/build
 
 FROM $IMAGE as runner
 WORKDIR /app

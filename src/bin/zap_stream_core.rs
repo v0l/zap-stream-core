@@ -5,17 +5,12 @@ use ffmpeg_rs_raw::rstr;
 use log::{error, info};
 use url::Url;
 
-use crate::egress::http::listen_out_dir;
-use crate::settings::Settings;
+use zap_stream_core::egress::http::listen_out_dir;
+#[cfg(feature = "srt")]
+use zap_stream_core::ingress::srt;
+use zap_stream_core::ingress::{file, tcp, test};
+use zap_stream_core::settings::Settings;
 
-mod egress;
-mod fraction;
-mod ingress;
-mod ipc;
-mod pipeline;
-mod settings;
-mod variant;
-mod webhook;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -53,8 +48,8 @@ async fn main() -> anyhow::Result<()> {
         let addr = format!("{}:{}", u.host_str().unwrap(), u.port().unwrap());
         match u.scheme() {
             #[cfg(feature = "srt")]
-            "srt" => listeners.push(tokio::spawn(ingress::srt::listen(addr, settings.clone()))),
-            "tcp" => listeners.push(tokio::spawn(ingress::tcp::listen(addr, settings.clone()))),
+            "srt" => listeners.push(tokio::spawn(srt::listen(addr, settings.clone()))),
+            "tcp" => listeners.push(tokio::spawn(tcp::listen(addr, settings.clone()))),
             _ => {
                 error!("Unknown endpoint config: {e}");
             }
@@ -66,14 +61,14 @@ async fn main() -> anyhow::Result<()> {
     )));
 
     if let Some(p) = args.file {
-        listeners.push(tokio::spawn(ingress::file::listen(
+        listeners.push(tokio::spawn(file::listen(
             p.parse()?,
             settings.clone(),
         )));
     }
     #[cfg(feature = "test-source")]
     if args.test_pattern {
-        listeners.push(tokio::spawn(ingress::test::listen(settings.clone())));
+        listeners.push(tokio::spawn(test::listen(settings.clone())));
     }
 
     for handle in listeners {

@@ -102,7 +102,7 @@ impl PipelineRunner {
             // Copy frame from GPU if using hwaccel decoding
             let frame = get_frame_from_hw(frame)?;
 
-            /// Get the variants which want this pkt
+            // Get the variants which want this pkt
             let pkt_vars = self
                 .config
                 .variants

@@ -3,6 +3,10 @@ name = "zap-stream-core"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "zap-stream-core"
+path = "src/bin/zap_stream_core.rs"
+
 [features]
 default = ["test-source"]
 srt = ["dep:srt-tokio"]
