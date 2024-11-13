@@ -1,97 +1,88 @@
+use crate::ingress::{spawn_pipeline, ConnectionInfo};
+use crate::settings::Settings;
+use anyhow::Result;
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_H264;
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVColorSpace::AVCOL_SPC_RGB;
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPictureType::AV_PICTURE_TYPE_NONE;
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::{AV_PIX_FMT_RGBA, AV_PIX_FMT_YUV420P};
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
+    av_frame_alloc, av_frame_get_buffer, AV_PROFILE_H264_MAIN,
+};
+use ffmpeg_rs_raw::{Encoder, Scaler};
+use fontdue::layout::{CoordinateSystem, Layout, TextStyle};
+use fontdue::Font;
+use log::info;
+use std::collections::VecDeque;
+use std::io::Read;
 use std::ops::Add;
 use std::slice;
 use std::time::{Duration, Instant};
+use tiny_skia::Pixmap;
+use warp::Buf;
 
-use crate::encode::video::VideoEncoder;
-use crate::ingress::ConnectionInfo;
-use crate::pipeline::builder::PipelineBuilder;
-use crate::pipeline::{AVFrameSource, PipelinePayload, PipelineProcessor};
-use crate::scale::Scaler;
-use crate::variant::mapping::VariantMapping;
-use crate::variant::video::VideoVariant;
-use ffmpeg_sys_next::AVCodecID::AV_CODEC_ID_H264;
-use ffmpeg_sys_next::AVColorSpace::AVCOL_SPC_RGB;
-use ffmpeg_sys_next::AVPictureType::AV_PICTURE_TYPE_NONE;
-use ffmpeg_sys_next::AVPixelFormat::{AV_PIX_FMT_RGBA, AV_PIX_FMT_YUV420P};
-use ffmpeg_sys_next::{
-    av_frame_alloc, av_frame_get_buffer, AV_PROFILE_H264_MAIN,
-};
-use fontdue::layout::{CoordinateSystem, Layout, TextStyle};
-use libc::memcpy;
-use log::{error, info, warn};
-use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
-use uuid::Uuid;
-
-const WIDTH: libc::c_int = 1920;
-const HEIGHT: libc::c_int = 1080;
-const FPS: libc::c_int = 25;
-
-pub async fn listen(builder: PipelineBuilder) -> Result<(), anyhow::Error> {
+pub async fn listen(settings: Settings) -> Result<()> {
     info!("Test pattern enabled");
 
-    let (tx, rx) = unbounded_channel();
     let info = ConnectionInfo {
-        ip_addr: "".to_owned(),
-        endpoint: "test-pattern".to_owned(),
+        endpoint: "test-source".to_string(),
+        ip_addr: "".to_string(),
     };
-
-    if let Ok(mut pl) = builder.build_for(info, rx).await {
-        let pipeline = std::thread::spawn(move || loop {
-            if let Err(e) = pl.run() {
-                error!("Pipeline error: {}\n{}", e, e.backtrace());
-                break;
-            }
-        });
-        let encoder = std::thread::spawn(move || {
-            run_encoder(tx);
-        });
-        if encoder.join().is_err() {
-            error!("Encoder thread error");
-        }
-        if pipeline.join().is_err() {
-            error!("Pipeline thread error");
-        }
-    }
+    let src = TestPatternSrc::new()?;
+    spawn_pipeline(info, settings, Box::new(src));
     Ok(())
 }
 
-fn run_encoder(tx: UnboundedSender<bytes::Bytes>) {
-    let var = VideoVariant {
-        mapping: VariantMapping {
-            id: Uuid::new_v4(),
-            src_index: 0,
-            dst_index: 0,
-            group_id: 0,
-        },
-        width: WIDTH as u16,
-        height: HEIGHT as u16,
-        fps: FPS as u16,
-        bitrate: 1_000_000,
-        codec: AV_CODEC_ID_H264 as usize,
-        profile: AV_PROFILE_H264_MAIN as usize,
-        level: 51,
-        keyframe_interval: FPS as u16,
-        pixel_format: AV_PIX_FMT_YUV420P as u32,
-    };
-    let mut sws = Scaler::new(var.clone());
-    let mut enc = VideoEncoder::new(var.clone());
+struct TestPatternSrc {
+    encoder: Encoder,
+    scaler: Scaler,
+    background: Pixmap,
+    font: [Font; 1],
+    frame_no: u64,
+    start: Instant,
+    buf: VecDeque<u8>,
+}
 
-    let svg_data = std::fs::read("./test.svg").unwrap();
-    let tree = usvg::Tree::from_data(&svg_data, &Default::default()).unwrap();
-    let mut pixmap = tiny_skia::Pixmap::new(WIDTH as u32, HEIGHT as u32).unwrap();
-    let render_ts = tiny_skia::Transform::from_scale(1f32, 1f32);
-    resvg::render(&tree, render_ts, &mut pixmap.as_mut());
+unsafe impl Send for TestPatternSrc {}
 
-    let font = include_bytes!("../../SourceCodePro-Regular.ttf") as &[u8];
-    let scp = fontdue::Font::from_bytes(font, Default::default()).unwrap();
-    let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
-    let fonts = &[&scp];
+impl TestPatternSrc {
+    pub fn new() -> Result<Self> {
+        let scaler = Scaler::new();
+        let encoder = unsafe {
+            Encoder::new(AV_CODEC_ID_H264)?
+                .with_stream_index(0)
+                .with_framerate(30.0)
+                .with_bitrate(1_000_000)
+                .with_pix_fmt(AV_PIX_FMT_YUV420P)
+                .with_width(1280)
+                .with_height(720)
+                .with_level(51)
+                .with_profile(AV_PROFILE_H264_MAIN)
+                .open(None)?
+        };
 
-    let start = Instant::now();
-    let mut frame_number: u64 = 0;
-    loop {
-        let stream_time = Duration::from_secs_f64(frame_number as f64 / FPS as f64);
-        let real_time = Instant::now().duration_since(start);
+        let svg_data = include_bytes!("../../test.svg");
+        let tree = usvg::Tree::from_data(svg_data, &Default::default())?;
+        let mut pixmap = Pixmap::new(1280, 720).unwrap();
+        let render_ts = tiny_skia::Transform::from_scale(1f32, 1f32);
+        resvg::render(&tree, render_ts, &mut pixmap.as_mut());
+
+        let font = include_bytes!("../../SourceCodePro-Regular.ttf") as &[u8];
+        let font = Font::from_bytes(font, Default::default()).unwrap();
+
+        Ok(Self {
+            encoder,
+            scaler,
+            background: pixmap,
+            font: [font],
+            frame_no: 0,
+            start: Instant::now(),
+            buf: VecDeque::new(),
+        })
+    }
+
+    pub unsafe fn next_pkt(&mut self) -> Result<Vec<u8>> {
+        let stream_time = Duration::from_secs_f64(self.frame_no as f64 / 30.0);
+        let real_time = Instant::now().duration_since(self.start);
         let wait_time = if stream_time > real_time {
             stream_time - real_time
         } else {
@@ -101,35 +92,35 @@ fn run_encoder(tx: UnboundedSender<bytes::Bytes>) {
             std::thread::sleep(wait_time);
         }
 
-        frame_number += 1;
+        self.frame_no += 1;
 
         let src_frame = unsafe {
             let src_frame = av_frame_alloc();
 
-            (*src_frame).width = WIDTH;
-            (*src_frame).height = HEIGHT;
+            (*src_frame).width = 1280;
+            (*src_frame).height = 720;
             (*src_frame).pict_type = AV_PICTURE_TYPE_NONE;
             (*src_frame).key_frame = 1;
             (*src_frame).colorspace = AVCOL_SPC_RGB;
-            (*src_frame).format = AV_PIX_FMT_RGBA as libc::c_int;
-            (*src_frame).pts = frame_number as i64;
+            (*src_frame).format = AV_PIX_FMT_RGBA as _;
+            (*src_frame).pts = self.frame_no as i64;
             (*src_frame).duration = 1;
             av_frame_get_buffer(src_frame, 0);
 
-            memcpy(
-                (*src_frame).data[0] as *mut libc::c_void,
-                pixmap.data().as_ptr() as *const libc::c_void,
-                (WIDTH * HEIGHT * 4) as libc::size_t,
-            );
+            self.background
+                .data()
+                .as_ptr()
+                .copy_to((*src_frame).data[0] as *mut _, 1280 * 720 * 4);
             src_frame
         };
+        let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
         layout.clear();
         layout.append(
-            fonts,
-            &TextStyle::new(&format!("frame={}", frame_number), 40.0, 0),
+            &self.font,
+            &TextStyle::new(&format!("frame={}", self.frame_no), 40.0, 0),
         );
         for g in layout.glyphs() {
-            let (metrics, bitmap) = scp.rasterize_config_subpixel(g.key);
+            let (metrics, bitmap) = self.font[0].rasterize_config_subpixel(g.key);
             for y in 0..metrics.height {
                 for x in 0..metrics.width {
                     let dst_x = x + g.x as usize;
@@ -146,40 +137,28 @@ fn run_encoder(tx: UnboundedSender<bytes::Bytes>) {
             }
         }
 
+        let mut ret = Vec::new();
         // scale/encode
-        let pkgs = match sws.process(PipelinePayload::AvFrame(src_frame, AVFrameSource::None(0))) {
-            Ok(p) => p,
-            Err(e) => {
-                error!("Failed to scale frame: {}", e);
-                return;
-            }
-        };
-        for pkg in pkgs {
-            match enc.process(pkg) {
-                Ok(pkgs) => {
-                    for pkg in pkgs {
-                        match pkg {
-                            PipelinePayload::AvPacket(pkt, _) => unsafe {
-                                let buf = bytes::Bytes::from(slice::from_raw_parts(
-                                    (*pkt).data,
-                                    (*pkt).size as usize,
-                                ));
-                                if let Err(e) = tx.send(buf) {
-                                    error!("Failed to send test pkt: {}", e);
-                                    return;
-                                }
-                            },
-                            _ => {
-                                warn!("Unknown payload from encoder: {:?}", pkg);
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    error!("Failed to encode: {}", e);
-                    return;
-                }
+        let frame = self
+            .scaler
+            .process_frame(src_frame, 1280, 720, AV_PIX_FMT_YUV420P)?;
+        for pkt in self.encoder.encode_frame(frame)? {
+            let buf = slice::from_raw_parts((*pkt).data, (*pkt).size as usize);
+            ret.extend(buf);
+        }
+        Ok(ret)
+    }
+}
+
+impl Read for TestPatternSrc {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        unsafe {
+            while self.buf.len() < buf.len() {
+                let data = self.next_pkt().map_err(|e| std::io::Error::other(e))?;
+                self.buf.extend(data);
             }
         }
+        self.buf.copy_to_slice(buf);
+        Ok(buf.len())
     }
 }

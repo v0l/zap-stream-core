@@ -1,10 +1,8 @@
-use std::fmt::{Display, Formatter};
-use std::ptr;
-
-use crate::variant::{StreamMapping, VariantStream};
-use anyhow::Error;
-use ffmpeg_sys_next::{avformat_new_stream, AVFormatContext};
+use anyhow::Result;
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPacket;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::fmt::{Display, Formatter};
 use uuid::Uuid;
 
 pub mod hls;
@@ -16,7 +14,7 @@ pub struct EgressConfig {
     pub name: String,
     pub out_dir: String,
     /// Which variants will be used in this muxer
-    pub variants: Vec<Uuid>,
+    pub variants: HashSet<Uuid>,
 }
 
 impl Display for EgressConfig {
@@ -32,20 +30,6 @@ impl Display for EgressConfig {
     }
 }
 
-pub unsafe fn map_variants_to_streams(
-    ctx: *mut AVFormatContext,
-    variants: &Vec<VariantStream>,
-) -> Result<(), Error> {
-    for var in variants {
-        let stream = avformat_new_stream(ctx, ptr::null());
-        if stream.is_null() {
-            return Err(Error::msg("Failed to add stream to output"));
-        }
-
-        // replace stream index value with variant dst_index
-        (*stream).index = var.dst_index() as libc::c_int;
-
-        var.to_stream(stream);
-    }
-    Ok(())
+pub trait Egress {
+    unsafe fn process_pkt(&mut self, packet: *mut AVPacket, variant: &Uuid) -> Result<()>;
 }

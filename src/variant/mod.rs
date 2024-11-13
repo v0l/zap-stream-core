@@ -1,13 +1,10 @@
-use std::fmt::{Display, Formatter};
-
-use anyhow::Error;
-use ffmpeg_sys_next::{AVCodec, AVCodecContext, AVCodecParameters, AVRational, AVStream};
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
-
 use crate::variant::audio::AudioVariant;
 use crate::variant::mapping::VariantMapping;
 use crate::variant::video::VideoVariant;
+use anyhow::Error;
+use serde::{Deserialize, Serialize};
+use std::fmt::{Display, Formatter};
+use uuid::Uuid;
 
 pub mod audio;
 pub mod mapping;
@@ -70,15 +67,6 @@ impl StreamMapping for VariantStream {
             VariantStream::CopyVideo(v) => v.group_id(),
         }
     }
-
-    unsafe fn to_stream(&self, stream: *mut AVStream) {
-        match self {
-            VariantStream::Video(v) => v.to_stream(stream),
-            VariantStream::Audio(v) => v.to_stream(stream),
-            VariantStream::CopyAudio(v) => v.to_stream(stream),
-            VariantStream::CopyVideo(v) => v.to_stream(stream),
-        }
-    }
 }
 
 impl Display for VariantStream {
@@ -98,14 +86,6 @@ pub trait StreamMapping {
     fn dst_index(&self) -> usize;
     fn set_dst_index(&mut self, dst: usize);
     fn group_id(&self) -> usize;
-    unsafe fn to_stream(&self, stream: *mut AVStream);
-}
-
-pub trait EncodedStream {
-    fn time_base(&self) -> AVRational;
-    unsafe fn get_codec(&self) -> *const AVCodec;
-    unsafe fn to_codec_context(&self, ctx: *mut AVCodecContext);
-    unsafe fn to_codec_params(&self, params: *mut AVCodecParameters);
 }
 
 /// Find a stream by ID in a vec of streams

@@ -1,19 +1,11 @@
-use std::ffi::CStr;
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::{av_get_sample_fmt, avcodec_get_name};
+use ffmpeg_rs_raw::{cstr, rstr, Encoder};
+use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 use std::intrinsics::transmute;
-use std::ptr;
-
-use ffmpeg_sys_next::AVChannelOrder::AV_CHANNEL_ORDER_NATIVE;
-use ffmpeg_sys_next::AVCodecID::AV_CODEC_ID_AAC;
-use ffmpeg_sys_next::{
-    av_get_sample_fmt, avcodec_find_encoder, avcodec_find_encoder_by_name, avcodec_get_name,
-    AVChannelLayout, AVChannelLayout__bindgen_ty_1, AVCodec, AVCodecContext, AVCodecParameters,
-    AVRational, AVStream, AV_CH_LAYOUT_STEREO,
-};
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::variant::{EncodedStream, StreamMapping, VariantMapping};
+use crate::variant::{StreamMapping, VariantMapping};
 
 /// Information related to variant streams for a given egress
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -44,11 +36,7 @@ impl Display for AudioVariant {
             "Audio #{}->{}: {}, {}kbps",
             self.mapping.src_index,
             self.mapping.dst_index,
-            unsafe {
-                CStr::from_ptr(avcodec_get_name(transmute(self.codec as i32)))
-                    .to_str()
-                    .unwrap()
-            },
+            unsafe { rstr!(avcodec_get_name(transmute(self.codec as i32))) },
             self.bitrate / 1000
         )
     }
@@ -72,65 +60,21 @@ impl StreamMapping for AudioVariant {
     fn group_id(&self) -> usize {
         self.mapping.group_id
     }
-
-    unsafe fn to_stream(&self, stream: *mut AVStream) {
-        (*stream).time_base = self.time_base();
-        self.to_codec_params((*stream).codecpar);
-    }
 }
 
-impl EncodedStream for AudioVariant {
-    fn time_base(&self) -> AVRational {
-        AVRational {
-            num: 1,
-            den: self.sample_rate as libc::c_int,
-        }
-    }
+impl TryInto<Encoder> for &AudioVariant {
+    type Error = anyhow::Error;
 
-    unsafe fn get_codec(&self) -> *const AVCodec {
-        if self.codec == AV_CODEC_ID_AAC as usize {
-            avcodec_find_encoder_by_name("libfdk_aac\0".as_ptr() as *const libc::c_char)
-        } else {
-            avcodec_find_encoder(transmute(self.codec as u32))
-        }
-    }
+    fn try_into(self) -> Result<Encoder, Self::Error> {
+        unsafe {
+            let enc = Encoder::new(transmute(self.codec as u32))?
+                .with_sample_rate(self.sample_rate as _)
+                .with_bitrate(self.bitrate as _)
+                .with_default_channel_layout(self.channels as _)
+                .with_sample_format(av_get_sample_fmt(cstr!(&self.sample_fmt)))
+                .open(None)?;
 
-    unsafe fn to_codec_context(&self, ctx: *mut AVCodecContext) {
-        let codec = self.get_codec();
-        (*ctx).codec_id = (*codec).id;
-        (*ctx).codec_type = (*codec).type_;
-        (*ctx).time_base = self.time_base();
-        (*ctx).sample_fmt =
-            av_get_sample_fmt(format!("{}\0", self.sample_fmt).as_ptr() as *const libc::c_char);
-        (*ctx).bit_rate = self.bitrate as i64;
-        (*ctx).sample_rate = self.sample_rate as libc::c_int;
-        (*ctx).ch_layout = self.channel_layout();
-        (*ctx).frame_size = 1024;
-    }
-
-    unsafe fn to_codec_params(&self, params: *mut AVCodecParameters) {
-        let codec = self.get_codec();
-        (*params).codec_id = (*codec).id;
-        (*params).codec_type = (*codec).type_;
-        (*params).format =
-            av_get_sample_fmt(format!("{}\0", self.sample_fmt).as_ptr() as *const libc::c_char)
-                as libc::c_int;
-        (*params).bit_rate = self.bitrate as i64;
-        (*params).sample_rate = self.sample_rate as libc::c_int;
-        (*params).ch_layout = self.channel_layout();
-        (*params).frame_size = 1024; //TODO: fix this
-    }
-}
-
-impl AudioVariant {
-    fn channel_layout(&self) -> AVChannelLayout {
-        AVChannelLayout {
-            order: AV_CHANNEL_ORDER_NATIVE,
-            nb_channels: 2,
-            u: AVChannelLayout__bindgen_ty_1 {
-                mask: AV_CH_LAYOUT_STEREO,
-            },
-            opaque: ptr::null_mut(),
+            Ok(enc)
         }
     }
 }

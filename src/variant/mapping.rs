@@ -1,7 +1,5 @@
-use std::fmt::{Display, Formatter};
-
-use ffmpeg_sys_next::AVStream;
 use serde::{Deserialize, Serialize};
+use std::fmt::{Display, Formatter};
 use uuid::Uuid;
 
 use crate::variant::StreamMapping;
@@ -46,9 +44,5 @@ impl StreamMapping for VariantMapping {
 
     fn group_id(&self) -> usize {
         self.group_id
-    }
-
-    unsafe fn to_stream(&self, stream: *mut AVStream) {
-        // do nothing
     }
 }
