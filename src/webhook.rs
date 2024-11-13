@@ -74,7 +74,7 @@ impl Webhook {
                 codec: 86018,
                 channels: 2,
                 sample_rate: 48_000,
-                sample_fmt: "flt".to_owned(),
+                sample_fmt: "fltp".to_owned(),
             }));
         }
 
@@ -83,16 +83,16 @@ impl Webhook {
             id: Uuid::new_v4(),
             variants: vars,
             egress: vec![
-                EgressType::Recorder(EgressConfig {
+                /*EgressType::Recorder(EgressConfig {
                     name: "REC".to_owned(),
                     out_dir: self.config.output_dir.clone(),
                     variants: var_ids,
-                }),
-                /*EgressType::HLS(EgressConfig {
+                }),*/
+                EgressType::HLS(EgressConfig {
                     name: "HLS".to_owned(),
                     out_dir: self.config.output_dir.clone(),
                     variants: var_ids,
-                }),*/
+                }),
             ],
         }
     }

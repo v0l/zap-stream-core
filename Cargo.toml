@@ -9,7 +9,7 @@ srt = ["dep:srt-tokio"]
 test-source = ["dep:resvg", "dep:usvg", "dep:tiny-skia", "dep:fontdue", "dep:ringbuf"]
 
 [dependencies]
-ffmpeg-rs-raw = { git = "https://git.v0l.io/Kieran/ffmpeg-rs-raw.git", rev = "6d443a24bcbe53c0a02a9dce3e41d22815229585" }
+ffmpeg-rs-raw = { git = "https://git.v0l.io/Kieran/ffmpeg-rs-raw.git", rev = "dc778d12a994f47236cb168b6145a2a563dba1ab" }
 
 tokio = { version = "1.36.0", features = ["rt", "rt-multi-thread", "macros"] }
 anyhow = { version = "^1.0.91", features = ["backtrace"] }

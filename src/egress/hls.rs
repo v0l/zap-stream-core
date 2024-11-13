@@ -56,7 +56,7 @@ impl HlsEgress {
         let mut opts = HashMap::new();
         opts.insert(
             "hls_segment_filename".to_string(),
-            base.join("%v/live.m3u8").to_string_lossy().to_string(),
+            format!("{}/%v/%05d.ts", base.display()),
         );
         opts.insert("master_pl_name".to_string(), "live.m3u8".to_string());
         opts.insert("master_pl_publish_rate".to_string(), "10".to_string());
@@ -65,7 +65,11 @@ impl HlsEgress {
 
         let muxer = unsafe {
             let mut m = Muxer::builder()
-                .with_output_path(base.to_str().unwrap(), Some("hls"), Some(opts))?
+                .with_output_path(
+                    base.join("%v/live.m3u8").to_str().unwrap(),
+                    Some("hls"),
+                    Some(opts),
+                )?
                 .build()?;
             for e in encoded {
                 m.add_stream_encoder(e)?;

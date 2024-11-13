@@ -109,6 +109,13 @@ impl PipelineRunner {
                 .iter()
                 .filter(|v| v.src_index() == src_index as usize);
             for var in pkt_vars {
+                let enc = if let Some(enc) = self.encoders.get_mut(&var.id()) {
+                    enc
+                } else {
+                    //warn!("Frame had nowhere to go in {} :/", var.id());
+                    continue;
+                };
+
                 let frame = match var {
                     VariantStream::Video(v) => {
                         if let Some(s) = self.scalers.get_mut(&v.id()) {
@@ -119,7 +126,9 @@ impl PipelineRunner {
                     }
                     VariantStream::Audio(a) => {
                         if let Some(r) = self.resampler.get_mut(&a.id()) {
-                            r.process_frame(frame)?
+                            let frame_size = (*enc.codec_context()).frame_size;
+                            // TODO: resample audio fifo
+                            r.process_frame(frame, frame_size)?
                         } else {
                             frame
                         }
@@ -127,18 +136,13 @@ impl PipelineRunner {
                     _ => frame,
                 };
 
-                let packets = if let Some(enc) = self.encoders.get_mut(&var.id()) {
-                    enc.encode_frame(frame)?
-                } else {
-                    //warn!("Frame had nowhere to go in {} :/", var.id());
-                    continue;
-                };
-
+                let packets = enc.encode_frame(frame)?;
                 // pass new packets to egress
-                for eg in self.egress.iter_mut() {
-                    for pkt in packets.iter() {
-                        eg.process_pkt(*pkt, &var.id())?;
+                for mut pkt in packets {
+                    for eg in self.egress.iter_mut() {
+                        eg.process_pkt(pkt, &var.id())?;
                     }
+                    av_packet_free(&mut pkt);
                 }
             }
         }
