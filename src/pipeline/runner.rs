@@ -12,7 +12,9 @@ use crate::pipeline::{EgressType, PipelineConfig};
 use crate::variant::{StreamMapping, VariantStream};
 use crate::webhook::Webhook;
 use anyhow::Result;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::{av_get_sample_fmt, av_packet_free};
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
+    av_frame_free, av_get_sample_fmt, av_packet_free, av_rescale_q,
+};
 use ffmpeg_rs_raw::{
     cstr, get_frame_from_hw, Decoder, Demuxer, DemuxerInfo, Encoder, Resample, Scaler,
 };
@@ -100,7 +102,8 @@ impl PipelineRunner {
             self.frame_ctr += 1;
 
             // Copy frame from GPU if using hwaccel decoding
-            let frame = get_frame_from_hw(frame)?;
+            let mut frame = get_frame_from_hw(frame)?;
+            (*frame).time_base = (*stream).time_base;
 
             // Get the variants which want this pkt
             let pkt_vars = self
@@ -116,9 +119,11 @@ impl PipelineRunner {
                     continue;
                 };
 
-                let frame = match var {
+                let mut new_frame = false;
+                let mut frame = match var {
                     VariantStream::Video(v) => {
                         if let Some(s) = self.scalers.get_mut(&v.id()) {
+                            new_frame = true;
                             s.process_frame(frame, v.width, v.height, transmute(v.pixel_format))?
                         } else {
                             frame
@@ -128,6 +133,7 @@ impl PipelineRunner {
                         if let Some(r) = self.resampler.get_mut(&a.id()) {
                             let frame_size = (*enc.codec_context()).frame_size;
                             // TODO: resample audio fifo
+                            new_frame = true;
                             r.process_frame(frame, frame_size)?
                         } else {
                             frame
@@ -135,6 +141,18 @@ impl PipelineRunner {
                     }
                     _ => frame,
                 };
+
+                // before encoding frame, rescale timestamps
+                if !frame.is_null() {
+                    let enc_ctx = enc.codec_context();
+                    (*frame).pts =
+                        av_rescale_q((*frame).pts, (*frame).time_base, (*enc_ctx).time_base);
+                    (*frame).pkt_dts =
+                        av_rescale_q((*frame).pkt_dts, (*frame).time_base, (*enc_ctx).time_base);
+                    (*frame).duration =
+                        av_rescale_q((*frame).duration, (*frame).time_base, (*enc_ctx).time_base);
+                    (*frame).time_base = (*enc_ctx).time_base;
+                }
 
                 let packets = enc.encode_frame(frame)?;
                 // pass new packets to egress
@@ -144,7 +162,13 @@ impl PipelineRunner {
                     }
                     av_packet_free(&mut pkt);
                 }
+
+                if new_frame {
+                    av_frame_free(&mut frame);
+                }
             }
+
+            av_frame_free(&mut frame);
         }
 
         av_packet_free(&mut pkt);
@@ -212,13 +236,16 @@ impl PipelineRunner {
         for e in cfg.egress {
             match e {
                 EgressType::HLS(ref c) => {
-                    let encoders = self
-                        .encoders
-                        .iter()
-                        .filter(|(k, v)| c.variants.contains(k))
-                        .map(|(_, v)| v);
+                    let encoders = self.encoders.iter().filter_map(|(k, v)| {
+                        if c.variants.contains(k) {
+                            let var = cfg.variants.iter().find(|x| x.id() == *k)?;
+                            Some((var, v))
+                        } else {
+                            None
+                        }
+                    });
 
-                    let hls = HlsEgress::new(c.clone(), encoders)?;
+                    let hls = HlsEgress::new(&c.out_dir, 2.0, encoders)?;
                     self.egress.push(Box::new(hls));
                 }
                 EgressType::Recorder(ref c) => {

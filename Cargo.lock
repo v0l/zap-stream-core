@@ -277,6 +277,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 
 [[package]]
+name = "chrono"
+version = "0.4.38"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a21f936df1771bf62b77f047b726c4625ff2e8aa607c01ec06e5a05bd8463401"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "cipher"
 version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -563,7 +572,7 @@ dependencies = [
 [[package]]
 name = "ffmpeg-rs-raw"
 version = "0.1.0"
-source = "git+https://git.v0l.io/Kieran/ffmpeg-rs-raw.git?rev=bde945fe887dfdb38fff096bbf1928b9e8e8469f#bde945fe887dfdb38fff096bbf1928b9e8e8469f"
+source = "git+https://git.v0l.io/Kieran/ffmpeg-rs-raw.git?rev=0abe0c5229adeb64b013d1895c7eba3d917f05a4#0abe0c5229adeb64b013d1895c7eba3d917f05a4"
 dependencies = [
  "anyhow",
  "ffmpeg-sys-the-third",
@@ -1091,6 +1100,16 @@ name = "log"
 version = "0.4.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a7a70ba024b9dc04c27ea2f0c0548feb474ec5c54bba33a7f72f873a39d07b24"
+
+[[package]]
+name = "m3u8-rs"
+version = "6.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f03cd3335fb5f2447755d45cda9c70f76013626a9db44374973791b0926a86c3"
+dependencies = [
+ "chrono",
+ "nom",
+]
 
 [[package]]
 name = "memchr"
@@ -2493,6 +2512,7 @@ dependencies = [
  "itertools 0.13.0",
  "libc",
  "log",
+ "m3u8-rs",
  "pretty_env_logger",
  "rand",
  "resvg",

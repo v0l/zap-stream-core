@@ -11,7 +11,6 @@ use zap_stream_core::ingress::srt;
 use zap_stream_core::ingress::{file, tcp, test};
 use zap_stream_core::settings::Settings;
 
-
 #[derive(Parser, Debug)]
 struct Args {
     /// Add file input at startup
@@ -61,10 +60,7 @@ async fn main() -> anyhow::Result<()> {
     )));
 
     if let Some(p) = args.file {
-        listeners.push(tokio::spawn(file::listen(
-            p.parse()?,
-            settings.clone(),
-        )));
+        listeners.push(tokio::spawn(file::listen(p.parse()?, settings.clone())));
     }
     #[cfg(feature = "test-source")]
     if args.test_pattern {

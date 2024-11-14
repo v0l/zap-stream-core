@@ -26,12 +26,12 @@ impl RecorderEgress {
 
         let muxer = unsafe {
             let mut m = Muxer::builder()
-                .with_output_path(out_file.to_str().unwrap(), None, None)?
+                .with_output_path(out_file.to_str().unwrap(), None)?
                 .build()?;
             for var in variants {
                 m.add_stream_encoder(var)?;
             }
-            m.open()?;
+            m.open(None)?;
             m
         };
         Ok(Self { id, config, muxer })

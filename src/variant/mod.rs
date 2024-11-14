@@ -16,6 +16,7 @@ pub enum VariantStream {
     Video(VideoVariant),
     /// Audio stream mapping
     Audio(AudioVariant),
+    Subtitle(VariantMapping),
     /// Copy stream src<>dst stream
     CopyVideo(VariantMapping),
     /// Copy stream src<>dst stream
@@ -27,6 +28,7 @@ impl StreamMapping for VariantStream {
         match self {
             VariantStream::Video(v) => v.id(),
             VariantStream::Audio(v) => v.id(),
+            VariantStream::Subtitle(v) => v.id(),
             VariantStream::CopyAudio(v) => v.id(),
             VariantStream::CopyVideo(v) => v.id(),
         }
@@ -36,6 +38,7 @@ impl StreamMapping for VariantStream {
         match self {
             VariantStream::Video(v) => v.src_index(),
             VariantStream::Audio(v) => v.src_index(),
+            VariantStream::Subtitle(v) => v.src_index(),
             VariantStream::CopyAudio(v) => v.src_index(),
             VariantStream::CopyVideo(v) => v.src_index(),
         }
@@ -45,6 +48,7 @@ impl StreamMapping for VariantStream {
         match self {
             VariantStream::Video(v) => v.dst_index(),
             VariantStream::Audio(v) => v.dst_index(),
+            VariantStream::Subtitle(v) => v.dst_index(),
             VariantStream::CopyAudio(v) => v.dst_index(),
             VariantStream::CopyVideo(v) => v.dst_index(),
         }
@@ -54,6 +58,7 @@ impl StreamMapping for VariantStream {
         match self {
             VariantStream::Video(v) => v.set_dst_index(dst),
             VariantStream::Audio(v) => v.set_dst_index(dst),
+            VariantStream::Subtitle(v) => v.set_dst_index(dst),
             VariantStream::CopyAudio(v) => v.set_dst_index(dst),
             VariantStream::CopyVideo(v) => v.set_dst_index(dst),
         }
@@ -63,6 +68,7 @@ impl StreamMapping for VariantStream {
         match self {
             VariantStream::Video(v) => v.group_id(),
             VariantStream::Audio(v) => v.group_id(),
+            VariantStream::Subtitle(v) => v.group_id(),
             VariantStream::CopyAudio(v) => v.group_id(),
             VariantStream::CopyVideo(v) => v.group_id(),
         }
@@ -74,6 +80,7 @@ impl Display for VariantStream {
         match self {
             VariantStream::Video(v) => write!(f, "{}", v),
             VariantStream::Audio(a) => write!(f, "{}", a),
+            VariantStream::Subtitle(s) => write!(f, "{}", s),
             VariantStream::CopyVideo(c) => write!(f, "{}", c),
             VariantStream::CopyAudio(c) => write!(f, "{}", c),
         }
@@ -98,6 +105,7 @@ pub fn find_stream<'a>(
         .find(|x| match x {
             VariantStream::Video(v) => v.id() == *id,
             VariantStream::Audio(a) => a.id() == *id,
+            VariantStream::Subtitle(v) => v.id() == *id,
             VariantStream::CopyVideo(c) => c.id() == *id,
             VariantStream::CopyAudio(c) => c.id() == *id,
         })

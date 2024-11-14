@@ -75,10 +75,10 @@ impl TestPatternSrc {
 
         let muxer = unsafe {
             let mut m = Muxer::builder()
-                .with_output_write(writer, Some("mpegts"), None)?
+                .with_output_write(writer, Some("mpegts"))?
                 .with_stream_encoder(&encoder)?
                 .build()?;
-            m.open()?;
+            m.open(None)?;
             m
         };
 
