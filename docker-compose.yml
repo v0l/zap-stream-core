@@ -4,14 +4,26 @@ services:
     image: mariadb
     environment:
       - "MARIADB_ROOT_PASSWORD=root"
-      - "MARIADB_DATABASE=zap-stream"
     ports:
       - "3368:3306"
-    #volumes:
-      #- "db:/var/lib/mysql"
+    volumes:
+      - "./db.sql:/docker-entrypoint-initdb.d/00-init.sql"
   relay:
     image: scsibug/nostr-rs-relay
     ports:
       - "7766:8080"
+  blossom:
+    depends_on:
+      - db
+    image: voidic/route96
+    environment:
+      - "RUST_LOG=info"
+    ports:
+      - "8881:8000"
+    volumes:
+      - "blossom:/app/data"
+      - "./route96.toml:/app/config.toml"
 volumes:
   db:
+  blossom:
+  relay:

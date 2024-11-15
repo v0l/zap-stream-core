@@ -5,3 +5,4 @@ pub mod overseer;
 pub mod pipeline;
 pub mod settings;
 pub mod variant;
+mod blossom;

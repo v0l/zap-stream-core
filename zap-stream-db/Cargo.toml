@@ -1,0 +1,14 @@
+[package]
+name = "zap-stream-db"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+test-pattern = []
+
+[dependencies]
+anyhow = "^1.0.70"
+chrono = { version = "0.4.38", features = ["serde"] }
+sqlx = { version = "0.8.2", features = ["runtime-tokio", "migrate", "mysql", "chrono"] }
+log = "0.4.22"
