@@ -8,36 +8,43 @@ name = "zap-stream-core"
 path = "src/bin/zap_stream_core.rs"
 
 [features]
-default = ["test-source"]
+default = ["test-pattern"]
 srt = ["dep:srt-tokio"]
-test-source = ["dep:resvg", "dep:usvg", "dep:tiny-skia", "dep:fontdue", "dep:ringbuf"]
+zap-stream = ["dep:nostr-sdk", "dep:sqlx", "dep:fedimint-tonic-lnd", "dep:chrono"]
+test-pattern = ["dep:resvg", "dep:usvg", "dep:tiny-skia", "dep:fontdue", "dep:ringbuf"]
 
 [dependencies]
 ffmpeg-rs-raw = { git = "https://git.v0l.io/Kieran/ffmpeg-rs-raw.git", rev = "0abe0c5229adeb64b013d1895c7eba3d917f05a4" }
-
 tokio = { version = "1.36.0", features = ["rt", "rt-multi-thread", "macros"] }
 anyhow = { version = "^1.0.91", features = ["backtrace"] }
 pretty_env_logger = "0.5.0"
-
 tokio-stream = "0.1.14"
 futures-util = "0.3.30"
 async-trait = "0.1.77"
 log = "0.4.21"
 uuid = { version = "1.8.0", features = ["v4", "serde"] }
 serde = { version = "1.0.197", features = ["derive"] }
-config = { version = "0.14.0", features = ["toml"] }
+config = { version = "0.14.0", features = ["yaml"] }
 url = "2.5.0"
 itertools = "0.13.0"
 rand = "0.8.5"
 clap = { version = "4.5.16", features = ["derive"] }
 warp = "0.3.7"
 libc = "0.2.162"
+m3u8-rs = "6.0.0"
 
+# test-pattern
 srt-tokio = { version = "0.4.3", optional = true }
 resvg = { version = "0.44.0", optional = true }
 usvg = { version = "0.44.0", optional = true }
 tiny-skia = { version = "0.11.4", optional = true }
 fontdue = { version = "0.9.2", optional = true }
 ringbuf = { version = "0.4.7", optional = true }
-m3u8-rs = "6.0.0"
+
+# zap-stream
+nostr-sdk = { version = "0.36.0", optional = true }
+sqlx = { version = "0.8.2", optional = true, features = ["runtime-tokio", "migrate", "mysql", "chrono"] }
+fedimint-tonic-lnd = { version = "0.2.0", optional = true, default-features = false, features = ["invoicesrpc", "versionrpc"] }
+chrono = { version = "0.4.38", optional = true, features = ["serde"] }
+
 

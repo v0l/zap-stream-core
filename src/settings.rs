@@ -1,3 +1,4 @@
+use crate::pipeline::EgressType;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -9,9 +10,38 @@ pub struct Settings {
     /// - rtmp://localhost:1935
     pub endpoints: Vec<String>,
 
-    /// Output directory for egress
+    /// Where to store output (static files)
     pub output_dir: String,
 
-    /// Webhook configuration URL
-    pub webhook_url: String,
+    /// Overseer service see [crate::overseer::Overseer] for more info
+    pub overseer: OverseerConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OverseerConfig {
+    /// Static output
+    Static {
+        /// Types of output
+        egress_types: Vec<String>,
+    },
+    /// Control system via external API
+    Webhook {
+        /// Webhook service URL
+        url: String,
+    },
+    /// NIP-53 service (i.e. zap.stream backend)
+    ZapStream {
+        database: String,
+        lnd: LndSettings,
+        relays: Vec<String>,
+        nsec: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LndSettings {
+    pub address: String,
+    pub cert: String,
+    pub macaroon: String,
 }

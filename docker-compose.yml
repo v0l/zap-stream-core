@@ -1,12 +1,17 @@
 name: zap-stream-core
 services:
-  app:
-    build:
-      context: .
+  db:
+    image: mariadb
     environment:
-      - "RUST_LOG=info"
+      - "MARIADB_ROOT_PASSWORD=root"
+      - "MARIADB_DATABASE=zap-stream"
     ports:
-      - "3333:3333"
-      - "3334:3334"
-    volumes:
-      - "./config.toml:/app/config.toml:ro"
+      - "3368:3306"
+    #volumes:
+      #- "db:/var/lib/mysql"
+  relay:
+    image: scsibug/nostr-rs-relay
+    ports:
+      - "7766:8080"
+volumes:
+  db:

@@ -1,0 +1,42 @@
+# List of endpoints to listen on
+# currently supporting srt/tcp/file/test-pattern
+# All the endpoints must be valid URI's
+endpoints:
+  - "srt://127.0.0.1:3333"
+  - "tcp://127.0.0.1:3334"
+  - "test-pattern:"
+
+# Output directory for recording / hls
+output_dir: "./out"
+
+# Overseer is the main control structure which controls access to the service
+#
+# ** ONLY 1 OVERSEER CAN BE CONFIGURED AT A TIME **
+#
+# Supported overseers:
+#   static:
+#     egress-types:
+#       - hls
+#       - recorder
+#   webhook:
+#     url: <endpoint-url>
+#   zap-stream:
+#     private-key: "nsec1234"
+#     relays:
+#       - "wss://relay.com"
+#     lnd:
+#       address: <ip:port>
+#       cert: <path-to-tls-cert>
+#       macaroon: <path-to-macaroon>
+#     database: <database-connection-string>
+#
+overseer:
+  zap-stream:
+    nsec: "nsec1wya428srvpu96n4h78gualaj7wqw4ecgatgja8d5ytdqrxw56r2se440y4"
+    relays:
+      - "ws://localhost:7766"
+    database: "mysql://root:root@localhost:3368/zap-stream?max_connections=2"
+    lnd:
+      address: "https://127.0.0.1:10001"
+      cert: "/home/kieran/.polar/networks/1/volumes/lnd/alice/tls.cert"
+      macaroon: "/home/kieran/.polar/networks/1/volumes/lnd/alice/data/chain/bitcoin/regtest/admin.macaroon"

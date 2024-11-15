@@ -45,7 +45,7 @@ impl Display for EgressType {
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct PipelineConfig {
-    pub id: Uuid,
+    pub id: u64,
     /// Transcoded/Copied stream config
     pub variants: Vec<VariantStream>,
     /// Output muxers

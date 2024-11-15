@@ -5,7 +5,7 @@ use std::fs;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-use crate::egress::{Egress, EgressConfig};
+use crate::egress::{Egress, EgressConfig, EgressResult};
 
 pub struct RecorderEgress {
     id: Uuid,
@@ -39,11 +39,14 @@ impl RecorderEgress {
 }
 
 impl Egress for RecorderEgress {
-    unsafe fn process_pkt(&mut self, packet: *mut AVPacket, variant: &Uuid) -> Result<()> {
+    unsafe fn process_pkt(
+        &mut self,
+        packet: *mut AVPacket,
+        variant: &Uuid,
+    ) -> Result<EgressResult> {
         if self.config.variants.contains(variant) {
-            self.muxer.write_packet(packet)
-        } else {
-            Ok(())
+            self.muxer.write_packet(packet)?;
         }
+        Ok(EgressResult::None)
     }
 }

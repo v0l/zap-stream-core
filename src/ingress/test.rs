@@ -1,4 +1,5 @@
 use crate::ingress::{spawn_pipeline, ConnectionInfo};
+use crate::overseer::Overseer;
 use crate::settings::Settings;
 use anyhow::Result;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_H264;
@@ -15,20 +16,20 @@ use log::info;
 use ringbuf::traits::{Observer, Split};
 use ringbuf::{HeapCons, HeapRb};
 use std::io::Read;
-use std::ops::Add;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tiny_skia::Pixmap;
-use warp::Buf;
 
-pub async fn listen(settings: Settings) -> Result<()> {
+pub async fn listen(overseer: Arc<dyn Overseer>) -> Result<()> {
     info!("Test pattern enabled");
 
     let info = ConnectionInfo {
-        endpoint: "test-source".to_string(),
-        ip_addr: "".to_string(),
+        endpoint: "test-pattern".to_string(),
+        ip_addr: "test-pattern".to_string(),
+        key: "test-pattern".to_string(),
     };
     let src = TestPatternSrc::new()?;
-    spawn_pipeline(info, settings, Box::new(src));
+    spawn_pipeline(info, overseer.clone(), Box::new(src)).await;
     Ok(())
 }
 
