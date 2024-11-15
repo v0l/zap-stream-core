@@ -232,7 +232,7 @@ impl PipelineRunner {
 
         let cfg = self.handle.block_on(async {
             self.overseer
-                .configure_pipeline(&self.connection, &i_info)
+                .start_stream(&self.connection, &i_info)
                 .await
         })?;
         self.config = Some(cfg);

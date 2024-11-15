@@ -21,7 +21,7 @@ impl WebhookOverseer {
 
 #[async_trait]
 impl Overseer for WebhookOverseer {
-    async fn configure_pipeline(
+    async fn start_stream(
         &self,
         connection: &ConnectionInfo,
         stream_info: &IngressInfo,
@@ -29,7 +29,7 @@ impl Overseer for WebhookOverseer {
         todo!()
     }
 
-    async fn new_segment(
+    async fn on_segment(
         &self,
         pipeline: &Uuid,
         variant_id: &Uuid,

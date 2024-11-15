@@ -54,7 +54,7 @@ pub enum IngressStreamType {
 /// The control process that oversees streaming operations
 pub trait Overseer: Send + Sync {
     /// Set up a new streaming pipeline
-    async fn configure_pipeline(
+    async fn start_stream(
         &self,
         connection: &ConnectionInfo,
         stream_info: &IngressInfo,
@@ -63,7 +63,7 @@ pub trait Overseer: Send + Sync {
     /// A new segment (HLS etc.) was generated for a stream variant
     ///
     /// This handler is usually used for distribution / billing
-    async fn new_segment(
+    async fn on_segment(
         &self,
         pipeline: &Uuid,
         variant_id: &Uuid,
@@ -170,7 +170,7 @@ impl StaticOverseer {
 
 #[async_trait]
 impl Overseer for StaticOverseer {
-    async fn configure_pipeline(
+    async fn start_stream(
         &self,
         connection: &ConnectionInfo,
         stream_info: &IngressInfo,
@@ -196,7 +196,7 @@ impl Overseer for StaticOverseer {
         })
     }
 
-    async fn new_segment(
+    async fn on_segment(
         &self,
         pipeline: &Uuid,
         variant_id: &Uuid,
