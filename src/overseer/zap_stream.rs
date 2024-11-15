@@ -1,4 +1,4 @@
-use crate::blossom::Blossom;
+use crate::blossom::{BlobDescriptor, Blossom};
 use crate::egress::hls::HlsEgress;
 use crate::egress::EgressConfig;
 use crate::ingress::ConnectionInfo;
@@ -10,6 +10,7 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::Utc;
 use fedimint_tonic_lnd::verrpc::VersionRequest;
+use futures_util::FutureExt;
 use log::info;
 use nostr_sdk::bitcoin::PrivateKey;
 use nostr_sdk::{Client, Event, EventBuilder, JsonUtil, Keys, Kind, Tag};
@@ -19,6 +20,8 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use uuid::Uuid;
 use zap_stream_db::{UserStream, UserStreamState, ZapStreamDb};
+
+const STREAM_EVENT_KIND: u16 = 30_313;
 
 /// zap.stream NIP-53 overseer
 pub struct ZapStreamOverseer {
@@ -36,6 +39,7 @@ impl ZapStreamOverseer {
         relays: &Vec<String>,
     ) -> Result<Self> {
         let db = ZapStreamDb::new(db).await?;
+        db.migrate().await?;
 
         let mut lnd = fedimint_tonic_lnd::connect(
             lnd.address.clone(),
@@ -93,22 +97,18 @@ impl Overseer for ZapStreamOverseer {
 
         // insert new stream record
         let mut new_stream = UserStream {
-            id: 0,
+            id: Uuid::new_v4(),
             user_id: uid,
             starts: Utc::now(),
             state: UserStreamState::Live,
             ..Default::default()
         };
-
-        let stream_id = self.db.insert_stream(&new_stream).await?;
-        new_stream.id = stream_id;
-
         let stream_event = publish_stream_event(&new_stream, &self.client).await?;
         new_stream.event = Some(stream_event.as_json());
-        self.db.update_stream(&new_stream).await?;
 
+        self.db.insert_stream(&new_stream).await?;
         Ok(PipelineConfig {
-            id: stream_id,
+            id: new_stream.id,
             variants,
             egress,
         })
@@ -116,21 +116,33 @@ impl Overseer for ZapStreamOverseer {
 
     async fn on_segment(
         &self,
-        pipeline: &Uuid,
+        pipeline_id: &Uuid,
         variant_id: &Uuid,
         index: u64,
         duration: f32,
         path: &PathBuf,
     ) -> Result<()> {
         let blossom = Blossom::new("http://localhost:8881/");
-
         let blob = blossom.upload(path, &self.keys).await?;
+
+        let a_tag = format!(
+            "{}:{}:{}",
+            pipeline_id,
+            self.keys.public_key.to_hex(),
+            STREAM_EVENT_KIND
+        );
+        // publish nip94 tagged to stream
+        let n96 = blob_to_event_builder(&blob)?
+            .add_tags(Tag::parse(&["a", &a_tag]))
+            .sign_with_keys(&self.keys)?;
+        self.client.send_event(n96).await?;
+        info!("Published N96 segment for {}", a_tag);
 
         Ok(())
     }
 }
 
-pub(super) fn to_event_builder(this: &UserStream) -> Result<EventBuilder> {
+fn stream_to_event_builder(this: &UserStream) -> Result<EventBuilder> {
     let mut tags = vec![
         Tag::parse(&["d".to_string(), this.id.to_string()])?,
         Tag::parse(&["status".to_string(), this.state.to_string()])?,
@@ -171,13 +183,33 @@ pub(super) fn to_event_builder(this: &UserStream) -> Result<EventBuilder> {
             tags.push(Tag::parse(&["t".to_string(), tag.to_string()])?);
         }
     }
-    Ok(EventBuilder::new(Kind::from(30_313), "", tags))
+    Ok(EventBuilder::new(Kind::from(STREAM_EVENT_KIND), "", tags))
 }
 
-pub(super) async fn publish_stream_event(this: &UserStream, client: &Client) -> Result<Event> {
-    let ev = to_event_builder(this)?
+async fn publish_stream_event(this: &UserStream, client: &Client) -> Result<Event> {
+    let ev = stream_to_event_builder(this)?
         .sign(&client.signer().await?)
         .await?;
     client.send_event(ev.clone()).await?;
     Ok(ev)
+}
+
+fn blob_to_event_builder(this: &BlobDescriptor) -> Result<EventBuilder> {
+    let tags = if let Some(tags) = this.nip94.as_ref() {
+        tags.iter()
+            .map_while(|(k, v)| Tag::parse(&[k, v]).ok())
+            .collect()
+    } else {
+        let mut tags = vec![
+            Tag::parse(&["x", &this.sha256])?,
+            Tag::parse(&["url", &this.url])?,
+            Tag::parse(&["size", &this.size.to_string()])?,
+        ];
+        if let Some(m) = this.mime_type.as_ref() {
+            tags.push(Tag::parse(&["m", m])?)
+        }
+        tags
+    };
+
+    Ok(EventBuilder::new(Kind::FileMetadata, "", tags))
 }

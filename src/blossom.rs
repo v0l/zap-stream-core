@@ -1,9 +1,9 @@
-use std::collections::HashMap;
 use anyhow::Result;
 use base64::Engine;
 use nostr_sdk::{EventBuilder, JsonUtil, Keys, Kind, Tag, Timestamp};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::io::SeekFrom;
 use std::ops::Add;
 use std::path::PathBuf;
@@ -40,7 +40,7 @@ impl Blossom {
         let mut hash = Sha256::new();
         let mut buf: [u8; 1024] = [0; 1024];
         f.seek(SeekFrom::Start(0)).await?;
-        while let Ok(data) = f.read(&mut buf).await {
+        while let Ok(data) = f.read(&mut buf[..]).await {
             if data == 0 {
                 break;
             }
@@ -51,11 +51,7 @@ impl Blossom {
         Ok(hex::encode(hash))
     }
 
-    pub async fn upload(
-        &self,
-        from_file: &PathBuf,
-        keys: &Keys,
-    ) -> Result<BlobDescriptor> {
+    pub async fn upload(&self, from_file: &PathBuf, keys: &Keys) -> Result<BlobDescriptor> {
         let mut f = File::open(from_file).await?;
         let hash = Self::hash_file(&mut f).await?;
         let auth_event = EventBuilder::new(

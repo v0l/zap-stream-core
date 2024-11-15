@@ -1,6 +1,5 @@
 use crate::ingress::{spawn_pipeline, ConnectionInfo};
 use crate::overseer::Overseer;
-use crate::settings::Settings;
 use anyhow::Result;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_H264;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVColorSpace::AVCOL_SPC_RGB;

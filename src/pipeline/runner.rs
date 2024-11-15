@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use crate::egress::hls::HlsEgress;
 use crate::egress::recorder::RecorderEgress;
-use crate::egress::Egress;
+use crate::egress::{Egress, EgressResult};
 use crate::ingress::ConnectionInfo;
 use crate::overseer::{IngressInfo, IngressStream, IngressStreamType, Overseer};
 use crate::pipeline::{EgressType, PipelineConfig};
@@ -20,7 +20,7 @@ use ffmpeg_rs_raw::{
     cstr, get_frame_from_hw, Decoder, Demuxer, DemuxerInfo, Encoder, Resample, Scaler, StreamType,
 };
 use itertools::Itertools;
-use log::{info, warn};
+use log::{error, info, warn};
 use tokio::runtime::Handle;
 use uuid::Uuid;
 
@@ -116,6 +116,7 @@ impl PipelineRunner {
             return Ok(());
         };
 
+        let mut egress_results = vec![];
         for frame in frames {
             self.frame_ctr += 1;
 
@@ -175,7 +176,8 @@ impl PipelineRunner {
                 // pass new packets to egress
                 for mut pkt in packets {
                     for eg in self.egress.iter_mut() {
-                        eg.process_pkt(pkt, &var.id())?;
+                        let er = eg.process_pkt(pkt, &var.id())?;
+                        egress_results.push(er);
                     }
                     av_packet_free(&mut pkt);
                 }
@@ -190,6 +192,20 @@ impl PipelineRunner {
 
         av_packet_free(&mut pkt);
 
+        // egress results
+        self.handle.block_on(async {
+            for er in egress_results {
+                if let EgressResult::NewSegment(seg) = er {
+                    if let Err(e) = self
+                        .overseer
+                        .on_segment(&config.id, &seg.variant, seg.idx, seg.duration, &seg.path)
+                        .await
+                    {
+                        error!("Failed to process segment: {}", e);
+                    }
+                }
+            }
+        });
         let elapsed = Instant::now().sub(self.fps_counter_start).as_secs_f32();
         if elapsed >= 2f32 {
             info!("Average fps: {:.2}", self.frame_ctr as f32 / elapsed);
@@ -230,11 +246,9 @@ impl PipelineRunner {
                 .collect(),
         };
 
-        let cfg = self.handle.block_on(async {
-            self.overseer
-                .start_stream(&self.connection, &i_info)
-                .await
-        })?;
+        let cfg = self
+            .handle
+            .block_on(async { self.overseer.start_stream(&self.connection, &i_info).await })?;
         self.config = Some(cfg);
         self.info = Some(i_info);
 

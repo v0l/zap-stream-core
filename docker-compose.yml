@@ -7,11 +7,14 @@ services:
     ports:
       - "3368:3306"
     volumes:
-      - "./db.sql:/docker-entrypoint-initdb.d/00-init.sql"
+      - "./dev-setup/db.sql:/docker-entrypoint-initdb.d/00-init.sql"
   relay:
-    image: scsibug/nostr-rs-relay
+    image: dockurr/strfry
     ports:
-      - "7766:8080"
+      - "7766:7777"
+    volumes:
+      - "relay:/app/strfry-db"
+      - "./dev-setup/strfry.conf:/etc/strfry.conf"
   blossom:
     depends_on:
       - db
@@ -22,7 +25,7 @@ services:
       - "8881:8000"
     volumes:
       - "blossom:/app/data"
-      - "./route96.toml:/app/config.toml"
+      - "./dev-setup/route96.toml:/app/config.toml"
 volumes:
   db:
   blossom:

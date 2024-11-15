@@ -1,6 +1,5 @@
 use anyhow::Result;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPacket;
-use std::fmt::Display;
 use uuid::Uuid;
 
 use crate::egress::{Egress, EgressResult};

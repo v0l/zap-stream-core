@@ -5,7 +5,6 @@ use tokio::net::TcpListener;
 
 use crate::ingress::{spawn_pipeline, ConnectionInfo};
 use crate::overseer::Overseer;
-use crate::settings::Settings;
 
 pub async fn listen(addr: String, overseer: Arc<dyn Overseer>) -> Result<()> {
     let listener = TcpListener::bind(addr.clone()).await?;

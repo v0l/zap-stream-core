@@ -11,7 +11,6 @@ use crate::variant::video::VideoVariant;
 use crate::variant::{StreamMapping, VariantStream};
 use anyhow::Result;
 use async_trait::async_trait;
-use chrono::Utc;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use std::cmp::PartialEq;
 use std::path::PathBuf;
@@ -66,7 +65,7 @@ pub trait Overseer: Send + Sync {
     /// This handler is usually used for distribution / billing
     async fn on_segment(
         &self,
-        pipeline: &Uuid,
+        pipeline_id: &Uuid,
         variant_id: &Uuid,
         index: u64,
         duration: f32,
@@ -179,7 +178,7 @@ impl Overseer for StaticOverseer {
         let vars = get_default_variants(stream_info)?;
         let var_ids = vars.iter().map(|v| v.id()).collect();
         Ok(PipelineConfig {
-            id: Utc::now().timestamp() as u64,
+            id: Uuid::new_v4(),
             variants: vars,
             egress: vec![
                 /*EgressType::Recorder(EgressConfig {
@@ -199,7 +198,7 @@ impl Overseer for StaticOverseer {
 
     async fn on_segment(
         &self,
-        pipeline: &Uuid,
+        pipeline_id: &Uuid,
         variant_id: &Uuid,
         index: u64,
         duration: f32,

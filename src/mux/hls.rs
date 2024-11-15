@@ -1,4 +1,4 @@
-use crate::egress::{EgressResult, NewSegment};
+use crate::egress::NewSegment;
 use crate::variant::{StreamMapping, VariantStream};
 use anyhow::{bail, Result};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
@@ -220,11 +220,13 @@ impl HlsVariant {
             .find(|a| matches!(*a, HlsVariantStream::Video { .. }))
             .map_or(Default::default(), |v| v.id().clone());
 
+        // emit result of the previously completed segment,
+        let prev_seg = self.idx - 1;
         Ok(NewSegment {
             variant: video_var,
-            idx: self.idx - 1, // emit result of the previously completed segment,
+            idx: prev_seg,
             duration,
-            path: PathBuf::from(next_seg_url),
+            path: PathBuf::from(Self::map_segment_path(&*self.out_dir, &self.name, prev_seg)),
         })
     }
 

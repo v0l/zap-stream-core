@@ -1,7 +1,5 @@
 use crate::overseer::Overseer;
 use crate::pipeline::runner::PipelineRunner;
-use crate::settings::Settings;
-use anyhow::Result;
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 use std::io::Read;

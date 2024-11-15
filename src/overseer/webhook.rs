@@ -31,7 +31,7 @@ impl Overseer for WebhookOverseer {
 
     async fn on_segment(
         &self,
-        pipeline: &Uuid,
+        pipeline_id: &Uuid,
         variant_id: &Uuid,
         index: u64,
         duration: f32,

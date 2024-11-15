@@ -1,4 +1,3 @@
-use crate::pipeline::EgressType;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

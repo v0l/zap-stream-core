@@ -1,6 +1,5 @@
 use crate::UserStream;
 use anyhow::Result;
-use log::info;
 use sqlx::{MySqlPool, Row};
 
 pub struct ZapStreamDb {
@@ -49,17 +48,16 @@ impl ZapStreamDb {
         }
     }
 
-    pub async fn insert_stream(&self, user_stream: &UserStream) -> Result<u64> {
-        sqlx::query(
-            "insert into user_stream (user_id, state, starts) values (?, ?, ?) returning id",
-        )
-        .bind(&user_stream.user_id)
-        .bind(&user_stream.state)
-        .bind(&user_stream.starts)
-        .fetch_one(&self.db)
-        .await?
-        .try_get(0)
-        .map_err(anyhow::Error::new)
+    pub async fn insert_stream(&self, user_stream: &UserStream) -> Result<()> {
+        sqlx::query("insert into user_stream (id, user_id, state, starts) values (?, ?, ?, ?)")
+            .bind(&user_stream.id)
+            .bind(&user_stream.user_id)
+            .bind(&user_stream.state)
+            .bind(&user_stream.starts)
+            .execute(&self.db)
+            .await?;
+
+        Ok(())
     }
 
     pub async fn update_stream(&self, user_stream: &UserStream) -> Result<()> {

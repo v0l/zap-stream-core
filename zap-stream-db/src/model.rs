@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use sqlx::{FromRow, Type};
 use std::fmt::{Display, Formatter};
+use uuid::Uuid;
 
 #[derive(Debug, Clone, FromRow)]
 pub struct User {
@@ -37,7 +38,7 @@ impl Display for UserStreamState {
 
 #[derive(Debug, Clone, Default, FromRow)]
 pub struct UserStream {
-    pub id: u64,
+    pub id: Uuid,
     pub user_id: u64,
     pub starts: DateTime<Utc>,
     pub ends: Option<DateTime<Utc>>,

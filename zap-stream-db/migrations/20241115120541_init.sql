@@ -13,7 +13,7 @@ create table user
 create unique index ix_user_pubkey on user (pubkey);
 create table user_stream
 (
-    id              integer unsigned not null auto_increment primary key,
+    id              UUID not null primary key,
     user_id         integer unsigned not null,
     starts          timestamp not null,
     ends            timestamp,

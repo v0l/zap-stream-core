@@ -1,6 +1,5 @@
 use crate::ingress::{spawn_pipeline, ConnectionInfo};
 use crate::overseer::Overseer;
-use crate::settings::Settings;
 use anyhow::Result;
 use log::info;
 use std::path::PathBuf;
