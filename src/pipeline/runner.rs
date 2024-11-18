@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::mem::transmute;
 use std::ops::Sub;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -13,11 +14,15 @@ use crate::overseer::{IngressInfo, IngressStream, IngressStreamType, Overseer};
 use crate::pipeline::{EgressType, PipelineConfig};
 use crate::variant::{StreamMapping, VariantStream};
 use anyhow::{bail, Result};
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_WEBP;
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPictureType::AV_PICTURE_TYPE_NONE;
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    av_frame_free, av_get_sample_fmt, av_packet_free, av_rescale_q,
+    av_frame_free, av_get_sample_fmt, av_packet_free, av_q2d, av_rescale_q, AVMediaType,
 };
 use ffmpeg_rs_raw::{
-    cstr, get_frame_from_hw, Decoder, Demuxer, DemuxerInfo, Encoder, Resample, Scaler, StreamType,
+    cstr, get_frame_from_hw, AudioFifo, Decoder, Demuxer, DemuxerInfo, Encoder, Resample, Scaler,
+    StreamType,
 };
 use itertools::Itertools;
 use log::{error, info, warn};
@@ -47,8 +52,8 @@ pub struct PipelineRunner {
     /// Scaler for a variant (variant_id, Scaler)
     scalers: HashMap<Uuid, Scaler>,
 
-    /// Resampler for a variant (variant_id, Resample)
-    resampler: HashMap<Uuid, Resample>,
+    /// Resampler for a variant (variant_id, Resample+FIFO)
+    resampler: HashMap<Uuid, (Resample, AudioFifo)>,
 
     /// Encoder for a variant (variant_id, Encoder)
     encoders: HashMap<Uuid, Encoder>,
@@ -59,25 +64,28 @@ pub struct PipelineRunner {
     /// All configured egress'
     egress: Vec<Box<dyn Egress>>,
 
-    fps_counter_start: Instant,
-    frame_ctr: u64,
-
     /// Info about the input stream
     info: Option<IngressInfo>,
 
     /// Overseer managing this pipeline
     overseer: Arc<dyn Overseer>,
+
+    fps_counter_start: Instant,
+    frame_ctr: u64,
+    out_dir: String,
 }
 
 impl PipelineRunner {
     pub fn new(
         handle: Handle,
+        out_dir: String,
         overseer: Arc<dyn Overseer>,
         connection: ConnectionInfo,
         recv: Box<dyn Read + Send>,
     ) -> Result<Self> {
         Ok(Self {
             handle,
+            out_dir,
             overseer,
             connection,
             config: Default::default(),
@@ -118,11 +126,38 @@ impl PipelineRunner {
 
         let mut egress_results = vec![];
         for frame in frames {
-            self.frame_ctr += 1;
-
             // Copy frame from GPU if using hwaccel decoding
             let mut frame = get_frame_from_hw(frame)?;
             (*frame).time_base = (*stream).time_base;
+
+            let p = (*stream).codecpar;
+            if (*p).codec_type == AVMediaType::AVMEDIA_TYPE_VIDEO {
+                let pts_sec = ((*frame).pts as f64 * av_q2d((*stream).time_base)).floor() as u64;
+                // write thumbnail every 1min
+                if pts_sec % 60 == 0 && pts_sec != 0 {
+                    let dst_pic = PathBuf::from(&self.out_dir)
+                        .join(config.id.to_string())
+                        .join("thumb.webp");
+                    let mut sw = Scaler::new();
+                    let mut frame = sw.process_frame(
+                        frame,
+                        (*frame).width as _,
+                        (*frame).height as _,
+                        AV_PIX_FMT_YUV420P,
+                    )?;
+                    Encoder::new(AV_CODEC_ID_WEBP)?
+                        .with_height((*frame).height)
+                        .with_width((*frame).width)
+                        .with_pix_fmt(transmute((*frame).format))
+                        .open(None)?
+                        .save_picture(frame, dst_pic.to_str().unwrap())?;
+                    info!("Saved thumb to: {}", dst_pic.display());
+                    av_frame_free(&mut frame);
+                }
+
+                // TODO: fix this, multiple video streams in
+                self.frame_ctr += 1;
+            }
 
             // Get the variants which want this pkt
             let pkt_vars = config
@@ -148,11 +183,21 @@ impl PipelineRunner {
                         }
                     }
                     VariantStream::Audio(a) => {
-                        if let Some(r) = self.resampler.get_mut(&a.id()) {
+                        if let Some((r, f)) = self.resampler.get_mut(&a.id()) {
                             let frame_size = (*enc.codec_context()).frame_size;
-                            // TODO: resample audio fifo
                             new_frame = true;
-                            r.process_frame(frame, frame_size)?
+                            let mut resampled_frame = r.process_frame(frame, frame_size)?;
+                            if let Some(ret) =
+                                f.buffer_frame(resampled_frame, frame_size as usize)?
+                            {
+                                av_frame_free(&mut resampled_frame);
+                                // assume timebase of the encoder
+                                //(*ret).time_base = (*enc.codec_context()).time_base;
+                                ret
+                            } else {
+                                av_frame_free(&mut resampled_frame);
+                                continue;
+                            }
                         } else {
                             frame
                         }
@@ -163,6 +208,7 @@ impl PipelineRunner {
                 // before encoding frame, rescale timestamps
                 if !frame.is_null() {
                     let enc_ctx = enc.codec_context();
+                    (*frame).pict_type = AV_PICTURE_TYPE_NONE;
                     (*frame).pts =
                         av_rescale_q((*frame).pts, (*frame).time_base, (*enc_ctx).time_base);
                     (*frame).pkt_dts =
@@ -288,12 +334,10 @@ impl PipelineRunner {
                 }
                 VariantStream::Audio(a) => {
                     let enc = a.try_into()?;
-                    let rs = Resample::new(
-                        av_get_sample_fmt(cstr!(a.sample_fmt.as_str())),
-                        a.sample_rate as _,
-                        a.channels as _,
-                    );
-                    self.resampler.insert(out_stream.id(), rs);
+                    let fmt = av_get_sample_fmt(cstr!(a.sample_fmt.as_str()));
+                    let rs = Resample::new(fmt, a.sample_rate as _, a.channels as _);
+                    let f = AudioFifo::new(fmt, a.channels as _)?;
+                    self.resampler.insert(out_stream.id(), (rs, f));
                     self.encoders.insert(out_stream.id(), enc);
                 }
                 _ => continue,
@@ -304,27 +348,22 @@ impl PipelineRunner {
 
         // Setup egress
         for e in &cfg.egress {
+            let c = e.config();
+            let encoders = self.encoders.iter().filter_map(|(k, v)| {
+                if c.variants.contains(k) {
+                    let var = cfg.variants.iter().find(|x| x.id() == *k)?;
+                    Some((var, v))
+                } else {
+                    None
+                }
+            });
             match e {
-                EgressType::HLS(ref c) => {
-                    let encoders = self.encoders.iter().filter_map(|(k, v)| {
-                        if c.variants.contains(k) {
-                            let var = cfg.variants.iter().find(|x| x.id() == *k)?;
-                            Some((var, v))
-                        } else {
-                            None
-                        }
-                    });
-
-                    let hls = HlsEgress::new(&c.out_dir, 2.0, encoders)?;
+                EgressType::HLS(_) => {
+                    let hls = HlsEgress::new(&cfg.id, &self.out_dir, 2.0, encoders)?;
                     self.egress.push(Box::new(hls));
                 }
-                EgressType::Recorder(ref c) => {
-                    let encoders = self
-                        .encoders
-                        .iter()
-                        .filter(|(k, _v)| c.variants.contains(k))
-                        .map(|(_, v)| v);
-                    let rec = RecorderEgress::new(c.clone(), encoders)?;
+                EgressType::Recorder(_) => {
+                    let rec = RecorderEgress::new(&cfg.id, &self.out_dir, encoders)?;
                     self.egress.push(Box::new(rec));
                 }
                 _ => warn!("{} is not implemented", e),

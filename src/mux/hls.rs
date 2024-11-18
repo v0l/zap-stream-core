@@ -1,9 +1,10 @@
 use crate::egress::NewSegment;
 use crate::variant::{StreamMapping, VariantStream};
 use anyhow::{bail, Result};
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_H264;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    av_free, av_opt_set, av_q2d, av_write_frame, avio_flush, avio_open, AVPacket, AVIO_FLAG_WRITE,
-    AV_PKT_FLAG_KEY,
+    av_free, av_opt_set, av_q2d, av_write_frame, avio_flush, avio_open, AVPacket, AVStream,
+    AVIO_FLAG_WRITE, AV_PKT_FLAG_KEY,
 };
 use ffmpeg_rs_raw::{cstr, Encoder, Muxer};
 use itertools::Itertools;
@@ -41,6 +42,14 @@ impl HlsVariantStream {
             HlsVariantStream::Subtitle { id, .. } => id,
         }
     }
+
+    pub fn index(&self) -> &usize {
+        match self {
+            HlsVariantStream::Video { index, .. } => index,
+            HlsVariantStream::Audio { index, .. } => index,
+            HlsVariantStream::Subtitle { index, .. } => index,
+        }
+    }
 }
 
 impl Display for HlsVariantStream {
@@ -64,6 +73,8 @@ pub struct HlsVariant {
     pub segment_length: f32,
     /// Current segment index
     pub idx: u64,
+    /// Current segment start time in seconds (duration)
+    pub pkt_start: f32,
     /// Output directory (base)
     pub out_dir: String,
     /// List of segments to be included in the playlist
@@ -142,6 +153,7 @@ impl HlsVariant {
             mux,
             streams,
             idx: 1,
+            pkt_start: 0.0,
             segments: Vec::from([SegmentInfo(1, segment_length)]),
             out_dir: out_dir.to_string(),
         })
@@ -165,21 +177,22 @@ impl HlsVariant {
 
     /// Mux a packet created by the encoder for this variant
     pub unsafe fn mux_packet(&mut self, pkt: *mut AVPacket) -> Result<Option<NewSegment>> {
+        let pkt_q = av_q2d((*pkt).time_base);
         // time of this packet in seconds
-        let pkt_time = (*pkt).pts as f32 * av_q2d((*pkt).time_base) as f32;
+        let pkt_time = (*pkt).pts as f32 * pkt_q as f32;
         // what segment this pkt should be in (index)
         let pkt_seg = 1 + (pkt_time / self.segment_length).floor() as u64;
 
         let mut result = None;
         let can_split = (*pkt).flags & AV_PKT_FLAG_KEY == AV_PKT_FLAG_KEY;
         if pkt_seg != self.idx && can_split {
-            result = Some(self.split_next_seg()?);
+            result = Some(self.split_next_seg(pkt_time)?);
         }
         self.mux.write_packet(pkt)?;
         Ok(result)
     }
 
-    unsafe fn split_next_seg(&mut self) -> Result<NewSegment> {
+    unsafe fn split_next_seg(&mut self, pkt_time: f32) -> Result<NewSegment> {
         self.idx += 1;
 
         // Manually reset muxer avio
@@ -204,9 +217,8 @@ impl HlsVariant {
             0,
         );
 
-        // TODO: calc actual duration
-        let duration = 2.0;
-        info!("Writing segment {}", &next_seg_url);
+        let duration = pkt_time - self.pkt_start;
+        info!("Writing segment {} [{}s]", &next_seg_url, duration);
         if let Err(e) = self.add_segment(self.idx, duration) {
             warn!("Failed to update playlist: {}", e);
         }
@@ -214,20 +226,24 @@ impl HlsVariant {
         /// Get the video variant for this group
         /// since this could actually be audio which would not be useful for
         /// [Overseer] impl
-        let video_var = self
-            .streams
-            .iter()
-            .find(|a| matches!(*a, HlsVariantStream::Video { .. }))
-            .map_or(Default::default(), |v| v.id().clone());
+        let video_var = self.video_stream().unwrap_or(self.streams.first().unwrap());
 
         // emit result of the previously completed segment,
         let prev_seg = self.idx - 1;
-        Ok(NewSegment {
-            variant: video_var,
+        let ret = NewSegment {
+            variant: *video_var.id(),
             idx: prev_seg,
             duration,
             path: PathBuf::from(Self::map_segment_path(&*self.out_dir, &self.name, prev_seg)),
-        })
+        };
+        self.pkt_start = pkt_time;
+        Ok(ret)
+    }
+
+    fn video_stream(&self) -> Option<&HlsVariantStream> {
+        self.streams
+            .iter()
+            .find(|a| matches!(*a, HlsVariantStream::Video { .. }))
     }
 
     fn add_segment(&mut self, idx: u64, duration: f32) -> Result<()> {
@@ -258,34 +274,104 @@ impl HlsVariant {
         pl.write_to(&mut f_out)?;
         Ok(())
     }
+
+    /// https://git.ffmpeg.org/gitweb/ffmpeg.git/blob/HEAD:/libavformat/hlsenc.c#l351
+    unsafe fn to_codec_attr(&self, stream: *mut AVStream) -> Option<String> {
+        let p = (*stream).codecpar;
+        if (*p).codec_id == AV_CODEC_ID_H264 {
+            let data = (*p).extradata;
+            if !data.is_null() {
+                let mut id_ptr = ptr::null_mut();
+                let ds: *mut u16 = data as *mut u16;
+                if (*ds) == 1 && (*data.add(4)) & 0x1F == 7 {
+                    id_ptr = data.add(5);
+                } else if (*ds) == 1 && (*data.add(3)) & 0x1F == 7 {
+                    id_ptr = data.add(4);
+                } else if *data.add(0) == 1 {
+                    id_ptr = data.add(1);
+                } else {
+                    return None;
+                }
+
+                return Some(format!(
+                    "avc1.{}",
+                    hex::encode([*id_ptr.add(0), *id_ptr.add(1), *id_ptr.add(2)])
+                ));
+            }
+        }
+        None
+    }
+
+    pub fn to_playlist_variant(&self) -> m3u8_rs::VariantStream {
+        unsafe {
+            let pes = self.video_stream().unwrap_or(self.streams.first().unwrap());
+            let av_stream = *(*self.mux.context()).streams.add(*pes.index());
+            let codec_par = (*av_stream).codecpar;
+            m3u8_rs::VariantStream {
+                is_i_frame: false,
+                uri: format!("{}/live.m3u8", self.name),
+                bandwidth: 0,
+                average_bandwidth: Some((*codec_par).bit_rate as u64),
+                codecs: self.to_codec_attr(av_stream),
+                resolution: Some(m3u8_rs::Resolution {
+                    width: (*codec_par).width as _,
+                    height: (*codec_par).height as _,
+                }),
+                frame_rate: Some(av_q2d((*codec_par).framerate)),
+                hdcp_level: None,
+                audio: None,
+                video: None,
+                subtitles: None,
+                closed_captions: None,
+                other_attributes: None,
+            }
+        }
+    }
 }
 
 pub struct HlsMuxer {
+    out_dir: PathBuf,
     variants: Vec<HlsVariant>,
 }
 
 impl HlsMuxer {
     pub fn new<'a>(
+        id: &Uuid,
         out_dir: &str,
         segment_length: f32,
         encoders: impl Iterator<Item = (&'a VariantStream, &'a Encoder)>,
     ) -> Result<Self> {
-        let id = Uuid::new_v4();
-        let base = PathBuf::from(out_dir)
-            .join(id.to_string())
-            .to_string_lossy()
-            .to_string();
+        let base = PathBuf::from(out_dir).join(id.to_string());
 
         let mut vars = Vec::new();
         for (k, group) in &encoders
             .sorted_by(|a, b| a.0.group_id().cmp(&b.0.group_id()))
             .chunk_by(|a| a.0.group_id())
         {
-            let var = HlsVariant::new(&base, segment_length, k, group)?;
+            let var = HlsVariant::new(base.to_str().unwrap(), segment_length, k, group)?;
             vars.push(var);
         }
 
-        Ok(Self { variants: vars })
+        let ret = Self {
+            out_dir: base,
+            variants: vars,
+        };
+        ret.write_master_playlist()?;
+        Ok(ret)
+    }
+
+    fn write_master_playlist(&self) -> Result<()> {
+        let mut pl = m3u8_rs::MasterPlaylist::default();
+        pl.version = Some(3);
+        pl.variants = self
+            .variants
+            .iter()
+            .map(|v| v.to_playlist_variant())
+            .collect();
+
+        let mut f_out = File::create(self.out_dir.join("live.m3u8"))?;
+        pl.write_to(&mut f_out)?;
+        Ok(())
     }
 
     /// Mux an encoded packet from [Encoder]
@@ -295,7 +381,9 @@ impl HlsMuxer {
         variant: &Uuid,
     ) -> Result<Option<NewSegment>> {
         for var in self.variants.iter_mut() {
-            if var.streams.iter().any(|s| s.id() == variant) {
+            if let Some(vs) = var.streams.iter().find(|s| s.id() == variant) {
+                // very important for muxer to know which stream this pkt belongs to
+                (*pkt).stream_index = *vs.index() as _;
                 return var.mux_packet(pkt);
             }
         }

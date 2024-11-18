@@ -9,17 +9,18 @@ use srt_tokio::{SrtListener, SrtSocket};
 use std::sync::Arc;
 use tokio::sync::mpsc::unbounded_channel;
 
-pub async fn listen(listen_addr: String, overseer: Arc<dyn Overseer>) -> Result<()> {
-    let (_binding, mut packets) = SrtListener::builder().bind(listen_addr.clone()).await?;
+pub async fn listen(out_dir: String, addr: String, overseer: Arc<dyn Overseer>) -> Result<()> {
+    let (_binding, mut packets) = SrtListener::builder().bind(&addr).await?;
 
-    info!("SRT listening on: {}", listen_addr.clone());
+    info!("SRT listening on: {}", &addr);
     while let Some(request) = packets.incoming().next().await {
         let mut socket = request.accept(None).await?;
         let info = ConnectionInfo {
-            endpoint: listen_addr.clone(),
+            endpoint: addr.clone(),
             ip_addr: socket.settings().remote.to_string(),
+            key: "".to_string(),
         };
-        spawn_pipeline(info, overseer.clone(), Box::new(socket)).await;
+        spawn_pipeline(info, out_dir.clone(), overseer.clone(), Box::new(socket)).await;
     }
     Ok(())
 }

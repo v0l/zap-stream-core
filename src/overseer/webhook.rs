@@ -39,4 +39,14 @@ impl Overseer for WebhookOverseer {
     ) -> Result<()> {
         todo!()
     }
+
+    async fn on_thumbnail(
+        &self,
+        pipeline_id: &Uuid,
+        width: usize,
+        height: usize,
+        path: &PathBuf,
+    ) -> Result<()> {
+        todo!()
+    }
 }

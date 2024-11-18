@@ -1,7 +1,5 @@
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_H264;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVColorSpace::AVCOL_SPC_BT709;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::{avcodec_get_name, AVCodecID};
-use ffmpeg_rs_raw::{rstr, Encoder};
+use ffmpeg_rs_raw::Encoder;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
@@ -28,8 +26,8 @@ pub struct VideoVariant {
     /// Bitrate of this stream
     pub bitrate: u64,
 
-    /// AVCodecID
-    pub codec: usize,
+    /// Codec name
+    pub codec: String,
 
     /// Codec profile
     pub profile: usize,
@@ -51,7 +49,7 @@ impl Display for VideoVariant {
             "Video #{}->{}: {}, {}x{}, {}fps, {}kbps",
             self.mapping.src_index,
             self.mapping.dst_index,
-            unsafe { rstr!(avcodec_get_name(transmute(self.codec as i32))) },
+            self.codec,
             self.width,
             self.height,
             self.fps,
@@ -87,18 +85,18 @@ impl TryInto<Encoder> for &VideoVariant {
     fn try_into(self) -> Result<Encoder, Self::Error> {
         unsafe {
             let mut opt = HashMap::new();
-            if self.codec == transmute::<AVCodecID, u32>(AV_CODEC_ID_H264) as usize {
+            if self.codec == "x264" {
                 opt.insert("preset".to_string(), "fast".to_string());
                 //opt.insert("tune".to_string(), "zerolatency".to_string());
             }
-            let enc = Encoder::new(transmute(self.codec as u32))?
+            let enc = Encoder::new_with_name(&self.codec)?
                 .with_bitrate(self.bitrate as _)
                 .with_width(self.width as _)
                 .with_height(self.height as _)
                 .with_pix_fmt(transmute(self.pixel_format))
                 .with_profile(transmute(self.profile as i32))
                 .with_level(transmute(self.level as i32))
-                .with_framerate(self.fps)
+                .with_framerate(self.fps)?
                 .with_options(|ctx| {
                     (*ctx).gop_size = self.keyframe_interval as _;
                     (*ctx).keyint_min = self.keyframe_interval as _;

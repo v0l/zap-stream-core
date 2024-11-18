@@ -31,15 +31,11 @@ impl EgressType {
 
 impl Display for EgressType {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                EgressType::HLS(c) => format!("{}", c),
-                EgressType::Recorder(c) => format!("{}", c),
-                EgressType::RTMPForwarder(c) => format!("{}", c),
-            }
-        )
+        match self {
+            EgressType::HLS(_) => write!(f, "HLS"),
+            EgressType::Recorder(_) => write!(f, "Recorder"),
+            EgressType::RTMPForwarder(_) => write!(f, "RTMPForwarder"),
+        }
     }
 }
 

@@ -27,14 +27,16 @@ pub struct ConnectionInfo {
 
 pub async fn spawn_pipeline(
     info: ConnectionInfo,
+    out_dir: String,
     seer: Arc<dyn Overseer>,
     reader: Box<dyn Read + Send>,
 ) {
     info!("New client connected: {}", &info.ip_addr);
     let handle = Handle::current();
     let seer = seer.clone();
+    let out_dir = out_dir.to_string();
     std::thread::spawn(move || unsafe {
-        match PipelineRunner::new(handle, seer, info, reader) {
+        match PipelineRunner::new(handle, out_dir, seer, info, reader) {
             Ok(mut pl) => loop {
                 if let Err(e) = pl.run() {
                     error!("Pipeline run failed: {}", e);

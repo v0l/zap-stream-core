@@ -9,6 +9,12 @@ endpoints:
 # Output directory for recording / hls
 output_dir: "./out"
 
+# Public URL for serving files for [output_dir]
+public_url: "http://localhost:8080"
+
+# Bind address for http server serving files from [output_dir]
+listen_http: "127.0.0.1:8080"
+
 # Overseer is the main control structure which controls access to the service
 #
 # ** ONLY 1 OVERSEER CAN BE CONFIGURED AT A TIME **

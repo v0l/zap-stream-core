@@ -71,6 +71,16 @@ pub trait Overseer: Send + Sync {
         duration: f32,
         path: &PathBuf,
     ) -> Result<()>;
+
+    /// At a regular interval, pipeline will emit one of the frames for processing as a
+    /// thumbnail
+    async fn on_thumbnail(
+        &self,
+        pipeline_id: &Uuid,
+        width: usize,
+        height: usize,
+        path: &PathBuf,
+    ) -> Result<()>;
 }
 
 impl Settings {
@@ -86,13 +96,23 @@ impl Settings {
                 database,
                 lnd,
                 relays,
+                blossom,
             } => {
                 #[cfg(not(feature = "zap-stream"))]
                 panic!("zap.stream overseer is not enabled");
 
                 #[cfg(feature = "zap-stream")]
                 Ok(Arc::new(
-                    ZapStreamOverseer::new(private_key, database, lnd, relays).await?,
+                    ZapStreamOverseer::new(
+                        &self.output_dir,
+                        &self.public_url,
+                        private_key,
+                        database,
+                        lnd,
+                        relays,
+                        blossom,
+                    )
+                    .await?,
                 ))
             }
         }
@@ -123,7 +143,7 @@ pub(crate) fn get_default_variants(info: &IngressInfo) -> Result<Vec<VariantStre
             height: 720,
             fps: video_src.fps,
             bitrate: 3_000_000,
-            codec: 27,
+            codec: "libx264".to_string(),
             profile: 100,
             level: 51,
             keyframe_interval: video_src.fps as u16 * 2,
@@ -150,10 +170,10 @@ pub(crate) fn get_default_variants(info: &IngressInfo) -> Result<Vec<VariantStre
                 group_id: 1,
             },
             bitrate: 192_000,
-            codec: 86018,
+            codec: "libfdk_aac".to_string(),
             channels: 2,
             sample_rate: 48_000,
-            sample_fmt: "fltp".to_owned(),
+            sample_fmt: "s16".to_owned(),
         }));
     }
 
@@ -188,8 +208,6 @@ impl Overseer for StaticOverseer {
                 }),*/
                 EgressType::HLS(EgressConfig {
                     name: "HLS".to_owned(),
-                    // TODO: this is temp, webhook should not need full config
-                    out_dir: "out".to_string(),
                     variants: var_ids,
                 }),
             ],
@@ -202,6 +220,16 @@ impl Overseer for StaticOverseer {
         variant_id: &Uuid,
         index: u64,
         duration: f32,
+        path: &PathBuf,
+    ) -> Result<()> {
+        todo!()
+    }
+
+    async fn on_thumbnail(
+        &self,
+        pipeline_id: &Uuid,
+        width: usize,
+        height: usize,
         path: &PathBuf,
     ) -> Result<()> {
         todo!()

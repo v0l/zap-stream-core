@@ -1,12 +1,11 @@
 use crate::ingress::{spawn_pipeline, ConnectionInfo};
 use crate::overseer::Overseer;
 use anyhow::Result;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_H264;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVColorSpace::AVCOL_SPC_RGB;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPictureType::AV_PICTURE_TYPE_NONE;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::{AV_PIX_FMT_RGBA, AV_PIX_FMT_YUV420P};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    av_frame_alloc, av_frame_get_buffer, AV_PROFILE_H264_MAIN,
+    av_frame_alloc, av_frame_free, av_frame_get_buffer, av_packet_free, AV_PROFILE_H264_MAIN,
 };
 use ffmpeg_rs_raw::{Encoder, Muxer, Scaler};
 use fontdue::layout::{CoordinateSystem, Layout, TextStyle};
@@ -19,16 +18,16 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tiny_skia::Pixmap;
 
-pub async fn listen(overseer: Arc<dyn Overseer>) -> Result<()> {
+pub async fn listen(out_dir: String, overseer: Arc<dyn Overseer>) -> Result<()> {
     info!("Test pattern enabled");
 
     let info = ConnectionInfo {
         endpoint: "test-pattern".to_string(),
         ip_addr: "test-pattern".to_string(),
-        key: "test-pattern".to_string(),
+        key: "test".to_string(),
     };
     let src = TestPatternSrc::new()?;
-    spawn_pipeline(info, overseer.clone(), Box::new(src)).await;
+    spawn_pipeline(info, out_dir.clone(), overseer.clone(), Box::new(src)).await;
     Ok(())
 }
 
@@ -49,9 +48,9 @@ impl TestPatternSrc {
     pub fn new() -> Result<Self> {
         let scaler = Scaler::new();
         let encoder = unsafe {
-            Encoder::new(AV_CODEC_ID_H264)?
+            Encoder::new_with_name("libx264")?
                 .with_stream_index(0)
-                .with_framerate(30.0)
+                .with_framerate(30.0)?
                 .with_bitrate(1_000_000)
                 .with_pix_fmt(AV_PIX_FMT_YUV420P)
                 .with_width(1280)
@@ -64,7 +63,10 @@ impl TestPatternSrc {
         let svg_data = include_bytes!("../../test.svg");
         let tree = usvg::Tree::from_data(svg_data, &Default::default())?;
         let mut pixmap = Pixmap::new(1280, 720).unwrap();
-        let render_ts = tiny_skia::Transform::from_scale(1f32, 1f32);
+        let render_ts = tiny_skia::Transform::from_scale(
+            pixmap.width() as f32 / tree.size().width(),
+            pixmap.height() as f32 / tree.size().height(),
+        );
         resvg::render(&tree, render_ts, &mut pixmap.as_mut());
 
         let font = include_bytes!("../../SourceCodePro-Regular.ttf") as &[u8];
@@ -108,7 +110,7 @@ impl TestPatternSrc {
 
         self.frame_no += 1;
 
-        let src_frame = unsafe {
+        let mut src_frame = unsafe {
             let src_frame = av_frame_alloc();
 
             (*src_frame).width = 1280;
@@ -152,12 +154,15 @@ impl TestPatternSrc {
         }
 
         // scale/encode
-        let frame = self
+        let mut frame = self
             .scaler
             .process_frame(src_frame, 1280, 720, AV_PIX_FMT_YUV420P)?;
-        for pkt in self.encoder.encode_frame(frame)? {
+        for mut pkt in self.encoder.encode_frame(frame)? {
             self.muxer.write_packet(pkt)?;
+            av_packet_free(&mut pkt);
         }
+        av_frame_free(&mut frame);
+        av_frame_free(&mut src_frame);
         Ok(())
     }
 }

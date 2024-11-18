@@ -18,12 +18,11 @@ zap-stream = [
     "tokio/fs",
     "dep:base64",
     "dep:sha2",
-    "dep:hex"
 ]
 test-pattern = ["dep:resvg", "dep:usvg", "dep:tiny-skia", "dep:fontdue", "dep:ringbuf", "zap-stream-db/test-pattern"]
 
 [dependencies]
-ffmpeg-rs-raw = { git = "https://git.v0l.io/Kieran/ffmpeg-rs-raw.git", rev = "0abe0c5229adeb64b013d1895c7eba3d917f05a4" }
+ffmpeg-rs-raw = { git = "https://git.v0l.io/Kieran/ffmpeg-rs-raw.git", rev = "c2ae78acbcbe315137aea94c77b0db7ea538a709" }
 tokio = { version = "1.36.0", features = ["rt", "rt-multi-thread", "macros"] }
 anyhow = { version = "^1.0.91", features = ["backtrace"] }
 pretty_env_logger = "0.5.0"
@@ -42,6 +41,7 @@ warp = "0.3.7"
 libc = "0.2.162"
 m3u8-rs = "6.0.0"
 chrono = "^0.4.38"
+hex = "0.4.3"
 
 # test-pattern
 srt-tokio = { version = "0.4.3", optional = true }
@@ -58,4 +58,3 @@ fedimint-tonic-lnd = { version = "0.2.0", optional = true, default-features = fa
 reqwest = { version = "0.12.9", optional = true, features = ["stream"] }
 base64 = { version = "0.22.1", optional = true }
 sha2 = { version = "0.10.8", optional = true }
-hex = { version = "0.4.3", optional = true }

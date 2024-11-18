@@ -51,7 +51,12 @@ impl Blossom {
         Ok(hex::encode(hash))
     }
 
-    pub async fn upload(&self, from_file: &PathBuf, keys: &Keys) -> Result<BlobDescriptor> {
+    pub async fn upload(
+        &self,
+        from_file: &PathBuf,
+        keys: &Keys,
+        mime: Option<&str>,
+    ) -> Result<BlobDescriptor> {
         let mut f = File::open(from_file).await?;
         let hash = Self::hash_file(&mut f).await?;
         let auth_event = EventBuilder::new(
@@ -69,7 +74,7 @@ impl Blossom {
         let rsp: BlobDescriptor = self
             .client
             .put(self.url.join("/upload").unwrap())
-            .header("Content-Type", "application/octet-stream")
+            .header("Content-Type", mime.unwrap_or("application/octet-stream"))
             .header(
                 "Authorization",
                 &format!(

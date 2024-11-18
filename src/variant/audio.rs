@@ -1,8 +1,7 @@
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::{av_get_sample_fmt, avcodec_get_name};
-use ffmpeg_rs_raw::{cstr, rstr, Encoder};
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::av_get_sample_fmt;
+use ffmpeg_rs_raw::{cstr, Encoder};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
-use std::intrinsics::transmute;
 use uuid::Uuid;
 
 use crate::variant::{StreamMapping, VariantMapping};
@@ -16,8 +15,8 @@ pub struct AudioVariant {
     /// Bitrate of this stream
     pub bitrate: u64,
 
-    /// AVCodecID
-    pub codec: usize,
+    /// Codec name
+    pub codec: String,
 
     /// Number of channels
     pub channels: u16,
@@ -36,7 +35,7 @@ impl Display for AudioVariant {
             "Audio #{}->{}: {}, {}kbps",
             self.mapping.src_index,
             self.mapping.dst_index,
-            unsafe { rstr!(avcodec_get_name(transmute(self.codec as i32))) },
+            self.codec,
             self.bitrate / 1000
         )
     }
@@ -67,8 +66,8 @@ impl TryInto<Encoder> for &AudioVariant {
 
     fn try_into(self) -> Result<Encoder, Self::Error> {
         unsafe {
-            let enc = Encoder::new(transmute(self.codec as u32))?
-                .with_sample_rate(self.sample_rate as _)
+            let enc = Encoder::new_with_name(&self.codec)?
+                .with_sample_rate(self.sample_rate as _)?
                 .with_bitrate(self.bitrate as _)
                 .with_default_channel_layout(self.channels as _)
                 .with_sample_format(av_get_sample_fmt(cstr!(self.sample_fmt.as_bytes())))

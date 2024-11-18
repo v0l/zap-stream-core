@@ -1,6 +1,7 @@
 use crate::UserStream;
 use anyhow::Result;
 use sqlx::{MySqlPool, Row};
+use uuid::Uuid;
 
 pub struct ZapStreamDb {
     db: MySqlPool,
@@ -20,7 +21,7 @@ impl ZapStreamDb {
     /// Find user by stream key, typical first lookup from ingress
     pub async fn find_user_stream_key(&self, key: &str) -> Result<Option<u64>> {
         #[cfg(feature = "test-pattern")]
-        if key == "test-pattern" {
+        if key == "test" {
             // use the 00 pubkey for test sources
             return Ok(Some(self.upsert_user(&[0; 32]).await?));
         }
@@ -82,5 +83,13 @@ impl ZapStreamDb {
             .await
             .map_err(anyhow::Error::new)?;
         Ok(())
+    }
+
+    pub async fn get_stream(&self, id: &Uuid) -> Result<UserStream> {
+        Ok(sqlx::query_as("select * from user_stream where id = ?")
+            .bind(id)
+            .fetch_one(&self.db)
+            .await
+            .map_err(anyhow::Error::new)?)
     }
 }

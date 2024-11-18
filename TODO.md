@@ -1,0 +1,2 @@
+- Setup multi-variant output
+- Manage event lifecycle (close stream)

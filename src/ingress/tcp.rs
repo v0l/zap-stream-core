@@ -6,10 +6,10 @@ use tokio::net::TcpListener;
 use crate::ingress::{spawn_pipeline, ConnectionInfo};
 use crate::overseer::Overseer;
 
-pub async fn listen(addr: String, overseer: Arc<dyn Overseer>) -> Result<()> {
-    let listener = TcpListener::bind(addr.clone()).await?;
+pub async fn listen(out_dir: String, addr: String, overseer: Arc<dyn Overseer>) -> Result<()> {
+    let listener = TcpListener::bind(&addr).await?;
 
-    info!("TCP listening on: {}", addr.clone());
+    info!("TCP listening on: {}", &addr);
     while let Ok((socket, ip)) = listener.accept().await {
         let info = ConnectionInfo {
             ip_addr: ip.to_string(),
@@ -17,7 +17,7 @@ pub async fn listen(addr: String, overseer: Arc<dyn Overseer>) -> Result<()> {
             key: "".to_string(),
         };
         let socket = socket.into_std()?;
-        spawn_pipeline(info, overseer.clone(), Box::new(socket)).await;
+        spawn_pipeline(info, out_dir.clone(), overseer.clone(), Box::new(socket)).await;
     }
     Ok(())
 }

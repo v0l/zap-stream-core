@@ -12,6 +12,12 @@ pub struct Settings {
     /// Where to store output (static files)
     pub output_dir: String,
 
+    /// Public facing URL that maps to [output_dir]
+    pub public_url: String,
+
+    /// Binding address for http server serving files from [output_dir]
+    pub listen_http: String,
+
     /// Overseer service see [crate::overseer::Overseer] for more info
     pub overseer: OverseerConfig,
 }
@@ -31,10 +37,16 @@ pub enum OverseerConfig {
     },
     /// NIP-53 service (i.e. zap.stream backend)
     ZapStream {
+        /// MYSQL database connection string
         database: String,
+        /// LND node connection details
         lnd: LndSettings,
+        /// Relays to publish events to
         relays: Vec<String>,
+        /// Nsec to sign nostr events
         nsec: String,
+        /// Blossom servers
+        blossom: Option<Vec<String>>,
     },
 }
 
