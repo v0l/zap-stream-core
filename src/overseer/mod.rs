@@ -16,6 +16,7 @@ use std::cmp::PartialEq;
 use std::path::PathBuf;
 use std::sync::Arc;
 use uuid::Uuid;
+use warp::Filter;
 
 mod webhook;
 
@@ -179,8 +180,9 @@ pub(crate) fn get_default_variants(info: &IngressInfo) -> Result<Vec<VariantStre
 
     Ok(vars)
 }
+
 /// Simple static file output without any access controls
-struct StaticOverseer {}
+struct StaticOverseer;
 
 impl StaticOverseer {
     fn new(out_dir: &str, egress_types: &Vec<String>) -> Self {
@@ -192,7 +194,7 @@ impl StaticOverseer {
 impl Overseer for StaticOverseer {
     async fn start_stream(
         &self,
-        connection: &ConnectionInfo,
+        _connection: &ConnectionInfo,
         stream_info: &IngressInfo,
     ) -> Result<PipelineConfig> {
         let vars = get_default_variants(stream_info)?;
@@ -200,17 +202,10 @@ impl Overseer for StaticOverseer {
         Ok(PipelineConfig {
             id: Uuid::new_v4(),
             variants: vars,
-            egress: vec![
-                /*EgressType::Recorder(EgressConfig {
-                    name: "REC".to_owned(),
-                    out_dir: self.config.output_dir.clone(),
-                    variants: var_ids,
-                }),*/
-                EgressType::HLS(EgressConfig {
-                    name: "HLS".to_owned(),
-                    variants: var_ids,
-                }),
-            ],
+            egress: vec![EgressType::HLS(EgressConfig {
+                name: "HLS".to_owned(),
+                variants: var_ids,
+            })],
         })
     }
 
@@ -222,7 +217,8 @@ impl Overseer for StaticOverseer {
         duration: f32,
         path: &PathBuf,
     ) -> Result<()> {
-        todo!()
+        // nothing to do here
+        Ok(())
     }
 
     async fn on_thumbnail(
@@ -232,6 +228,7 @@ impl Overseer for StaticOverseer {
         height: usize,
         path: &PathBuf,
     ) -> Result<()> {
-        todo!()
+        // nothing to do here
+        Ok(())
     }
 }

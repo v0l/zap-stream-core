@@ -5,14 +5,24 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, FromRow)]
 pub struct User {
+    /// Database ID for this uer
     pub id: u64,
-    pub pubkey: [u8; 32],
+    /// Nostr pubkey of this user
+    pub pubkey: Vec<u8>,
+    /// Timestamp when this user first used the service
     pub created: DateTime<Utc>,
+    /// Current balance in milli-sats
     pub balance: i64,
-    pub tos_accepted: DateTime<Utc>,
+    /// When the TOS was accepted
+    pub tos_accepted: Option<DateTime<Utc>>,
+    /// Primary stream key
     pub stream_key: String,
+    /// If the user is an admin
     pub is_admin: bool,
+    /// If the user is blocked from streaming
     pub is_blocked: bool,
+    /// Streams are recorded
+    pub recording: bool,
 }
 
 #[derive(Default, Debug, Clone, Type)]

@@ -10,11 +10,18 @@ use ffmpeg_rs_raw::{cstr, Encoder, Muxer};
 use itertools::Itertools;
 use log::{info, warn};
 use m3u8_rs::MediaSegment;
+use std::collections::HashMap;
 use std::fmt::Display;
 use std::fs::File;
 use std::path::PathBuf;
 use std::ptr;
 use uuid::Uuid;
+
+#[derive(Clone, Copy)]
+pub enum SegmentType {
+    MPEGTS,
+    FMP4,
+}
 
 pub enum HlsVariantStream {
     Video {
@@ -79,22 +86,24 @@ pub struct HlsVariant {
     pub out_dir: String,
     /// List of segments to be included in the playlist
     pub segments: Vec<SegmentInfo>,
+    /// Type of segments to create
+    pub segment_type: SegmentType,
 }
 
-struct SegmentInfo(u64, f32);
+struct SegmentInfo(u64, f32, SegmentType);
 
 impl SegmentInfo {
     fn to_media_segment(&self) -> MediaSegment {
         MediaSegment {
-            uri: HlsVariant::segment_name(self.0),
+            uri: self.filename(),
             duration: self.1,
-            title: Some("no desc".to_string()),
+            title: None,
             ..MediaSegment::default()
         }
     }
 
     fn filename(&self) -> String {
-        HlsVariant::segment_name(self.0)
+        HlsVariant::segment_name(self.2, self.0)
     }
 }
 
@@ -104,14 +113,32 @@ impl HlsVariant {
         segment_length: f32,
         group: usize,
         encoded_vars: impl Iterator<Item = (&'a VariantStream, &'a Encoder)>,
+        segment_type: SegmentType,
     ) -> Result<Self> {
         let name = format!("stream_{}", group);
-        let first_seg = Self::map_segment_path(out_dir, &name, 1);
+        let first_seg = Self::map_segment_path(out_dir, &name, 1, segment_type);
         std::fs::create_dir_all(PathBuf::from(&first_seg).parent().unwrap())?;
 
+        let mut opts = HashMap::new();
+        match segment_type {
+            SegmentType::FMP4 => {
+                opts.insert("fflags".to_string(), "-autobsf".to_string());
+                opts.insert(
+                    "movflags".to_string(),
+                    "+frag_custom+dash+delay_moov".to_string(),
+                );
+            }
+            _ => {}
+        };
         let mut mux = unsafe {
             Muxer::builder()
-                .with_output_path(first_seg.as_str(), Some("mpegts"))?
+                .with_output_path(
+                    first_seg.as_str(),
+                    match segment_type {
+                        SegmentType::MPEGTS => Some("mpegts"),
+                        SegmentType::FMP4 => Some("mp4"),
+                    },
+                )?
                 .build()?
         };
         let mut streams = Vec::new();
@@ -145,7 +172,7 @@ impl HlsVariant {
             }
         }
         unsafe {
-            mux.open(None)?;
+            mux.open(Some(opts))?;
         }
         Ok(Self {
             name: name.clone(),
@@ -154,23 +181,27 @@ impl HlsVariant {
             streams,
             idx: 1,
             pkt_start: 0.0,
-            segments: Vec::from([SegmentInfo(1, segment_length)]),
+            segments: Vec::from([SegmentInfo(1, segment_length, segment_type)]),
             out_dir: out_dir.to_string(),
+            segment_type,
         })
     }
 
-    pub fn segment_name(idx: u64) -> String {
-        format!("{}.ts", idx)
+    pub fn segment_name(t: SegmentType, idx: u64) -> String {
+        match t {
+            SegmentType::MPEGTS => format!("{}.ts", idx),
+            SegmentType::FMP4 => format!("{}.m4s", idx),
+        }
     }
 
     pub fn out_dir(&self) -> PathBuf {
         PathBuf::from(&self.out_dir).join(&self.name)
     }
 
-    pub fn map_segment_path(out_dir: &str, name: &str, idx: u64) -> String {
+    pub fn map_segment_path(out_dir: &str, name: &str, idx: u64, typ: SegmentType) -> String {
         PathBuf::from(out_dir)
             .join(name)
-            .join(Self::segment_name(idx))
+            .join(Self::segment_name(typ, idx))
             .to_string_lossy()
             .to_string()
     }
@@ -201,7 +232,8 @@ impl HlsVariant {
         avio_flush((*ctx).pb);
         av_free((*ctx).url as *mut _);
 
-        let next_seg_url = Self::map_segment_path(&*self.out_dir, &self.name, self.idx);
+        let next_seg_url =
+            Self::map_segment_path(&*self.out_dir, &self.name, self.idx, self.segment_type);
         (*ctx).url = cstr!(next_seg_url.as_str());
 
         let ret = avio_open(&mut (*ctx).pb, (*ctx).url, AVIO_FLAG_WRITE);
@@ -234,7 +266,12 @@ impl HlsVariant {
             variant: *video_var.id(),
             idx: prev_seg,
             duration,
-            path: PathBuf::from(Self::map_segment_path(&*self.out_dir, &self.name, prev_seg)),
+            path: PathBuf::from(Self::map_segment_path(
+                &*self.out_dir,
+                &self.name,
+                prev_seg,
+                self.segment_type,
+            )),
         };
         self.pkt_start = pkt_time;
         Ok(ret)
@@ -247,7 +284,8 @@ impl HlsVariant {
     }
 
     fn add_segment(&mut self, idx: u64, duration: f32) -> Result<()> {
-        self.segments.push(SegmentInfo(idx, duration));
+        self.segments
+            .push(SegmentInfo(idx, duration, self.segment_type));
 
         const MAX_SEGMENTS: usize = 10;
 
@@ -340,6 +378,7 @@ impl HlsMuxer {
         out_dir: &str,
         segment_length: f32,
         encoders: impl Iterator<Item = (&'a VariantStream, &'a Encoder)>,
+        segment_type: SegmentType,
     ) -> Result<Self> {
         let base = PathBuf::from(out_dir).join(id.to_string());
 
@@ -348,7 +387,13 @@ impl HlsMuxer {
             .sorted_by(|a, b| a.0.group_id().cmp(&b.0.group_id()))
             .chunk_by(|a| a.0.group_id())
         {
-            let var = HlsVariant::new(base.to_str().unwrap(), segment_length, k, group)?;
+            let var = HlsVariant::new(
+                base.to_str().unwrap(),
+                segment_length,
+                k,
+                group,
+                segment_type,
+            )?;
             vars.push(var);
         }
 

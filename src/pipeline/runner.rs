@@ -10,6 +10,7 @@ use crate::egress::hls::HlsEgress;
 use crate::egress::recorder::RecorderEgress;
 use crate::egress::{Egress, EgressResult};
 use crate::ingress::ConnectionInfo;
+use crate::mux::SegmentType;
 use crate::overseer::{IngressInfo, IngressStream, IngressStreamType, Overseer};
 use crate::pipeline::{EgressType, PipelineConfig};
 use crate::variant::{StreamMapping, VariantStream};
@@ -359,7 +360,8 @@ impl PipelineRunner {
             });
             match e {
                 EgressType::HLS(_) => {
-                    let hls = HlsEgress::new(&cfg.id, &self.out_dir, 2.0, encoders)?;
+                    let hls =
+                        HlsEgress::new(&cfg.id, &self.out_dir, 2.0, encoders, SegmentType::MPEGTS)?;
                     self.egress.push(Box::new(hls));
                 }
                 EgressType::Recorder(_) => {

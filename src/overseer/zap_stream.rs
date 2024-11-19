@@ -24,6 +24,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use url::Url;
 use uuid::Uuid;
+use warp::Filter;
 use zap_stream_db::sqlx::Encode;
 use zap_stream_db::{UserStream, UserStreamState, ZapStreamDb};
 
@@ -95,6 +96,112 @@ impl ZapStreamOverseer {
             public_url: public_url.clone(),
         })
     }
+
+    fn stream_to_event_builder(&self, stream: &UserStream) -> Result<EventBuilder> {
+        let mut tags = vec![
+            Tag::parse(&["d".to_string(), stream.id.to_string()])?,
+            Tag::parse(&["status".to_string(), stream.state.to_string()])?,
+            Tag::parse(&["starts".to_string(), stream.starts.timestamp().to_string()])?,
+        ];
+        if let Some(ref ends) = stream.ends {
+            tags.push(Tag::parse(&[
+                "ends".to_string(),
+                ends.timestamp().to_string(),
+            ])?);
+        }
+        if let Some(ref title) = stream.title {
+            tags.push(Tag::parse(&["title".to_string(), title.to_string()])?);
+        }
+        if let Some(ref summary) = stream.summary {
+            tags.push(Tag::parse(&["summary".to_string(), summary.to_string()])?);
+        }
+        if let Some(ref image) = stream.image {
+            tags.push(Tag::parse(&["image".to_string(), image.to_string()])?);
+        }
+        if let Some(ref thumb) = stream.thumb {
+            tags.push(Tag::parse(&["thumb".to_string(), thumb.to_string()])?);
+        }
+        if let Some(ref content_warning) = stream.content_warning {
+            tags.push(Tag::parse(&[
+                "content_warning".to_string(),
+                content_warning.to_string(),
+            ])?);
+        }
+        if let Some(ref goal) = stream.goal {
+            tags.push(Tag::parse(&["goal".to_string(), goal.to_string()])?);
+        }
+        if let Some(ref pinned) = stream.pinned {
+            tags.push(Tag::parse(&["pinned".to_string(), pinned.to_string()])?);
+        }
+        if let Some(ref tags_csv) = stream.tags {
+            for tag in tags_csv.split(',') {
+                tags.push(Tag::parse(&["t".to_string(), tag.to_string()])?);
+            }
+        }
+
+        let kind = Kind::from(STREAM_EVENT_KIND);
+        let coord = Coordinate::new(kind, self.keys.public_key).identifier(stream.id);
+        tags.push(Tag::parse(&[
+            "alt",
+            &format!("Watch live on https://zap.stream/{}", coord.to_bech32()?),
+        ])?);
+        Ok(EventBuilder::new(kind, "", tags))
+    }
+
+    fn blob_to_event_builder(&self, stream: &BlobDescriptor) -> Result<EventBuilder> {
+        let tags = if let Some(tags) = stream.nip94.as_ref() {
+            tags.iter()
+                .map_while(|(k, v)| Tag::parse(&[k, v]).ok())
+                .collect()
+        } else {
+            let mut tags = vec![
+                Tag::parse(&["x", &stream.sha256])?,
+                Tag::parse(&["url", &stream.url])?,
+                Tag::parse(&["size", &stream.size.to_string()])?,
+            ];
+            if let Some(m) = stream.mime_type.as_ref() {
+                tags.push(Tag::parse(&["m", m])?)
+            }
+            tags
+        };
+
+        Ok(EventBuilder::new(Kind::FileMetadata, "", tags))
+    }
+
+    async fn publish_stream_event(&self, stream: &UserStream, pubkey: &Vec<u8>) -> Result<Event> {
+        let mut extra_tags = vec![
+            Tag::parse(&["p", hex::encode(pubkey).as_str(), "", "host"])?,
+            Tag::parse(&[
+                "streaming",
+                self.map_to_public_url(stream, "live.m3u8")?.as_str(),
+            ])?,
+            Tag::parse(&[
+                "image",
+                self.map_to_public_url(stream, "thumb.webp")?.as_str(),
+            ])?,
+        ];
+        // flag NIP94 streaming when using blossom servers
+        if self.blossom_servers.len() > 0 {
+            extra_tags.push(Tag::parse(&["streaming", "nip94"])?);
+        }
+        let ev = self
+            .stream_to_event_builder(stream)?
+            .add_tags(extra_tags)
+            .sign_with_keys(&self.keys)?;
+        self.client.send_event(ev.clone()).await?;
+        Ok(ev)
+    }
+
+    fn map_to_public_url<'a>(
+        &self,
+        stream: &UserStream,
+        path: impl Into<&'a str>,
+    ) -> Result<String> {
+        let u: Url = self.public_url.parse()?;
+        Ok(u.join(&format!("/{}/", stream.id))?
+            .join(path.into())?
+            .to_string())
+    }
 }
 
 #[async_trait]
@@ -118,6 +225,7 @@ impl Overseer for ZapStreamOverseer {
             variants: variants.iter().map(|v| v.id()).collect(),
         }));
 
+        let user = self.db.get_user(uid).await?;
         // insert new stream record
         let mut new_stream = UserStream {
             id: Uuid::new_v4(),
@@ -126,8 +234,7 @@ impl Overseer for ZapStreamOverseer {
             state: UserStreamState::Live,
             ..Default::default()
         };
-        let stream_event =
-            publish_stream_event(&new_stream, &self.client, &self.keys, &self.public_url).await?;
+        let stream_event = self.publish_stream_event(&new_stream, &user.pubkey).await?;
         new_stream.event = Some(stream_event.as_json());
 
         self.db.insert_stream(&new_stream).await?;
@@ -158,13 +265,17 @@ impl Overseer for ZapStreamOverseer {
                 self.keys.public_key.to_hex(),
                 pipeline_id
             );
-            let mut n94 = blob_to_event_builder(blob)?.add_tags(Tag::parse(&["a", &a_tag]));
+            let mut n94 = self.blob_to_event_builder(blob)?.add_tags([
+                Tag::parse(&["a", &a_tag])?,
+                Tag::parse(&["d", variant_id.to_string().as_str()])?,
+                Tag::parse(&["duration", duration.to_string().as_str()])?,
+            ]);
             for b in blobs.iter().skip(1) {
                 n94 = n94.add_tags(Tag::parse(&["url", &b.url]));
             }
             let n94 = n94.sign_with_keys(&self.keys)?;
             self.client.send_event(n94).await?;
-            info!("Published N94 segment for {}", a_tag);
+            info!("Published N94 segment to {}", blob.url);
         }
 
         Ok(())
@@ -180,104 +291,4 @@ impl Overseer for ZapStreamOverseer {
         // nothing to do
         Ok(())
     }
-}
-
-fn stream_to_event_builder(this: &UserStream, keys: &Keys) -> Result<EventBuilder> {
-    let mut tags = vec![
-        Tag::parse(&["d".to_string(), this.id.to_string()])?,
-        Tag::parse(&["status".to_string(), this.state.to_string()])?,
-        Tag::parse(&["starts".to_string(), this.starts.timestamp().to_string()])?,
-    ];
-    if let Some(ref ends) = this.ends {
-        tags.push(Tag::parse(&[
-            "ends".to_string(),
-            ends.timestamp().to_string(),
-        ])?);
-    }
-    if let Some(ref title) = this.title {
-        tags.push(Tag::parse(&["title".to_string(), title.to_string()])?);
-    }
-    if let Some(ref summary) = this.summary {
-        tags.push(Tag::parse(&["summary".to_string(), summary.to_string()])?);
-    }
-    if let Some(ref image) = this.image {
-        tags.push(Tag::parse(&["image".to_string(), image.to_string()])?);
-    }
-    if let Some(ref thumb) = this.thumb {
-        tags.push(Tag::parse(&["thumb".to_string(), thumb.to_string()])?);
-    }
-    if let Some(ref content_warning) = this.content_warning {
-        tags.push(Tag::parse(&[
-            "content_warning".to_string(),
-            content_warning.to_string(),
-        ])?);
-    }
-    if let Some(ref goal) = this.goal {
-        tags.push(Tag::parse(&["goal".to_string(), goal.to_string()])?);
-    }
-    if let Some(ref pinned) = this.pinned {
-        tags.push(Tag::parse(&["pinned".to_string(), pinned.to_string()])?);
-    }
-    if let Some(ref tags_csv) = this.tags {
-        for tag in tags_csv.split(',') {
-            tags.push(Tag::parse(&["t".to_string(), tag.to_string()])?);
-        }
-    }
-
-    let kind = Kind::from(STREAM_EVENT_KIND);
-    let coord = Coordinate::new(kind, keys.public_key).identifier(this.id);
-    tags.push(Tag::parse(&[
-        "alt",
-        &format!("Watch live on https://zap.stream/{}", coord.to_bech32()?),
-    ])?);
-    Ok(EventBuilder::new(kind, "", tags))
-}
-
-fn stream_url_mapping(this: &UserStream, public_url: &str) -> Result<String> {
-    let u: Url = public_url.parse()?;
-    // hls muxer always writes the master playlist like this
-    Ok(u.join(&format!("/{}/live.m3u8", this.id))?.to_string())
-}
-
-fn image_url_mapping(this: &UserStream, public_url: &str) -> Result<String> {
-    let u: Url = public_url.parse()?;
-    // pipeline always writes a thumbnail like this
-    Ok(u.join(&format!("/{}/thumb.webp", this.id))?.to_string())
-}
-
-async fn publish_stream_event(
-    this: &UserStream,
-    client: &Client,
-    keys: &Keys,
-    public_url: &str,
-) -> Result<Event> {
-    let ev = stream_to_event_builder(this, keys)?
-        .add_tags([
-            Tag::parse(&["streaming", stream_url_mapping(this, public_url)?.as_str()])?,
-            Tag::parse(&["image", image_url_mapping(this, public_url)?.as_str()])?,
-        ])
-        .sign(&client.signer().await?)
-        .await?;
-    client.send_event(ev.clone()).await?;
-    Ok(ev)
-}
-
-fn blob_to_event_builder(this: &BlobDescriptor) -> Result<EventBuilder> {
-    let tags = if let Some(tags) = this.nip94.as_ref() {
-        tags.iter()
-            .map_while(|(k, v)| Tag::parse(&[k, v]).ok())
-            .collect()
-    } else {
-        let mut tags = vec![
-            Tag::parse(&["x", &this.sha256])?,
-            Tag::parse(&["url", &this.url])?,
-            Tag::parse(&["size", &this.size.to_string()])?,
-        ];
-        if let Some(m) = this.mime_type.as_ref() {
-            tags.push(Tag::parse(&["m", m])?)
-        }
-        tags
-    };
-
-    Ok(EventBuilder::new(Kind::FileMetadata, "", tags))
 }

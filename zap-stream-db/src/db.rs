@@ -1,4 +1,4 @@
-use crate::UserStream;
+use crate::{User, UserStream};
 use anyhow::Result;
 use sqlx::{MySqlPool, Row};
 use uuid::Uuid;
@@ -31,6 +31,15 @@ impl ZapStreamDb {
             .fetch_optional(&self.db)
             .await?
             .map(|r| r.try_get(0).unwrap()))
+    }
+
+    /// Get user by id
+    pub async fn get_user(&self, uid: u64) -> Result<User> {
+        Ok(sqlx::query_as("select * from user where id = ?")
+            .bind(uid)
+            .fetch_one(&self.db)
+            .await
+            .map_err(anyhow::Error::new)?)
     }
 
     pub async fn upsert_user(&self, pubkey: &[u8; 32]) -> Result<u64> {

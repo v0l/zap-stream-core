@@ -8,7 +8,8 @@ create table user
     tos_accepted timestamp,
     stream_key   text   not null default uuid(),
     is_admin     bool   not null default false,
-    is_blocked   bool   not null default false
+    is_blocked   bool   not null default false,
+    recording    bool   not null default false
 );
 create unique index ix_user_pubkey on user (pubkey);
 create table user_stream
