@@ -14,7 +14,7 @@ pub async fn listen(out_dir: String, addr: String, overseer: Arc<dyn Overseer>) 
         let info = ConnectionInfo {
             ip_addr: ip.to_string(),
             endpoint: addr.clone(),
-            key: "".to_string(),
+            key: "no-key-tcp".to_string(),
         };
         let socket = socket.into_std()?;
         spawn_pipeline(info, out_dir.clone(), overseer.clone(), Box::new(socket)).await;

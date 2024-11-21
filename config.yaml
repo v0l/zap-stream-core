@@ -2,9 +2,8 @@
 # currently supporting srt/tcp/file/test-pattern
 # All the endpoints must be valid URI's
 endpoints:
-  - "srt://127.0.0.1:3333"
+  - "srt://127.0.0.1:3335"
   - "tcp://127.0.0.1:3334"
-  - "test-pattern:"
 
 # Output directory for recording / hls
 output_dir: "./out"
