@@ -8,10 +8,13 @@ RUN apt update && \
     apt install -y \
     build-essential \
     libx264-dev \
+    libx265-dev \
+    libwebp-dev \
+    libpng-dev \
     nasm \
     libclang-dev && \
     rm -rf /var/lib/apt/lists/*
-RUN git clone --depth=1 https://git.ffmpeg.org/ffmpeg.git && \
+RUN git clone --single-branch --branch release/7.1 https://git.ffmpeg.org/ffmpeg.git && \
     cd ffmpeg && \
     ./configure \
     --prefix=$FFMPEG_DIR \
@@ -22,6 +25,9 @@ RUN git clone --depth=1 https://git.ffmpeg.org/ffmpeg.git && \
     --enable-version3 \
     --disable-postproc \
     --enable-libx264 \
+    --enable-libx265 \
+    --enable-libpng \
+    --enable-libwebp \
     --disable-static \
     --enable-shared && \
     make -j$(nproc) && make install
@@ -34,4 +40,4 @@ RUN apt update && \
     rm -rf /var/lib/apt/lists/*
 COPY --from=build /app/build .
 COPY --from=build /app/ffmpeg/lib/ /lib
-ENTRYPOINT ["/app/bin/stream-core"]
+ENTRYPOINT ["/app/bin/zap-stream-core"]
