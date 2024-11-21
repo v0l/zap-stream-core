@@ -12,6 +12,7 @@ RUN apt update && \
     libwebp-dev \
     libpng-dev \
     nasm \
+    protobuf-compiler \
     libclang-dev && \
     rm -rf /var/lib/apt/lists/*
 RUN git clone --single-branch --branch release/7.1 https://git.ffmpeg.org/ffmpeg.git && \
@@ -30,7 +31,7 @@ RUN git clone --single-branch --branch release/7.1 https://git.ffmpeg.org/ffmpeg
     --disable-static \
     --enable-shared && \
     make -j$(nproc) && make install
-RUN cargo install --path . --bin zap-stream-core --root /app/build --all-features
+RUN cargo install --path . --bin zap-stream-core --root /app/build --features zap-stream
 
 FROM $IMAGE AS runner
 WORKDIR /app
