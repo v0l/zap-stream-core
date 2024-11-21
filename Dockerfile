@@ -26,7 +26,6 @@ RUN git clone --single-branch --branch release/7.1 https://git.ffmpeg.org/ffmpeg
     --disable-postproc \
     --enable-libx264 \
     --enable-libx265 \
-    --enable-libpng \
     --enable-libwebp \
     --disable-static \
     --enable-shared && \
