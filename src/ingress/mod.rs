@@ -38,9 +38,16 @@ pub async fn spawn_pipeline(
     std::thread::spawn(move || unsafe {
         match PipelineRunner::new(handle, out_dir, seer, info, reader) {
             Ok(mut pl) => loop {
-                if let Err(e) = pl.run() {
-                    error!("Pipeline run failed: {}", e);
-                    break;
+                match pl.run() {
+                    Ok(c) => {
+                        if !c {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        error!("Pipeline run failed: {}", e);
+                        break;
+                    }
                 }
             },
             Err(e) => {

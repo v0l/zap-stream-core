@@ -96,7 +96,7 @@ impl ZapStreamDb {
 
     pub async fn get_stream(&self, id: &Uuid) -> Result<UserStream> {
         Ok(sqlx::query_as("select * from user_stream where id = ?")
-            .bind(id)
+            .bind(id.to_string())
             .fetch_one(&self.db)
             .await
             .map_err(anyhow::Error::new)?)

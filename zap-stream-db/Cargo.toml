@@ -10,6 +10,6 @@ test-pattern = []
 [dependencies]
 anyhow = "^1.0.70"
 chrono = { version = "0.4.38", features = ["serde"] }
-sqlx = { version = "0.8.1", features = ["runtime-tokio", "migrate", "mysql", "chrono", "uuid"] }
+sqlx = { version = "0.8.1", features = ["runtime-tokio", "migrate", "mysql", "chrono"] }
 log = "0.4.22"
 uuid = { version = "1.11.0", features = ["v4"] }

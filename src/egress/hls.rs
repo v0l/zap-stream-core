@@ -20,4 +20,11 @@ impl Egress for HlsMuxer {
             Ok(EgressResult::None)
         }
     }
+
+    unsafe fn reset(&mut self) -> Result<()> {
+        for var in &mut self.variants {
+            var.reset()?
+        }
+        Ok(())
+    }
 }

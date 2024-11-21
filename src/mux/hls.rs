@@ -2,6 +2,7 @@ use crate::egress::NewSegment;
 use crate::variant::{StreamMapping, VariantStream};
 use anyhow::{bail, Result};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_H264;
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVMediaType::AVMEDIA_TYPE_VIDEO;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
     av_free, av_opt_set, av_q2d, av_write_frame, avio_flush, avio_open, AVPacket, AVStream,
     AVIO_FLAG_WRITE, AV_PKT_FLAG_KEY,
@@ -215,12 +216,20 @@ impl HlsVariant {
         let pkt_seg = 1 + (pkt_time / self.segment_length).floor() as u64;
 
         let mut result = None;
-        let can_split = (*pkt).flags & AV_PKT_FLAG_KEY == AV_PKT_FLAG_KEY;
+        let pkt_stream = *(*self.mux.context())
+            .streams
+            .add((*pkt).stream_index as usize);
+        let can_split = (*pkt).flags & AV_PKT_FLAG_KEY == AV_PKT_FLAG_KEY
+            && (*(*pkt_stream).codecpar).codec_type == AVMEDIA_TYPE_VIDEO;
         if pkt_seg != self.idx && can_split {
             result = Some(self.split_next_seg(pkt_time)?);
         }
         self.mux.write_packet(pkt)?;
         Ok(result)
+    }
+
+    pub unsafe fn reset(&mut self) -> Result<()> {
+        self.mux.reset()
     }
 
     unsafe fn split_next_seg(&mut self, pkt_time: f32) -> Result<NewSegment> {
@@ -368,8 +377,8 @@ impl HlsVariant {
 }
 
 pub struct HlsMuxer {
-    out_dir: PathBuf,
-    variants: Vec<HlsVariant>,
+    pub out_dir: PathBuf,
+    pub variants: Vec<HlsVariant>,
 }
 
 impl HlsMuxer {

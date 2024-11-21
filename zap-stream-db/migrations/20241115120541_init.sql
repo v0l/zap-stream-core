@@ -14,11 +14,11 @@ create table user
 create unique index ix_user_pubkey on user (pubkey);
 create table user_stream
 (
-    id              UUID not null primary key,
+    id              varchar(50) not null primary key,
     user_id         integer unsigned not null,
-    starts          timestamp not null,
+    starts          timestamp   not null,
     ends            timestamp,
-    state           smallint  not null,
+    state           tinyint unsigned not null,
     title           text,
     summary         text,
     image           text,
@@ -28,9 +28,9 @@ create table user_stream
     goal            text,
     pinned          text,
     -- milli-sats paid for this stream
-    cost            bigint    not null default 0,
+    cost            bigint unsigned    not null default 0,
     -- duration in seconds
-    duration        float     not null default 0,
+    duration        float       not null default 0,
     -- admission fee
     fee             integer unsigned,
     -- current nostr event json

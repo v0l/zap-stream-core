@@ -49,4 +49,8 @@ impl Overseer for WebhookOverseer {
     ) -> Result<()> {
         todo!()
     }
+
+    async fn on_end(&self, pipeline_id: &Uuid) -> Result<()> {
+        todo!()
+    }
 }

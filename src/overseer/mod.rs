@@ -82,6 +82,9 @@ pub trait Overseer: Send + Sync {
         height: usize,
         path: &PathBuf,
     ) -> Result<()>;
+
+    /// Stream is finished
+    async fn on_end(&self, pipeline_id: &Uuid) -> Result<()>;
 }
 
 impl Settings {
@@ -171,10 +174,10 @@ pub(crate) fn get_default_variants(info: &IngressInfo) -> Result<Vec<VariantStre
                 group_id: 1,
             },
             bitrate: 192_000,
-            codec: "libfdk_aac".to_string(),
+            codec: "aac".to_string(),
             channels: 2,
             sample_rate: 48_000,
-            sample_fmt: "s16".to_owned(),
+            sample_fmt: "fltp".to_owned(),
         }));
     }
 
@@ -228,6 +231,12 @@ impl Overseer for StaticOverseer {
         height: usize,
         path: &PathBuf,
     ) -> Result<()> {
+        // nothing to do here
+        Ok(())
+    }
+
+    async fn on_end(&self, pipeline_id: &Uuid) -> Result<()> {
+
         // nothing to do here
         Ok(())
     }

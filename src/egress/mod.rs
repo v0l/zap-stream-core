@@ -19,6 +19,7 @@ pub struct EgressConfig {
 pub trait Egress {
     unsafe fn process_pkt(&mut self, packet: *mut AVPacket, variant: &Uuid)
         -> Result<EgressResult>;
+    unsafe fn reset(&mut self) -> Result<()>;
 }
 
 #[derive(Debug, Clone)]

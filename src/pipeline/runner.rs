@@ -3,6 +3,7 @@ use std::io::Read;
 use std::mem::transmute;
 use std::ops::Sub;
 use std::path::PathBuf;
+use std::ptr;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -19,7 +20,8 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_WEBP;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPictureType::AV_PICTURE_TYPE_NONE;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    av_frame_free, av_get_sample_fmt, av_packet_free, av_q2d, av_rescale_q, AVMediaType,
+    av_frame_free, av_get_sample_fmt, av_packet_free, av_pkt_dump_log2, av_q2d, av_rescale_q,
+    AVMediaType,
 };
 use ffmpeg_rs_raw::{
     cstr, get_frame_from_hw, AudioFifo, Decoder, Demuxer, DemuxerInfo, Encoder, Resample, Scaler,
@@ -103,11 +105,28 @@ impl PipelineRunner {
         })
     }
 
+    /// EOF, cleanup
+    unsafe fn flush(&mut self) -> Result<()> {
+        for (var, enc) in &mut self.encoders {
+            for mut pkt in enc.encode_frame(ptr::null_mut())? {
+                for eg in self.egress.iter_mut() {
+                    eg.process_pkt(pkt, &var)?;
+                }
+                av_packet_free(&mut pkt);
+            }
+        }
+        for eg in self.egress.iter_mut() {
+            eg.reset()?;
+        }
+        Ok(())
+    }
+
     /// Main processor, should be called in a loop
-    pub unsafe fn run(&mut self) -> Result<()> {
+    /// Returns false when stream data ended (EOF)
+    pub unsafe fn run(&mut self) -> Result<bool> {
         self.setup()?;
 
-        let config = if let Some(ref config) = self.config {
+        let config = if let Some(config) = &self.config {
             config
         } else {
             bail!("Pipeline not configured, cannot run")
@@ -115,14 +134,23 @@ impl PipelineRunner {
 
         // run transcoder pipeline
         let (mut pkt, stream) = self.demuxer.get_packet()?;
-        let src_index = (*stream).index;
+        if pkt.is_null() {
+            self.handle.block_on(async {
+                if let Err(e) = self.overseer.on_end(&config.id).await {
+                    error!("Failed to end stream: {e}");
+                }
+            });
+            self.flush()?;
+            return Ok(false);
+        }
 
         // TODO: For copy streams, skip decoder
-        let frames = if let Ok(frames) = self.decoder.decode_pkt(pkt) {
-            frames
-        } else {
-            warn!("Error decoding frames");
-            return Ok(());
+        let frames = match self.decoder.decode_pkt(pkt) {
+            Ok(f) => f,
+            Err(e) => {
+                warn!("Error decoding frames, {e}");
+                return Ok(true);
+            }
         };
 
         let mut egress_results = vec![];
@@ -164,7 +192,7 @@ impl PipelineRunner {
             let pkt_vars = config
                 .variants
                 .iter()
-                .filter(|v| v.src_index() == src_index as usize);
+                .filter(|v| v.src_index() == (*stream).index as usize);
             for var in pkt_vars {
                 let enc = if let Some(enc) = self.encoders.get_mut(&var.id()) {
                     enc
@@ -172,6 +200,18 @@ impl PipelineRunner {
                     //warn!("Frame had nowhere to go in {} :/", var.id());
                     continue;
                 };
+                // before encoding frame, rescale timestamps
+                if !frame.is_null() {
+                    let enc_ctx = enc.codec_context();
+                    (*frame).pict_type = AV_PICTURE_TYPE_NONE;
+                    (*frame).pts =
+                        av_rescale_q((*frame).pts, (*frame).time_base, (*enc_ctx).time_base);
+                    (*frame).pkt_dts =
+                        av_rescale_q((*frame).pkt_dts, (*frame).time_base, (*enc_ctx).time_base);
+                    (*frame).duration =
+                        av_rescale_q((*frame).duration, (*frame).time_base, (*enc_ctx).time_base);
+                    (*frame).time_base = (*enc_ctx).time_base;
+                }
 
                 let mut new_frame = false;
                 let mut frame = match var {
@@ -192,8 +232,6 @@ impl PipelineRunner {
                                 f.buffer_frame(resampled_frame, frame_size as usize)?
                             {
                                 av_frame_free(&mut resampled_frame);
-                                // assume timebase of the encoder
-                                //(*ret).time_base = (*enc.codec_context()).time_base;
                                 ret
                             } else {
                                 av_frame_free(&mut resampled_frame);
@@ -205,19 +243,6 @@ impl PipelineRunner {
                     }
                     _ => frame,
                 };
-
-                // before encoding frame, rescale timestamps
-                if !frame.is_null() {
-                    let enc_ctx = enc.codec_context();
-                    (*frame).pict_type = AV_PICTURE_TYPE_NONE;
-                    (*frame).pts =
-                        av_rescale_q((*frame).pts, (*frame).time_base, (*enc_ctx).time_base);
-                    (*frame).pkt_dts =
-                        av_rescale_q((*frame).pkt_dts, (*frame).time_base, (*enc_ctx).time_base);
-                    (*frame).duration =
-                        av_rescale_q((*frame).duration, (*frame).time_base, (*enc_ctx).time_base);
-                    (*frame).time_base = (*enc_ctx).time_base;
-                }
 
                 let packets = enc.encode_frame(frame)?;
                 // pass new packets to egress
@@ -259,7 +284,7 @@ impl PipelineRunner {
             self.fps_counter_start = Instant::now();
             self.frame_ctr = 0;
         }
-        Ok(())
+        Ok(true)
     }
 
     unsafe fn setup(&mut self) -> Result<()> {

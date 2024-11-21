@@ -3,6 +3,7 @@ use crate::overseer::Overseer;
 use crate::pipeline::runner::PipelineRunner;
 use crate::settings::Settings;
 use anyhow::Result;
+use futures_util::stream::FusedStream;
 use futures_util::{SinkExt, StreamExt, TryStreamExt};
 use log::{error, info, warn};
 use srt_tokio::{SrtListener, SrtSocket};
@@ -54,6 +55,9 @@ impl Read for SrtReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let (mut rx, _) = self.socket.split_mut();
         while self.buf.len() < buf.len() {
+            if rx.is_terminated() {
+                return Ok(0);
+            }
             if let Some((_, mut data)) = self.handle.block_on(rx.next()) {
                 self.buf.extend(data.iter().as_slice());
             }

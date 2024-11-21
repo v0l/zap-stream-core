@@ -6,7 +6,7 @@ use crate::overseer::{get_default_variants, IngressInfo, Overseer};
 use crate::pipeline::{EgressType, PipelineConfig};
 use crate::settings::LndSettings;
 use crate::variant::StreamMapping;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use chrono::Utc;
 use fedimint_tonic_lnd::verrpc::VersionRequest;
@@ -140,7 +140,7 @@ impl ZapStreamOverseer {
         }
 
         let kind = Kind::from(STREAM_EVENT_KIND);
-        let coord = Coordinate::new(kind, self.keys.public_key).identifier(stream.id);
+        let coord = Coordinate::new(kind, self.keys.public_key).identifier(&stream.id);
         tags.push(Tag::parse(&[
             "alt",
             &format!("Watch live on https://zap.stream/{}", coord.to_bech32()?),
@@ -226,9 +226,10 @@ impl Overseer for ZapStreamOverseer {
         }));
 
         let user = self.db.get_user(uid).await?;
+        let stream_id = Uuid::new_v4();
         // insert new stream record
         let mut new_stream = UserStream {
-            id: Uuid::new_v4(),
+            id: stream_id.to_string(),
             user_id: uid,
             starts: Utc::now(),
             state: UserStreamState::Live,
@@ -238,8 +239,9 @@ impl Overseer for ZapStreamOverseer {
         new_stream.event = Some(stream_event.as_json());
 
         self.db.insert_stream(&new_stream).await?;
+        self.db.update_stream(&new_stream).await?;
         Ok(PipelineConfig {
-            id: new_stream.id,
+            id: stream_id,
             variants,
             egress,
         })
@@ -289,6 +291,19 @@ impl Overseer for ZapStreamOverseer {
         pixels: &PathBuf,
     ) -> Result<()> {
         // nothing to do
+        Ok(())
+    }
+
+    async fn on_end(&self, pipeline_id: &Uuid) -> Result<()> {
+        let mut stream = self.db.get_stream(pipeline_id).await?;
+        let user = self.db.get_user(stream.user_id).await?;
+
+        stream.state = UserStreamState::Ended;
+        let event = self.publish_stream_event(&stream, &user.pubkey).await?;
+        stream.event = Some(event.as_json());
+        self.db.update_stream(&stream).await?;
+
+        info!("Stream ended {}", stream.id);
         Ok(())
     }
 }

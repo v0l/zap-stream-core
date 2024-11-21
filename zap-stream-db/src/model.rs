@@ -48,7 +48,7 @@ impl Display for UserStreamState {
 
 #[derive(Debug, Clone, Default, FromRow)]
 pub struct UserStream {
-    pub id: Uuid,
+    pub id: String,
     pub user_id: u64,
     pub starts: DateTime<Utc>,
     pub ends: Option<DateTime<Utc>>,
