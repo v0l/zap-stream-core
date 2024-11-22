@@ -14,7 +14,7 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_MJPEG;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVFrame;
 use ffmpeg_rs_raw::Encoder;
 use futures_util::FutureExt;
-use log::info;
+use log::{info, warn};
 use nostr_sdk::bitcoin::PrivateKey;
 use nostr_sdk::prelude::Coordinate;
 use nostr_sdk::{Client, Event, EventBuilder, JsonUtil, Keys, Kind, Tag, ToBech32};
@@ -276,7 +276,12 @@ impl Overseer for ZapStreamOverseer {
                 n94 = n94.add_tags(Tag::parse(&["url", &b.url]));
             }
             let n94 = n94.sign_with_keys(&self.keys)?;
-            self.client.send_event(n94).await?;
+            let cc = self.client.clone();
+            tokio::spawn(async move {
+                if let Err(e) = cc.send_event(n94).await {
+                    warn!("Error sending event: {}", e);
+                }
+            });
             info!("Published N94 segment to {}", blob.url);
         }
 

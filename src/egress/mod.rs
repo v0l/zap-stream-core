@@ -6,7 +6,6 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 pub mod hls;
-pub mod http;
 pub mod recorder;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

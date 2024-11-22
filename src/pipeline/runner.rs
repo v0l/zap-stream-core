@@ -20,8 +20,7 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_WEBP;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPictureType::AV_PICTURE_TYPE_NONE;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    av_frame_free, av_get_sample_fmt, av_packet_free, av_pkt_dump_log2, av_q2d, av_rescale_q,
-    AVMediaType,
+    av_frame_free, av_get_sample_fmt, av_packet_free, av_q2d, av_rescale_q, AVMediaType,
 };
 use ffmpeg_rs_raw::{
     cstr, get_frame_from_hw, AudioFifo, Decoder, Demuxer, DemuxerInfo, Encoder, Resample, Scaler,
@@ -106,7 +105,7 @@ impl PipelineRunner {
     }
 
     /// EOF, cleanup
-    unsafe fn flush(&mut self) -> Result<()> {
+    pub unsafe fn flush(&mut self) -> Result<()> {
         for (var, enc) in &mut self.encoders {
             for mut pkt in enc.encode_frame(ptr::null_mut())? {
                 for eg in self.egress.iter_mut() {
@@ -117,6 +116,14 @@ impl PipelineRunner {
         }
         for eg in self.egress.iter_mut() {
             eg.reset()?;
+        }
+
+        if let Some(config) = &self.config {
+            self.handle.block_on(async {
+                if let Err(e) = self.overseer.on_end(&config.id).await {
+                    error!("Failed to end stream: {e}");
+                }
+            });
         }
         Ok(())
     }
@@ -135,12 +142,6 @@ impl PipelineRunner {
         // run transcoder pipeline
         let (mut pkt, stream) = self.demuxer.get_packet()?;
         if pkt.is_null() {
-            self.handle.block_on(async {
-                if let Err(e) = self.overseer.on_end(&config.id).await {
-                    error!("Failed to end stream: {e}");
-                }
-            });
-            self.flush()?;
             return Ok(false);
         }
 
@@ -227,7 +228,7 @@ impl PipelineRunner {
                         if let Some((r, f)) = self.resampler.get_mut(&a.id()) {
                             let frame_size = (*enc.codec_context()).frame_size;
                             new_frame = true;
-                            let mut resampled_frame = r.process_frame(frame, frame_size)?;
+                            let mut resampled_frame = r.process_frame(frame)?;
                             if let Some(ret) =
                                 f.buffer_frame(resampled_frame, frame_size as usize)?
                             {

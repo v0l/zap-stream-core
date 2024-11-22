@@ -4,12 +4,14 @@ use config::Config;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{av_log_set_callback, av_version_info};
 use ffmpeg_rs_raw::{av_log_redirect, rstr};
 use log::{error, info};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 use url::Url;
-
-use zap_stream_core::egress::http::listen_out_dir;
+use warp::{cors, Filter};
+#[cfg(feature = "rtmp")]
+use zap_stream_core::ingress::rtmp;
 #[cfg(feature = "srt")]
 use zap_stream_core::ingress::srt;
 #[cfg(feature = "test-pattern")]
@@ -48,10 +50,26 @@ async fn main() -> Result<()> {
             Err(e) => error!("{}", e),
         }
     }
-    listeners.push(tokio::spawn(listen_out_dir(
-        settings.listen_http,
-        settings.output_dir,
-    )));
+
+    let http_addr: SocketAddr = settings.listen_http.parse()?;
+    let http_dir = settings.output_dir.clone();
+    let index_html = include_str!("../index.html").replace("%%PUBLIC_URL%%", &settings.public_url);
+
+    listeners.push(tokio::spawn(async move {
+        let cors = cors().allow_any_origin().allow_methods(vec!["GET"]);
+
+        let index_handle = warp::get()
+            .or(warp::path("index.html"))
+            .and(warp::path::end())
+            .map(move |_| warp::reply::html(index_html.clone()));
+
+        let dir_handle = warp::get().and(warp::fs::dir(http_dir)).with(cors);
+
+        warp::serve(index_handle.or(dir_handle))
+            .run(http_addr)
+            .await;
+        Ok(())
+    }));
 
     for handle in listeners {
         if let Err(e) = handle.await? {
@@ -71,6 +89,12 @@ fn try_create_listener(
     match url.scheme() {
         #[cfg(feature = "srt")]
         "srt" => Ok(tokio::spawn(srt::listen(
+            out_dir.to_string(),
+            format!("{}:{}", url.host().unwrap(), url.port().unwrap()),
+            overseer.clone(),
+        ))),
+        #[cfg(feature = "srt")]
+        "rtmp" => Ok(tokio::spawn(rtmp::listen(
             out_dir.to_string(),
             format!("{}:{}", url.host().unwrap(), url.port().unwrap()),
             overseer.clone(),

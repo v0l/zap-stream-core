@@ -7,6 +7,8 @@ use std::sync::Arc;
 use tokio::runtime::Handle;
 
 pub mod file;
+#[cfg(feature = "rtmp")]
+pub mod rtmp;
 #[cfg(feature = "srt")]
 pub mod srt;
 pub mod tcp;
@@ -21,18 +23,21 @@ pub struct ConnectionInfo {
     /// IP address of the connection
     pub ip_addr: String,
 
+    /// App name, empty unless RTMP ingress
+    pub app_name: String,
+
     /// Stream key
     pub key: String,
 }
 
-pub async fn spawn_pipeline(
+pub fn spawn_pipeline(
+    handle: Handle,
     info: ConnectionInfo,
     out_dir: String,
     seer: Arc<dyn Overseer>,
     reader: Box<dyn Read + Send>,
 ) {
     info!("New client connected: {}", &info.ip_addr);
-    let handle = Handle::current();
     let seer = seer.clone();
     let out_dir = out_dir.to_string();
     std::thread::spawn(move || unsafe {
@@ -41,10 +46,16 @@ pub async fn spawn_pipeline(
                 match pl.run() {
                     Ok(c) => {
                         if !c {
+                            if let Err(e) = pl.flush() {
+                                error!("Pipeline flush failed: {}", e);
+                            }
                             break;
                         }
                     }
                     Err(e) => {
+                        if let Err(e) = pl.flush() {
+                            error!("Pipeline flush failed: {}", e);
+                        }
                         error!("Pipeline run failed: {}", e);
                         break;
                     }

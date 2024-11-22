@@ -2,6 +2,7 @@
 # currently supporting srt/tcp/file/test-pattern
 # All the endpoints must be valid URI's
 endpoints:
+  - "rtmp://127.0.0.1:3336"
   - "srt://127.0.0.1:3335"
   - "tcp://127.0.0.1:3334"
 
@@ -38,8 +39,8 @@ listen_http: "127.0.0.1:8080"
 overseer:
   zap-stream:
     nsec: "nsec1wya428srvpu96n4h78gualaj7wqw4ecgatgja8d5ytdqrxw56r2se440y4"
-    blossom:
-      - "http://localhost:8881"
+    #blossom:
+    #  - "http://localhost:8881"
     relays:
       - "ws://localhost:7766"
     database: "mysql://root:root@localhost:3368/zap_stream?max_connections=2"

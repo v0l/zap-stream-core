@@ -8,8 +8,11 @@ name = "zap-stream-core"
 path = "src/bin/zap_stream_core.rs"
 
 [features]
-default = ["test-pattern", "srt"]
+default = ["test-pattern", "srt", "rtmp"]
 srt = ["dep:srt-tokio"]
+rtmp = ["dep:rml_rtmp"]
+local-overseer = [] # WIP
+webhook-overseer = [] # WIP
 zap-stream = [
     "dep:nostr-sdk",
     "dep:zap-stream-db",
@@ -19,10 +22,17 @@ zap-stream = [
     "dep:sha2",
     "tokio/fs",
 ]
-test-pattern = ["dep:resvg", "dep:usvg", "dep:tiny-skia", "dep:fontdue", "dep:ringbuf", "zap-stream-db/test-pattern"]
+test-pattern = [
+    "dep:resvg",
+    "dep:usvg",
+    "dep:tiny-skia",
+    "dep:fontdue",
+    "dep:ringbuf",
+    "zap-stream-db/test-pattern"
+]
 
 [dependencies]
-ffmpeg-rs-raw = { git = "https://git.v0l.io/Kieran/ffmpeg-rs-raw.git", rev = "c2ae78acbcbe315137aea94c77b0db7ea538a709" }
+ffmpeg-rs-raw = { git = "https://git.v0l.io/Kieran/ffmpeg-rs-raw.git", rev = "8e102423d46c8fe7dc4dc999e4ce3fcfe6abfee0" }
 tokio = { version = "1.36.0", features = ["rt", "rt-multi-thread", "macros"] }
 anyhow = { version = "^1.0.91", features = ["backtrace"] }
 pretty_env_logger = "0.5.0"
@@ -46,6 +56,9 @@ hex = "0.4.3"
 # srt
 srt-tokio = { version = "0.4.3", optional = true }
 
+# rtmp
+rml_rtmp = { version = "0.8.0", optional = true }
+
 # test-pattern
 resvg = { version = "0.44.0", optional = true }
 usvg = { version = "0.44.0", optional = true }
@@ -60,3 +73,5 @@ fedimint-tonic-lnd = { version = "0.2.0", optional = true, default-features = fa
 reqwest = { version = "0.12.9", optional = true, features = ["stream"] }
 base64 = { version = "0.22.1", optional = true }
 sha2 = { version = "0.10.8", optional = true }
+bytes = "1.8.0"
+

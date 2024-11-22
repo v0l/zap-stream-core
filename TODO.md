@@ -1,7 +1,5 @@
-- Store user preference for (rates and recording) [DB]
-- Setup multi-variant output
-- Manage event lifecycle (close stream)
 - RTMP?
+- Setup multi-variant output
 - API parity
 - fMP4 instead of MPEG-TS segments
 - HLS-LL

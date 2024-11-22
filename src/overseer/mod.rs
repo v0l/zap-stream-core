@@ -1,14 +1,15 @@
-use crate::egress::EgressConfig;
 use crate::ingress::ConnectionInfo;
+
+#[cfg(feature = "local-overseer")]
+use crate::overseer::local::LocalOverseer;
+#[cfg(feature = "webhook-overseer")]
 use crate::overseer::webhook::WebhookOverseer;
-#[cfg(feature = "zap-stream")]
-use crate::overseer::zap_stream::ZapStreamOverseer;
-use crate::pipeline::{EgressType, PipelineConfig};
-use crate::settings::{OverseerConfig, Settings};
+use crate::pipeline::PipelineConfig;
+use crate::settings::Settings;
 use crate::variant::audio::AudioVariant;
 use crate::variant::mapping::VariantMapping;
 use crate::variant::video::VideoVariant;
-use crate::variant::{StreamMapping, VariantStream};
+use crate::variant::VariantStream;
 use anyhow::Result;
 use async_trait::async_trait;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
@@ -16,8 +17,14 @@ use std::cmp::PartialEq;
 use std::path::PathBuf;
 use std::sync::Arc;
 use uuid::Uuid;
-use warp::Filter;
 
+#[cfg(feature = "zap-stream")]
+use crate::overseer::zap_stream::ZapStreamOverseer;
+
+#[cfg(feature = "local-overseer")]
+mod local;
+
+#[cfg(feature = "webhook-overseer")]
 mod webhook;
 
 #[cfg(feature = "zap-stream")]
@@ -90,34 +97,31 @@ pub trait Overseer: Send + Sync {
 impl Settings {
     pub async fn get_overseer(&self) -> Result<Arc<dyn Overseer>> {
         match &self.overseer {
-            OverseerConfig::Static { egress_types } => Ok(Arc::new(StaticOverseer::new(
-                &self.output_dir,
-                egress_types,
-            ))),
+            #[cfg(feature = "local-overseer")]
+            OverseerConfig::Local => Ok(Arc::new(LocalOverseer::new())),
+            #[cfg(feature = "webhook-overseer")]
             OverseerConfig::Webhook { url } => Ok(Arc::new(WebhookOverseer::new(&url))),
+            #[cfg(feature = "zap-stream")]
             OverseerConfig::ZapStream {
                 nsec: private_key,
                 database,
                 lnd,
                 relays,
                 blossom,
-            } => {
-                #[cfg(not(feature = "zap-stream"))]
-                panic!("zap.stream overseer is not enabled");
-
-                #[cfg(feature = "zap-stream")]
-                Ok(Arc::new(
-                    ZapStreamOverseer::new(
-                        &self.output_dir,
-                        &self.public_url,
-                        private_key,
-                        database,
-                        lnd,
-                        relays,
-                        blossom,
-                    )
-                    .await?,
-                ))
+            } => Ok(Arc::new(
+                ZapStreamOverseer::new(
+                    &self.output_dir,
+                    &self.public_url,
+                    private_key,
+                    database,
+                    lnd,
+                    relays,
+                    blossom,
+                )
+                .await?,
+            )),
+            _ => {
+                panic!("Unsupported overseer");
             }
         }
     }
@@ -182,62 +186,4 @@ pub(crate) fn get_default_variants(info: &IngressInfo) -> Result<Vec<VariantStre
     }
 
     Ok(vars)
-}
-
-/// Simple static file output without any access controls
-struct StaticOverseer;
-
-impl StaticOverseer {
-    fn new(out_dir: &str, egress_types: &Vec<String>) -> Self {
-        Self {}
-    }
-}
-
-#[async_trait]
-impl Overseer for StaticOverseer {
-    async fn start_stream(
-        &self,
-        _connection: &ConnectionInfo,
-        stream_info: &IngressInfo,
-    ) -> Result<PipelineConfig> {
-        let vars = get_default_variants(stream_info)?;
-        let var_ids = vars.iter().map(|v| v.id()).collect();
-        Ok(PipelineConfig {
-            id: Uuid::new_v4(),
-            variants: vars,
-            egress: vec![EgressType::HLS(EgressConfig {
-                name: "HLS".to_owned(),
-                variants: var_ids,
-            })],
-        })
-    }
-
-    async fn on_segment(
-        &self,
-        pipeline_id: &Uuid,
-        variant_id: &Uuid,
-        index: u64,
-        duration: f32,
-        path: &PathBuf,
-    ) -> Result<()> {
-        // nothing to do here
-        Ok(())
-    }
-
-    async fn on_thumbnail(
-        &self,
-        pipeline_id: &Uuid,
-        width: usize,
-        height: usize,
-        path: &PathBuf,
-    ) -> Result<()> {
-        // nothing to do here
-        Ok(())
-    }
-
-    async fn on_end(&self, pipeline_id: &Uuid) -> Result<()> {
-
-        // nothing to do here
-        Ok(())
-    }
 }

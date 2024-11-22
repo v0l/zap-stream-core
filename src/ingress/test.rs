@@ -17,6 +17,7 @@ use std::io::Read;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tiny_skia::Pixmap;
+use tokio::runtime::Handle;
 
 pub async fn listen(out_dir: String, overseer: Arc<dyn Overseer>) -> Result<()> {
     info!("Test pattern enabled");
@@ -24,10 +25,17 @@ pub async fn listen(out_dir: String, overseer: Arc<dyn Overseer>) -> Result<()> 
     let info = ConnectionInfo {
         endpoint: "test-pattern".to_string(),
         ip_addr: "test-pattern".to_string(),
+        app_name: "".to_string(),
         key: "test".to_string(),
     };
     let src = TestPatternSrc::new()?;
-    spawn_pipeline(info, out_dir.clone(), overseer.clone(), Box::new(src)).await;
+    spawn_pipeline(
+        Handle::current(),
+        info,
+        out_dir.clone(),
+        overseer.clone(),
+        Box::new(src),
+    );
     Ok(())
 }
 

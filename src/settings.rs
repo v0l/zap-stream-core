@@ -26,10 +26,7 @@ pub struct Settings {
 #[serde(rename_all = "kebab-case")]
 pub enum OverseerConfig {
     /// Static output
-    Static {
-        /// Types of output
-        egress_types: Vec<String>,
-    },
+    Local,
     /// Control system via external API
     Webhook {
         /// Webhook service URL
