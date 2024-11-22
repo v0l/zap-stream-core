@@ -179,7 +179,7 @@ impl Read for TestPatternSrc {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         unsafe {
             while self.reader.occupied_len() < buf.len() {
-                self.next_pkt().map_err(|e| std::io::Error::other(e))?;
+                self.next_pkt().map_err(std::io::Error::other)?;
             }
         }
         self.reader.read(buf)

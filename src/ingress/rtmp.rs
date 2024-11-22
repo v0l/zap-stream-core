@@ -98,7 +98,7 @@ impl RtmpClient {
         }
 
         let mx = self.session.handle_input(&self.reader_buf[..r])?;
-        if mx.len() > 0 {
+        if !mx.is_empty() {
             self.msg_queue.extend(mx);
             self.process_msg_queue()?;
         }
@@ -187,7 +187,7 @@ impl RtmpClient {
 impl Read for RtmpClient {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         // block this thread until something comes into [media_buf]
-        while self.media_buf.len() == 0 {
+        while self.media_buf.is_empty() {
             if let Err(e) = self.read_data() {
                 error!("Error reading data: {}", e);
                 return Ok(0);
@@ -216,7 +216,6 @@ pub async fn listen(out_dir: String, addr: String, overseer: Arc<dyn Overseer>) 
             .spawn(move || {
                 if let Err(e) = cc.read_until_publish_request(Duration::from_secs(10)) {
                     error!("{}", e);
-                    return;
                 } else {
                     let pr = cc.published_stream.as_ref().unwrap();
                     let info = ConnectionInfo {

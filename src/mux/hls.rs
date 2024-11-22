@@ -121,15 +121,12 @@ impl HlsVariant {
         std::fs::create_dir_all(PathBuf::from(&first_seg).parent().unwrap())?;
 
         let mut opts = HashMap::new();
-        match segment_type {
-            SegmentType::FMP4 => {
-                opts.insert("fflags".to_string(), "-autobsf".to_string());
-                opts.insert(
-                    "movflags".to_string(),
-                    "+frag_custom+dash+delay_moov".to_string(),
-                );
-            }
-            _ => {}
+        if let SegmentType::FMP4 = segment_type {
+            opts.insert("fflags".to_string(), "-autobsf".to_string());
+            opts.insert(
+                "movflags".to_string(),
+                "+frag_custom+dash+delay_moov".to_string(),
+            );
         };
         let mut mux = unsafe {
             Muxer::builder()
@@ -242,7 +239,7 @@ impl HlsVariant {
         av_free((*ctx).url as *mut _);
 
         let next_seg_url =
-            Self::map_segment_path(&*self.out_dir, &self.name, self.idx, self.segment_type);
+            Self::map_segment_path(&self.out_dir, &self.name, self.idx, self.segment_type);
         (*ctx).url = cstr!(next_seg_url.as_str());
 
         let ret = avio_open(&mut (*ctx).pb, (*ctx).url, AVIO_FLAG_WRITE);
@@ -276,7 +273,7 @@ impl HlsVariant {
             idx: prev_seg,
             duration,
             path: PathBuf::from(Self::map_segment_path(
-                &*self.out_dir,
+                &self.out_dir,
                 &self.name,
                 prev_seg,
                 self.segment_type,
@@ -300,7 +297,7 @@ impl HlsVariant {
 
         if self.segments.len() > MAX_SEGMENTS {
             let n_drain = self.segments.len() - MAX_SEGMENTS;
-            let seg_dir = PathBuf::from(self.out_dir());
+            let seg_dir = self.out_dir();
             for seg in self.segments.drain(..n_drain) {
                 // delete file
                 let seg_path = seg_dir.join(seg.filename());

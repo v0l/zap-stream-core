@@ -63,8 +63,7 @@ pub fn spawn_pipeline(
             },
             Err(e) => {
                 error!("Failed to create PipelineRunner: {}", e);
-                return;
             }
-        };
+        }
     });
 }

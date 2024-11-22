@@ -42,7 +42,7 @@ impl RecorderEgress {
             m
         };
         Ok(Self {
-            id: id.clone(),
+            id: *id,
             muxer,
             var_map,
         })

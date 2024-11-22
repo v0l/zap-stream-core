@@ -109,7 +109,7 @@ impl PipelineRunner {
         for (var, enc) in &mut self.encoders {
             for mut pkt in enc.encode_frame(ptr::null_mut())? {
                 for eg in self.egress.iter_mut() {
-                    eg.process_pkt(pkt, &var)?;
+                    eg.process_pkt(pkt, var)?;
                 }
                 av_packet_free(&mut pkt);
             }
