@@ -4,7 +4,15 @@ use crate::ingress::ConnectionInfo;
 use crate::overseer::local::LocalOverseer;
 #[cfg(feature = "webhook-overseer")]
 use crate::overseer::webhook::WebhookOverseer;
+#[cfg(feature = "zap-stream")]
+use crate::overseer::zap_stream::ZapStreamOverseer;
 use crate::pipeline::PipelineConfig;
+#[cfg(any(
+    feature = "local-overseer",
+    feature = "webhook-overseer",
+    feature = "zap-stream"
+))]
+use crate::settings::OverseerConfig;
 use crate::settings::Settings;
 use crate::variant::audio::AudioVariant;
 use crate::variant::mapping::VariantMapping;
@@ -17,9 +25,6 @@ use std::cmp::PartialEq;
 use std::path::PathBuf;
 use std::sync::Arc;
 use uuid::Uuid;
-
-#[cfg(feature = "zap-stream")]
-use crate::overseer::zap_stream::ZapStreamOverseer;
 
 #[cfg(feature = "local-overseer")]
 mod local;
