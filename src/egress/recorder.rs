@@ -65,6 +65,6 @@ impl Egress for RecorderEgress {
     }
 
     unsafe fn reset(&mut self) -> Result<()> {
-        self.muxer.reset()
+        self.muxer.close()
     }
 }

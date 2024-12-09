@@ -38,6 +38,7 @@ listen_http: "127.0.0.1:8080"
 #
 overseer:
   zap-stream:
+    cost: 16
     nsec: "nsec1wya428srvpu96n4h78gualaj7wqw4ecgatgja8d5ytdqrxw56r2se440y4"
     #blossom:
     #  - "http://localhost:8881"

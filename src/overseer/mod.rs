@@ -66,6 +66,9 @@ pub enum IngressStreamType {
 #[async_trait]
 /// The control process that oversees streaming operations
 pub trait Overseer: Send + Sync {
+    /// Check all streams
+    async fn check_streams(&self) -> Result<()>;
+
     /// Set up a new streaming pipeline
     async fn start_stream(
         &self,
@@ -113,6 +116,7 @@ impl Settings {
                 lnd,
                 relays,
                 blossom,
+                cost,
             } => Ok(Arc::new(
                 ZapStreamOverseer::new(
                     &self.output_dir,
@@ -122,6 +126,7 @@ impl Settings {
                     lnd,
                     relays,
                     blossom,
+                    *cost,
                 )
                 .await?,
             )),

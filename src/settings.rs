@@ -44,6 +44,8 @@ pub enum OverseerConfig {
         nsec: String,
         /// Blossom servers
         blossom: Option<Vec<String>>,
+        /// Cost (milli-sats) / second / variant
+        cost: i64,
     },
 }
 

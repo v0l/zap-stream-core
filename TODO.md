@@ -1,5 +1,4 @@
 - RTMP?
 - Setup multi-variant output
-- API parity
-- fMP4 instead of MPEG-TS segments
+- API parity https://git.v0l.io/Kieran/zap.stream/issues/7
 - HLS-LL

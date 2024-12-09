@@ -226,7 +226,7 @@ impl HlsVariant {
     }
 
     pub unsafe fn reset(&mut self) -> Result<()> {
-        self.mux.reset()
+        self.mux.close()
     }
 
     unsafe fn split_next_seg(&mut self, pkt_time: f32) -> Result<NewSegment> {

@@ -14,14 +14,17 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_MJPEG;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVFrame;
 use ffmpeg_rs_raw::Encoder;
 use futures_util::FutureExt;
-use log::{info, warn};
+use log::{error, info, warn};
 use nostr_sdk::bitcoin::PrivateKey;
 use nostr_sdk::prelude::Coordinate;
 use nostr_sdk::{Client, Event, EventBuilder, JsonUtil, Keys, Kind, Tag, ToBech32};
+use std::collections::HashSet;
 use std::env::temp_dir;
 use std::fs::create_dir_all;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use url::Url;
 use uuid::Uuid;
 use warp::Filter;
@@ -46,6 +49,11 @@ pub struct ZapStreamOverseer {
     blossom_servers: Vec<Blossom>,
     /// Public facing URL pointing to [out_dir]
     public_url: String,
+    /// Cost / second / variant
+    cost: i64,
+    /// Currently active streams
+    /// Any streams which are not contained in this set are dead
+    active_streams: Arc<RwLock<HashSet<Uuid>>>,
 }
 
 impl ZapStreamOverseer {
@@ -57,6 +65,7 @@ impl ZapStreamOverseer {
         lnd: &LndSettings,
         relays: &Vec<String>,
         blossom_servers: &Option<Vec<String>>,
+        cost: i64,
     ) -> Result<Self> {
         let db = ZapStreamDb::new(db).await?;
         db.migrate().await?;
@@ -94,6 +103,8 @@ impl ZapStreamOverseer {
                 .map(|b| Blossom::new(b))
                 .collect(),
             public_url: public_url.clone(),
+            cost,
+            active_streams: Arc::new(RwLock::new(HashSet::new())),
         })
     }
 
@@ -206,6 +217,25 @@ impl ZapStreamOverseer {
 
 #[async_trait]
 impl Overseer for ZapStreamOverseer {
+    async fn check_streams(&self) -> Result<()> {
+        let active_streams = self.db.list_live_streams().await?;
+        for stream in active_streams {
+            // check
+            let id = Uuid::parse_str(&stream.id)?;
+            info!("Checking stream is alive: {}", stream.id);
+            let is_active = {
+                let streams = self.active_streams.read().await;
+                streams.contains(&id)
+            };
+            if !is_active {
+                if let Err(e) = self.on_end(&id).await {
+                    error!("Failed to end dead stream {}: {}", &id, e);
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn start_stream(
         &self,
         connection: &ConnectionInfo,
@@ -217,6 +247,11 @@ impl Overseer for ZapStreamOverseer {
             .await?
             .ok_or_else(|| anyhow::anyhow!("User not found"))?;
 
+        let user = self.db.get_user(uid).await?;
+        if user.balance <= 0 {
+            bail!("Not enough balance");
+        }
+
         let variants = get_default_variants(&stream_info)?;
 
         let mut egress = vec![];
@@ -225,7 +260,6 @@ impl Overseer for ZapStreamOverseer {
             variants: variants.iter().map(|v| v.id()).collect(),
         }));
 
-        let user = self.db.get_user(uid).await?;
         let stream_id = Uuid::new_v4();
         // insert new stream record
         let mut new_stream = UserStream {
@@ -238,8 +272,12 @@ impl Overseer for ZapStreamOverseer {
         let stream_event = self.publish_stream_event(&new_stream, &user.pubkey).await?;
         new_stream.event = Some(stream_event.as_json());
 
+        let mut streams = self.active_streams.write().await;
+        streams.insert(stream_id.clone());
+
         self.db.insert_stream(&new_stream).await?;
         self.db.update_stream(&new_stream).await?;
+
         Ok(PipelineConfig {
             id: stream_id,
             variants,
@@ -255,6 +293,16 @@ impl Overseer for ZapStreamOverseer {
         duration: f32,
         path: &PathBuf,
     ) -> Result<()> {
+        let cost = self.cost * duration.round() as i64;
+        let stream = self.db.get_stream(pipeline_id).await?;
+        let bal = self
+            .db
+            .tick_stream(pipeline_id, stream.user_id, duration, cost)
+            .await?;
+        if bal <= 0 {
+            bail!("Not enough balance");
+        }
+
         // Upload to blossom servers if configured
         let mut blobs = vec![];
         for b in &self.blossom_servers {
@@ -302,6 +350,9 @@ impl Overseer for ZapStreamOverseer {
     async fn on_end(&self, pipeline_id: &Uuid) -> Result<()> {
         let mut stream = self.db.get_stream(pipeline_id).await?;
         let user = self.db.get_user(stream.user_id).await?;
+
+        let mut streams = self.active_streams.write().await;
+        streams.remove(pipeline_id);
 
         stream.state = UserStreamState::Ended;
         let event = self.publish_stream_event(&stream, &user.pubkey).await?;

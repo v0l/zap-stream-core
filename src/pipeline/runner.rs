@@ -73,6 +73,9 @@ pub struct PipelineRunner {
     overseer: Arc<dyn Overseer>,
 
     fps_counter_start: Instant,
+    fps_last_frame_ctr: u64,
+
+    /// Total number of frames produced
     frame_ctr: u64,
     out_dir: String,
 }
@@ -100,6 +103,7 @@ impl PipelineRunner {
             fps_counter_start: Instant::now(),
             egress: Vec::new(),
             frame_ctr: 0,
+            fps_last_frame_ctr: 0,
             info: None,
         })
     }
@@ -162,9 +166,7 @@ impl PipelineRunner {
 
             let p = (*stream).codecpar;
             if (*p).codec_type == AVMediaType::AVMEDIA_TYPE_VIDEO {
-                let pts_sec = ((*frame).pts as f64 * av_q2d((*stream).time_base)).floor() as u64;
-                // write thumbnail every 1min
-                if pts_sec % 60 == 0 && pts_sec != 0 {
+                if (self.frame_ctr % 1800) == 0 {
                     let dst_pic = PathBuf::from(&self.out_dir)
                         .join(config.id.to_string())
                         .join("thumb.webp");
@@ -274,16 +276,18 @@ impl PipelineRunner {
                         .on_segment(&config.id, &seg.variant, seg.idx, seg.duration, &seg.path)
                         .await
                     {
-                        error!("Failed to process segment: {}", e);
+                        bail!("Failed to process segment {}", e.to_string());
                     }
                 }
             }
-        });
+            Ok(())
+        })?;
         let elapsed = Instant::now().sub(self.fps_counter_start).as_secs_f32();
         if elapsed >= 2f32 {
-            info!("Average fps: {:.2}", self.frame_ctr as f32 / elapsed);
+            let n_frames = self.frame_ctr - self.fps_last_frame_ctr;
+            info!("Average fps: {:.2}", n_frames as f32 / elapsed);
             self.fps_counter_start = Instant::now();
-            self.frame_ctr = 0;
+            self.fps_last_frame_ctr = self.frame_ctr;
         }
         Ok(true)
     }

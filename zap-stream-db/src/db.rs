@@ -1,6 +1,6 @@
 use crate::{User, UserStream};
 use anyhow::Result;
-use sqlx::{MySqlPool, Row};
+use sqlx::{Executor, MySqlPool, Row};
 use uuid::Uuid;
 
 pub struct ZapStreamDb {
@@ -100,5 +100,46 @@ impl ZapStreamDb {
             .fetch_one(&self.db)
             .await
             .map_err(anyhow::Error::new)?)
+    }
+
+    /// Get the list of active streams
+    pub async fn list_live_streams(&self) -> Result<Vec<UserStream>> {
+        Ok(sqlx::query_as("select * from user_stream where state = 2")
+            .fetch_all(&self.db)
+            .await?)
+    }
+
+    /// Add [duration] & [cost] to a stream and return the new user balance
+    pub async fn tick_stream(
+        &self,
+        stream_id: &Uuid,
+        user_id: u64,
+        duration: f32,
+        cost: i64,
+    ) -> Result<i64> {
+        let mut tx = self.db.begin().await?;
+
+        sqlx::query("update user_stream set duration = duration + ?, cost = cost + ? where id = ?")
+            .bind(&duration)
+            .bind(&cost)
+            .bind(stream_id.to_string())
+            .execute(&mut *tx)
+            .await?;
+
+        sqlx::query("update user set balance = balance - ? where id = ?")
+            .bind(&cost)
+            .bind(&user_id)
+            .execute(&mut *tx)
+            .await?;
+
+        let balance: i64 = sqlx::query("select balance from user where id = ?")
+            .bind(&user_id)
+            .fetch_one(&mut *tx)
+            .await?
+            .try_get(0)?;
+
+        tx.commit().await?;
+
+        Ok(balance)
     }
 }

@@ -1,3 +1,4 @@
+pub mod background;
 #[cfg(feature = "zap-stream")]
 pub mod blossom;
 pub mod egress;

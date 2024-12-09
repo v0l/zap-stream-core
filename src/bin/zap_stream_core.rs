@@ -7,9 +7,12 @@ use log::{error, info};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::task::JoinHandle;
+use tokio::time::sleep;
 use url::Url;
 use warp::{cors, Filter};
+use zap_stream_core::background::BackgroundMonitor;
 #[cfg(feature = "rtmp")]
 use zap_stream_core::ingress::rtmp;
 #[cfg(feature = "srt")]
@@ -43,10 +46,10 @@ async fn main() -> Result<()> {
     let settings: Settings = builder.try_deserialize()?;
     let overseer = settings.get_overseer().await?;
 
-    let mut listeners = vec![];
+    let mut tasks = vec![];
     for e in &settings.endpoints {
         match try_create_listener(e, &settings.output_dir, &overseer) {
-            Ok(l) => listeners.push(l),
+            Ok(l) => tasks.push(l),
             Err(e) => error!("{}", e),
         }
     }
@@ -55,7 +58,7 @@ async fn main() -> Result<()> {
     let http_dir = settings.output_dir.clone();
     let index_html = include_str!("../index.html").replace("%%PUBLIC_URL%%", &settings.public_url);
 
-    listeners.push(tokio::spawn(async move {
+    tasks.push(tokio::spawn(async move {
         let cors = cors().allow_any_origin().allow_methods(vec!["GET"]);
 
         let index_handle = warp::get()
@@ -71,7 +74,18 @@ async fn main() -> Result<()> {
         Ok(())
     }));
 
-    for handle in listeners {
+    // spawn background job
+    let mut bg = BackgroundMonitor::new(overseer.clone());
+    tasks.push(tokio::spawn(async move {
+        loop {
+            if let Err(e) = bg.check().await {
+                error!("{}", e);
+            }
+            sleep(Duration::from_secs(10)).await;
+        }
+    }));
+
+    for handle in tasks {
         if let Err(e) = handle.await? {
             error!("{e}");
         }
