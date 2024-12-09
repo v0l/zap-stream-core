@@ -47,11 +47,15 @@ url = "2.5.0"
 itertools = "0.13.0"
 rand = "0.8.5"
 clap = { version = "4.5.16", features = ["derive"] }
-warp = "0.3.7"
 libc = "0.2.162"
 m3u8-rs = "6.0.0"
 chrono = "^0.4.38"
 hex = "0.4.3"
+hyper = { version = "1.5.1", features = ["server"] }
+hyper-util = { version = "0.1.10", features = ["tokio"] }
+bytes = "1.8.0"
+http-body-util = "0.1.2"
+tokio-util = "0.7.13"
 
 # srt
 srt-tokio = { version = "0.4.3", optional = true }
@@ -73,5 +77,5 @@ fedimint-tonic-lnd = { version = "0.2.0", optional = true, default-features = fa
 reqwest = { version = "0.12.9", optional = true, features = ["stream"] }
 base64 = { version = "0.22.1", optional = true }
 sha2 = { version = "0.10.8", optional = true }
-bytes = "1.8.0"
+
 

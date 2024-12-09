@@ -8,12 +8,17 @@ use crate::settings::LndSettings;
 use crate::variant::StreamMapping;
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
+use bytes::Bytes;
 use chrono::Utc;
 use fedimint_tonic_lnd::verrpc::VersionRequest;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_MJPEG;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVFrame;
 use ffmpeg_rs_raw::Encoder;
 use futures_util::FutureExt;
+use http_body_util::combinators::BoxBody;
+use http_body_util::{BodyExt, Full};
+use hyper::body::Incoming;
+use hyper::{Method, Request, Response};
 use log::{error, info, warn};
 use nostr_sdk::bitcoin::PrivateKey;
 use nostr_sdk::prelude::Coordinate;
@@ -27,7 +32,6 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use url::Url;
 use uuid::Uuid;
-use warp::Filter;
 use zap_stream_db::sqlx::Encode;
 use zap_stream_db::{UserStream, UserStreamState, ZapStreamDb};
 
@@ -217,6 +221,18 @@ impl ZapStreamOverseer {
 
 #[async_trait]
 impl Overseer for ZapStreamOverseer {
+    async fn api(&self, req: Request<Incoming>) -> Result<Response<BoxBody<Bytes, anyhow::Error>>> {
+        Ok(match (req.method(), req.uri().path()) {
+            (&Method::GET, "/api/v1/account") => {
+                bail!("Not implemented")
+            }
+            _ => Response::builder()
+                .header("server", "zap-stream-core")
+                .status(404)
+                .body(Full::from("").map_err(anyhow::Error::new).boxed())?,
+        })
+    }
+
     async fn check_streams(&self) -> Result<()> {
         let active_streams = self.db.list_live_streams().await?;
         for stream in active_streams {

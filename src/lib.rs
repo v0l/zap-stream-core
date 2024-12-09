@@ -2,6 +2,7 @@ pub mod background;
 #[cfg(feature = "zap-stream")]
 pub mod blossom;
 pub mod egress;
+pub mod http;
 pub mod ingress;
 pub mod mux;
 pub mod overseer;

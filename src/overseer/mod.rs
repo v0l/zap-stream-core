@@ -20,7 +20,12 @@ use crate::variant::video::VideoVariant;
 use crate::variant::VariantStream;
 use anyhow::Result;
 use async_trait::async_trait;
+use bytes::Bytes;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
+use http_body_util::combinators::BoxBody;
+use http_body_util::Full;
+use hyper::body::Incoming;
+use hyper::{Request, Response};
 use std::cmp::PartialEq;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -66,6 +71,9 @@ pub enum IngressStreamType {
 #[async_trait]
 /// The control process that oversees streaming operations
 pub trait Overseer: Send + Sync {
+    /// Add any API routes to the web server
+    async fn api(&self, req: Request<Incoming>) -> Result<Response<BoxBody<Bytes, anyhow::Error>>>;
+
     /// Check all streams
     async fn check_streams(&self) -> Result<()>;
 
