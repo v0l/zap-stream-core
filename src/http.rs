@@ -6,6 +6,7 @@ use http_body_util::{BodyExt, Full, StreamBody};
 use hyper::body::{Frame, Incoming};
 use hyper::service::Service;
 use hyper::{Method, Request, Response};
+use log::error;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -83,7 +84,10 @@ impl Service<Request<Incoming>> for HttpServer {
         Box::pin(async move {
             match overseer.api(req).await {
                 Ok(res) => Ok(res),
-                Err(e) => Err(e),
+                Err(e) => {
+                    error!("{}", e);
+                    Ok(Response::builder().status(500).body(BoxBody::default())?)
+                }
             }
         })
     }

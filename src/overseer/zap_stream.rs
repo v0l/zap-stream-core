@@ -8,6 +8,8 @@ use crate::settings::LndSettings;
 use crate::variant::StreamMapping;
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
+use base64::alphabet::STANDARD;
+use base64::Engine;
 use bytes::Bytes;
 use chrono::Utc;
 use fedimint_tonic_lnd::verrpc::VersionRequest;
@@ -23,6 +25,7 @@ use log::{error, info, warn};
 use nostr_sdk::bitcoin::PrivateKey;
 use nostr_sdk::prelude::Coordinate;
 use nostr_sdk::{Client, Event, EventBuilder, JsonUtil, Keys, Kind, Tag, ToBech32};
+use serde::Serialize;
 use std::collections::HashSet;
 use std::env::temp_dir;
 use std::fs::create_dir_all;
@@ -35,7 +38,7 @@ use uuid::Uuid;
 use zap_stream_db::sqlx::Encode;
 use zap_stream_db::{UserStream, UserStreamState, ZapStreamDb};
 
-const STREAM_EVENT_KIND: u16 = 30_311;
+const STREAM_EVENT_KIND: u16 = 30_313;
 
 /// zap.stream NIP-53 overseer
 pub struct ZapStreamOverseer {
@@ -184,21 +187,19 @@ impl ZapStreamOverseer {
     }
 
     async fn publish_stream_event(&self, stream: &UserStream, pubkey: &Vec<u8>) -> Result<Event> {
-        let mut extra_tags = vec![
+        let extra_tags = vec![
             Tag::parse(&["p", hex::encode(pubkey).as_str(), "", "host"])?,
             Tag::parse(&[
                 "streaming",
-                self.map_to_public_url(stream, "live.m3u8")?.as_str(),
+                self.map_to_stream_public_url(stream, "live.m3u8")?.as_str(),
             ])?,
             Tag::parse(&[
                 "image",
-                self.map_to_public_url(stream, "thumb.webp")?.as_str(),
+                self.map_to_stream_public_url(stream, "thumb.webp")?
+                    .as_str(),
             ])?,
+            Tag::parse(&["service", self.map_to_public_url("api/v1")?.as_str()])?,
         ];
-        // flag NIP94 streaming when using blossom servers
-        if self.blossom_servers.len() > 0 {
-            extra_tags.push(Tag::parse(&["streaming", "nip94"])?);
-        }
         let ev = self
             .stream_to_event_builder(stream)?
             .add_tags(extra_tags)
@@ -207,29 +208,93 @@ impl ZapStreamOverseer {
         Ok(ev)
     }
 
-    fn map_to_public_url<'a>(
+    fn map_to_stream_public_url(
         &self,
         stream: &UserStream,
-        path: impl Into<&'a str>,
+        path: &str,
     ) -> Result<String> {
+        self.map_to_public_url(&format!("{}/{}", stream.id, path))
+    }
+
+    fn map_to_public_url(&self, path: &str) -> Result<String> {
         let u: Url = self.public_url.parse()?;
-        Ok(u.join(&format!("/{}/", stream.id))?
-            .join(path.into())?
-            .to_string())
+        Ok(u.join(path)?.to_string())
+    }
+
+    fn check_nip98_auth(&self, req: Request<Incoming>) -> Result<()> {
+        let auth = if let Some(a) = req.headers().get("authorization") {
+            a.to_str()?
+        } else {
+            bail!("Authorization header missing");
+        };
+
+        if !auth.starts_with("Nostr ") {
+            bail!("Invalid authorization scheme");
+        }
+
+        let json = String::from_utf8(
+            base64::engine::general_purpose::STANDARD.decode(auth[6..].as_bytes())?,
+        )?;
+        info!("{}", json);
+
+        Ok(())
     }
 }
 
+#[derive(Serialize)]
+struct Endpoint {}
+
+#[derive(Serialize)]
+struct AccountInfo {
+    pub endpoints: Vec<Endpoint>,
+    pub event: Event,
+    pub balance: u64,
+}
 #[async_trait]
 impl Overseer for ZapStreamOverseer {
     async fn api(&self, req: Request<Incoming>) -> Result<Response<BoxBody<Bytes, anyhow::Error>>> {
+        let base = Response::builder()
+            .header("server", "zap-stream-core")
+            .header("access-control-allow-origin", "*")
+            .header("access-control-allow-headers", "*")
+            .header("access-control-allow-methods", "HEAD, GET");
+
         Ok(match (req.method(), req.uri().path()) {
             (&Method::GET, "/api/v1/account") => {
+                self.check_nip98_auth(req)?;
+                base.body(Default::default())?
+            }
+            (&Method::PATCH, "/api/v1/account") => {
                 bail!("Not implemented")
             }
-            _ => Response::builder()
-                .header("server", "zap-stream-core")
-                .status(404)
-                .body(Full::from("").map_err(anyhow::Error::new).boxed())?,
+            (&Method::GET, "/api/v1/topup") => {
+                bail!("Not implemented")
+            }
+            (&Method::PATCH, "/api/v1/event") => {
+                bail!("Not implemented")
+            }
+            (&Method::POST, "/api/v1/withdraw") => {
+                bail!("Not implemented")
+            }
+            (&Method::POST, "/api/v1/account/forward") => {
+                bail!("Not implemented")
+            }
+            (&Method::DELETE, "/api/v1/account/forward/<id>") => {
+                bail!("Not implemented")
+            }
+            (&Method::GET, "/api/v1/account/history") => {
+                bail!("Not implemented")
+            }
+            (&Method::GET, "/api/v1/account/keys") => {
+                bail!("Not implemented")
+            }
+            _ => {
+                if req.method() == Method::OPTIONS {
+                    base.body(Default::default())?
+                } else {
+                    base.status(404).body(Default::default())?
+                }
+            }
         })
     }
 
