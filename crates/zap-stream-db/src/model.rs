@@ -1,7 +1,6 @@
 use chrono::{DateTime, Utc};
 use sqlx::{FromRow, Type};
 use std::fmt::{Display, Formatter};
-use uuid::Uuid;
 
 #[derive(Debug, Clone, FromRow)]
 pub struct User {

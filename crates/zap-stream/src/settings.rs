@@ -1,4 +1,7 @@
+use crate::overseer::ZapStreamOverseer;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use zap_stream_core::overseer::Overseer;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
@@ -54,4 +57,34 @@ pub struct LndSettings {
     pub address: String,
     pub cert: String,
     pub macaroon: String,
+}
+
+impl Settings {
+    pub async fn get_overseer(&self) -> anyhow::Result<Arc<ZapStreamOverseer>> {
+        match &self.overseer {
+            OverseerConfig::ZapStream {
+                nsec: private_key,
+                database,
+                lnd,
+                relays,
+                blossom,
+                cost,
+            } => Ok(Arc::new(
+                ZapStreamOverseer::new(
+                    &self.output_dir,
+                    &self.public_url,
+                    private_key,
+                    database,
+                    lnd,
+                    relays,
+                    blossom,
+                    *cost,
+                )
+                .await?,
+            )),
+            _ => {
+                panic!("Unsupported overseer");
+            }
+        }
+    }
 }

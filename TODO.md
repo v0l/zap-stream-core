@@ -2,3 +2,4 @@
 - Setup multi-variant output
 - API parity https://git.v0l.io/Kieran/zap.stream/issues/7
 - HLS-LL
+- Delete old segments (HLS+N94)

@@ -1,11 +1,10 @@
 use crate::blossom::{BlobDescriptor, Blossom};
-use crate::egress::hls::HlsEgress;
-use crate::egress::EgressConfig;
-use crate::ingress::ConnectionInfo;
-use crate::overseer::{get_default_variants, IngressInfo, Overseer};
-use crate::pipeline::{EgressType, PipelineConfig};
-use crate::settings::LndSettings;
-use crate::variant::StreamMapping;
+use zap_stream_core::egress::hls::HlsEgress;
+use zap_stream_core::egress::EgressConfig;
+use zap_stream_core::ingress::ConnectionInfo;
+use zap_stream_core::overseer::{IngressInfo, IngressStreamType, Overseer};
+use zap_stream_core::pipeline::{EgressType, PipelineConfig};
+use zap_stream_core::variant::{StreamMapping, VariantStream};
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use base64::alphabet::STANDARD;
@@ -32,11 +31,16 @@ use std::fs::create_dir_all;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use tokio::sync::RwLock;
 use url::Url;
 use uuid::Uuid;
+use zap_stream_core::variant::audio::AudioVariant;
+use zap_stream_core::variant::mapping::VariantMapping;
+use zap_stream_core::variant::video::VideoVariant;
 use zap_stream_db::sqlx::Encode;
 use zap_stream_db::{UserStream, UserStreamState, ZapStreamDb};
+use crate::settings::LndSettings;
 
 const STREAM_EVENT_KIND: u16 = 30_313;
 
@@ -77,12 +81,26 @@ impl ZapStreamOverseer {
         let db = ZapStreamDb::new(db).await?;
         db.migrate().await?;
 
+        #[cfg(debug_assertions)]
+        {
+            let uid = db.upsert_user(&[0; 32]).await?;
+            db.update_user_balance(uid, 100_000_000).await?;
+            let user = db.get_user(uid).await?;
+
+            info!(
+                "ZERO pubkey: uid={},key={},balance={}",
+                user.id,
+                user.stream_key,
+                user.balance / 1000
+            );
+        }
+
         let mut lnd = fedimint_tonic_lnd::connect(
             lnd.address.clone(),
             PathBuf::from(&lnd.cert),
             PathBuf::from(&lnd.macaroon),
         )
-        .await?;
+            .await?;
 
         let version = lnd
             .versioner()
@@ -112,6 +130,52 @@ impl ZapStreamOverseer {
             public_url: public_url.clone(),
             cost,
             active_streams: Arc::new(RwLock::new(HashSet::new())),
+        })
+    }
+
+    pub(crate) async fn api(&self, req: Request<Incoming>) -> Result<Response<BoxBody<Bytes, anyhow::Error>>> {
+        let base = Response::builder()
+            .header("server", "zap-stream-core")
+            .header("access-control-allow-origin", "*")
+            .header("access-control-allow-headers", "*")
+            .header("access-control-allow-methods", "HEAD, GET");
+
+        Ok(match (req.method(), req.uri().path()) {
+            (&Method::GET, "/api/v1/account") => {
+                self.check_nip98_auth(req)?;
+                base.body(Default::default())?
+            }
+            (&Method::PATCH, "/api/v1/account") => {
+                bail!("Not implemented")
+            }
+            (&Method::GET, "/api/v1/topup") => {
+                bail!("Not implemented")
+            }
+            (&Method::PATCH, "/api/v1/event") => {
+                bail!("Not implemented")
+            }
+            (&Method::POST, "/api/v1/withdraw") => {
+                bail!("Not implemented")
+            }
+            (&Method::POST, "/api/v1/account/forward") => {
+                bail!("Not implemented")
+            }
+            (&Method::DELETE, "/api/v1/account/forward/<id>") => {
+                bail!("Not implemented")
+            }
+            (&Method::GET, "/api/v1/account/history") => {
+                bail!("Not implemented")
+            }
+            (&Method::GET, "/api/v1/account/keys") => {
+                bail!("Not implemented")
+            }
+            _ => {
+                if req.method() == Method::OPTIONS {
+                    base.body(Default::default())?
+                } else {
+                    base.status(404).body(Default::default())?
+                }
+            }
         })
     }
 
@@ -159,60 +223,56 @@ impl ZapStreamOverseer {
 
         let kind = Kind::from(STREAM_EVENT_KIND);
         let coord = Coordinate::new(kind, self.keys.public_key).identifier(&stream.id);
-        tags.push(Tag::parse(&[
+        tags.push(Tag::parse([
             "alt",
             &format!("Watch live on https://zap.stream/{}", coord.to_bech32()?),
         ])?);
-        Ok(EventBuilder::new(kind, "", tags))
+        Ok(EventBuilder::new(kind, "").tags(tags))
     }
 
     fn blob_to_event_builder(&self, stream: &BlobDescriptor) -> Result<EventBuilder> {
         let tags = if let Some(tags) = stream.nip94.as_ref() {
             tags.iter()
-                .map_while(|(k, v)| Tag::parse(&[k, v]).ok())
+                .map_while(|(k, v)| Tag::parse([k, v]).ok())
                 .collect()
         } else {
             let mut tags = vec![
-                Tag::parse(&["x", &stream.sha256])?,
-                Tag::parse(&["url", &stream.url])?,
-                Tag::parse(&["size", &stream.size.to_string()])?,
+                Tag::parse(["x", &stream.sha256])?,
+                Tag::parse(["url", &stream.url])?,
+                Tag::parse(["size", &stream.size.to_string()])?,
             ];
             if let Some(m) = stream.mime_type.as_ref() {
-                tags.push(Tag::parse(&["m", m])?)
+                tags.push(Tag::parse(["m", m])?)
             }
             tags
         };
 
-        Ok(EventBuilder::new(Kind::FileMetadata, "", tags))
+        Ok(EventBuilder::new(Kind::FileMetadata, "").tags(tags))
     }
 
     async fn publish_stream_event(&self, stream: &UserStream, pubkey: &Vec<u8>) -> Result<Event> {
         let extra_tags = vec![
-            Tag::parse(&["p", hex::encode(pubkey).as_str(), "", "host"])?,
-            Tag::parse(&[
+            Tag::parse(["p", hex::encode(pubkey).as_str(), "", "host"])?,
+            Tag::parse([
                 "streaming",
                 self.map_to_stream_public_url(stream, "live.m3u8")?.as_str(),
             ])?,
-            Tag::parse(&[
+            Tag::parse([
                 "image",
                 self.map_to_stream_public_url(stream, "thumb.webp")?
                     .as_str(),
             ])?,
-            Tag::parse(&["service", self.map_to_public_url("api/v1")?.as_str()])?,
+            Tag::parse(["service", self.map_to_public_url("api/v1")?.as_str()])?,
         ];
         let ev = self
             .stream_to_event_builder(stream)?
-            .add_tags(extra_tags)
+            .tags(extra_tags)
             .sign_with_keys(&self.keys)?;
         self.client.send_event(ev.clone()).await?;
         Ok(ev)
     }
 
-    fn map_to_stream_public_url(
-        &self,
-        stream: &UserStream,
-        path: &str,
-    ) -> Result<String> {
+    fn map_to_stream_public_url(&self, stream: &UserStream, path: &str) -> Result<String> {
         self.map_to_public_url(&format!("{}/{}", stream.id, path))
     }
 
@@ -252,52 +312,6 @@ struct AccountInfo {
 }
 #[async_trait]
 impl Overseer for ZapStreamOverseer {
-    async fn api(&self, req: Request<Incoming>) -> Result<Response<BoxBody<Bytes, anyhow::Error>>> {
-        let base = Response::builder()
-            .header("server", "zap-stream-core")
-            .header("access-control-allow-origin", "*")
-            .header("access-control-allow-headers", "*")
-            .header("access-control-allow-methods", "HEAD, GET");
-
-        Ok(match (req.method(), req.uri().path()) {
-            (&Method::GET, "/api/v1/account") => {
-                self.check_nip98_auth(req)?;
-                base.body(Default::default())?
-            }
-            (&Method::PATCH, "/api/v1/account") => {
-                bail!("Not implemented")
-            }
-            (&Method::GET, "/api/v1/topup") => {
-                bail!("Not implemented")
-            }
-            (&Method::PATCH, "/api/v1/event") => {
-                bail!("Not implemented")
-            }
-            (&Method::POST, "/api/v1/withdraw") => {
-                bail!("Not implemented")
-            }
-            (&Method::POST, "/api/v1/account/forward") => {
-                bail!("Not implemented")
-            }
-            (&Method::DELETE, "/api/v1/account/forward/<id>") => {
-                bail!("Not implemented")
-            }
-            (&Method::GET, "/api/v1/account/history") => {
-                bail!("Not implemented")
-            }
-            (&Method::GET, "/api/v1/account/keys") => {
-                bail!("Not implemented")
-            }
-            _ => {
-                if req.method() == Method::OPTIONS {
-                    base.body(Default::default())?
-                } else {
-                    base.status(404).body(Default::default())?
-                }
-            }
-        })
-    }
-
     async fn check_streams(&self) -> Result<()> {
         let active_streams = self.db.list_live_streams().await?;
         for stream in active_streams {
@@ -397,12 +411,12 @@ impl Overseer for ZapStreamOverseer {
                 pipeline_id
             );
             let mut n94 = self.blob_to_event_builder(blob)?.add_tags([
-                Tag::parse(&["a", &a_tag])?,
-                Tag::parse(&["d", variant_id.to_string().as_str()])?,
-                Tag::parse(&["duration", duration.to_string().as_str()])?,
+                Tag::parse(["a", &a_tag])?,
+                Tag::parse(["d", variant_id.to_string().as_str()])?,
+                Tag::parse(["duration", duration.to_string().as_str()])?,
             ]);
             for b in blobs.iter().skip(1) {
-                n94 = n94.add_tags(Tag::parse(&["url", &b.url]));
+                n94 = n94.tag(Tag::parse(["url", &b.url])?);
             }
             let n94 = n94.sign_with_keys(&self.keys)?;
             let cc = self.client.clone();
@@ -443,4 +457,66 @@ impl Overseer for ZapStreamOverseer {
         info!("Stream ended {}", stream.id);
         Ok(())
     }
+}
+
+
+fn get_default_variants(info: &IngressInfo) -> Result<Vec<VariantStream>> {
+    let mut vars: Vec<VariantStream> = vec![];
+    if let Some(video_src) = info
+        .streams
+        .iter()
+        .find(|c| c.stream_type == IngressStreamType::Video)
+    {
+        vars.push(VariantStream::CopyVideo(VariantMapping {
+            id: Uuid::new_v4(),
+            src_index: video_src.index,
+            dst_index: 0,
+            group_id: 0,
+        }));
+        vars.push(VariantStream::Video(VideoVariant {
+            mapping: VariantMapping {
+                id: Uuid::new_v4(),
+                src_index: video_src.index,
+                dst_index: 1,
+                group_id: 1,
+            },
+            width: 1280,
+            height: 720,
+            fps: video_src.fps,
+            bitrate: 3_000_000,
+            codec: "libx264".to_string(),
+            profile: 100,
+            level: 51,
+            keyframe_interval: video_src.fps as u16 * 2,
+            pixel_format: AV_PIX_FMT_YUV420P as u32,
+        }));
+    }
+
+    if let Some(audio_src) = info
+        .streams
+        .iter()
+        .find(|c| c.stream_type == IngressStreamType::Audio)
+    {
+        vars.push(VariantStream::CopyAudio(VariantMapping {
+            id: Uuid::new_v4(),
+            src_index: audio_src.index,
+            dst_index: 2,
+            group_id: 0,
+        }));
+        vars.push(VariantStream::Audio(AudioVariant {
+            mapping: VariantMapping {
+                id: Uuid::new_v4(),
+                src_index: audio_src.index,
+                dst_index: 3,
+                group_id: 1,
+            },
+            bitrate: 192_000,
+            codec: "aac".to_string(),
+            channels: 2,
+            sample_rate: 48_000,
+            sample_fmt: "fltp".to_owned(),
+        }));
+    }
+
+    Ok(vars)
 }

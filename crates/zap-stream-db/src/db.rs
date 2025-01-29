@@ -42,6 +42,16 @@ impl ZapStreamDb {
             .map_err(anyhow::Error::new)?)
     }
 
+    /// Update a users balance
+    pub async fn update_user_balance(&self, uid: u64, diff: i64) -> Result<()> {
+        sqlx::query("update user set balance = balance + ? where id = ?")
+            .bind(diff)
+            .bind(uid)
+            .execute(&self.db)
+            .await?;
+        Ok(())
+    }
+
     pub async fn upsert_user(&self, pubkey: &[u8; 32]) -> Result<u64> {
         let res = sqlx::query("insert ignore into user(pubkey) values(?) returning id")
             .bind(pubkey.as_slice())

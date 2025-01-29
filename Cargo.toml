@@ -1,81 +1,20 @@
-[package]
-name = "zap-stream-core"
-version = "0.1.0"
-edition = "2021"
-
-[[bin]]
-name = "zap-stream-core"
-path = "src/bin/zap_stream_core.rs"
-
-[features]
-default = ["test-pattern", "srt", "rtmp"]
-srt = ["dep:srt-tokio"]
-rtmp = ["dep:rml_rtmp"]
-local-overseer = [] # WIP
-webhook-overseer = [] # WIP
-zap-stream = [
-    "dep:nostr-sdk",
-    "dep:zap-stream-db",
-    "dep:fedimint-tonic-lnd",
-    "dep:reqwest",
-    "dep:base64",
-    "dep:sha2",
-    "tokio/fs",
-]
-test-pattern = [
-    "dep:resvg",
-    "dep:usvg",
-    "dep:tiny-skia",
-    "dep:fontdue",
-    "dep:ringbuf",
-    "zap-stream-db/test-pattern"
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/zap-stream",
+    "crates/zap-stream-db"
 ]
 
-[dependencies]
+[workspace.dependencies]
 ffmpeg-rs-raw = { git = "https://git.v0l.io/Kieran/ffmpeg-rs-raw.git", rev = "df69b2f05da4279e36ad55086d77b45b2caf5174" }
 tokio = { version = "1.36.0", features = ["rt", "rt-multi-thread", "macros"] }
 anyhow = { version = "^1.0.91", features = ["backtrace"] }
-pretty_env_logger = "0.5.0"
-tokio-stream = "0.1.14"
-futures-util = "0.3.30"
 async-trait = "0.1.77"
 log = "0.4.21"
 uuid = { version = "1.8.0", features = ["v4", "serde"] }
 serde = { version = "1.0.197", features = ["derive"] }
-config = { version = "0.14.0", features = ["yaml"] }
 url = "2.5.0"
-itertools = "0.13.0"
-rand = "0.8.5"
-clap = { version = "4.5.16", features = ["derive"] }
-libc = "0.2.162"
-m3u8-rs = "6.0.0"
+itertools = "0.14.0"
 chrono = "^0.4.38"
 hex = "0.4.3"
-hyper = { version = "1.5.1", features = ["server"] }
-hyper-util = { version = "0.1.10", features = ["tokio"] }
-bytes = "1.8.0"
-http-body-util = "0.1.2"
-tokio-util = "0.7.13"
-
-# srt
-srt-tokio = { version = "0.4.3", optional = true }
-
-# rtmp
-rml_rtmp = { version = "0.8.0", optional = true }
-
-# test-pattern
-resvg = { version = "0.44.0", optional = true }
-usvg = { version = "0.44.0", optional = true }
-tiny-skia = { version = "0.11.4", optional = true }
-fontdue = { version = "0.9.2", optional = true }
-ringbuf = { version = "0.4.7", optional = true }
-
-# zap-stream
-zap-stream-db = { path = "zap-stream-db", optional = true }
-nostr-sdk = { version = "0.36.0", optional = true }
-fedimint-tonic-lnd = { version = "0.2.0", optional = true, default-features = false, features = ["invoicesrpc", "versionrpc"] }
-reqwest = { version = "0.12.9", optional = true, features = ["stream"] }
-base64 = { version = "0.22.1", optional = true }
-sha2 = { version = "0.10.8", optional = true }
-
-

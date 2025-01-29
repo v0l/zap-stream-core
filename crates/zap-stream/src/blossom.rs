@@ -59,15 +59,11 @@ impl Blossom {
     ) -> Result<BlobDescriptor> {
         let mut f = File::open(from_file).await?;
         let hash = Self::hash_file(&mut f).await?;
-        let auth_event = EventBuilder::new(
-            Kind::Custom(24242),
-            "Upload blob",
-            [
-                Tag::hashtag("upload"),
-                Tag::parse(&["x", &hash])?,
-                Tag::expiration(Timestamp::now().add(60)),
-            ],
-        );
+        let auth_event = EventBuilder::new(Kind::Custom(24242), "Upload blob").tags([
+            Tag::hashtag("upload"),
+            Tag::parse(["x", &hash])?,
+            Tag::expiration(Timestamp::now().add(60)),
+        ]);
 
         let auth_event = auth_event.sign_with_keys(keys)?;
 

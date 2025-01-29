@@ -1,4 +1,3 @@
-use crate::overseer::Overseer;
 use bytes::Bytes;
 use futures_util::TryStreamExt;
 use http_body_util::combinators::BoxBody;
@@ -13,16 +12,18 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tokio::fs::File;
 use tokio_util::io::ReaderStream;
+use zap_stream_core::overseer::Overseer;
+use crate::overseer::ZapStreamOverseer;
 
 #[derive(Clone)]
 pub struct HttpServer {
     index: String,
     files_dir: PathBuf,
-    overseer: Arc<dyn Overseer>,
+    overseer: Arc<ZapStreamOverseer>,
 }
 
 impl HttpServer {
-    pub fn new(index: String, files_dir: PathBuf, overseer: Arc<dyn Overseer>) -> Self {
+    pub fn new(index: String, files_dir: PathBuf, overseer: Arc<ZapStreamOverseer>) -> Self {
         Self {
             index,
             files_dir,

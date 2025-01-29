@@ -20,6 +20,10 @@ impl LocalOverseer {
 
 #[async_trait]
 impl Overseer for LocalOverseer {
+    async fn check_streams(&self) -> Result<()> {
+        todo!()
+    }
+
     async fn start_stream(
         &self,
         _connection: &ConnectionInfo,

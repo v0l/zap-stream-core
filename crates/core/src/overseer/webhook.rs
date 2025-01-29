@@ -21,6 +21,10 @@ impl WebhookOverseer {
 
 #[async_trait]
 impl Overseer for WebhookOverseer {
+    async fn check_streams(&self) -> Result<()> {
+        todo!()
+    }
+
     async fn start_stream(
         &self,
         connection: &ConnectionInfo,

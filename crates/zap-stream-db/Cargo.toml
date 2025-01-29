@@ -1,0 +1,15 @@
+[package]
+name = "zap-stream-db"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+test-pattern = []
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+
+sqlx = { version = "0.8.1", features = ["runtime-tokio", "migrate", "mysql", "chrono"] }

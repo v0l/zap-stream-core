@@ -14,8 +14,6 @@ use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use url::Url;
-use zap_stream_core::background::BackgroundMonitor;
-use zap_stream_core::http::HttpServer;
 #[cfg(feature = "rtmp")]
 use zap_stream_core::ingress::rtmp;
 #[cfg(feature = "srt")]
@@ -25,7 +23,16 @@ use zap_stream_core::ingress::test;
 
 use zap_stream_core::ingress::{file, tcp};
 use zap_stream_core::overseer::Overseer;
-use zap_stream_core::settings::Settings;
+use crate::http::HttpServer;
+use crate::monitor::BackgroundMonitor;
+use crate::overseer::ZapStreamOverseer;
+use crate::settings::Settings;
+
+mod blossom;
+mod http;
+mod monitor;
+mod overseer;
+mod settings;
 
 #[derive(Parser, Debug)]
 struct Args {}
@@ -103,7 +110,7 @@ async fn main() -> Result<()> {
 fn try_create_listener(
     u: &str,
     out_dir: &str,
-    overseer: &Arc<dyn Overseer>,
+    overseer: &Arc<ZapStreamOverseer>,
 ) -> Result<JoinHandle<Result<()>>> {
     let url: Url = u.parse()?;
     match url.scheme() {
@@ -113,7 +120,7 @@ fn try_create_listener(
             format!("{}:{}", url.host().unwrap(), url.port().unwrap()),
             overseer.clone(),
         ))),
-        #[cfg(feature = "srt")]
+        #[cfg(feature = "rtmp")]
         "rtmp" => Ok(tokio::spawn(rtmp::listen(
             out_dir.to_string(),
             format!("{}:{}", url.host().unwrap(), url.port().unwrap()),
