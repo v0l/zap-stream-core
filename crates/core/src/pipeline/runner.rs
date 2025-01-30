@@ -270,10 +270,10 @@ impl PipelineRunner {
         // egress results
         self.handle.block_on(async {
             for er in egress_results {
-                if let EgressResult::NewSegment(seg) = er {
+                if let EgressResult::Segments { created, deleted } = er {
                     if let Err(e) = self
                         .overseer
-                        .on_segment(&config.id, &seg.variant, seg.idx, seg.duration, &seg.path)
+                        .on_segments(&config.id, &created, &deleted)
                         .await
                     {
                         bail!("Failed to process segment {}", e.to_string());

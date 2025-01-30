@@ -1,5 +1,6 @@
 use crate::ingress::ConnectionInfo;
 
+use crate::egress::EgressSegment;
 use crate::pipeline::PipelineConfig;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -12,9 +13,6 @@ mod local;
 
 #[cfg(feature = "webhook-overseer")]
 mod webhook;
-
-#[cfg(feature = "zap-stream")]
-mod zap_stream;
 
 /// A copy of [ffmpeg_rs_raw::DemuxerInfo] without internal ptr
 #[derive(PartialEq, Clone)]
@@ -57,16 +55,14 @@ pub trait Overseer: Send + Sync {
         stream_info: &IngressInfo,
     ) -> Result<PipelineConfig>;
 
-    /// A new segment (HLS etc.) was generated for a stream variant
+    /// A new segment(s) (HLS etc.) was generated for a stream variant
     ///
     /// This handler is usually used for distribution / billing
-    async fn on_segment(
+    async fn on_segments(
         &self,
         pipeline_id: &Uuid,
-        variant_id: &Uuid,
-        index: u64,
-        duration: f32,
-        path: &PathBuf,
+        added: &Vec<EgressSegment>,
+        deleted: &Vec<EgressSegment>,
     ) -> Result<()>;
 
     /// At a regular interval, pipeline will emit one of the frames for processing as a

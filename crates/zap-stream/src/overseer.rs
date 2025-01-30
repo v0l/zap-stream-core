@@ -31,7 +31,7 @@ use tokio::sync::RwLock;
 use url::Url;
 use uuid::Uuid;
 use zap_stream_core::egress::hls::HlsEgress;
-use zap_stream_core::egress::EgressConfig;
+use zap_stream_core::egress::{EgressConfig, EgressSegment};
 use zap_stream_core::ingress::ConnectionInfo;
 use zap_stream_core::overseer::{IngressInfo, IngressStreamType, Overseer};
 use zap_stream_core::pipeline::{EgressType, PipelineConfig};
@@ -319,16 +319,16 @@ impl Overseer for ZapStreamOverseer {
         })
     }
 
-    async fn on_segment(
+    async fn on_segments(
         &self,
         pipeline_id: &Uuid,
-        variant_id: &Uuid,
-        index: u64,
-        duration: f32,
-        path: &PathBuf,
+        added: &Vec<EgressSegment>,
+        deleted: &Vec<EgressSegment>,
     ) -> Result<()> {
-        let cost = self.cost * duration.round() as i64;
         let stream = self.db.get_stream(pipeline_id).await?;
+
+        let duration = added.iter().fold(0.0, |acc, v| acc + v.duration);
+        let cost = self.cost * duration.round() as i64;
         let bal = self
             .db
             .tick_stream(pipeline_id, stream.user_id, duration, cost)
@@ -337,34 +337,47 @@ impl Overseer for ZapStreamOverseer {
             bail!("Not enough balance");
         }
 
-        // Upload to blossom servers if configured
+        // Upload to blossom servers if configured (N94)
         let mut blobs = vec![];
-        for b in &self.blossom_servers {
-            blobs.push(b.upload(path, &self.keys, Some("video/mp2t")).await?);
-        }
-        if let Some(blob) = blobs.first() {
-            let a_tag = format!(
-                "{}:{}:{}",
-                STREAM_EVENT_KIND,
-                self.keys.public_key.to_hex(),
-                pipeline_id
-            );
-            let mut n94 = self.blob_to_event_builder(blob)?.add_tags([
-                Tag::parse(["a", &a_tag])?,
-                Tag::parse(["d", variant_id.to_string().as_str()])?,
-                Tag::parse(["duration", duration.to_string().as_str()])?,
-            ]);
-            for b in blobs.iter().skip(1) {
-                n94 = n94.tag(Tag::parse(["url", &b.url])?);
+        for seg in added {
+            for b in &self.blossom_servers {
+                blobs.push(b.upload(&seg.path, &self.keys, Some("video/mp2t")).await?);
             }
-            let n94 = n94.sign_with_keys(&self.keys)?;
-            let cc = self.client.clone();
-            tokio::spawn(async move {
-                if let Err(e) = cc.send_event(n94).await {
-                    warn!("Error sending event: {}", e);
+            if let Some(blob) = blobs.first() {
+                let a_tag = format!(
+                    "{}:{}:{}",
+                    STREAM_EVENT_KIND,
+                    self.keys.public_key.to_hex(),
+                    pipeline_id
+                );
+                let mut n94 = self.blob_to_event_builder(blob)?.tags([
+                    Tag::parse(["a", &a_tag])?,
+                    Tag::parse(["d", seg.variant.to_string().as_str()])?,
+                    Tag::parse(["index", seg.idx.to_string().as_str()])?,
+                ]);
+
+                // some servers add duration tag
+                if blob
+                    .nip94
+                    .as_ref()
+                    .map(|a| a.contains_key("duration"))
+                    .is_none()
+                {
+                    n94 = n94.tag(Tag::parse(["duration", seg.duration.to_string().as_str()])?);
                 }
-            });
-            info!("Published N94 segment to {}", blob.url);
+
+                for b in blobs.iter().skip(1) {
+                    n94 = n94.tag(Tag::parse(["url", &b.url])?);
+                }
+                let n94 = n94.sign_with_keys(&self.keys)?;
+                let cc = self.client.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = cc.send_event(n94).await {
+                        warn!("Error sending event: {}", e);
+                    }
+                });
+                info!("Published N94 segment to {}", blob.url);
+            }
         }
 
         Ok(())

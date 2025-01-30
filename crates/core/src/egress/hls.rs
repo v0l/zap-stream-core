@@ -14,11 +14,7 @@ impl Egress for HlsMuxer {
         packet: *mut AVPacket,
         variant: &Uuid,
     ) -> Result<EgressResult> {
-        if let Some(ns) = self.mux_packet(packet, variant)? {
-            Ok(EgressResult::NewSegment(ns))
-        } else {
-            Ok(EgressResult::None)
-        }
+        self.mux_packet(packet, variant)
     }
 
     unsafe fn reset(&mut self) -> Result<()> {

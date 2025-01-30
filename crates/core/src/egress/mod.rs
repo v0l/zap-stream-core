@@ -25,13 +25,16 @@ pub trait Egress {
 pub enum EgressResult {
     /// Nothing to report
     None,
-    /// A new segment was created
-    NewSegment(NewSegment),
+    /// Egress created/deleted some segments
+    Segments {
+        created: Vec<EgressSegment>,
+        deleted: Vec<EgressSegment>,
+    },
 }
 
 /// Basic details of new segment created by a muxer
 #[derive(Debug, Clone)]
-pub struct NewSegment {
+pub struct EgressSegment {
     /// The id of the variant (video or audio)
     pub variant: Uuid,
     /// Segment index

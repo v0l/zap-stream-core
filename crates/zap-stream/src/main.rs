@@ -73,11 +73,7 @@ async fn main() -> Result<()> {
 
     let api = Api::new(overseer.database(), settings.clone());
     // HTTP server
-    let server = HttpServer::new(
-        index_html,
-        PathBuf::from(settings.output_dir),
-        api,
-    );
+    let server = HttpServer::new(index_html, PathBuf::from(settings.output_dir), api);
     tasks.push(tokio::spawn(async move {
         let listener = TcpListener::bind(&http_addr).await?;
 

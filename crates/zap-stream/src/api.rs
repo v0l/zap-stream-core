@@ -108,7 +108,11 @@ impl Api {
                         let addr: SocketAddr = endpoint.parse().ok()?;
                         Some(Endpoint {
                             name: "SRT".to_string(),
-                            url: format!("srt://{}:{}", self.settings.endpoints_public_hostname, addr.port()),
+                            url: format!(
+                                "srt://{}:{}",
+                                self.settings.endpoints_public_hostname,
+                                addr.port()
+                            ),
                             key: user.stream_key.clone(),
                             capabilities: vec![],
                         })
@@ -117,7 +121,11 @@ impl Api {
                         let addr: SocketAddr = endpoint.parse().ok()?;
                         Some(Endpoint {
                             name: "RTMP".to_string(),
-                            url: format!("rtmp://{}:{}", self.settings.endpoints_public_hostname, addr.port()),
+                            url: format!(
+                                "rtmp://{}:{}",
+                                self.settings.endpoints_public_hostname,
+                                addr.port()
+                            ),
                             key: user.stream_key.clone(),
                             capabilities: vec![],
                         })
@@ -126,7 +134,11 @@ impl Api {
                         let addr: SocketAddr = endpoint.parse().ok()?;
                         Some(Endpoint {
                             name: "TCP".to_string(),
-                            url: format!("tcp://{}:{}", self.settings.endpoints_public_hostname, addr.port()),
+                            url: format!(
+                                "tcp://{}:{}",
+                                self.settings.endpoints_public_hostname,
+                                addr.port()
+                            ),
                             key: user.stream_key.clone(),
                             capabilities: vec![],
                         })

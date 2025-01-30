@@ -1,4 +1,4 @@
-use crate::egress::NewSegment;
+use crate::egress::{EgressResult, EgressSegment};
 use crate::variant::{StreamMapping, VariantStream};
 use anyhow::{bail, Result};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_H264;
@@ -79,6 +79,8 @@ pub struct HlsVariant {
     pub streams: Vec<HlsVariantStream>,
     /// Segment length in seconds
     pub segment_length: f32,
+    /// Total number of segments to store for this variant
+    pub segment_window: Option<u16>,
     /// Current segment index
     pub idx: u64,
     /// Current segment start time in seconds (duration)
@@ -91,20 +93,24 @@ pub struct HlsVariant {
     pub segment_type: SegmentType,
 }
 
-struct SegmentInfo(u64, f32, SegmentType);
+struct SegmentInfo {
+    pub index: u64,
+    pub duration: f32,
+    pub kind: SegmentType,
+}
 
 impl SegmentInfo {
     fn to_media_segment(&self) -> MediaSegment {
         MediaSegment {
             uri: self.filename(),
-            duration: self.1,
+            duration: self.duration,
             title: None,
             ..MediaSegment::default()
         }
     }
 
     fn filename(&self) -> String {
-        HlsVariant::segment_name(self.2, self.0)
+        HlsVariant::segment_name(self.kind, self.index)
     }
 }
 
@@ -175,11 +181,16 @@ impl HlsVariant {
         Ok(Self {
             name: name.clone(),
             segment_length,
+            segment_window: Some(10), //TODO: configure window
             mux,
             streams,
             idx: 1,
             pkt_start: 0.0,
-            segments: Vec::from([SegmentInfo(1, segment_length, segment_type)]),
+            segments: Vec::from([SegmentInfo {
+                index: 1,
+                duration: segment_length,
+                kind: segment_type,
+            }]),
             out_dir: out_dir.to_string(),
             segment_type,
         })
@@ -205,21 +216,21 @@ impl HlsVariant {
     }
 
     /// Mux a packet created by the encoder for this variant
-    pub unsafe fn mux_packet(&mut self, pkt: *mut AVPacket) -> Result<Option<NewSegment>> {
+    pub unsafe fn mux_packet(&mut self, pkt: *mut AVPacket) -> Result<EgressResult> {
         let pkt_q = av_q2d((*pkt).time_base);
         // time of this packet in seconds
         let pkt_time = (*pkt).pts as f32 * pkt_q as f32;
         // what segment this pkt should be in (index)
         let pkt_seg = 1 + (pkt_time / self.segment_length).floor() as u64;
 
-        let mut result = None;
+        let mut result = EgressResult::None;
         let pkt_stream = *(*self.mux.context())
             .streams
             .add((*pkt).stream_index as usize);
         let can_split = (*pkt).flags & AV_PKT_FLAG_KEY == AV_PKT_FLAG_KEY
             && (*(*pkt_stream).codecpar).codec_type == AVMEDIA_TYPE_VIDEO;
         if pkt_seg != self.idx && can_split {
-            result = Some(self.split_next_seg(pkt_time)?);
+            result = self.split_next_seg(pkt_time)?;
         }
         self.mux.write_packet(pkt)?;
         Ok(result)
@@ -229,7 +240,8 @@ impl HlsVariant {
         self.mux.close()
     }
 
-    unsafe fn split_next_seg(&mut self, pkt_time: f32) -> Result<NewSegment> {
+    /// Reset the muxer state and start the next segment
+    unsafe fn split_next_seg(&mut self, pkt_time: f32) -> Result<EgressResult> {
         self.idx += 1;
 
         // Manually reset muxer avio
@@ -257,19 +269,40 @@ impl HlsVariant {
 
         let duration = pkt_time - self.pkt_start;
         info!("Writing segment {} [{}s]", &next_seg_url, duration);
-        if let Err(e) = self.add_segment(self.idx, duration) {
+        if let Err(e) = self.push_segment(self.idx, duration) {
             warn!("Failed to update playlist: {}", e);
         }
 
         /// Get the video variant for this group
         /// since this could actually be audio which would not be useful for
         /// [Overseer] impl
-        let video_var = self.video_stream().unwrap_or(self.streams.first().unwrap());
+        let video_var_id = self
+            .video_stream()
+            .unwrap_or(self.streams.first().unwrap())
+            .id()
+            .clone();
+
+        // cleanup old segments
+        let deleted = self
+            .clean_segments()?
+            .into_iter()
+            .map(|seg| EgressSegment {
+                variant: video_var_id,
+                idx: seg.index,
+                duration: seg.duration,
+                path: PathBuf::from(Self::map_segment_path(
+                    &self.out_dir,
+                    &self.name,
+                    seg.index,
+                    self.segment_type,
+                )),
+            })
+            .collect();
 
         // emit result of the previously completed segment,
         let prev_seg = self.idx - 1;
-        let ret = NewSegment {
-            variant: *video_var.id(),
+        let created = EgressSegment {
+            variant: video_var_id,
             idx: prev_seg,
             duration,
             path: PathBuf::from(Self::map_segment_path(
@@ -280,7 +313,10 @@ impl HlsVariant {
             )),
         };
         self.pkt_start = pkt_time;
-        Ok(ret)
+        Ok(EgressResult::Segments {
+            created: vec![created],
+            deleted,
+        })
     }
 
     fn video_stream(&self) -> Option<&HlsVariantStream> {
@@ -289,22 +325,39 @@ impl HlsVariant {
             .find(|a| matches!(*a, HlsVariantStream::Video { .. }))
     }
 
-    fn add_segment(&mut self, idx: u64, duration: f32) -> Result<()> {
-        self.segments
-            .push(SegmentInfo(idx, duration, self.segment_type));
+    /// Add a new segment to the variant and return a list of deleted segments
+    fn push_segment(&mut self, idx: u64, duration: f32) -> Result<()> {
+        self.segments.push(SegmentInfo {
+            index: idx,
+            duration,
+            kind: self.segment_type,
+        });
 
+        self.write_playlist()
+    }
+
+    /// Delete segments which are too old
+    fn clean_segments(&mut self) -> Result<Vec<SegmentInfo>> {
         const MAX_SEGMENTS: usize = 10;
 
+        let mut ret = vec![];
         if self.segments.len() > MAX_SEGMENTS {
             let n_drain = self.segments.len() - MAX_SEGMENTS;
             let seg_dir = self.out_dir();
             for seg in self.segments.drain(..n_drain) {
                 // delete file
                 let seg_path = seg_dir.join(seg.filename());
-                std::fs::remove_file(seg_path)?;
+                if let Err(e) = std::fs::remove_file(&seg_path) {
+                    warn!(
+                        "Failed to remove segment file: {} {}",
+                        seg_path.display(),
+                        e
+                    );
+                }
+                ret.push(seg);
             }
         }
-        self.write_playlist()
+        Ok(ret)
     }
 
     fn write_playlist(&mut self) -> Result<()> {
@@ -312,7 +365,7 @@ impl HlsVariant {
         pl.target_duration = self.segment_length as u64;
         pl.segments = self.segments.iter().map(|s| s.to_media_segment()).collect();
         pl.version = Some(3);
-        pl.media_sequence = self.segments.first().map(|s| s.0).unwrap_or(0);
+        pl.media_sequence = self.segments.first().map(|s| s.index).unwrap_or(0);
 
         let mut f_out = File::create(self.out_dir().join("live.m3u8"))?;
         pl.write_to(&mut f_out)?;
@@ -430,7 +483,7 @@ impl HlsMuxer {
         &mut self,
         pkt: *mut AVPacket,
         variant: &Uuid,
-    ) -> Result<Option<NewSegment>> {
+    ) -> Result<EgressResult> {
         for var in self.variants.iter_mut() {
             if let Some(vs) = var.streams.iter().find(|s| s.id() == variant) {
                 // very important for muxer to know which stream this pkt belongs to
