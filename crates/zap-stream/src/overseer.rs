@@ -42,7 +42,7 @@ use zap_stream_core::variant::{StreamMapping, VariantStream};
 use zap_stream_db::sqlx::Encode;
 use zap_stream_db::{UserStream, UserStreamState, ZapStreamDb};
 
-const STREAM_EVENT_KIND: u16 = 30_313;
+const STREAM_EVENT_KIND: u16 = 30_312;
 
 /// zap.stream NIP-53 overseer
 pub struct ZapStreamOverseer {
