@@ -40,4 +40,4 @@ RUN apt update && \
     rm -rf /var/lib/apt/lists/*
 COPY --from=build /app/build .
 COPY --from=build /app/ffmpeg/lib/ /lib
-ENTRYPOINT ["/app/bin/zap-stream-core"]
+ENTRYPOINT ["/app/bin/zap-stream"]
