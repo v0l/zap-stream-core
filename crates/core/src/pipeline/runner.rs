@@ -144,7 +144,7 @@ impl PipelineRunner {
         };
 
         // run transcoder pipeline
-        let (mut pkt, stream) = self.demuxer.get_packet()?;
+        let (mut pkt, _stream) = self.demuxer.get_packet()?;
         if pkt.is_null() {
             return Ok(false);
         }
@@ -159,7 +159,7 @@ impl PipelineRunner {
         };
 
         let mut egress_results = vec![];
-        for frame in frames {
+        for (frame, stream) in frames {
             // Copy frame from GPU if using hwaccel decoding
             let mut frame = get_frame_from_hw(frame)?;
             (*frame).time_base = (*stream).time_base;

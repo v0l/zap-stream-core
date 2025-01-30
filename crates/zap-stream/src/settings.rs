@@ -1,7 +1,6 @@
 use crate::overseer::ZapStreamOverseer;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use zap_stream_core::overseer::Overseer;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
@@ -12,6 +11,9 @@ pub struct Settings {
     /// - rtmp://localhost:1935
     pub endpoints: Vec<String>,
 
+    /// Public facing hostname that maps to [endpoints]
+    pub endpoints_public_hostname: String,
+
     /// Where to store output (static files)
     pub output_dir: String,
 
@@ -21,7 +23,7 @@ pub struct Settings {
     /// Binding address for http server serving files from [output_dir]
     pub listen_http: String,
 
-    /// Overseer service see [crate::overseer::Overseer] for more info
+    /// Overseer service see [Overseer] for more info
     pub overseer: OverseerConfig,
 }
 

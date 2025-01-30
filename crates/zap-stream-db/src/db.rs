@@ -3,6 +3,7 @@ use anyhow::Result;
 use sqlx::{Executor, MySqlPool, Row};
 use uuid::Uuid;
 
+#[derive(Clone)]
 pub struct ZapStreamDb {
     db: MySqlPool,
 }

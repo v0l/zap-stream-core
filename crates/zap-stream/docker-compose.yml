@@ -18,14 +18,14 @@ services:
   blossom:
     depends_on:
       - db
-    image: voidic/route96
+    image: voidic/route96:latest
     environment:
       - "RUST_LOG=info"
     ports:
       - "8881:8000"
     volumes:
       - "blossom:/app/data"
-      - "./dev-setup/route96.toml:/app/config.toml"
+      - "./dev-setup/route96.yaml:/app/config.yaml"
 volumes:
   db:
   blossom:

@@ -1,10 +1,5 @@
 use crate::blossom::{BlobDescriptor, Blossom};
-use zap_stream_core::egress::hls::HlsEgress;
-use zap_stream_core::egress::EgressConfig;
-use zap_stream_core::ingress::ConnectionInfo;
-use zap_stream_core::overseer::{IngressInfo, IngressStreamType, Overseer};
-use zap_stream_core::pipeline::{EgressType, PipelineConfig};
-use zap_stream_core::variant::{StreamMapping, VariantStream};
+use crate::settings::LndSettings;
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use base64::alphabet::STANDARD;
@@ -14,6 +9,7 @@ use chrono::Utc;
 use fedimint_tonic_lnd::verrpc::VersionRequest;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_MJPEG;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVFrame;
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use ffmpeg_rs_raw::Encoder;
 use futures_util::FutureExt;
 use http_body_util::combinators::BoxBody;
@@ -31,16 +27,20 @@ use std::fs::create_dir_all;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use tokio::sync::RwLock;
 use url::Url;
 use uuid::Uuid;
+use zap_stream_core::egress::hls::HlsEgress;
+use zap_stream_core::egress::EgressConfig;
+use zap_stream_core::ingress::ConnectionInfo;
+use zap_stream_core::overseer::{IngressInfo, IngressStreamType, Overseer};
+use zap_stream_core::pipeline::{EgressType, PipelineConfig};
 use zap_stream_core::variant::audio::AudioVariant;
 use zap_stream_core::variant::mapping::VariantMapping;
 use zap_stream_core::variant::video::VideoVariant;
+use zap_stream_core::variant::{StreamMapping, VariantStream};
 use zap_stream_db::sqlx::Encode;
 use zap_stream_db::{UserStream, UserStreamState, ZapStreamDb};
-use crate::settings::LndSettings;
 
 const STREAM_EVENT_KIND: u16 = 30_313;
 
@@ -100,7 +100,7 @@ impl ZapStreamOverseer {
             PathBuf::from(&lnd.cert),
             PathBuf::from(&lnd.macaroon),
         )
-            .await?;
+        .await?;
 
         let version = lnd
             .versioner()
@@ -133,50 +133,8 @@ impl ZapStreamOverseer {
         })
     }
 
-    pub(crate) async fn api(&self, req: Request<Incoming>) -> Result<Response<BoxBody<Bytes, anyhow::Error>>> {
-        let base = Response::builder()
-            .header("server", "zap-stream-core")
-            .header("access-control-allow-origin", "*")
-            .header("access-control-allow-headers", "*")
-            .header("access-control-allow-methods", "HEAD, GET");
-
-        Ok(match (req.method(), req.uri().path()) {
-            (&Method::GET, "/api/v1/account") => {
-                self.check_nip98_auth(req)?;
-                base.body(Default::default())?
-            }
-            (&Method::PATCH, "/api/v1/account") => {
-                bail!("Not implemented")
-            }
-            (&Method::GET, "/api/v1/topup") => {
-                bail!("Not implemented")
-            }
-            (&Method::PATCH, "/api/v1/event") => {
-                bail!("Not implemented")
-            }
-            (&Method::POST, "/api/v1/withdraw") => {
-                bail!("Not implemented")
-            }
-            (&Method::POST, "/api/v1/account/forward") => {
-                bail!("Not implemented")
-            }
-            (&Method::DELETE, "/api/v1/account/forward/<id>") => {
-                bail!("Not implemented")
-            }
-            (&Method::GET, "/api/v1/account/history") => {
-                bail!("Not implemented")
-            }
-            (&Method::GET, "/api/v1/account/keys") => {
-                bail!("Not implemented")
-            }
-            _ => {
-                if req.method() == Method::OPTIONS {
-                    base.body(Default::default())?
-                } else {
-                    base.status(404).body(Default::default())?
-                }
-            }
-        })
+    pub(crate) fn database(&self) -> ZapStreamDb {
+        self.db.clone()
     }
 
     fn stream_to_event_builder(&self, stream: &UserStream) -> Result<EventBuilder> {
@@ -279,25 +237,6 @@ impl ZapStreamOverseer {
     fn map_to_public_url(&self, path: &str) -> Result<String> {
         let u: Url = self.public_url.parse()?;
         Ok(u.join(path)?.to_string())
-    }
-
-    fn check_nip98_auth(&self, req: Request<Incoming>) -> Result<()> {
-        let auth = if let Some(a) = req.headers().get("authorization") {
-            a.to_str()?
-        } else {
-            bail!("Authorization header missing");
-        };
-
-        if !auth.starts_with("Nostr ") {
-            bail!("Invalid authorization scheme");
-        }
-
-        let json = String::from_utf8(
-            base64::engine::general_purpose::STANDARD.decode(auth[6..].as_bytes())?,
-        )?;
-        info!("{}", json);
-
-        Ok(())
     }
 }
 
@@ -458,7 +397,6 @@ impl Overseer for ZapStreamOverseer {
         Ok(())
     }
 }
-
 
 fn get_default_variants(info: &IngressInfo) -> Result<Vec<VariantStream>> {
     let mut vars: Vec<VariantStream> = vec![];

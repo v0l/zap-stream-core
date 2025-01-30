@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-default = ["srt", "rtmp"]
+default = ["srt", "rtmp", "test-pattern"]
 srt = ["zap-stream-core/srt"]
 rtmp = ["zap-stream-core/rtmp"]
 test-pattern = ["zap-stream-core/test-pattern", "zap-stream-db/test-pattern"]

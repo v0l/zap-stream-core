@@ -1,3 +1,7 @@
+use crate::api::Api;
+use crate::overseer::ZapStreamOverseer;
+use anyhow::{bail, Result};
+use base64::Engine;
 use bytes::Bytes;
 use futures_util::TryStreamExt;
 use http_body_util::combinators::BoxBody;
@@ -5,7 +9,8 @@ use http_body_util::{BodyExt, Full, StreamBody};
 use hyper::body::{Frame, Incoming};
 use hyper::service::Service;
 use hyper::{Method, Request, Response};
-use log::error;
+use log::{error, info};
+use nostr_sdk::{serde_json, Event};
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -13,21 +18,20 @@ use std::sync::Arc;
 use tokio::fs::File;
 use tokio_util::io::ReaderStream;
 use zap_stream_core::overseer::Overseer;
-use crate::overseer::ZapStreamOverseer;
 
 #[derive(Clone)]
 pub struct HttpServer {
     index: String,
     files_dir: PathBuf,
-    overseer: Arc<ZapStreamOverseer>,
+    api: Api,
 }
 
 impl HttpServer {
-    pub fn new(index: String, files_dir: PathBuf, overseer: Arc<ZapStreamOverseer>) -> Self {
+    pub fn new(index: String, files_dir: PathBuf, api: Api) -> Self {
         Self {
             index,
             files_dir,
-            overseer,
+            api,
         }
     }
 }
@@ -81,9 +85,9 @@ impl Service<Request<Incoming>> for HttpServer {
         }
 
         // otherwise handle in overseer
-        let overseer = self.overseer.clone();
+        let mut api = self.api.clone();
         Box::pin(async move {
-            match overseer.api(req).await {
+            match api.handler(req).await {
                 Ok(res) => Ok(res),
                 Err(e) => {
                     error!("{}", e);
@@ -92,4 +96,23 @@ impl Service<Request<Incoming>> for HttpServer {
             }
         })
     }
+}
+
+pub fn check_nip98_auth(req: &Request<Incoming>) -> Result<Event> {
+    let auth = if let Some(a) = req.headers().get("authorization") {
+        a.to_str()?
+    } else {
+        bail!("Authorization header missing");
+    };
+
+    if !auth.starts_with("Nostr ") {
+        bail!("Invalid authorization scheme");
+    }
+
+    let json =
+        String::from_utf8(base64::engine::general_purpose::STANDARD.decode(auth[6..].as_bytes())?)?;
+    info!("{}", json);
+
+    // TODO: check tags
+    Ok(serde_json::from_str::<Event>(&json)?)
 }
