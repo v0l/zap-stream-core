@@ -26,7 +26,6 @@ use ffmpeg_rs_raw::{
     cstr, get_frame_from_hw, AudioFifo, Decoder, Demuxer, DemuxerInfo, Encoder, Resample, Scaler,
     StreamType,
 };
-use itertools::Itertools;
 use log::{error, info, warn};
 use tokio::runtime::Handle;
 use uuid::Uuid;
@@ -203,19 +202,8 @@ impl PipelineRunner {
                     //warn!("Frame had nowhere to go in {} :/", var.id());
                     continue;
                 };
-                // before encoding frame, rescale timestamps
-                if !frame.is_null() {
-                    let enc_ctx = enc.codec_context();
-                    (*frame).pict_type = AV_PICTURE_TYPE_NONE;
-                    (*frame).pts =
-                        av_rescale_q((*frame).pts, (*frame).time_base, (*enc_ctx).time_base);
-                    (*frame).pkt_dts =
-                        av_rescale_q((*frame).pkt_dts, (*frame).time_base, (*enc_ctx).time_base);
-                    (*frame).duration =
-                        av_rescale_q((*frame).duration, (*frame).time_base, (*enc_ctx).time_base);
-                    (*frame).time_base = (*enc_ctx).time_base;
-                }
 
+                // scaling / resampling
                 let mut new_frame = false;
                 let mut frame = match var {
                     VariantStream::Video(v) => {
@@ -234,6 +222,9 @@ impl PipelineRunner {
                             if let Some(ret) =
                                 f.buffer_frame(resampled_frame, frame_size as usize)?
                             {
+                                // Set correct timebase for audio (1/sample_rate)
+                                (*ret).time_base.num = 1;
+                                (*ret).time_base.den = a.sample_rate as i32;                                
                                 av_frame_free(&mut resampled_frame);
                                 ret
                             } else {
@@ -246,6 +237,19 @@ impl PipelineRunner {
                     }
                     _ => frame,
                 };
+
+                // before encoding frame, rescale timestamps
+                if !frame.is_null() {
+                    let enc_ctx = enc.codec_context();
+                    (*frame).pict_type = AV_PICTURE_TYPE_NONE;
+                    (*frame).pts =
+                        av_rescale_q((*frame).pts, (*frame).time_base, (*enc_ctx).time_base);
+                    (*frame).pkt_dts =
+                        av_rescale_q((*frame).pkt_dts, (*frame).time_base, (*enc_ctx).time_base);
+                    (*frame).duration =
+                        av_rescale_q((*frame).duration, (*frame).time_base, (*enc_ctx).time_base);
+                    (*frame).time_base = (*enc_ctx).time_base;
+                }
 
                 let packets = enc.encode_frame(frame)?;
                 // pass new packets to egress

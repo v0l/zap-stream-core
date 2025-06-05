@@ -1,36 +1,21 @@
 use crate::blossom::{BlobDescriptor, Blossom};
 use crate::settings::LndSettings;
-use anyhow::{anyhow, bail, Result};
+use anyhow::{bail, Result};
 use async_trait::async_trait;
-use base64::alphabet::STANDARD;
-use base64::Engine;
-use bytes::Bytes;
 use chrono::Utc;
 use fedimint_tonic_lnd::verrpc::VersionRequest;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_MJPEG;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVFrame;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
-use ffmpeg_rs_raw::Encoder;
-use futures_util::FutureExt;
-use http_body_util::combinators::BoxBody;
-use http_body_util::{BodyExt, Full};
-use hyper::body::Incoming;
-use hyper::{Method, Request, Response};
 use log::{error, info, warn};
-use nostr_sdk::bitcoin::PrivateKey;
 use nostr_sdk::prelude::Coordinate;
 use nostr_sdk::{Client, Event, EventBuilder, JsonUtil, Keys, Kind, Tag, ToBech32};
 use serde::Serialize;
 use std::collections::HashSet;
-use std::env::temp_dir;
-use std::fs::create_dir_all;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use url::Url;
 use uuid::Uuid;
-use zap_stream_core::egress::hls::HlsEgress;
 use zap_stream_core::egress::{EgressConfig, EgressSegment};
 use zap_stream_core::ingress::ConnectionInfo;
 use zap_stream_core::overseer::{IngressInfo, IngressStreamType, Overseer};
@@ -39,7 +24,6 @@ use zap_stream_core::variant::audio::AudioVariant;
 use zap_stream_core::variant::mapping::VariantMapping;
 use zap_stream_core::variant::video::VideoVariant;
 use zap_stream_core::variant::{StreamMapping, VariantStream};
-use zap_stream_db::sqlx::Encode;
 use zap_stream_db::{UserStream, UserStreamState, ZapStreamDb};
 
 const STREAM_EVENT_KIND: u16 = 30_311;
@@ -436,7 +420,7 @@ fn get_default_variants(info: &IngressInfo) -> Result<Vec<VariantStream>> {
             fps: video_src.fps,
             bitrate: 3_000_000,
             codec: "libx264".to_string(),
-            profile: 100,
+            profile: 77, // AV_PROFILE_H264_MAIN
             level: 51,
             keyframe_interval: video_src.fps as u16 * 2,
             pixel_format: AV_PIX_FMT_YUV420P as u32,

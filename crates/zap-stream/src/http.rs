@@ -60,10 +60,10 @@ impl Service<Request<Incoming>> for HttpServer {
         }
 
         // check if mapped to file
-        let mut dst_path = self.files_dir.join(req.uri().path()[1..].to_string());
+        let dst_path = self.files_dir.join(req.uri().path()[1..].to_string());
         if dst_path.exists() {
             return Box::pin(async move {
-                let mut rsp = Response::builder()
+                let rsp = Response::builder()
                     .header("server", "zap-stream-core")
                     .header("access-control-allow-origin", "*")
                     .header("access-control-allow-headers", "*")
@@ -85,7 +85,7 @@ impl Service<Request<Incoming>> for HttpServer {
         }
 
         // otherwise handle in overseer
-        let mut api = self.api.clone();
+        let api = self.api.clone();
         Box::pin(async move {
             match api.handler(req).await {
                 Ok(res) => Ok(res),
