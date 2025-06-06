@@ -175,26 +175,31 @@ impl PipelineRunner {
                     let dst_pic = PathBuf::from(&self.out_dir)
                         .join(config.id.to_string())
                         .join("thumb.webp");
-                    let mut sw = Scaler::new();
-                    let mut frame = sw.process_frame(
-                        frame,
-                        (*frame).width as _,
-                        (*frame).height as _,
-                        AV_PIX_FMT_YUV420P,
-                    )?;
-                    Encoder::new(AV_CODEC_ID_WEBP)?
-                        .with_height((*frame).height)
-                        .with_width((*frame).width)
-                        .with_pix_fmt(transmute((*frame).format))
-                        .open(None)?
-                        .save_picture(frame, dst_pic.to_str().unwrap())?;
+                    {
+                        let mut sw = Scaler::new();
+                        let mut scaled_frame = sw.process_frame(
+                            frame,
+                            (*frame).width as _,
+                            (*frame).height as _,
+                            AV_PIX_FMT_YUV420P,
+                        )?;
+
+                        let mut encoder = Encoder::new(AV_CODEC_ID_WEBP)?
+                            .with_height((*scaled_frame).height)
+                            .with_width((*scaled_frame).width)
+                            .with_pix_fmt(transmute((*scaled_frame).format))
+                            .open(None)?;
+
+                        encoder.save_picture(scaled_frame, dst_pic.to_str().unwrap())?;
+                        av_frame_free(&mut scaled_frame);
+                    }
+
                     let thumb_duration = thumb_start.elapsed();
                     info!(
                         "Saved thumb ({:.2}ms) to: {}",
                         thumb_duration.as_millis() as f32 / 1000.0,
                         dst_pic.display(),
                     );
-                    av_frame_free(&mut frame);
                 }
 
                 self.frame_ctr += 1;
@@ -418,5 +423,26 @@ impl PipelineRunner {
             }
         }
         Ok(())
+    }
+}
+
+impl Drop for PipelineRunner {
+    fn drop(&mut self) {
+        unsafe {
+            // First try to flush properly
+            if let Err(e) = self.flush() {
+                error!("Failed to flush pipeline during drop: {}", e);
+            }
+
+            // Clear all collections to ensure proper Drop cleanup
+            // The FFmpeg objects should implement Drop properly in ffmpeg-rs-raw
+            self.encoders.clear();
+            self.scalers.clear();
+            self.resampler.clear();
+            self.copy_stream.clear();
+            self.egress.clear();
+
+            info!("PipelineRunner cleaned up resources for stream: {}", self.connection.key);
+        }
     }
 }

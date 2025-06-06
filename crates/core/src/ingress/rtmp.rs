@@ -1,7 +1,7 @@
 use crate::ingress::{spawn_pipeline, ConnectionInfo};
 use crate::overseer::Overseer;
 use anyhow::{bail, Result};
-use log::{error, info};
+use log::{error, info, warn};
 use rml_rtmp::handshake::{Handshake, HandshakeProcessResult, PeerType};
 use rml_rtmp::sessions::{
     ServerSession, ServerSessionConfig, ServerSessionEvent, ServerSessionResult,
@@ -14,6 +14,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::Handle;
 use tokio::time::Instant;
+
+const MAX_MEDIA_BUFFER_SIZE: usize = 10 * 1024 * 1024; // 10MB limit
 #[derive(PartialEq, Eq, Clone, Hash)]
 struct RtmpPublishedStream(String, String);
 
@@ -27,6 +29,17 @@ struct RtmpClient {
 }
 
 impl RtmpClient {
+    /// Add data to media buffer with size limit to prevent unbounded growth
+    fn add_to_media_buffer(&mut self, data: &[u8]) {
+        if self.media_buf.len() + data.len() > MAX_MEDIA_BUFFER_SIZE {
+            let bytes_to_drop = (self.media_buf.len() + data.len()) - MAX_MEDIA_BUFFER_SIZE;
+            warn!("Media buffer full ({} bytes), dropping {} oldest bytes", 
+                  self.media_buf.len(), bytes_to_drop);
+            self.media_buf.drain(..bytes_to_drop);
+        }
+        self.media_buf.extend(data);
+    }
+
     async fn start(mut socket: TcpStream) -> Result<Self> {
         let mut hs = Handshake::new(PeerType::Server);
 
@@ -117,7 +130,7 @@ impl RtmpClient {
                     error!("Received unhandleable message with {} bytes", m.data.len());
                     // Only append data if it looks like valid media data
                     if !m.data.is_empty() && m.data.len() > 4 {
-                        self.media_buf.extend(&m.data);
+                        self.add_to_media_buffer(&m.data);
                     }
                 }
             }
@@ -170,7 +183,7 @@ impl RtmpClient {
             ServerSessionEvent::AudioDataReceived { data, .. } => {
                 // Validate audio data before adding to buffer
                 if !data.is_empty() {
-                    self.media_buf.extend(data);
+                    self.add_to_media_buffer(&data);
                 } else {
                     error!("Received empty audio data");
                 }
@@ -178,7 +191,7 @@ impl RtmpClient {
             ServerSessionEvent::VideoDataReceived { data, .. } => {
                 // Validate video data before adding to buffer  
                 if !data.is_empty() {
-                    self.media_buf.extend(data);
+                    self.add_to_media_buffer(&data);
                 } else {
                     error!("Received empty video data");
                 }
