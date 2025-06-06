@@ -554,6 +554,23 @@ fn get_default_variants(info: &IngressInfo) -> Result<Vec<VariantStream>> {
             keyframe_interval: video_src.fps as u16 * 2,
             pixel_format: AV_PIX_FMT_YUV420P as u32,
         }));
+        vars.push(VariantStream::Video(VideoVariant {
+            mapping: VariantMapping {
+                id: Uuid::new_v4(),
+                src_index: video_src.index,
+                dst_index: 4,
+                group_id: 2,
+            },
+            width: 640,
+            height: 480,
+            fps: video_src.fps,
+            bitrate: 1_000_000,
+            codec: "libx264".to_string(),
+            profile: 77, // AV_PROFILE_H264_MAIN
+            level: 51,
+            keyframe_interval: video_src.fps as u16 * 2,
+            pixel_format: AV_PIX_FMT_YUV420P as u32,
+        }));
     }
 
     if let Some(audio_src) = info
@@ -575,6 +592,19 @@ fn get_default_variants(info: &IngressInfo) -> Result<Vec<VariantStream>> {
                 group_id: 1,
             },
             bitrate: 192_000,
+            codec: "aac".to_string(),
+            channels: 2,
+            sample_rate: 48_000,
+            sample_fmt: "fltp".to_owned(),
+        }));
+        vars.push(VariantStream::Audio(AudioVariant {
+            mapping: VariantMapping {
+                id: Uuid::new_v4(),
+                src_index: audio_src.index,
+                dst_index: 5,
+                group_id: 2,
+            },
+            bitrate: 64_000,
             codec: "aac".to_string(),
             channels: 2,
             sample_rate: 48_000,
