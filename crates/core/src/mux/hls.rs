@@ -4,8 +4,8 @@ use anyhow::{bail, Result};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_H264;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVMediaType::AVMEDIA_TYPE_VIDEO;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    av_free, av_opt_set, av_q2d, av_write_frame, avio_close,
-    avio_flush, avio_open, AVPacket, AVStream, AVIO_FLAG_WRITE, AV_PKT_FLAG_KEY,
+    av_free, av_opt_set, av_q2d, av_write_frame, avio_close, avio_flush, avio_open, AVPacket,
+    AVStream, AVIO_FLAG_WRITE, AV_PKT_FLAG_KEY,
 };
 use ffmpeg_rs_raw::{cstr, Encoder, Muxer};
 use itertools::Itertools;
@@ -23,7 +23,6 @@ pub enum SegmentType {
     MPEGTS,
     FMP4,
 }
-
 
 pub enum HlsVariantStream {
     Video {
@@ -225,21 +224,21 @@ impl HlsVariant {
         let pkt_stream = *(*self.mux.context())
             .streams
             .add((*pkt).stream_index as usize);
-        
+
         // Match FFmpeg's segmentation logic exactly
         let can_split = (*pkt).flags & AV_PKT_FLAG_KEY == AV_PKT_FLAG_KEY
             && (*(*pkt_stream).codecpar).codec_type == AVMEDIA_TYPE_VIDEO;
-        
+
         if can_split {
             let pkt_q = av_q2d((*pkt).time_base);
             let pkt_time = (*pkt).pts as f32 * pkt_q as f32;
             let relative_time = pkt_time - self.pkt_start;
-            
+
             // FFmpeg checks: pkt->pts - vs->end_pts > 0 to prevent zero duration
             // and av_compare_ts for target duration
             let has_positive_duration = relative_time > 0.0;
             let target_duration_reached = relative_time >= self.segment_length;
-            
+
             if has_positive_duration && target_duration_reached {
                 result = self.split_next_seg(pkt_time)?;
             }
@@ -256,6 +255,7 @@ impl HlsVariant {
 
     /// Reset the muxer state and start the next segment
     unsafe fn split_next_seg(&mut self, pkt_time: f32) -> Result<EgressResult> {
+        let completed_segment_idx = self.idx;
         self.idx += 1;
 
         // Manually reset muxer avio
@@ -284,26 +284,27 @@ impl HlsVariant {
 
         let duration = pkt_time - self.pkt_start;
         // Log the completed segment (previous index), not the next one
-        let completed_seg_path =
-            Self::map_segment_path(&self.out_dir, &self.name, self.idx - 1, self.segment_type);
-        let segment_path = PathBuf::from(&completed_seg_path);
-        let segment_size = segment_path.metadata().map(|m| m.len()).unwrap_or(0);
+        let completed_seg_path = Self::map_segment_path(
+            &self.out_dir,
+            &self.name,
+            completed_segment_idx,
+            self.segment_type,
+        );
+        let completed_segment_path = PathBuf::from(&completed_seg_path);
+        let segment_size = completed_segment_path
+            .metadata()
+            .map(|m| m.len())
+            .unwrap_or(0);
         info!(
-            "Writing segment {} [{:.3}s, {} bytes]",
-            segment_path
+            "Finished segment {} [{:.3}s, {} bytes]",
+            completed_segment_path
                 .file_name()
                 .unwrap_or_default()
                 .to_string_lossy(),
             duration,
             segment_size
         );
-        if let Err(e) = self.push_segment(self.idx, duration) {
-            warn!("Failed to update playlist: {}", e);
-        }
 
-        /// Get the video variant for this group
-        /// since this could actually be audio which would not be useful for
-        /// [Overseer] impl
         let video_var_id = self
             .video_stream()
             .unwrap_or(self.streams.first().unwrap())
@@ -328,18 +329,16 @@ impl HlsVariant {
             .collect();
 
         // emit result of the previously completed segment,
-        let prev_seg = self.idx - 1;
         let created = EgressSegment {
             variant: video_var_id,
-            idx: prev_seg,
+            idx: completed_segment_idx,
             duration,
-            path: PathBuf::from(Self::map_segment_path(
-                &self.out_dir,
-                &self.name,
-                prev_seg,
-                self.segment_type,
-            )),
+            path: completed_segment_path,
         };
+
+        if let Err(e) = self.push_segment(completed_segment_idx, duration) {
+            warn!("Failed to update playlist: {}", e);
+        }
         self.pkt_start = pkt_time;
         Ok(EgressResult::Segments {
             created: vec![created],
