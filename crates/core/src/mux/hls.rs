@@ -173,7 +173,7 @@ impl HlsVariant {
                         id: s.id(),
                     })
                 },
-                _ => panic!("unsupported variant stream"),
+                _ => bail!("unsupported variant stream"),
             }
         }
         unsafe {
