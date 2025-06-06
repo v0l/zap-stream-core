@@ -5,17 +5,24 @@ concurrency:
   limit: 1
 metadata:
   namespace: git
+volumes:
+  - name: cache
+    claim:
+      name: storage2
 steps:
   - name: build
     image: docker
     privileged: true
+    volumes:
+      - name: cache
+        path: /cache
     environment:
       TOKEN:
         from_secret: gitea
       DOCKER_TOKEN:
         from_secret: docker_hub
     commands:
-      - dockerd &
+      - dockerd --data-root /cache/dockerd &
       - docker login -u kieran -p $TOKEN git.v0l.io
       - docker login -u voidic -p $DOCKER_TOKEN
       - docker buildx create --name mybuilder --bootstrap --use
