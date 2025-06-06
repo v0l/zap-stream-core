@@ -265,7 +265,11 @@ impl HlsVariant {
         );
 
         let duration = pkt_time - self.pkt_start;
-        info!("Writing segment {} [{}s]", &next_seg_url, duration);
+        let segment_path = PathBuf::from(&next_seg_url);
+        let segment_size = segment_path.metadata().map(|m| m.len()).unwrap_or(0);
+        info!("Writing segment {} [{:.3}s, {} bytes]", 
+              segment_path.file_name().unwrap_or_default().to_string_lossy(), 
+              duration, segment_size);
         if let Err(e) = self.push_segment(self.idx, duration) {
             warn!("Failed to update playlist: {}", e);
         }

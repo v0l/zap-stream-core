@@ -8,6 +8,7 @@ use srt_tokio::{SrtListener, SrtSocket};
 use std::io::Read;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::runtime::Handle;
 
 const MAX_SRT_BUFFER_SIZE: usize = 10 * 1024 * 1024; // 10MB limit
@@ -38,6 +39,9 @@ pub async fn listen(out_dir: String, addr: String, overseer: Arc<dyn Overseer>) 
                 handle: Handle::current(),
                 socket,
                 buf: Vec::with_capacity(4096),
+                last_buffer_log: Instant::now(),
+                bytes_processed: 0,
+                packets_received: 0,
             }),
         );
     }
@@ -48,6 +52,9 @@ struct SrtReader {
     pub handle: Handle,
     pub socket: SrtSocket,
     pub buf: Vec<u8>,
+    last_buffer_log: Instant,
+    bytes_processed: u64,
+    packets_received: u64,
 }
 
 impl SrtReader {
@@ -60,6 +67,28 @@ impl SrtReader {
             self.buf.drain(..bytes_to_drop);
         }
         self.buf.extend(data);
+        
+        // Update performance counters
+        self.bytes_processed += data.len() as u64;
+        self.packets_received += 1;
+        
+        // Log buffer status every 5 seconds
+        if self.last_buffer_log.elapsed().as_secs() >= 5 {
+            let buffer_util = (self.buf.len() as f32 / MAX_SRT_BUFFER_SIZE as f32) * 100.0;
+            let elapsed = self.last_buffer_log.elapsed();
+            let mbps = (self.bytes_processed as f64 * 8.0) / (elapsed.as_secs_f64() * 1_000_000.0);
+            let pps = self.packets_received as f64 / elapsed.as_secs_f64();
+            
+            info!(
+                "SRT ingress: {:.1} Mbps, {:.1} packets/sec, buffer: {}% ({}/{} bytes)",
+                mbps, pps, buffer_util as u32, self.buf.len(), MAX_SRT_BUFFER_SIZE
+            );
+            
+            // Reset counters
+            self.last_buffer_log = Instant::now();
+            self.bytes_processed = 0;
+            self.packets_received = 0;
+        }
     }
 }
 

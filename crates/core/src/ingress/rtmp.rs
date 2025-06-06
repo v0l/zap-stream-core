@@ -26,6 +26,9 @@ struct RtmpClient {
     msg_queue: VecDeque<ServerSessionResult>,
     reader_buf: [u8; 4096],
     pub published_stream: Option<RtmpPublishedStream>,
+    last_buffer_log: Instant,
+    bytes_processed: u64,
+    frames_received: u64,
 }
 
 impl RtmpClient {
@@ -33,11 +36,33 @@ impl RtmpClient {
     fn add_to_media_buffer(&mut self, data: &[u8]) {
         if self.media_buf.len() + data.len() > MAX_MEDIA_BUFFER_SIZE {
             let bytes_to_drop = (self.media_buf.len() + data.len()) - MAX_MEDIA_BUFFER_SIZE;
-            warn!("Media buffer full ({} bytes), dropping {} oldest bytes", 
+            warn!("RTMP buffer full ({} bytes), dropping {} oldest bytes", 
                   self.media_buf.len(), bytes_to_drop);
             self.media_buf.drain(..bytes_to_drop);
         }
         self.media_buf.extend(data);
+        
+        // Update performance counters
+        self.bytes_processed += data.len() as u64;
+        self.frames_received += 1;
+        
+        // Log buffer status every 5 seconds
+        if self.last_buffer_log.elapsed().as_secs() >= 5 {
+            let buffer_util = (self.media_buf.len() as f32 / MAX_MEDIA_BUFFER_SIZE as f32) * 100.0;
+            let elapsed = self.last_buffer_log.elapsed();
+            let mbps = (self.bytes_processed as f64 * 8.0) / (elapsed.as_secs_f64() * 1_000_000.0);
+            let fps = self.frames_received as f64 / elapsed.as_secs_f64();
+            
+            info!(
+                "RTMP ingress: {:.1} Mbps, {:.1} frames/sec, buffer: {}% ({}/{} bytes)",
+                mbps, fps, buffer_util as u32, self.media_buf.len(), MAX_MEDIA_BUFFER_SIZE
+            );
+            
+            // Reset counters
+            self.last_buffer_log = Instant::now();
+            self.bytes_processed = 0;
+            self.frames_received = 0;
+        }
     }
 
     async fn start(mut socket: TcpStream) -> Result<Self> {
@@ -75,6 +100,9 @@ impl RtmpClient {
                         msg_queue: VecDeque::from(res),
                         reader_buf: [0; 4096],
                         published_stream: None,
+                        last_buffer_log: Instant::now(),
+                        bytes_processed: 0,
+                        frames_received: 0,
                     };
 
                     return Ok(ret);
