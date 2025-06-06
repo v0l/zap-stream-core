@@ -103,7 +103,12 @@ impl Api {
                 }
                 (&Method::GET, Route::Topup) => {
                     let auth = check_nip98_auth(&req, &self.settings.public_url)?;
-                    let url: Url = req.uri().to_string().parse()?;
+                    let full_url = format!(
+                        "{}{}",
+                        self.settings.public_url.trim_end_matches('/'),
+                        req.uri()
+                    );
+                    let url: Url = full_url.parse()?;
                     let amount: usize = url
                         .query_pairs()
                         .find_map(|(k, v)| if k == "amount" { Some(v) } else { None })
@@ -121,7 +126,12 @@ impl Api {
                 }
                 (&Method::POST, Route::Withdraw) => {
                     let auth = check_nip98_auth(&req, &self.settings.public_url)?;
-                    let url: Url = req.uri().to_string().parse()?;
+                    let full_url = format!(
+                        "{}{}",
+                        self.settings.public_url.trim_end_matches('/'),
+                        req.uri()
+                    );
+                    let url: Url = full_url.parse()?;
                     let invoice = url
                         .query_pairs()
                         .find_map(|(k, v)| {
@@ -344,10 +354,9 @@ impl Api {
         let invoice_response = response.into_inner();
 
         // Create payment entry for this topup invoice
-        let payment_hash = hex::decode(&invoice_response.r_hash)?;
         self.db
             .create_payment(
-                &payment_hash,
+                &invoice_response.r_hash,
                 uid,
                 Some(&invoice_response.payment_request),
                 amount as u64 * 1000, // Convert to milli-sats
@@ -364,9 +373,14 @@ impl Api {
     async fn update_event(&self, pubkey: &PublicKey, patch_event: PatchEvent) -> Result<()> {
         let uid = self.db.upsert_user(&pubkey.to_bytes()).await?;
 
-        if let Some(stream_id) = patch_event.id {
+        if patch_event
+            .id
+            .as_ref()
+            .map(|i| !i.is_empty())
+            .unwrap_or(false)
+        {
             // Update specific stream
-            let stream_uuid = Uuid::parse_str(&stream_id)?;
+            let stream_uuid = Uuid::parse_str(&patch_event.id.unwrap())?;
             let mut stream = self.db.get_stream(&stream_uuid).await?;
 
             // Verify user owns this stream
@@ -526,19 +540,20 @@ impl Api {
 
         let items = payments
             .into_iter()
+            .filter(|p| p.is_paid) // Only include paid payments like C# version
             .map(|p| HistoryEntry {
-                payment_hash: hex::encode(p.payment_hash),
-                amount: p.amount as i64,
-                timestamp: p.created.timestamp(),
-                payment_type: match p.payment_type {
-                    zap_stream_db::PaymentType::TopUp => "topup".to_string(),
-                    zap_stream_db::PaymentType::Zap => "zap".to_string(),
-                    zap_stream_db::PaymentType::Credit => "credit".to_string(),
-                    zap_stream_db::PaymentType::Withdrawal => "withdrawal".to_string(),
-                    zap_stream_db::PaymentType::AdmissionFee => "admission_fee".to_string(),
+                created: p.created.timestamp() as u64,
+                entry_type: match p.payment_type {
+                    zap_stream_db::PaymentType::Withdrawal => 1, // Debit
+                    _ => 0, // Credit (TopUp, Zap, Credit, AdmissionFee)
                 },
-                is_paid: p.is_paid,
-                fee: p.fee,
+                amount: p.amount as f64 / 1000.0, // Convert from milli-sats to sats
+                desc: match p.payment_type {
+                    zap_stream_db::PaymentType::Withdrawal => Some("Withdrawal".to_string()),
+                    zap_stream_db::PaymentType::Credit => Some("Admin Credit".to_string()),
+                    zap_stream_db::PaymentType::Zap => p.nostr.clone(), // Nostr content
+                    _ => None,
+                },
             })
             .collect();
 
@@ -671,12 +686,11 @@ struct ForwardResponse {
 
 #[derive(Deserialize, Serialize)]
 struct HistoryEntry {
-    pub payment_hash: String,
-    pub amount: i64,
-    pub timestamp: i64,
-    pub payment_type: String,
-    pub is_paid: bool,
-    pub fee: u64,
+    pub created: u64,
+    #[serde(rename = "type")]
+    pub entry_type: i32,
+    pub amount: f64,
+    pub desc: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
