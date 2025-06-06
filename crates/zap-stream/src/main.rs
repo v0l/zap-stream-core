@@ -71,7 +71,7 @@ async fn main() -> Result<()> {
     let http_addr: SocketAddr = settings.listen_http.parse()?;
     let index_html = include_str!("../index.html").replace("%%PUBLIC_URL%%", &settings.public_url);
 
-    let api = Api::new(overseer.database(), settings.clone());
+    let api = Api::new(overseer.database(), settings.clone(), overseer.lnd_client());
     // HTTP server
     let server = HttpServer::new(index_html, PathBuf::from(settings.output_dir), api);
     tasks.push(tokio::spawn(async move {

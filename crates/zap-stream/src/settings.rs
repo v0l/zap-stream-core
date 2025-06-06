@@ -49,8 +49,6 @@ pub enum OverseerConfig {
         nsec: String,
         /// Blossom servers
         blossom: Option<Vec<String>>,
-        /// Cost (milli-sats) / second / variant
-        cost: i64,
     },
 }
 
@@ -70,7 +68,6 @@ impl Settings {
                 lnd,
                 relays,
                 blossom,
-                cost,
             } => Ok(Arc::new(
                 ZapStreamOverseer::new(
                     &self.output_dir,
@@ -80,7 +77,6 @@ impl Settings {
                     lnd,
                     relays,
                     blossom,
-                    *cost,
                 )
                 .await?,
             )),

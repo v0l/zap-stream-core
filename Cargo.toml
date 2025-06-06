@@ -16,5 +16,5 @@ uuid = { version = "1.8.0", features = ["v4", "serde"] }
 serde = { version = "1.0.197", features = ["derive"] }
 url = "2.5.0"
 itertools = "0.14.0"
-chrono = "^0.4.38"
+chrono = { version = "^0.4.38", features = ["serde"] }
 hex = "0.4.3"

@@ -8,7 +8,6 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use log::{error, info, warn};
 use nostr_sdk::prelude::Coordinate;
 use nostr_sdk::{Client, Event, EventBuilder, JsonUtil, Keys, Kind, Tag, ToBech32};
-use serde::Serialize;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -44,8 +43,6 @@ pub struct ZapStreamOverseer {
     blossom_servers: Vec<Blossom>,
     /// Public facing URL pointing to [out_dir]
     public_url: String,
-    /// Cost / second / variant
-    cost: i64,
     /// Currently active streams
     /// Any streams which are not contained in this set are dead
     active_streams: Arc<RwLock<HashSet<Uuid>>>,
@@ -60,7 +57,6 @@ impl ZapStreamOverseer {
         lnd: &LndSettings,
         relays: &Vec<String>,
         blossom_servers: &Option<Vec<String>>,
-        cost: i64,
     ) -> Result<Self> {
         let db = ZapStreamDb::new(db).await?;
         db.migrate().await?;
@@ -112,13 +108,16 @@ impl ZapStreamOverseer {
                 .map(|b| Blossom::new(b))
                 .collect(),
             public_url: public_url.clone(),
-            cost,
             active_streams: Arc::new(RwLock::new(HashSet::new())),
         })
     }
 
-    pub(crate) fn database(&self) -> ZapStreamDb {
+    pub fn database(&self) -> ZapStreamDb {
         self.db.clone()
+    }
+
+    pub fn lnd_client(&self) -> fedimint_tonic_lnd::Client {
+        self.lnd.clone()
     }
 
     fn stream_to_event_builder(&self, stream: &UserStream) -> Result<EventBuilder> {
@@ -224,15 +223,6 @@ impl ZapStreamOverseer {
     }
 }
 
-#[derive(Serialize)]
-struct Endpoint {}
-
-#[derive(Serialize)]
-struct AccountInfo {
-    pub endpoints: Vec<Endpoint>,
-    pub event: Event,
-    pub balance: u64,
-}
 #[async_trait]
 impl Overseer for ZapStreamOverseer {
     async fn check_streams(&self) -> Result<()> {
@@ -270,7 +260,19 @@ impl Overseer for ZapStreamOverseer {
             bail!("Not enough balance");
         }
 
-        let variants = get_default_variants(&stream_info)?;
+        // Get ingest endpoint configuration based on connection type
+        let endpoint_id = self.detect_endpoint(&connection).await?;
+        let endpoint = if let Some(id) = endpoint_id {
+            self.db.get_ingest_endpoint(id).await?
+        } else {
+            None
+        };
+
+        let variants = if let Some(endpoint) = &endpoint {
+            get_variants_from_endpoint(&stream_info, endpoint)?
+        } else {
+            get_default_variants(&stream_info)?
+        };
 
         let mut egress = vec![];
         egress.push(EgressType::HLS(EgressConfig {
@@ -285,6 +287,7 @@ impl Overseer for ZapStreamOverseer {
             user_id: uid,
             starts: Utc::now(),
             state: UserStreamState::Live,
+            endpoint_id,
             ..Default::default()
         };
         let stream_event = self.publish_stream_event(&new_stream, &user.pubkey).await?;
@@ -312,7 +315,21 @@ impl Overseer for ZapStreamOverseer {
         let stream = self.db.get_stream(pipeline_id).await?;
 
         let duration = added.iter().fold(0.0, |acc, v| acc + v.duration);
-        let cost = self.cost * duration.round() as i64;
+
+        // Get the cost per minute from the ingest endpoint, or use default
+        let cost_per_minute = if let Some(endpoint_id) = stream.endpoint_id {
+            if let Some(endpoint) = self.db.get_ingest_endpoint(endpoint_id).await? {
+                endpoint.cost
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+
+        // Convert duration from seconds to minutes and calculate cost
+        let duration_minutes = duration / 60.0;
+        let cost = (cost_per_minute as f32 * duration_minutes).round() as i64;
         let bal = self
             .db
             .tick_stream(pipeline_id, stream.user_id, duration, cost)
@@ -451,6 +468,144 @@ fn get_default_variants(info: &IngressInfo) -> Result<Vec<VariantStream>> {
             sample_rate: 48_000,
             sample_fmt: "fltp".to_owned(),
         }));
+    }
+
+    Ok(vars)
+}
+
+impl ZapStreamOverseer {
+    /// Detect which ingest endpoint should be used based on connection info
+    async fn detect_endpoint(&self, connection: &ConnectionInfo) -> Result<Option<u64>> {
+        // Get all ingest endpoints and match by name against connection endpoint
+        let endpoints = self.db.get_ingest_endpoints().await?;
+
+        for endpoint in endpoints {
+            if endpoint.name == connection.endpoint {
+                return Ok(Some(endpoint.id));
+            }
+        }
+
+        // No matching endpoint found
+        Ok(None)
+    }
+}
+
+fn get_variants_from_endpoint(
+    info: &IngressInfo,
+    endpoint: &zap_stream_db::IngestEndpoint,
+) -> Result<Vec<VariantStream>> {
+    let capabilities_str = endpoint.capabilities.as_deref().unwrap_or("");
+    let capabilities: Vec<&str> = capabilities_str.split(',').collect();
+
+    let mut vars: Vec<VariantStream> = vec![];
+
+    let video_src = info
+        .streams
+        .iter()
+        .find(|c| c.stream_type == IngressStreamType::Video);
+    let audio_src = info
+        .streams
+        .iter()
+        .find(|c| c.stream_type == IngressStreamType::Audio);
+
+    // Parse all variant capabilities and create grouped variants
+    let mut group_id = 0usize;
+    let mut dst_index = 0;
+
+    for capability in capabilities {
+        let parts: Vec<&str> = capability.split(':').collect();
+
+        if parts.len() >= 2 && parts[0] == "variant" && parts[1] == "source" {
+            // Add copy variant (group for source)
+            if let Some(video_src) = video_src {
+                vars.push(VariantStream::CopyVideo(VariantMapping {
+                    id: Uuid::new_v4(),
+                    src_index: video_src.index,
+                    dst_index,
+                    group_id,
+                }));
+                dst_index += 1;
+            }
+
+            if let Some(audio_src) = audio_src {
+                vars.push(VariantStream::CopyAudio(VariantMapping {
+                    id: Uuid::new_v4(),
+                    src_index: audio_src.index,
+                    dst_index,
+                    group_id,
+                }));
+                dst_index += 1;
+            }
+
+            group_id += 1;
+        } else if parts.len() >= 3 && parts[0] == "variant" {
+            if let (Ok(target_height), Ok(bitrate)) =
+                (parts[1].parse::<u32>(), parts[2].parse::<u32>())
+            {
+                // Add video variant for this group
+                if let Some(video_src) = video_src {
+                    // Calculate dimensions maintaining aspect ratio
+                    let input_width = video_src.width as f32;
+                    let input_height = video_src.height as f32;
+                    let aspect_ratio = input_width / input_height;
+
+                    let output_height = target_height;
+                    let output_width = (output_height as f32 * aspect_ratio).round() as u16;
+
+                    // Ensure even dimensions for H.264 compatibility
+                    let output_width = if output_width % 2 == 1 {
+                        output_width + 1
+                    } else {
+                        output_width
+                    };
+                    let output_height = if output_height % 2 == 1 {
+                        output_height + 1
+                    } else {
+                        output_height
+                    } as u16;
+
+                    vars.push(VariantStream::Video(VideoVariant {
+                        mapping: VariantMapping {
+                            id: Uuid::new_v4(),
+                            src_index: video_src.index,
+                            dst_index,
+                            group_id,
+                        },
+                        width: output_width,
+                        height: output_height,
+                        fps: video_src.fps,
+                        bitrate: bitrate as u64,
+                        codec: "libx264".to_string(),
+                        profile: 77, // AV_PROFILE_H264_MAIN
+                        level: 51,
+                        keyframe_interval: video_src.fps as u16 * 2,
+                        pixel_format: AV_PIX_FMT_YUV420P as u32,
+                    }));
+                    dst_index += 1;
+                }
+
+                // Add audio variant for the same group
+                if let Some(audio_src) = audio_src {
+                    vars.push(VariantStream::Audio(AudioVariant {
+                        mapping: VariantMapping {
+                            id: Uuid::new_v4(),
+                            src_index: audio_src.index,
+                            dst_index,
+                            group_id,
+                        },
+                        bitrate: 192_000,
+                        codec: "aac".to_string(),
+                        channels: 2,
+                        sample_rate: 48_000,
+                        sample_fmt: "fltp".to_owned(),
+                    }));
+                    dst_index += 1;
+                }
+
+                group_id += 1;
+            }
+        }
+        // Handle other capabilities like dvr:720h here if needed
     }
 
     Ok(vars)

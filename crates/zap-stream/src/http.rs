@@ -1,23 +1,21 @@
 use crate::api::Api;
-use crate::overseer::ZapStreamOverseer;
 use anyhow::{bail, Result};
 use base64::Engine;
 use bytes::Bytes;
+use chrono::{DateTime, Utc};
 use futures_util::TryStreamExt;
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full, StreamBody};
 use hyper::body::{Frame, Incoming};
 use hyper::service::Service;
 use hyper::{Method, Request, Response};
-use log::{error, info};
-use nostr_sdk::{serde_json, Event};
+use log::error;
+use nostr_sdk::{serde_json, Alphabet, Event, Kind, PublicKey, SingleLetterTag, TagKind};
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::Arc;
 use tokio::fs::File;
 use tokio_util::io::ReaderStream;
-use zap_stream_core::overseer::Overseer;
 
 #[derive(Clone)]
 pub struct HttpServer {
@@ -98,7 +96,13 @@ impl Service<Request<Incoming>> for HttpServer {
     }
 }
 
-pub fn check_nip98_auth(req: &Request<Incoming>) -> Result<Event> {
+#[derive(Debug, Clone)]
+pub struct AuthResult {
+    pub pubkey: PublicKey,
+    pub event: Event,
+}
+
+pub fn check_nip98_auth(req: &Request<Incoming>, public_url: &str) -> Result<AuthResult> {
     let auth = if let Some(a) = req.headers().get("authorization") {
         a.to_str()?
     } else {
@@ -109,10 +113,68 @@ pub fn check_nip98_auth(req: &Request<Incoming>) -> Result<Event> {
         bail!("Invalid authorization scheme");
     }
 
-    let json =
-        String::from_utf8(base64::engine::general_purpose::STANDARD.decode(auth[6..].as_bytes())?)?;
-    info!("{}", json);
+    let token = &auth[6..];
+    let decoded = base64::engine::general_purpose::STANDARD.decode(token.as_bytes())?;
 
-    // TODO: check tags
-    Ok(serde_json::from_str::<Event>(&json)?)
+    // Check if decoded data starts with '{'
+    if decoded.is_empty() || decoded[0] != b'{' {
+        bail!("Invalid token");
+    }
+
+    let json = String::from_utf8(decoded)?;
+    let event: Event = serde_json::from_str(&json)?;
+
+    // Verify signature
+    if !event.verify().is_ok() {
+        bail!("Invalid nostr event, invalid signature");
+    }
+
+    // Check event kind (NIP-98: HTTP Auth, kind 27235)
+    if event.kind != Kind::Custom(27235) {
+        bail!("Invalid nostr event, wrong kind");
+    }
+
+    // Check timestamp (within 120 seconds)
+    let now = Utc::now();
+    let event_time = DateTime::from_timestamp(event.created_at.as_u64() as i64, 0)
+        .ok_or_else(|| anyhow::anyhow!("Invalid timestamp"))?;
+    let diff_seconds = (now - event_time).num_seconds().abs();
+    if diff_seconds > 120 {
+        bail!("Invalid nostr event, timestamp out of range");
+    }
+
+    // Check URL tag (full URI)
+    let url_tag = event
+        .tags
+        .iter()
+        .find(|tag| tag.kind() == TagKind::SingleLetter(SingleLetterTag::lowercase(Alphabet::U)))
+        .and_then(|tag| tag.content())
+        .ok_or_else(|| anyhow::anyhow!("Missing URL tag"))?;
+
+    // Construct full URI using public_url + path + query
+    let request_uri = match req.uri().query() {
+        Some(query) => format!("{}{}?{}", public_url.trim_end_matches('/'), req.uri().path(), query),
+        None => format!("{}{}", public_url.trim_end_matches('/'), req.uri().path()),
+    };
+
+    if !url_tag.eq_ignore_ascii_case(&request_uri) {
+        bail!("Invalid nostr event, URL tag invalid. Expected: {}, Got: {}", request_uri, url_tag);
+    }
+
+    // Check method tag
+    let method_tag = event
+        .tags
+        .iter()
+        .find(|tag| tag.kind() == TagKind::Method)
+        .and_then(|tag| tag.content())
+        .ok_or_else(|| anyhow::anyhow!("Missing method tag"))?;
+
+    if !method_tag.eq_ignore_ascii_case(req.method().as_str()) {
+        bail!("Invalid nostr event, method tag invalid");
+    }
+
+    Ok(AuthResult {
+        pubkey: event.pubkey.clone(),
+        event,
+    })
 }

@@ -22,6 +22,18 @@ pub struct User {
     pub is_blocked: bool,
     /// Streams are recorded
     pub recording: bool,
+    /// Default stream title
+    pub title: Option<String>,
+    /// Default stream summary
+    pub summary: Option<String>,
+    /// Default stream image
+    pub image: Option<String>,
+    /// Default tags (comma separated)
+    pub tags: Option<String>,
+    /// Default content warning
+    pub content_warning: Option<String>,
+    /// Default stream goal
+    pub goal: Option<String>,
 }
 
 #[derive(Default, Debug, Clone, Type)]
@@ -64,4 +76,56 @@ pub struct UserStream {
     pub duration: f32,
     pub fee: Option<u32>,
     pub event: Option<String>,
+    pub endpoint_id: Option<u64>,
+    pub last_segment: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, FromRow)]
+pub struct UserStreamForward {
+    pub id: u64,
+    pub user_id: u64,
+    pub name: String,
+    pub target: String,
+}
+
+#[derive(Debug, Clone, FromRow)]
+pub struct UserStreamKey {
+    pub id: u64,
+    pub user_id: u64,
+    pub key: String,
+    pub created: DateTime<Utc>,
+    pub expires: Option<DateTime<Utc>>,
+    pub stream_id: String,
+}
+
+#[derive(Default, Debug, Clone, Type)]
+#[repr(u8)]
+pub enum PaymentType {
+    #[default]
+    TopUp = 0,
+    Zap = 1,
+    Credit = 2,
+    Withdrawal = 3,
+    AdmissionFee = 4,
+}
+
+#[derive(Debug, Clone, FromRow)]
+pub struct Payment {
+    pub payment_hash: Vec<u8>,
+    pub user_id: u64,
+    pub invoice: Option<String>,
+    pub is_paid: bool,
+    pub amount: u64,
+    pub created: DateTime<Utc>,
+    pub nostr: Option<String>,
+    pub payment_type: PaymentType,
+    pub fee: u64,
+}
+
+#[derive(Debug, Clone, FromRow)]
+pub struct IngestEndpoint {
+    pub id: u64,
+    pub name: String,
+    pub cost: u64,
+    pub capabilities: Option<String>, // JSON array stored as string
 }
