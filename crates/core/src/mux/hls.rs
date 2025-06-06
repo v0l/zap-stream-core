@@ -4,8 +4,8 @@ use anyhow::{bail, Result};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_H264;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVMediaType::AVMEDIA_TYPE_VIDEO;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    av_free, av_opt_set, av_packet_clone, av_packet_free, av_q2d, av_write_frame, avio_flush,
-    avio_open, AVPacket, AVStream, AVIO_FLAG_WRITE, AV_PKT_FLAG_KEY,
+    av_free, av_opt_set, av_packet_clone, av_packet_free, av_q2d, av_write_frame, avio_close,
+    avio_flush, avio_open, AVPacket, AVStream, AVIO_FLAG_WRITE, AV_PKT_FLAG_KEY,
 };
 use ffmpeg_rs_raw::{cstr, Encoder, Muxer};
 use itertools::Itertools;
@@ -350,6 +350,7 @@ impl HlsVariant {
         let ctx = self.mux.context();
         av_write_frame(ctx, ptr::null_mut());
         avio_flush((*ctx).pb);
+        avio_close((*ctx).pb);
         av_free((*ctx).url as *mut _);
 
         let next_seg_url =
