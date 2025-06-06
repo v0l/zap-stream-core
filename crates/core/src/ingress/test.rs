@@ -133,8 +133,6 @@ impl TestPatternSrc {
             std::thread::sleep(wait_time);
         }
 
-        self.frame_no += 1;
-
         let mut src_frame = unsafe {
             let src_frame = av_frame_alloc();
 
@@ -191,6 +189,8 @@ impl TestPatternSrc {
 
         // Generate and encode audio (sine wave)
         self.generate_audio_frame()?;
+
+        self.frame_no += 1;
 
         Ok(())
     }
