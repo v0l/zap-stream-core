@@ -56,13 +56,15 @@ struct TestPatternSrc {
 
 unsafe impl Send for TestPatternSrc {}
 
+const VIDEO_FPS: f32 = 30.0;
+
 impl TestPatternSrc {
     pub fn new() -> Result<Self> {
         let scaler = Scaler::new();
         let video_encoder = unsafe {
             Encoder::new_with_name("libx264")?
                 .with_stream_index(0)
-                .with_framerate(30.0)?
+                .with_framerate(VIDEO_FPS)?
                 .with_bitrate(1_000_000)
                 .with_pix_fmt(AV_PIX_FMT_YUV420P)
                 .with_width(1280)
@@ -122,14 +124,14 @@ impl TestPatternSrc {
     }
 
     pub unsafe fn next_pkt(&mut self) -> Result<()> {
-        let stream_time = Duration::from_secs_f64(self.frame_no as f64 / 30.0);
+        let stream_time = Duration::from_secs_f64(self.frame_no as f64 / VIDEO_FPS as f64);
         let real_time = Instant::now().duration_since(self.start);
         let wait_time = if stream_time > real_time {
             stream_time - real_time
         } else {
             Duration::new(0, 0)
         };
-        if !wait_time.is_zero() {
+        if !wait_time.is_zero() && wait_time.as_secs_f32() > 1f32 / VIDEO_FPS {
             std::thread::sleep(wait_time);
         }
 
@@ -199,7 +201,6 @@ impl TestPatternSrc {
     unsafe fn generate_audio_frame(&mut self) -> Result<()> {
         const SAMPLE_RATE: f32 = 44100.0;
         const FREQUENCY: f32 = 440.0; // A4 note
-        const VIDEO_FPS: f32 = 30.0;
         const SAMPLES_PER_FRAME: usize = 1024; // Fixed AAC frame size
 
         // Calculate how many audio samples we should have by now
