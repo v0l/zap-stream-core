@@ -2,13 +2,13 @@ use crate::blossom::{BlobDescriptor, Blossom};
 use crate::settings::LndSettings;
 use anyhow::{bail, Result};
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use fedimint_tonic_lnd::verrpc::VersionRequest;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use log::{error, info, warn};
 use nostr_sdk::prelude::Coordinate;
 use nostr_sdk::{Client, Event, EventBuilder, JsonUtil, Keys, Kind, Tag, ToBech32};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -23,11 +23,19 @@ use zap_stream_core::variant::audio::AudioVariant;
 use zap_stream_core::variant::mapping::VariantMapping;
 use zap_stream_core::variant::video::VideoVariant;
 use zap_stream_core::variant::{StreamMapping, VariantStream};
+use zap_stream_core::viewer::ViewerTracker;
 use zap_stream_db::{UserStream, UserStreamState, ZapStreamDb};
 
 const STREAM_EVENT_KIND: u16 = 30_311;
 
+#[derive(Clone)]
+struct StreamViewerState {
+    last_published_count: usize,
+    last_update_time: DateTime<Utc>,
+}
+
 /// zap.stream NIP-53 overseer
+#[derive(Clone)]
 pub struct ZapStreamOverseer {
     /// Dir where HTTP server serves files from
     out_dir: String,
@@ -46,6 +54,10 @@ pub struct ZapStreamOverseer {
     /// Currently active streams
     /// Any streams which are not contained in this set are dead
     active_streams: Arc<RwLock<HashSet<Uuid>>>,
+    /// Viewer tracking for active streams
+    viewer_tracker: ViewerTracker,
+    /// Track last published viewer count and update time for each stream
+    stream_viewer_states: Arc<RwLock<HashMap<String, StreamViewerState>>>,
 }
 
 impl ZapStreamOverseer {
@@ -95,7 +107,7 @@ impl ZapStreamOverseer {
         }
         client.connect().await;
 
-        Ok(Self {
+        let overseer = Self {
             out_dir: out_dir.clone(),
             db,
             lnd,
@@ -109,7 +121,12 @@ impl ZapStreamOverseer {
                 .collect(),
             public_url: public_url.clone(),
             active_streams: Arc::new(RwLock::new(HashSet::new())),
-        })
+            viewer_tracker: ViewerTracker::new(),
+            stream_viewer_states: Arc::new(RwLock::new(HashMap::new())),
+        };
+
+
+        Ok(overseer)
     }
 
     pub fn database(&self) -> ZapStreamDb {
@@ -119,6 +136,11 @@ impl ZapStreamOverseer {
     pub fn lnd_client(&self) -> fedimint_tonic_lnd::Client {
         self.lnd.clone()
     }
+
+    pub fn viewer_tracker(&self) -> &ViewerTracker {
+        &self.viewer_tracker
+    }
+
 
     fn stream_to_event_builder(&self, stream: &UserStream) -> Result<EventBuilder> {
         let mut tags = vec![
@@ -160,6 +182,15 @@ impl ZapStreamOverseer {
             for tag in tags_csv.split(',') {
                 tags.push(Tag::parse(&["t".to_string(), tag.to_string()])?);
             }
+        }
+
+        // Add current viewer count for live streams
+        if stream.state == UserStreamState::Live {
+            let viewer_count = self.viewer_tracker.get_viewer_count(&stream.id);
+            tags.push(Tag::parse(&[
+                "current_participants".to_string(),
+                viewer_count.to_string(),
+            ])?);
         }
 
         let kind = Kind::from(STREAM_EVENT_KIND);
@@ -228,7 +259,7 @@ impl Overseer for ZapStreamOverseer {
     async fn check_streams(&self) -> Result<()> {
         let active_streams = self.db.list_live_streams().await?;
         for stream in active_streams {
-            // check
+            // check if stream is alive
             let id = Uuid::parse_str(&stream.id)?;
             info!("Checking stream is alive: {}", stream.id);
             let is_active = {
@@ -238,6 +269,37 @@ impl Overseer for ZapStreamOverseer {
             if !is_active {
                 if let Err(e) = self.on_end(&id).await {
                     error!("Failed to end dead stream {}: {}", &id, e);
+                }
+            } else {
+                // Stream is active, check if we should update viewer count in nostr event
+                let viewer_count = self.viewer_tracker.get_viewer_count(&stream.id);
+                let now = Utc::now();
+                
+                let should_update = {
+                    let viewer_states = self.stream_viewer_states.read().await;
+                    if let Some(state) = viewer_states.get(&stream.id) {
+                        // Update if count changed OR if 10 minutes have passed since last update
+                        viewer_count != state.last_published_count || 
+                        (now - state.last_update_time).num_minutes() >= 10
+                    } else {
+                        // First time tracking this stream, always update
+                        viewer_count > 0
+                    }
+                };
+                
+                if should_update && viewer_count > 0 {
+                    if let Ok(user) = self.db.get_user(stream.user_id).await {
+                        if let Ok(_) = self.publish_stream_event(&stream, &user.pubkey).await {
+                            // Update the tracking state
+                            let mut viewer_states = self.stream_viewer_states.write().await;
+                            viewer_states.insert(stream.id.clone(), StreamViewerState {
+                                last_published_count: viewer_count,
+                                last_update_time: now,
+                            });
+                        } else {
+                            warn!("Failed to update viewer count for stream {}", stream.id);
+                        }
+                    }
                 }
             }
         }
@@ -401,6 +463,10 @@ impl Overseer for ZapStreamOverseer {
 
         let mut streams = self.active_streams.write().await;
         streams.remove(pipeline_id);
+
+        // Clean up viewer tracking state for this stream
+        let mut viewer_states = self.stream_viewer_states.write().await;
+        viewer_states.remove(&stream.id);
 
         stream.state = UserStreamState::Ended;
         let event = self.publish_stream_event(&stream, &user.pubkey).await?;

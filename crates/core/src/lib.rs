@@ -4,3 +4,4 @@ pub mod mux;
 pub mod overseer;
 pub mod pipeline;
 pub mod variant;
+pub mod viewer;

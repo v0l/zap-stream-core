@@ -648,6 +648,16 @@ impl Api {
 
         Ok(())
     }
+
+    /// Track a viewer for viewer count analytics
+    pub fn track_viewer(&self, token: &str, stream_id: &str, ip_address: &str, user_agent: Option<String>) {
+        self.overseer.viewer_tracker().track_viewer(token, stream_id, ip_address, user_agent);
+    }
+
+    /// Get current viewer count for a stream
+    pub fn get_viewer_count(&self, stream_id: &str) -> usize {
+        self.overseer.viewer_tracker().get_viewer_count(stream_id)
+    }
 }
 
 #[derive(Deserialize, Serialize)]

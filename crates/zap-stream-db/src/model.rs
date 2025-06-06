@@ -36,7 +36,7 @@ pub struct User {
     pub goal: Option<String>,
 }
 
-#[derive(Default, Debug, Clone, Type)]
+#[derive(Default, Debug, Clone, PartialEq, Type)]
 #[repr(u8)]
 pub enum UserStreamState {
     #[default]

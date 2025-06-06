@@ -23,8 +23,9 @@ serde.workspace = true
 chrono.workspace = true
 hex.workspace = true
 url.workspace = true
+m3u8-rs.workspace = true
 
-# http setuff
+# http stuff
 hyper = { version = "1.5.1", features = ["server"] }
 bytes = "1.8.0"
 http-body-util = "0.1.2"

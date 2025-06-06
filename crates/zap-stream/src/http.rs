@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use tokio::fs::File;
 use tokio_util::io::ReaderStream;
+use zap_stream_core::viewer::ViewerTracker;
 
 #[derive(Clone)]
 pub struct HttpServer {
@@ -30,6 +31,123 @@ impl HttpServer {
             index,
             files_dir,
             api,
+        }
+    }
+
+    async fn handle_hls_playlist(
+        api: &Api,
+        req: &Request<Incoming>,
+        playlist_path: &PathBuf,
+    ) -> Result<Response<BoxBody<Bytes, anyhow::Error>>, anyhow::Error> {
+        // Extract stream ID from path (e.g., /uuid/live.m3u8 -> uuid)
+        let path_parts: Vec<&str> = req.uri().path().trim_start_matches('/').split('/').collect();
+        if path_parts.len() < 2 {
+            return Ok(Response::builder().status(404).body(BoxBody::default())?);
+        }
+        
+        let stream_id = path_parts[0];
+        
+        // Get client IP and User-Agent for tracking
+        let client_ip = Self::get_client_ip(req);
+        let user_agent = req
+            .headers()
+            .get("user-agent")
+            .and_then(|h| h.to_str().ok())
+            .map(|s| s.to_string());
+
+        // Check for existing viewer token in query params
+        let query_params: std::collections::HashMap<String, String> = req
+            .uri()
+            .query()
+            .map(|q| {
+                url::form_urlencoded::parse(q.as_bytes())
+                    .into_owned()
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let viewer_token = if let Some(token) = query_params.get("vt") {
+            // Track existing viewer
+            api.track_viewer(token, stream_id, &client_ip, user_agent.clone());
+            token.clone()
+        } else {
+            // Generate new viewer token
+            let token = ViewerTracker::generate_viewer_token();
+            api.track_viewer(&token, stream_id, &client_ip, user_agent);
+            token
+        };
+
+        // Read the playlist file
+        let playlist_content = tokio::fs::read(playlist_path).await?;
+        
+        // Parse and modify playlist to add viewer token to URLs
+        let modified_content = Self::add_viewer_token_to_playlist(&playlist_content, &viewer_token)?;
+
+        Ok(Response::builder()
+            .header("content-type", "application/vnd.apple.mpegurl")
+            .header("server", "zap-stream-core")
+            .header("access-control-allow-origin", "*")
+            .header("access-control-allow-headers", "*")
+            .header("access-control-allow-methods", "HEAD, GET")
+            .body(
+                Full::new(Bytes::from(modified_content))
+                    .map_err(|e| match e {})
+                    .boxed(),
+            )?)
+    }
+
+    fn get_client_ip(req: &Request<Incoming>) -> String {
+        // Check common headers for real client IP
+        if let Some(forwarded) = req.headers().get("x-forwarded-for") {
+            if let Ok(forwarded_str) = forwarded.to_str() {
+                if let Some(first_ip) = forwarded_str.split(',').next() {
+                    return first_ip.trim().to_string();
+                }
+            }
+        }
+        
+        if let Some(real_ip) = req.headers().get("x-real-ip") {
+            if let Ok(ip_str) = real_ip.to_str() {
+                return ip_str.to_string();
+            }
+        }
+
+        // Fallback to connection IP (note: in real deployment this might be a proxy)
+        "unknown".to_string()
+    }
+
+    fn add_viewer_token_to_playlist(content: &[u8], viewer_token: &str) -> Result<String> {
+        // Parse the M3U8 playlist using the m3u8-rs crate
+        let (_, playlist) = m3u8_rs::parse_playlist(content)
+            .map_err(|e| anyhow::anyhow!("Failed to parse M3U8 playlist: {}", e))?;
+        
+        match playlist {
+            m3u8_rs::Playlist::MasterPlaylist(mut master) => {
+                // For master playlists, add viewer token to variant streams
+                for variant in &mut master.variants {
+                    variant.uri = Self::add_token_to_url(&variant.uri, viewer_token);
+                }
+                
+                // Write the modified playlist back to string
+                let mut output = Vec::new();
+                master.write_to(&mut output)
+                    .map_err(|e| anyhow::anyhow!("Failed to write master playlist: {}", e))?;
+                String::from_utf8(output)
+                    .map_err(|e| anyhow::anyhow!("Failed to convert playlist to string: {}", e))
+            }
+            m3u8_rs::Playlist::MediaPlaylist(_) => {
+                // For media playlists, return original content unchanged
+                String::from_utf8(content.to_vec())
+                    .map_err(|e| anyhow::anyhow!("Failed to convert playlist to string: {}", e))
+            }
+        }
+    }
+    
+    fn add_token_to_url(url: &str, viewer_token: &str) -> String {
+        if url.contains('?') {
+            format!("{}&vt={}", url, viewer_token)
+        } else {
+            format!("{}?vt={}", url, viewer_token)
         }
     }
 }
@@ -60,6 +178,7 @@ impl Service<Request<Incoming>> for HttpServer {
         // check if mapped to file
         let dst_path = self.files_dir.join(req.uri().path()[1..].to_string());
         if dst_path.exists() {
+            let api_clone = self.api.clone();
             return Box::pin(async move {
                 let rsp = Response::builder()
                     .header("server", "zap-stream-core")
@@ -70,6 +189,13 @@ impl Service<Request<Incoming>> for HttpServer {
                 if req.method() == Method::HEAD {
                     return Ok(rsp.body(BoxBody::default())?);
                 }
+
+                // Handle HLS playlists with viewer tracking
+                if req.uri().path().ends_with("/live.m3u8") {
+                    return Self::handle_hls_playlist(&api_clone, &req, &dst_path).await;
+                }
+
+                // Handle regular files
                 let f = File::open(&dst_path).await?;
                 let f_stream = ReaderStream::new(f);
                 let body = StreamBody::new(

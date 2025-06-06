@@ -28,7 +28,7 @@ serde.workspace = true
 hex.workspace = true
 itertools.workspace = true
 futures-util = "0.3.30"
-m3u8-rs = "6.0.0"
+m3u8-rs.workspace = true
 
 # srt
 srt-tokio = { version = "0.4.3", optional = true }

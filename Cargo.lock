@@ -4793,6 +4793,7 @@ dependencies = [
  "hyper 1.6.0",
  "hyper-util",
  "log",
+ "m3u8-rs",
  "matchit 0.8.6",
  "nostr-sdk",
  "pretty_env_logger",

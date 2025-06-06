@@ -11,6 +11,7 @@ use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use url::Url;
 
+#[derive(Clone)]
 pub struct Blossom {
     url: Url,
     client: reqwest::Client,
