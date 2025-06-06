@@ -15,7 +15,7 @@ RUN apt update && \
     protobuf-compiler \
     libclang-dev && \
     rm -rf /var/lib/apt/lists/*
-RUN git clone --single-branch --branch release/7.1 https://git.ffmpeg.org/ffmpeg.git && \
+RUN git clone --single-branch --branch release/7.1 https://git.v0l.io/ffmpeg/ffmpeg.git && \
     cd ffmpeg && \
     ./configure \
     --prefix=$FFMPEG_DIR \
