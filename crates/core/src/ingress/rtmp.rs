@@ -113,8 +113,12 @@ impl RtmpClient {
                 }
                 ServerSessionResult::RaisedEvent(ev) => self.handle_event(ev)?,
                 ServerSessionResult::UnhandleableMessageReceived(m) => {
-                    // treat any non-flv streams as raw media stream in rtmp
-                    self.media_buf.extend(&m.data);
+                    // Log unhandleable messages for debugging  
+                    error!("Received unhandleable message with {} bytes", m.data.len());
+                    // Only append data if it looks like valid media data
+                    if !m.data.is_empty() && m.data.len() > 4 {
+                        self.media_buf.extend(&m.data);
+                    }
                 }
             }
         }
@@ -164,10 +168,20 @@ impl RtmpClient {
                 );
             }
             ServerSessionEvent::AudioDataReceived { data, .. } => {
-                self.media_buf.extend(data);
+                // Validate audio data before adding to buffer
+                if !data.is_empty() {
+                    self.media_buf.extend(data);
+                } else {
+                    error!("Received empty audio data");
+                }
             }
             ServerSessionEvent::VideoDataReceived { data, .. } => {
-                self.media_buf.extend(data);
+                // Validate video data before adding to buffer  
+                if !data.is_empty() {
+                    self.media_buf.extend(data);
+                } else {
+                    error!("Received empty video data");
+                }
             }
             ServerSessionEvent::UnhandleableAmf0Command { .. } => {}
             ServerSessionEvent::PlayStreamRequested { request_id, .. } => {

@@ -191,7 +191,7 @@ impl ZapStreamOverseer {
         Ok(EventBuilder::new(Kind::FileMetadata, "").tags(tags))
     }
 
-    async fn publish_stream_event(&self, stream: &UserStream, pubkey: &Vec<u8>) -> Result<Event> {
+    pub async fn publish_stream_event(&self, stream: &UserStream, pubkey: &Vec<u8>) -> Result<Event> {
         let extra_tags = vec![
             Tag::parse(["p", hex::encode(pubkey).as_str(), "", "host"])?,
             Tag::parse([

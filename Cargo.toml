@@ -6,6 +6,12 @@ members = [
     "crates/zap-stream-db"
 ]
 
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+
 [workspace.dependencies]
 ffmpeg-rs-raw = { git = "https://git.v0l.io/Kieran/ffmpeg-rs-raw.git", rev = "29ab0547478256c574766b4acc6fcda8ebf4cae6" }
 tokio = { version = "1.36.0", features = ["rt", "rt-multi-thread", "macros"] }

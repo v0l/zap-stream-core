@@ -77,6 +77,9 @@ pub struct PipelineRunner {
     /// Total number of frames produced
     frame_ctr: u64,
     out_dir: String,
+
+    /// Thumbnail generation interval (0 = disabled)
+    thumb_interval: u64,
 }
 
 impl PipelineRunner {
@@ -104,6 +107,7 @@ impl PipelineRunner {
             frame_ctr: 0,
             fps_last_frame_ctr: 0,
             info: None,
+            thumb_interval: 1800, // Disable thumbnails by default for performance
         })
     }
 
@@ -165,7 +169,9 @@ impl PipelineRunner {
 
             let p = (*stream).codecpar;
             if (*p).codec_type == AVMediaType::AVMEDIA_TYPE_VIDEO {
-                if (self.frame_ctr % 1800) == 0 {
+                // Conditionally generate thumbnails based on interval (0 = disabled)
+                if self.thumb_interval > 0 && (self.frame_ctr % self.thumb_interval) == 0 {
+                    let thumb_start = Instant::now();
                     let dst_pic = PathBuf::from(&self.out_dir)
                         .join(config.id.to_string())
                         .join("thumb.webp");
@@ -182,11 +188,15 @@ impl PipelineRunner {
                         .with_pix_fmt(transmute((*frame).format))
                         .open(None)?
                         .save_picture(frame, dst_pic.to_str().unwrap())?;
-                    info!("Saved thumb to: {}", dst_pic.display());
+                    let thumb_duration = thumb_start.elapsed();
+                    info!(
+                        "Saved thumb ({:.2}ms) to: {}",
+                        thumb_duration.as_millis() as f32 / 1000.0,
+                        dst_pic.display(),
+                    );
                     av_frame_free(&mut frame);
                 }
 
-                // TODO: fix this, multiple video streams in
                 self.frame_ctr += 1;
             }
 
@@ -224,7 +234,7 @@ impl PipelineRunner {
                             {
                                 // Set correct timebase for audio (1/sample_rate)
                                 (*ret).time_base.num = 1;
-                                (*ret).time_base.den = a.sample_rate as i32;                                
+                                (*ret).time_base.den = a.sample_rate as i32;
                                 av_frame_free(&mut resampled_frame);
                                 ret
                             } else {
@@ -271,21 +281,23 @@ impl PipelineRunner {
 
         av_packet_free(&mut pkt);
 
-        // egress results
-        self.handle.block_on(async {
-            for er in egress_results {
-                if let EgressResult::Segments { created, deleted } = er {
-                    if let Err(e) = self
-                        .overseer
-                        .on_segments(&config.id, &created, &deleted)
-                        .await
-                    {
-                        bail!("Failed to process segment {}", e.to_string());
+        // egress results - process async operations without blocking if possible
+        if !egress_results.is_empty() {
+            self.handle.block_on(async {
+                for er in egress_results {
+                    if let EgressResult::Segments { created, deleted } = er {
+                        if let Err(e) = self
+                            .overseer
+                            .on_segments(&config.id, &created, &deleted)
+                            .await
+                        {
+                            bail!("Failed to process segment {}", e.to_string());
+                        }
                     }
                 }
-            }
-            Ok(())
-        })?;
+                Ok(())
+            })?;
+        }
         let elapsed = Instant::now().sub(self.fps_counter_start).as_secs_f32();
         if elapsed >= 2f32 {
             let n_frames = self.frame_ctr - self.fps_last_frame_ctr;

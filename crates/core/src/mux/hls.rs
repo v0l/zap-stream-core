@@ -186,11 +186,7 @@ impl HlsVariant {
             streams,
             idx: 1,
             pkt_start: 0.0,
-            segments: Vec::from([SegmentInfo {
-                index: 1,
-                duration: segment_length,
-                kind: segment_type,
-            }]),
+            segments: Vec::new(), // Start with empty segments list
             out_dir: out_dir.to_string(),
             segment_type,
         })
@@ -220,8 +216,9 @@ impl HlsVariant {
         let pkt_q = av_q2d((*pkt).time_base);
         // time of this packet in seconds
         let pkt_time = (*pkt).pts as f32 * pkt_q as f32;
-        // what segment this pkt should be in (index)
-        let pkt_seg = 1 + (pkt_time / self.segment_length).floor() as u64;
+        // what segment this pkt should be in (index) - use relative time from start
+        let relative_time = pkt_time - self.pkt_start;
+        let pkt_seg = self.idx + (relative_time / self.segment_length).floor() as u64;
 
         let mut result = EgressResult::None;
         let pkt_stream = *(*self.mux.context())
@@ -361,11 +358,18 @@ impl HlsVariant {
     }
 
     fn write_playlist(&mut self) -> Result<()> {
+        if self.segments.is_empty() {
+            return Ok(()); // Don't write empty playlists
+        }
+        
         let mut pl = m3u8_rs::MediaPlaylist::default();
-        pl.target_duration = self.segment_length as u64;
+        // Round up target duration to ensure compliance
+        pl.target_duration = (self.segment_length.ceil() as u64).max(1);
         pl.segments = self.segments.iter().map(|s| s.to_media_segment()).collect();
         pl.version = Some(3);
         pl.media_sequence = self.segments.first().map(|s| s.index).unwrap_or(0);
+        // For live streams, don't set end list
+        pl.end_list = false;
 
         let mut f_out = File::create(self.out_dir().join("live.m3u8"))?;
         pl.write_to(&mut f_out)?;

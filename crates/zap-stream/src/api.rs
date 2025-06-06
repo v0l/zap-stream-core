@@ -1,4 +1,5 @@
 use crate::http::check_nip98_auth;
+use crate::overseer::ZapStreamOverseer;
 use crate::settings::Settings;
 use crate::ListenerEndpoint;
 use anyhow::{anyhow, bail, Result};
@@ -8,14 +9,16 @@ use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::{Method, Request, Response};
+use log::warn;
 use matchit::Router;
-use nostr_sdk::{serde_json, PublicKey};
+use nostr_sdk::{serde_json, JsonUtil, PublicKey};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::str::FromStr;
+use std::sync::Arc;
 use url::Url;
 use uuid::Uuid;
-use zap_stream_db::ZapStreamDb;
+use zap_stream_db::{UserStream, ZapStreamDb};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Route {
@@ -35,10 +38,11 @@ pub struct Api {
     settings: Settings,
     lnd: fedimint_tonic_lnd::Client,
     router: Router<Route>,
+    overseer: Arc<ZapStreamOverseer>,
 }
 
 impl Api {
-    pub fn new(db: ZapStreamDb, settings: Settings, lnd: fedimint_tonic_lnd::Client) -> Self {
+    pub fn new(overseer: Arc<ZapStreamOverseer>, settings: Settings) -> Self {
         let mut router = Router::new();
 
         // Define routes (path only, method will be matched separately)
@@ -54,10 +58,11 @@ impl Api {
         router.insert("/api/v1/keys", Route::Keys).unwrap();
 
         Self {
-            db,
+            db: overseer.database(),
             settings,
-            lnd,
+            lnd: overseer.lnd_client(),
             router,
+            overseer,
         }
     }
 
@@ -410,7 +415,16 @@ impl Api {
 
             self.db.update_stream(&stream).await?;
 
-            // TODO: Update the nostr event and republish like C# version
+            // Update the nostr event and republish like C# version
+            if let Err(e) = self
+                .republish_stream_event(&stream, pubkey.to_bytes())
+                .await
+            {
+                warn!(
+                    "Failed to republish nostr event for stream {}: {}",
+                    stream.id, e
+                );
+            }
         } else {
             // Update user default stream info
             self.db
@@ -618,6 +632,21 @@ impl Api {
             key,
             event: None, // TODO: Build proper nostr event like C# version
         })
+    }
+
+    /// Republish stream event to nostr relays using the same code as overseer
+    async fn republish_stream_event(&self, stream: &UserStream, pubkey: [u8; 32]) -> Result<()> {
+        let event = self
+            .overseer
+            .publish_stream_event(stream, &pubkey.to_vec())
+            .await?;
+
+        // Update the stream with the new event JSON
+        let mut updated_stream = stream.clone();
+        updated_stream.event = Some(event.as_json());
+        self.db.update_stream(&updated_stream).await?;
+
+        Ok(())
     }
 }
 
