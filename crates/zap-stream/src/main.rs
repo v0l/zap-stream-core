@@ -69,11 +69,11 @@ async fn main() -> Result<()> {
     }
 
     let http_addr: SocketAddr = settings.listen_http.parse()?;
-    let index_html = include_str!("../index.html").replace("%%PUBLIC_URL%%", &settings.public_url);
+    let index_template = include_str!("../index.html");
 
     let api = Api::new(overseer.clone(), settings.clone());
     // HTTP server
-    let server = HttpServer::new(index_html, PathBuf::from(settings.output_dir), api);
+    let server = HttpServer::new(index_template.to_string(), PathBuf::from(settings.output_dir), api);
     tasks.push(tokio::spawn(async move {
         let listener = TcpListener::bind(&http_addr).await?;
 

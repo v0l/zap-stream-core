@@ -11,6 +11,7 @@ use hyper::service::Service;
 use hyper::{Method, Request, Response};
 use log::error;
 use nostr_sdk::{serde_json, Alphabet, Event, Kind, PublicKey, SingleLetterTag, TagKind};
+use serde_json::Value;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -20,18 +21,61 @@ use zap_stream_core::viewer::ViewerTracker;
 
 #[derive(Clone)]
 pub struct HttpServer {
-    index: String,
+    index_template: String,
     files_dir: PathBuf,
     api: Api,
 }
 
 impl HttpServer {
-    pub fn new(index: String, files_dir: PathBuf, api: Api) -> Self {
+    pub fn new(index_template: String, files_dir: PathBuf, api: Api) -> Self {
         Self {
-            index,
+            index_template,
             files_dir,
             api,
         }
+    }
+
+    async fn render_index(&self) -> Result<String> {
+        // Get active streams from the database
+        let active_streams = self.api.get_active_streams().await?;
+        
+        // Build data for mustache template using serde_json for simpler approach
+        let mut template_data = serde_json::Map::new();
+        template_data.insert("public_url".to_string(), Value::String(self.api.get_public_url()));
+        
+        if !active_streams.is_empty() {
+            template_data.insert("has_streams".to_string(), Value::Bool(true));
+            
+            let mut streams_array = Vec::new();
+            for stream in active_streams {
+                let mut stream_obj = serde_json::Map::new();
+                stream_obj.insert("id".to_string(), Value::String(stream.id.clone()));
+                stream_obj.insert("title".to_string(), Value::String(
+                    stream.title.clone().unwrap_or_else(|| format!("Stream {}", &stream.id[..8]))
+                ));
+                if let Some(summary) = &stream.summary {
+                    stream_obj.insert("summary".to_string(), Value::String(summary.clone()));
+                }
+                stream_obj.insert("live_url".to_string(), Value::String(
+                    format!("/{}/live.m3u8", stream.id)
+                ));
+                
+                // Get viewer count for this stream
+                let viewer_count = self.api.get_viewer_count(&stream.id);
+                if viewer_count > 0 {
+                    stream_obj.insert("viewer_count".to_string(), Value::Number(viewer_count.into()));
+                }
+                
+                streams_array.push(Value::Object(stream_obj));
+            }
+            template_data.insert("streams".to_string(), Value::Array(streams_array));
+        } else {
+            template_data.insert("has_streams".to_string(), Value::Bool(false));
+        }
+        
+        let template = mustache::compile_str(&self.index_template)?;
+        let rendered = template.render_to_string(&Value::Object(template_data))?;
+        Ok(rendered)
     }
 
     async fn handle_hls_playlist(
@@ -162,16 +206,24 @@ impl Service<Request<Incoming>> for HttpServer {
         if req.method() == Method::GET && req.uri().path() == "/"
             || req.uri().path() == "/index.html"
         {
-            let index = self.index.clone();
+            let server = self.clone();
             return Box::pin(async move {
-                Ok(Response::builder()
-                    .header("content-type", "text/html")
-                    .header("server", "zap-stream-core")
-                    .body(
-                        Full::new(Bytes::from(index))
-                            .map_err(|e| match e {})
-                            .boxed(),
-                    )?)
+                match server.render_index().await {
+                    Ok(index_html) => Ok(Response::builder()
+                        .header("content-type", "text/html")
+                        .header("server", "zap-stream-core")
+                        .body(
+                            Full::new(Bytes::from(index_html))
+                                .map_err(|e| match e {})
+                                .boxed(),
+                        )?),
+                    Err(e) => {
+                        error!("Failed to render index: {}", e);
+                        Ok(Response::builder()
+                            .status(500)
+                            .body(BoxBody::default())?)
+                    }
+                }
             });
         }
 
