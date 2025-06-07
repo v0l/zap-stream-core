@@ -5,7 +5,7 @@ use std::ops::Sub;
 use std::path::PathBuf;
 use std::ptr;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::egress::hls::HlsEgress;
 use crate::egress::recorder::RecorderEgress;
@@ -15,6 +15,8 @@ use crate::mux::SegmentType;
 use crate::overseer::{IngressInfo, IngressStream, IngressStreamType, Overseer};
 use crate::pipeline::{EgressType, PipelineConfig};
 use crate::variant::{StreamMapping, VariantStream};
+use crate::variant::video::VideoVariant;
+use crate::variant::audio::AudioVariant;
 use anyhow::{bail, Result};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_WEBP;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPictureType::AV_PICTURE_TYPE_NONE;
@@ -80,6 +82,15 @@ pub struct PipelineRunner {
 
     /// Thumbnail generation interval (0 = disabled)
     thumb_interval: u64,
+
+    /// Whether we're in idle/placeholder mode (connection lost)
+    idle_mode: bool,
+
+    /// When we entered idle mode (for 1-minute timeout)
+    idle_start_time: Option<Instant>,
+
+    /// Placeholder frame counter for generating consistent timestamps
+    placeholder_frame_count: u64,
 }
 
 impl PipelineRunner {
@@ -108,7 +119,176 @@ impl PipelineRunner {
             fps_last_frame_ctr: 0,
             info: None,
             thumb_interval: 1800, // Disable thumbnails by default for performance
+            idle_mode: false,
+            idle_start_time: None,
+            placeholder_frame_count: 0,
         })
+    }
+
+    /// Generate a placeholder black video frame
+    unsafe fn generate_placeholder_video_frame(&mut self, variant: &VideoVariant, stream_time_base: (i32, i32)) -> Result<*mut ffmpeg_rs_raw::ffmpeg_sys_the_third::AVFrame> {
+        use ffmpeg_rs_raw::ffmpeg_sys_the_third::{av_frame_alloc, av_frame_get_buffer, AVFrame, AVPixelFormat};
+        
+        let frame = av_frame_alloc();
+        if frame.is_null() {
+            bail!("Failed to allocate placeholder video frame");
+        }
+
+        (*frame).format = AVPixelFormat::AV_PIX_FMT_YUV420P as i32;
+        (*frame).width = variant.width as i32;
+        (*frame).height = variant.height as i32;
+        (*frame).time_base.num = stream_time_base.0;
+        (*frame).time_base.den = stream_time_base.1;
+        
+        // Set PTS based on frame rate and placeholder frame count
+        let fps = if variant.fps > 0.0 { variant.fps } else { 30.0 };
+        let time_base_f64 = stream_time_base.0 as f64 / stream_time_base.1 as f64;
+        (*frame).pts = (self.placeholder_frame_count as f64 / fps / time_base_f64) as i64;
+
+        if av_frame_get_buffer(frame, 0) < 0 {
+            ffmpeg_rs_raw::ffmpeg_sys_the_third::av_frame_free(&mut frame);
+            bail!("Failed to allocate buffer for placeholder video frame");
+        }
+
+        // Fill with black (Y=16, U=V=128 for limited range YUV420P)
+        let y_size = ((*frame).width * (*frame).height) as usize;
+        let uv_size = y_size / 4;
+        
+        if !(*frame).data[0].is_null() {
+            std::ptr::write_bytes((*frame).data[0], 16, y_size);
+        }
+        if !(*frame).data[1].is_null() {
+            std::ptr::write_bytes((*frame).data[1], 128, uv_size);
+        }
+        if !(*frame).data[2].is_null() {
+            std::ptr::write_bytes((*frame).data[2], 128, uv_size);
+        }
+
+        self.placeholder_frame_count += 1;
+        Ok(frame)
+    }
+
+    /// Generate a placeholder silent audio frame
+    unsafe fn generate_placeholder_audio_frame(&mut self, variant: &AudioVariant, stream_time_base: (i32, i32)) -> Result<*mut ffmpeg_rs_raw::ffmpeg_sys_the_third::AVFrame> {
+        use ffmpeg_rs_raw::ffmpeg_sys_the_third::{av_frame_alloc, av_frame_get_buffer, AVFrame, AVSampleFormat};
+        
+        let frame = av_frame_alloc();
+        if frame.is_null() {
+            bail!("Failed to allocate placeholder audio frame");
+        }
+
+        // Use the sample format from the variant configuration
+        let sample_fmt_int = av_get_sample_fmt(cstr!(variant.sample_fmt.as_str()));
+        (*frame).format = sample_fmt_int;
+        (*frame).channels = variant.channels as i32;
+        (*frame).sample_rate = variant.sample_rate as i32;
+        (*frame).nb_samples = 1024; // Standard audio frame size
+        (*frame).time_base.num = stream_time_base.0;
+        (*frame).time_base.den = stream_time_base.1;
+        
+        // Set PTS based on sample rate and placeholder frame count
+        let samples_per_second = variant.sample_rate as f64;
+        let time_base_f64 = stream_time_base.0 as f64 / stream_time_base.1 as f64;
+        (*frame).pts = ((self.placeholder_frame_count * 1024) as f64 / samples_per_second / time_base_f64) as i64;
+
+        if av_frame_get_buffer(frame, 0) < 0 {
+            ffmpeg_rs_raw::ffmpeg_sys_the_third::av_frame_free(&mut frame);
+            bail!("Failed to allocate buffer for placeholder audio frame");
+        }
+
+        // Fill with silence (zeros)
+        for i in 0..8 {
+            if !(*frame).data[i].is_null() && (*frame).linesize[i] > 0 {
+                std::ptr::write_bytes((*frame).data[i], 0, (*frame).linesize[i] as usize);
+            }
+        }
+
+        self.placeholder_frame_count += 1;
+        Ok(frame)
+    }
+
+    /// Process placeholder frames when in idle mode
+    unsafe fn process_placeholder_frames(&mut self, config: &PipelineConfig) -> Result<()> {
+        let mut egress_results = vec![];
+        
+        for variant in &config.variants {
+            match variant {
+                VariantStream::Video(v) => {
+                    // Generate placeholder video frame
+                    let fps = if v.fps > 0.0 { v.fps } else { 30.0 };
+                    let time_base = (1, fps as i32);
+                    let mut frame = self.generate_placeholder_video_frame(v, time_base)?;
+                    
+                    // Set the frame time_base directly since we don't have a stream
+                    (*frame).time_base.num = time_base.0;
+                    (*frame).time_base.den = time_base.1;
+                    
+                    // Increment frame counter for video
+                    self.frame_ctr += 1;
+                    
+                    // Process through the encoding pipeline
+                    if let Some(enc) = self.encoders.get_mut(&v.id()) {
+                        let packets = enc.encode_frame(frame)?;
+                        for mut pkt in packets {
+                            for eg in self.egress.iter_mut() {
+                                let er = eg.process_pkt(pkt, &v.id())?;
+                                egress_results.push(er);
+                            }
+                            av_packet_free(&mut pkt);
+                        }
+                    }
+                    
+                    av_frame_free(&mut frame);
+                }
+                VariantStream::Audio(a) => {
+                    // Generate placeholder audio frame
+                    let time_base = (1, a.sample_rate as i32);
+                    let mut frame = self.generate_placeholder_audio_frame(a, time_base)?;
+                    
+                    // Set the frame time_base directly
+                    (*frame).time_base.num = time_base.0;
+                    (*frame).time_base.den = time_base.1;
+                    
+                    // Process through the encoding pipeline
+                    if let Some(enc) = self.encoders.get_mut(&a.id()) {
+                        let packets = enc.encode_frame(frame)?;
+                        for mut pkt in packets {
+                            for eg in self.egress.iter_mut() {
+                                let er = eg.process_pkt(pkt, &a.id())?;
+                                egress_results.push(er);
+                            }
+                            av_packet_free(&mut pkt);
+                        }
+                    }
+                    
+                    av_frame_free(&mut frame);
+                }
+                _ => {
+                    // Skip copy streams and other types for now in idle mode
+                    continue;
+                }
+            }
+        }
+        
+        // Handle egress results (same as normal processing)
+        if !egress_results.is_empty() {
+            self.handle.block_on(async {
+                for er in egress_results {
+                    if let EgressResult::Segments { created, deleted } = er {
+                        if let Err(e) = self
+                            .overseer
+                            .on_segments(&config.id, &created, &deleted)
+                            .await
+                        {
+                            bail!("Failed to process segment {}", e.to_string());
+                        }
+                    }
+                }
+                Ok(())
+            })?;
+        }
+        
+        Ok(())
     }
 
     /// EOF, cleanup
@@ -147,19 +327,51 @@ impl PipelineRunner {
         };
 
         // run transcoder pipeline
-        let (mut pkt, _stream) = self.demuxer.get_packet()?;
+        let (mut pkt, stream_info) = self.demuxer.get_packet()?;
+        
+        // Handle disconnection by entering idle mode
         if pkt.is_null() {
-            return Ok(false);
-        }
-
-        // TODO: For copy streams, skip decoder
-        let frames = match self.decoder.decode_pkt(pkt) {
-            Ok(f) => f,
-            Err(e) => {
-                warn!("Error decoding frames, {e}");
-                return Ok(true);
+            if !self.idle_mode {
+                // First time entering idle mode
+                info!("Stream input disconnected, entering idle mode with placeholder content");
+                self.idle_mode = true;
+                self.idle_start_time = Some(Instant::now());
+            } else {
+                // Check if we've been idle for more than 1 minute
+                if let Some(idle_start) = self.idle_start_time {
+                    if idle_start.elapsed() > Duration::from_secs(60) {
+                        info!("Idle timeout reached (60 seconds), ending stream");
+                        return Ok(false);
+                    }
+                }
             }
-        };
+            
+            // Generate and process placeholder frames directly
+            self.process_placeholder_frames(config)?;
+            
+            // Free the null packet if needed
+            if !pkt.is_null() {
+                av_packet_free(&mut pkt);
+            }
+            
+            return Ok(true); // Continue processing
+        } else {
+            // Normal operation - we have a real packet
+            if self.idle_mode {
+                info!("Stream reconnected, leaving idle mode");
+                self.idle_mode = false;
+                self.idle_start_time = None;
+            }
+            
+            // TODO: For copy streams, skip decoder
+            let frames = match self.decoder.decode_pkt(pkt) {
+                Ok(f) => f,
+                Err(e) => {
+                    warn!("Error decoding frames, {e}");
+                    return Ok(true);
+                }
+            };
+        }
 
         let mut egress_results = vec![];
         for (frame, stream) in frames {
