@@ -4,6 +4,8 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 use tokio::task;
 use log::debug;
+use sha2::{Digest, Sha256};
+use bech32::{encode, Hrp, Base32};
 
 #[derive(Debug, Clone)]
 pub struct ViewerInfo {
@@ -35,8 +37,27 @@ impl ViewerTracker {
         tracker
     }
 
-    pub fn generate_viewer_token() -> String {
-        Uuid::new_v4().to_string()
+    pub fn generate_viewer_token(ip_address: &str, user_agent: Option<&str>) -> String {
+        // Create input string by combining IP address and user agent
+        let input = match user_agent {
+            Some(ua) => format!("{}{}", ip_address, ua),
+            None => ip_address.to_string(),
+        };
+        
+        // Hash the input using SHA-256
+        let mut hasher = Sha256::new();
+        hasher.update(input.as_bytes());
+        let hash = hasher.finalize();
+        
+        // Take the first 8 bytes of the hash
+        let fingerprint = &hash[..8];
+        
+        // Bech32 encode with 'vt' (viewer token) as human readable part
+        let hrp = Hrp::parse("vt").expect("Valid HRP");
+        encode::<Base32>(hrp, fingerprint).unwrap_or_else(|_| {
+            // Fallback to UUID if bech32 encoding fails
+            Uuid::new_v4().to_string()
+        })
     }
 
     pub fn track_viewer(&self, token: &str, stream_id: &str, ip_address: &str, user_agent: Option<String>) {
