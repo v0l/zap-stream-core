@@ -5,7 +5,7 @@ use uuid::Uuid;
 use tokio::task;
 use log::debug;
 use sha2::{Digest, Sha256};
-use bech32::{encode, Hrp, Base32};
+use bech32::{encode, Hrp};
 
 #[derive(Debug, Clone)]
 pub struct ViewerInfo {
@@ -54,7 +54,7 @@ impl ViewerTracker {
         
         // Bech32 encode with 'vt' (viewer token) as human readable part
         let hrp = Hrp::parse("vt").expect("Valid HRP");
-        encode::<Base32>(hrp, fingerprint).unwrap_or_else(|_| {
+        encode::<bech32::Bech32>(hrp, fingerprint).unwrap_or_else(|_| {
             // Fallback to UUID if bech32 encoding fails
             Uuid::new_v4().to_string()
         })
@@ -131,5 +131,71 @@ impl ViewerTracker {
 impl Default for ViewerTracker {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_generate_viewer_token_consistency() {
+        // Test that the same IP and user agent always generate the same token
+        let ip = "192.168.1.1";
+        let user_agent = Some("Mozilla/5.0 (Test Browser)");
+        
+        let token1 = ViewerTracker::generate_viewer_token(ip, user_agent);
+        let token2 = ViewerTracker::generate_viewer_token(ip, user_agent);
+        
+        assert_eq!(token1, token2, "Same IP and user agent should generate identical tokens");
+    }
+
+    #[test]
+    fn test_generate_viewer_token_different_inputs() {
+        // Test that different inputs generate different tokens
+        let ip1 = "192.168.1.1";
+        let ip2 = "192.168.1.2";
+        let user_agent = Some("Mozilla/5.0 (Test Browser)");
+        
+        let token1 = ViewerTracker::generate_viewer_token(ip1, user_agent);
+        let token2 = ViewerTracker::generate_viewer_token(ip2, user_agent);
+        
+        assert_ne!(token1, token2, "Different IPs should generate different tokens");
+    }
+
+    #[test]
+    fn test_generate_viewer_token_no_user_agent() {
+        // Test that tokens are generated even without user agent
+        let ip = "192.168.1.1";
+        
+        let token1 = ViewerTracker::generate_viewer_token(ip, None);
+        let token2 = ViewerTracker::generate_viewer_token(ip, None);
+        
+        assert_eq!(token1, token2, "Same IP without user agent should generate identical tokens");
+    }
+
+    #[test]
+    fn test_generate_viewer_token_format() {
+        // Test that generated tokens have the expected bech32 format with 'vt' prefix
+        let ip = "192.168.1.1";
+        let user_agent = Some("Mozilla/5.0 (Test Browser)");
+        
+        let token = ViewerTracker::generate_viewer_token(ip, user_agent);
+        
+        assert!(token.starts_with("vt1"), "Token should start with 'vt1' (bech32 with 'vt' HRP)");
+        assert!(token.len() > 10, "Token should be reasonably long");
+    }
+
+    #[test]
+    fn test_generate_viewer_token_different_user_agents() {
+        // Test that different user agents generate different tokens
+        let ip = "192.168.1.1";
+        let user_agent1 = Some("Mozilla/5.0 (Chrome)");
+        let user_agent2 = Some("Mozilla/5.0 (Firefox)");
+        
+        let token1 = ViewerTracker::generate_viewer_token(ip, user_agent1);
+        let token2 = ViewerTracker::generate_viewer_token(ip, user_agent2);
+        
+        assert_ne!(token1, token2, "Different user agents should generate different tokens");
     }
 }
