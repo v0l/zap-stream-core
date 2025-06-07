@@ -262,9 +262,21 @@ impl Service<Request<Incoming>> for HttpServer {
         if req.method() == Method::GET && req.uri().path() == "/"
             || req.uri().path() == "/index.html"
         {
-            let index_template = self.index_template.clone();
             let stream_cache = self.stream_cache.clone();
             let api = self.api.clone();
+            
+            // Compile template outside async move for better performance
+            let template = match mustache::compile_str(&self.index_template) {
+                Ok(t) => t,
+                Err(e) => {
+                    error!("Failed to compile template: {}", e);
+                    return Box::pin(async move {
+                        Ok(Response::builder()
+                            .status(500)  
+                            .body(BoxBody::default()).unwrap())
+                    });
+                }
+            };
             
             return Box::pin(async move {
                 // Use the existing method to get cached template data
@@ -272,27 +284,17 @@ impl Service<Request<Incoming>> for HttpServer {
 
                 match template_data {
                     Ok(data) => {
-                        match mustache::compile_str(&index_template) {
-                            Ok(template) => {
-                                match template.render_to_string(&data) {
-                                    Ok(index_html) => Ok(Response::builder()
-                                        .header("content-type", "text/html")
-                                        .header("server", "zap-stream-core")
-                                        .body(
-                                            Full::new(Bytes::from(index_html))
-                                                .map_err(|e| match e {})
-                                                .boxed(),
-                                        )?),
-                                    Err(e) => {
-                                        error!("Failed to render template: {}", e);
-                                        Ok(Response::builder()
-                                            .status(500)
-                                            .body(BoxBody::default())?)
-                                    }
-                                }
-                            }
+                        match template.render_to_string(&data) {
+                            Ok(index_html) => Ok(Response::builder()
+                                .header("content-type", "text/html")
+                                .header("server", "zap-stream-core")
+                                .body(
+                                    Full::new(Bytes::from(index_html))
+                                        .map_err(|e| match e {})
+                                        .boxed(),
+                                )?),
                             Err(e) => {
-                                error!("Failed to compile template: {}", e);
+                                error!("Failed to render template: {}", e);
                                 Ok(Response::builder()
                                     .status(500)
                                     .body(BoxBody::default())?)
