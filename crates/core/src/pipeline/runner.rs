@@ -288,6 +288,9 @@ impl PipelineRunner {
             })?;
         }
         
+        // Add a small delay to prevent spinning too fast in idle mode
+        std::thread::sleep(Duration::from_millis(33)); // ~30 FPS
+        
         Ok(())
     }
 
