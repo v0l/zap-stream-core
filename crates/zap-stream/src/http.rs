@@ -11,19 +11,47 @@ use hyper::service::Service;
 use hyper::{Method, Request, Response};
 use log::error;
 use nostr_sdk::{serde_json, Alphabet, Event, Kind, PublicKey, SingleLetterTag, TagKind};
-use serde_json::Value;
+use serde::{Serialize, Deserialize};
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
-use tokio::fs::File;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::fs::File;  
+use tokio::sync::RwLock;
 use tokio_util::io::ReaderStream;
 use zap_stream_core::viewer::ViewerTracker;
+
+#[derive(Serialize)]
+struct StreamData {
+    id: String,
+    title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary: Option<String>,
+    live_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    viewer_count: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct IndexTemplateData {
+    public_url: String,
+    has_streams: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    streams: Vec<StreamData>,
+}
+
+struct CachedStreams {
+    data: IndexTemplateData,
+    cached_at: Instant,
+}
 
 #[derive(Clone)]
 pub struct HttpServer {
     index_template: String,
     files_dir: PathBuf,
     api: Api,
+    stream_cache: Arc<RwLock<Option<CachedStreams>>>,
 }
 
 impl HttpServer {
@@ -32,49 +60,71 @@ impl HttpServer {
             index_template,
             files_dir,
             api,
+            stream_cache: Arc::new(RwLock::new(None)),
         }
     }
 
-    async fn render_index(&self) -> Result<String> {
-        // Get active streams from the database
-        let active_streams = self.api.get_active_streams().await?;
-        
-        // Build data for mustache template using serde_json for simpler approach
-        let mut template_data = serde_json::Map::new();
-        template_data.insert("public_url".to_string(), Value::String(self.api.get_public_url()));
-        
-        if !active_streams.is_empty() {
-            template_data.insert("has_streams".to_string(), Value::Bool(true));
-            
-            let mut streams_array = Vec::new();
-            for stream in active_streams {
-                let mut stream_obj = serde_json::Map::new();
-                stream_obj.insert("id".to_string(), Value::String(stream.id.clone()));
-                stream_obj.insert("title".to_string(), Value::String(
-                    stream.title.clone().unwrap_or_else(|| format!("Stream {}", &stream.id[..8]))
-                ));
-                if let Some(summary) = &stream.summary {
-                    stream_obj.insert("summary".to_string(), Value::String(summary.clone()));
+    async fn get_cached_or_fetch_streams(&self) -> Result<IndexTemplateData> {
+        const CACHE_DURATION: Duration = Duration::from_secs(60); // 1 minute
+
+        // Check if we have valid cached data
+        {
+            let cache = self.stream_cache.read().await;
+            if let Some(ref cached) = *cache {
+                if cached.cached_at.elapsed() < CACHE_DURATION {
+                    return Ok(cached.data.clone());
                 }
-                stream_obj.insert("live_url".to_string(), Value::String(
-                    format!("/{}/live.m3u8", stream.id)
-                ));
-                
-                // Get viewer count for this stream
-                let viewer_count = self.api.get_viewer_count(&stream.id);
-                if viewer_count > 0 {
-                    stream_obj.insert("viewer_count".to_string(), Value::Number(viewer_count.into()));
-                }
-                
-                streams_array.push(Value::Object(stream_obj));
             }
-            template_data.insert("streams".to_string(), Value::Array(streams_array));
-        } else {
-            template_data.insert("has_streams".to_string(), Value::Bool(false));
         }
+
+        // Cache is expired or missing, fetch new data
+        let active_streams = self.api.get_active_streams().await?;
+        let public_url = self.api.get_public_url();
         
+        let template_data = if !active_streams.is_empty() {
+            let streams: Vec<StreamData> = active_streams
+                .into_iter()
+                .map(|stream| {
+                    let viewer_count = self.api.get_viewer_count(&stream.id);
+                    StreamData {
+                        id: stream.id.clone(),
+                        title: stream.title.unwrap_or_else(|| format!("Stream {}", &stream.id[..8])),
+                        summary: stream.summary,
+                        live_url: format!("/{}/live.m3u8", stream.id),
+                        viewer_count: if viewer_count > 0 { Some(viewer_count) } else { None },
+                    }
+                })
+                .collect();
+
+            IndexTemplateData {
+                public_url,
+                has_streams: true,
+                streams,
+            }
+        } else {
+            IndexTemplateData {
+                public_url,
+                has_streams: false,
+                streams: Vec::new(),
+            }
+        };
+
+        // Update cache
+        {
+            let mut cache = self.stream_cache.write().await;
+            *cache = Some(CachedStreams {
+                data: template_data.clone(),
+                cached_at: Instant::now(),
+            });
+        }
+
+        Ok(template_data)
+    }
+
+    async fn render_index(&self) -> Result<String> {
+        let template_data = self.get_cached_or_fetch_streams().await?;
         let template = mustache::compile_str(&self.index_template)?;
-        let rendered = template.render_to_string(&Value::Object(template_data))?;
+        let rendered = template.render_to_string(&template_data)?;
         Ok(rendered)
     }
 
@@ -206,19 +256,109 @@ impl Service<Request<Incoming>> for HttpServer {
         if req.method() == Method::GET && req.uri().path() == "/"
             || req.uri().path() == "/index.html"
         {
-            let server = self.clone();
+            let index_template = self.index_template.clone();
+            let stream_cache = self.stream_cache.clone();
+            let api = self.api.clone();
+            
             return Box::pin(async move {
-                match server.render_index().await {
-                    Ok(index_html) => Ok(Response::builder()
-                        .header("content-type", "text/html")
-                        .header("server", "zap-stream-core")
-                        .body(
-                            Full::new(Bytes::from(index_html))
-                                .map_err(|e| match e {})
-                                .boxed(),
-                        )?),
+                // Get cached template data or fetch new ones
+                let template_data = {
+                    const CACHE_DURATION: Duration = Duration::from_secs(60); // 1 minute
+
+                    // Check if we have valid cached data
+                    let cached_data = {
+                        let cache = stream_cache.read().await;
+                        if let Some(ref cached) = *cache {
+                            if cached.cached_at.elapsed() < CACHE_DURATION {
+                                Some(cached.data.clone())
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    };
+
+                    match cached_data {
+                        Some(data) => Ok(data),
+                        None => {
+                            // Cache is expired or missing, fetch new data
+                            let active_streams = api.get_active_streams().await?;
+                            let public_url = api.get_public_url();
+                            
+                            let data = if !active_streams.is_empty() {
+                                let streams: Vec<StreamData> = active_streams
+                                    .into_iter()
+                                    .map(|stream| {
+                                        let viewer_count = api.get_viewer_count(&stream.id);
+                                        StreamData {
+                                            id: stream.id.clone(),
+                                            title: stream.title.unwrap_or_else(|| format!("Stream {}", &stream.id[..8])),
+                                            summary: stream.summary,
+                                            live_url: format!("/{}/live.m3u8", stream.id),
+                                            viewer_count: if viewer_count > 0 { Some(viewer_count) } else { None },
+                                        }
+                                    })
+                                    .collect();
+
+                                IndexTemplateData {
+                                    public_url,
+                                    has_streams: true,
+                                    streams,
+                                }
+                            } else {
+                                IndexTemplateData {
+                                    public_url,
+                                    has_streams: false,
+                                    streams: Vec::new(),
+                                }
+                            };
+
+                            // Update cache
+                            {
+                                let mut cache = stream_cache.write().await;
+                                *cache = Some(CachedStreams {
+                                    data: data.clone(),
+                                    cached_at: Instant::now(),
+                                });
+                            }
+
+                            Ok(data)
+                        }
+                    }
+                };
+
+                match template_data {
+                    Ok(data) => {
+                        match mustache::compile_str(&index_template) {
+                            Ok(template) => {
+                                match template.render_to_string(&data) {
+                                    Ok(index_html) => Ok(Response::builder()
+                                        .header("content-type", "text/html")
+                                        .header("server", "zap-stream-core")
+                                        .body(
+                                            Full::new(Bytes::from(index_html))
+                                                .map_err(|e| match e {})
+                                                .boxed(),
+                                        )?),
+                                    Err(e) => {
+                                        error!("Failed to render template: {}", e);
+                                        Ok(Response::builder()
+                                            .status(500)
+                                            .body(BoxBody::default())?)
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!("Failed to compile template: {}", e);
+                                Ok(Response::builder()
+                                    .status(500)
+                                    .body(BoxBody::default())?)
+                            }
+                        }
+                    }
                     Err(e) => {
-                        error!("Failed to render index: {}", e);
+                        error!("Failed to fetch template data: {}", e);
                         Ok(Response::builder()
                             .status(500)
                             .body(BoxBody::default())?)
