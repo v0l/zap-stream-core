@@ -38,7 +38,7 @@ nostr-sdk = { version = "0.38.0" }
 fedimint-tonic-lnd = { version = "0.2.0", default-features = false, features = ["invoicesrpc", "versionrpc"] }
 reqwest = { version = "0.12.9", features = ["stream", "json"] }
 base64 = { version = "0.22.1" }
-sha2 = { version = "0.10.8" }
+sha2.workspace = true
 pretty_env_logger = "0.5.0"
 clap = { version = "4.5.16", features = ["derive"] }
 futures-util = "0.3.31"

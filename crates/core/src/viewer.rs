@@ -5,7 +5,7 @@ use uuid::Uuid;
 use tokio::task;
 use log::debug;
 use sha2::{Digest, Sha256};
-use bech32::{encode, Hrp};
+use data_encoding::BASE32_NOPAD;
 
 #[derive(Debug, Clone)]
 pub struct ViewerInfo {
@@ -52,12 +52,8 @@ impl ViewerTracker {
         // Take the first 8 bytes of the hash
         let fingerprint = &hash[..8];
         
-        // Bech32 encode with 'vt' (viewer token) as human readable part
-        let hrp = Hrp::parse("vt").expect("Valid HRP");
-        encode::<bech32::Bech32>(hrp, fingerprint).unwrap_or_else(|_| {
-            // Fallback to UUID if bech32 encoding fails
-            Uuid::new_v4().to_string()
-        })
+        // Base32 encode the fingerprint (without padding)
+        BASE32_NOPAD.encode(fingerprint).to_lowercase()
     }
 
     pub fn track_viewer(&self, token: &str, stream_id: &str, ip_address: &str, user_agent: Option<String>) {
@@ -176,13 +172,15 @@ mod tests {
 
     #[test]
     fn test_generate_viewer_token_format() {
-        // Test that generated tokens have the expected bech32 format with 'vt' prefix
+        // Test that generated tokens have the expected base32 format
         let ip = "192.168.1.1";
         let user_agent = Some("Mozilla/5.0 (Test Browser)");
         
         let token = ViewerTracker::generate_viewer_token(ip, user_agent);
         
-        assert!(token.starts_with("vt1"), "Token should start with 'vt1' (bech32 with 'vt' HRP)");
+        // Should be base32 encoded (lowercase, no padding)
+        assert!(token.chars().all(|c| "abcdefghijklmnopqrstuvwxyz234567".contains(c)), 
+                "Token should only contain base32 characters");
         assert!(token.len() > 10, "Token should be reasonably long");
     }
 
