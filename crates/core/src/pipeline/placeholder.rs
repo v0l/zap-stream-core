@@ -5,7 +5,7 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
     av_frame_alloc, av_frame_get_buffer, av_frame_free, av_get_sample_fmt, AVFrame, 
     AVPixelFormat, AVSampleFormat
 };
-use ffmpeg_rs_raw::cstr;
+use std::ffi::CString;
 
 /// Placeholder frame generator for idle mode when stream disconnects
 pub struct PlaceholderGenerator;
@@ -15,7 +15,7 @@ impl PlaceholderGenerator {
     pub unsafe fn generate_video_frame(
         variant: &VideoVariant, 
         stream_time_base: (i32, i32),
-        frame_count: u64
+        frame_index: u64
     ) -> Result<*mut AVFrame> {
         let frame = av_frame_alloc();
         if frame.is_null() {
@@ -28,10 +28,10 @@ impl PlaceholderGenerator {
         (*frame).time_base.num = stream_time_base.0;
         (*frame).time_base.den = stream_time_base.1;
         
-        // Set PTS based on frame rate and total frame count
+        // Set PTS based on frame rate and total frame index
         let fps = if variant.fps > 0.0 { variant.fps } else { 30.0 };
         let time_base_f64 = stream_time_base.0 as f64 / stream_time_base.1 as f64;
-        (*frame).pts = (frame_count as f64 / fps / time_base_f64) as i64;
+        (*frame).pts = (frame_index as f64 / fps / time_base_f64) as i64;
 
         if av_frame_get_buffer(frame, 0) < 0 {
             av_frame_free(&mut frame);
@@ -59,7 +59,7 @@ impl PlaceholderGenerator {
     pub unsafe fn generate_audio_frame(
         variant: &AudioVariant, 
         stream_time_base: (i32, i32),
-        frame_count: u64
+        frame_index: u64
     ) -> Result<*mut AVFrame> {
         let frame = av_frame_alloc();
         if frame.is_null() {
@@ -67,7 +67,9 @@ impl PlaceholderGenerator {
         }
 
         // Use the sample format from the variant configuration
-        let sample_fmt_int = av_get_sample_fmt(cstr!(variant.sample_fmt.as_str()));
+        let sample_fmt_cstr = CString::new(variant.sample_fmt.as_str())
+            .map_err(|_| anyhow::anyhow!("Invalid sample format string"))?;
+        let sample_fmt_int = av_get_sample_fmt(sample_fmt_cstr.as_ptr());
         (*frame).format = sample_fmt_int;
         (*frame).channels = variant.channels as i32;
         (*frame).sample_rate = variant.sample_rate as i32;
@@ -75,10 +77,10 @@ impl PlaceholderGenerator {
         (*frame).time_base.num = stream_time_base.0;
         (*frame).time_base.den = stream_time_base.1;
         
-        // Set PTS based on sample rate and frame count
+        // Set PTS based on sample rate and frame index
         let samples_per_second = variant.sample_rate as f64;
         let time_base_f64 = stream_time_base.0 as f64 / stream_time_base.1 as f64;
-        (*frame).pts = ((frame_count * 1024) as f64 / samples_per_second / time_base_f64) as i64;
+        (*frame).pts = ((frame_index * 1024) as f64 / samples_per_second / time_base_f64) as i64;
 
         if av_frame_get_buffer(frame, 0) < 0 {
             av_frame_free(&mut frame);

@@ -31,6 +31,19 @@ use log::{error, info, warn};
 use tokio::runtime::Handle;
 use uuid::Uuid;
 
+/// Runner state for handling normal vs idle modes
+#[derive(Debug, Clone)]
+pub enum RunnerState {
+    /// Normal operation - processing live stream
+    Normal,
+    /// Idle mode - generating placeholder content after disconnection
+    Idle {
+        start_time: Instant,
+        variant_index: usize,
+        last_frame_time: Option<Instant>,
+    },
+}
+
 /// Pipeline runner is the main entry process for stream transcoding
 ///
 /// Each client connection spawns a new [PipelineRunner] and it should be run in its own thread
@@ -82,17 +95,8 @@ pub struct PipelineRunner {
     /// Thumbnail generation interval (0 = disabled)
     thumb_interval: u64,
 
-    /// Whether we're in idle/placeholder mode (connection lost)
-    idle_mode: bool,
-
-    /// When we entered idle mode (for 1-minute timeout)
-    idle_start_time: Option<Instant>,
-
-    /// Current variant index for rotating through variants in idle mode
-    idle_variant_index: usize,
-
-    /// Last frame generation time for idle mode timing
-    last_idle_frame_time: Option<Instant>,
+    /// Current runner state (normal or idle)
+    state: RunnerState,
 }
 
 impl PipelineRunner {
@@ -121,14 +125,11 @@ impl PipelineRunner {
             fps_last_frame_ctr: 0,
             info: None,
             thumb_interval: 1800, // Disable thumbnails by default for performance
-            idle_mode: false,
-            idle_start_time: None,
-            idle_variant_index: 0,
-            last_idle_frame_time: None,
+            state: RunnerState::Normal,
         })
     }
 
-    /// Process a single idle frame for the current variant (rotating through variants)
+    /// Process a single idle frame - generates one source frame and processes it through all variants
     unsafe fn process_single_idle_frame(&mut self, config: &PipelineConfig) -> Result<()> {
         use std::time::{Duration, Instant};
         
@@ -136,10 +137,16 @@ impl PipelineRunner {
             return Ok(());
         }
 
+        // Extract timing info from current state
+        let (mut last_frame_time, variant_index) = match &mut self.state {
+            RunnerState::Idle { last_frame_time, variant_index, .. } => (last_frame_time, variant_index),
+            _ => return Ok(()), // Only process in idle state
+        };
+
         // Time-based frame rate calculation
         let now = Instant::now();
-        if let Some(last_time) = self.last_idle_frame_time {
-            // Calculate target frame interval (assume 30fps for now, can be refined per variant)
+        if let Some(last_time) = *last_frame_time {
+            // Calculate target frame interval (assume 30fps for now)
             let target_interval = Duration::from_millis(33); // ~30fps
             let elapsed = now.duration_since(last_time);
             
@@ -148,46 +155,74 @@ impl PipelineRunner {
                 std::thread::sleep(target_interval - elapsed);
             }
         }
-        self.last_idle_frame_time = Some(Instant::now());
+        *last_frame_time = Some(Instant::now());
 
-        // Rotate through variants to generate one frame at a time
-        let variant = &config.variants[self.idle_variant_index % config.variants.len()];
-        self.idle_variant_index = (self.idle_variant_index + 1) % config.variants.len();
+        // Find the primary video variant to determine source frame properties
+        let video_variant = config.variants.iter().find_map(|v| {
+            if let VariantStream::Video(video) = v {
+                Some(video)
+            } else {
+                None
+            }
+        });
 
         let mut egress_results = vec![];
 
-        match variant {
-            VariantStream::Video(v) => {
-                let fps = if v.fps > 0.0 { v.fps } else { 30.0 };
-                let time_base = (1, fps as i32);
-                let mut frame = PlaceholderGenerator::generate_video_frame(v, time_base, self.frame_ctr)?;
-                
-                // Set the frame time_base directly since we don't have a stream
-                (*frame).time_base.num = time_base.0;
-                (*frame).time_base.den = time_base.1;
-                
-                // Increment frame counter for video
-                self.frame_ctr += 1;
-                
-                // Process through the encoding pipeline
-                if let Some(enc) = self.encoders.get_mut(&v.id()) {
-                    let packets = enc.encode_frame(frame)?;
-                    for mut pkt in packets {
-                        for eg in self.egress.iter_mut() {
-                            let er = eg.process_pkt(pkt, &v.id())?;
-                            egress_results.push(er);
+        // Generate one source frame and process it through all relevant variants
+        if let Some(video) = video_variant {
+            // Generate a single source placeholder video frame
+            let fps = if video.fps > 0.0 { video.fps } else { 30.0 };
+            let time_base = (1, fps as i32);
+            let mut source_frame = PlaceholderGenerator::generate_video_frame(video, time_base, self.frame_ctr)?;
+            
+            // Set the frame time_base
+            (*source_frame).time_base.num = time_base.0;
+            (*source_frame).time_base.den = time_base.1;
+            
+            // Increment frame counter for all video processing
+            self.frame_ctr += 1;
+            
+            // Process this single frame through all video variants (like normal pipeline)
+            for variant in &config.variants {
+                if let VariantStream::Video(v) = variant {
+                    // Scale/encode the source frame for this variant
+                    if let Some(enc) = self.encoders.get_mut(&v.id()) {
+                        // Use scaler if needed for different resolutions
+                        let frame_to_encode = if v.width as i32 == (*source_frame).width && 
+                                                v.height as i32 == (*source_frame).height {
+                            // Same resolution, use source frame directly
+                            source_frame
+                        } else {
+                            // Different resolution, need to scale
+                            if let Some(scaler) = self.scalers.get_mut(&v.id()) {
+                                scaler.process_frame(source_frame, v.width, v.height, AV_PIX_FMT_YUV420P)?
+                            } else {
+                                source_frame // Fallback to source frame
+                            }
+                        };
+
+                        let packets = enc.encode_frame(frame_to_encode)?;
+                        for mut pkt in packets {
+                            for eg in self.egress.iter_mut() {
+                                let er = eg.process_pkt(pkt, &v.id())?;
+                                egress_results.push(er);
+                            }
+                            av_packet_free(&mut pkt);
                         }
-                        av_packet_free(&mut pkt);
                     }
                 }
-                
-                av_frame_free(&mut frame);
             }
-            VariantStream::Audio(a) => {
+            
+            av_frame_free(&mut source_frame);
+        }
+
+        // Generate and process audio frames separately (audio doesn't share like video)
+        for variant in &config.variants {
+            if let VariantStream::Audio(a) = variant {
                 let time_base = (1, a.sample_rate as i32);
                 let mut frame = PlaceholderGenerator::generate_audio_frame(a, time_base, self.frame_ctr)?;
                 
-                // Set the frame time_base directly
+                // Set the frame time_base
                 (*frame).time_base.num = time_base.0;
                 (*frame).time_base.den = time_base.1;
                 
@@ -204,10 +239,6 @@ impl PipelineRunner {
                 }
                 
                 av_frame_free(&mut frame);
-            }
-            _ => {
-                // Skip copy streams and other types for now in idle mode
-                return Ok(());
             }
         }
         
@@ -270,51 +301,65 @@ impl PipelineRunner {
         // run transcoder pipeline
         let (mut pkt, stream_info) = self.demuxer.get_packet()?;
         
-        // Handle disconnection by entering idle mode
-        if pkt.is_null() {
-            if !self.idle_mode {
+        // Handle state transitions based on packet availability
+        match (&self.state, pkt.is_null()) {
+            (RunnerState::Normal, true) => {
                 // First time entering idle mode
                 info!("Stream input disconnected, entering idle mode with placeholder content");
-                self.idle_mode = true;
-                self.idle_start_time = Some(Instant::now());
-            } else {
+                self.state = RunnerState::Idle {
+                    start_time: Instant::now(),
+                    variant_index: 0,
+                    last_frame_time: None,
+                };
+            }
+            (RunnerState::Idle { start_time, .. }, true) => {
                 // Check if we've been idle for more than 1 minute
-                if let Some(idle_start) = self.idle_start_time {
-                    if idle_start.elapsed() > Duration::from_secs(60) {
-                        info!("Idle timeout reached (60 seconds), ending stream");
-                        return Ok(false);
-                    }
+                if start_time.elapsed() > Duration::from_secs(60) {
+                    info!("Idle timeout reached (60 seconds), ending stream");
+                    return Ok(false);
                 }
             }
-            
-            // Process a single idle frame (rotating through variants)
-            self.process_single_idle_frame(config)?;
-            
-            // Free the null packet if needed
-            if !pkt.is_null() {
-                av_packet_free(&mut pkt);
-            }
-            
-            return Ok(true); // Continue processing
-        } else {
-            // Normal operation - we have a real packet
-            if self.idle_mode {
+            (RunnerState::Idle { .. }, false) => {
+                // Stream reconnected
                 info!("Stream reconnected, leaving idle mode");
-                self.idle_mode = false;
-                self.idle_start_time = None;
+                self.state = RunnerState::Normal;
             }
-            
-            // TODO: For copy streams, skip decoder
-            let frames = match self.decoder.decode_pkt(pkt) {
-                Ok(f) => f,
-                Err(e) => {
-                    warn!("Error decoding frames, {e}");
+            (RunnerState::Normal, false) => {
+                // Normal operation continues
+            }
+        }
+        
+        // Process based on current state
+        match &self.state {
+            RunnerState::Idle { .. } => {
+                // Process a single idle frame (rotating through variants)
+                self.process_single_idle_frame(config)?;
+                
+                // Free the null packet if needed
+                if !pkt.is_null() {
+                    av_packet_free(&mut pkt);
+                }
+                
+                return Ok(true); // Continue processing
+            }
+            RunnerState::Normal => {
+                // Normal packet processing
+                if pkt.is_null() {
+                    // This shouldn't happen in Normal state but handle gracefully
                     return Ok(true);
                 }
-            };
+                
+                // TODO: For copy streams, skip decoder
+                let frames = match self.decoder.decode_pkt(pkt) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        warn!("Error decoding frames, {e}");
+                        return Ok(true);
+                    }
+                };
 
-            let mut egress_results = vec![];
-            for (frame, stream) in frames {
+                let mut egress_results = vec![];
+                for (frame, stream) in frames {
             // Copy frame from GPU if using hwaccel decoding
             let mut frame = get_frame_from_hw(frame)?;
             (*frame).time_base = (*stream).time_base;
@@ -462,7 +507,8 @@ impl PipelineRunner {
             self.fps_counter_start = Instant::now();
             self.fps_last_frame_ctr = self.frame_ctr;
         }
-        } // Close the else block
+            } // Close the RunnerState::Normal match arm
+        }
         Ok(true)
     }
 
