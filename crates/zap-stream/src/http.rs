@@ -71,8 +71,8 @@ impl HttpServer {
             api.track_viewer(token, stream_id, &client_ip, user_agent.clone());
             token.clone()
         } else {
-            // Generate new viewer token
-            let token = ViewerTracker::generate_viewer_token();
+            // Generate new viewer token based on IP and user agent fingerprint
+            let token = ViewerTracker::generate_viewer_token(&client_ip, user_agent.as_deref());
             api.track_viewer(&token, stream_id, &client_ip, user_agent);
             token
         };
