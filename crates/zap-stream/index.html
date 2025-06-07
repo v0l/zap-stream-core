@@ -9,9 +9,122 @@
             color: white;
             font-family: monospace;
         }
+        .container {
+            padding: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .stream-list {
+            margin: 20px 0;
+        }
+        .stream-item {
+            background: #333;
+            margin: 10px 0;
+            padding: 15px;
+            border-radius: 5px;
+        }
+        .stream-title {
+            font-size: 18px;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+        .stream-link {
+            color: #00ff00;
+            text-decoration: none;
+        }
+        .stream-link:hover {
+            text-decoration: underline;
+        }
+        .video-player {
+            margin: 20px 0;
+            max-width: 800px;
+        }
+        video {
+            width: 100%;
+            max-width: 800px;
+            background: #000;
+        }
+        .no-streams {
+            color: #999;
+            font-style: italic;
+        }
+        .player-section {
+            margin-top: 30px;
+            border-top: 1px solid #555;
+            padding-top: 20px;
+        }
     </style>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
 </head>
 <body>
-<h1>Welcome to %%PUBLIC_URL%%</h1>
+<div class="container">
+    <h1>Welcome to {{public_url}}</h1>
+    
+    <h2>Active Streams</h2>
+    {{#has_streams}}
+    <div class="stream-list">
+        {{#streams}}
+        <div class="stream-item">
+            <div class="stream-title">{{title}}</div>
+            {{#summary}}<div class="stream-summary">{{summary}}</div>{{/summary}}
+            <div>
+                <a href="{{live_url}}" class="stream-link">📺 {{live_url}}</a>
+                {{#viewer_count}}<span style="margin-left: 15px;">👥 {{viewer_count}} viewers</span>{{/viewer_count}}
+            </div>
+            <button onclick="playStream('{{live_url}}')" style="margin-top: 5px; background: #00ff00; color: black; border: none; padding: 5px 10px; cursor: pointer;">Play</button>
+        </div>
+        {{/streams}}
+    </div>
+    {{/has_streams}}
+    {{^has_streams}}
+    <div class="no-streams">No active streams</div>
+    {{/has_streams}}
+    
+    <div class="player-section">
+        <h2>Stream Player</h2>
+        <div class="video-player">
+            <video id="video-player" controls></video>
+        </div>
+        <div style="margin-top: 10px;">
+            <input type="text" id="stream-url" placeholder="Enter stream URL (e.g., /stream-id/live.m3u8)" style="width: 400px; padding: 5px; margin-right: 10px;">
+            <button onclick="playCustomStream()" style="background: #00ff00; color: black; border: none; padding: 5px 10px; cursor: pointer;">Play URL</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    const video = document.getElementById('video-player');
+    let hls = null;
+
+    function playStream(url) {
+        if (Hls.isSupported()) {
+            if (hls) {
+                hls.destroy();
+            }
+            hls = new Hls();
+            hls.loadSource(url);
+            hls.attachMedia(video);
+            hls.on(Hls.Events.MANIFEST_PARSED, function() {
+                video.play();
+            });
+        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+            video.src = url;
+            video.addEventListener('loadedmetadata', function() {
+                video.play();
+            });
+        } else {
+            alert('HLS is not supported in this browser');
+        }
+    }
+
+    function playCustomStream() {
+        const url = document.getElementById('stream-url').value;
+        if (url) {
+            playStream(url);
+        } else {
+            alert('Please enter a stream URL');
+        }
+    }
+</script>
 </body>
 </html>

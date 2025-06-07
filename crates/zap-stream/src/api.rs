@@ -658,6 +658,16 @@ impl Api {
     pub fn get_viewer_count(&self, stream_id: &str) -> usize {
         self.overseer.viewer_tracker().get_viewer_count(stream_id)
     }
+
+    /// Get active streams from database
+    pub async fn get_active_streams(&self) -> Result<Vec<UserStream>> {
+        self.db.list_live_streams().await
+    }
+
+    /// Get the public URL from settings
+    pub fn get_public_url(&self) -> String {
+        self.settings.public_url.clone()
+    }
 }
 
 #[derive(Deserialize, Serialize)]

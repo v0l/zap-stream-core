@@ -12,6 +12,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
+use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use url::Url;
@@ -23,7 +24,7 @@ use zap_stream_core::ingress::srt;
 use zap_stream_core::ingress::test;
 
 use crate::api::Api;
-use crate::http::HttpServer;
+use crate::http::{HttpServer, StreamCache};
 use crate::monitor::BackgroundMonitor;
 use crate::overseer::ZapStreamOverseer;
 use crate::settings::Settings;
@@ -69,11 +70,13 @@ async fn main() -> Result<()> {
     }
 
     let http_addr: SocketAddr = settings.listen_http.parse()?;
-    let index_html = include_str!("../index.html").replace("%%PUBLIC_URL%%", &settings.public_url);
+    let index_template = include_str!("../index.html");
 
     let api = Api::new(overseer.clone(), settings.clone());
+    // Create shared stream cache
+    let stream_cache: StreamCache = Arc::new(RwLock::new(None));
     // HTTP server
-    let server = HttpServer::new(index_html, PathBuf::from(settings.output_dir), api);
+    let server = HttpServer::new(index_template.to_string(), PathBuf::from(settings.output_dir), api, stream_cache);
     tasks.push(tokio::spawn(async move {
         let listener = TcpListener::bind(&http_addr).await?;
 

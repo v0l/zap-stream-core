@@ -11,27 +11,127 @@ use hyper::service::Service;
 use hyper::{Method, Request, Response};
 use log::error;
 use nostr_sdk::{serde_json, Alphabet, Event, Kind, PublicKey, SingleLetterTag, TagKind};
+use serde::{Serialize, Deserialize};
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
-use tokio::fs::File;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::fs::File;  
+use tokio::sync::RwLock;
 use tokio_util::io::ReaderStream;
 use zap_stream_core::viewer::ViewerTracker;
 
+#[derive(Serialize)]
+struct StreamData {
+    id: String,
+    title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary: Option<String>,
+    live_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    viewer_count: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct IndexTemplateData {
+    public_url: String,
+    has_streams: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    streams: Vec<StreamData>,
+}
+
+struct CachedStreams {
+    data: IndexTemplateData,
+    cached_at: Instant,
+}
+
+pub type StreamCache = Arc<RwLock<Option<CachedStreams>>>;
+
 #[derive(Clone)]
 pub struct HttpServer {
-    index: String,
+    index_template: String,
     files_dir: PathBuf,
     api: Api,
+    stream_cache: StreamCache,
 }
 
 impl HttpServer {
-    pub fn new(index: String, files_dir: PathBuf, api: Api) -> Self {
+    pub fn new(index_template: String, files_dir: PathBuf, api: Api, stream_cache: StreamCache) -> Self {
         Self {
-            index,
+            index_template,
             files_dir,
             api,
+            stream_cache,
         }
+    }
+
+    async fn get_cached_or_fetch_streams(&self) -> Result<IndexTemplateData> {
+        Self::get_cached_or_fetch_streams_static(&self.stream_cache, &self.api).await
+    }
+
+    async fn get_cached_or_fetch_streams_static(stream_cache: &StreamCache, api: &Api) -> Result<IndexTemplateData> {
+        const CACHE_DURATION: Duration = Duration::from_secs(60); // 1 minute
+
+        // Check if we have valid cached data
+        {
+            let cache = stream_cache.read().await;
+            if let Some(ref cached) = *cache {
+                if cached.cached_at.elapsed() < CACHE_DURATION {
+                    return Ok(cached.data.clone());
+                }
+            }
+        }
+
+        // Cache is expired or missing, fetch new data
+        let active_streams = api.get_active_streams().await?;
+        let public_url = api.get_public_url();
+        
+        let template_data = if !active_streams.is_empty() {
+            let streams: Vec<StreamData> = active_streams
+                .into_iter()
+                .map(|stream| {
+                    let viewer_count = api.get_viewer_count(&stream.id);
+                    StreamData {
+                        id: stream.id.clone(),
+                        title: stream.title.unwrap_or_else(|| format!("Stream {}", &stream.id[..8])),
+                        summary: stream.summary,
+                        live_url: format!("/{}/live.m3u8", stream.id),
+                        viewer_count: if viewer_count > 0 { Some(viewer_count) } else { None },
+                    }
+                })
+                .collect();
+
+            IndexTemplateData {
+                public_url,
+                has_streams: true,
+                streams,
+            }
+        } else {
+            IndexTemplateData {
+                public_url,
+                has_streams: false,
+                streams: Vec::new(),
+            }
+        };
+
+        // Update cache
+        {
+            let mut cache = stream_cache.write().await;
+            *cache = Some(CachedStreams {
+                data: template_data.clone(),
+                cached_at: Instant::now(),
+            });
+        }
+
+        Ok(template_data)
+    }
+
+    async fn render_index(&self) -> Result<String> {
+        let template_data = self.get_cached_or_fetch_streams().await?;
+        let template = mustache::compile_str(&self.index_template)?;
+        let rendered = template.render_to_string(&template_data)?;
+        Ok(rendered)
     }
 
     async fn handle_hls_playlist(
@@ -162,16 +262,52 @@ impl Service<Request<Incoming>> for HttpServer {
         if req.method() == Method::GET && req.uri().path() == "/"
             || req.uri().path() == "/index.html"
         {
-            let index = self.index.clone();
+            let stream_cache = self.stream_cache.clone();
+            let api = self.api.clone();
+            
+            // Compile template outside async move for better performance
+            let template = match mustache::compile_str(&self.index_template) {
+                Ok(t) => t,
+                Err(e) => {
+                    error!("Failed to compile template: {}", e);
+                    return Box::pin(async move {
+                        Ok(Response::builder()
+                            .status(500)  
+                            .body(BoxBody::default()).unwrap())
+                    });
+                }
+            };
+            
             return Box::pin(async move {
-                Ok(Response::builder()
-                    .header("content-type", "text/html")
-                    .header("server", "zap-stream-core")
-                    .body(
-                        Full::new(Bytes::from(index))
-                            .map_err(|e| match e {})
-                            .boxed(),
-                    )?)
+                // Use the existing method to get cached template data
+                let template_data = Self::get_cached_or_fetch_streams_static(&stream_cache, &api).await;
+
+                match template_data {
+                    Ok(data) => {
+                        match template.render_to_string(&data) {
+                            Ok(index_html) => Ok(Response::builder()
+                                .header("content-type", "text/html")
+                                .header("server", "zap-stream-core")
+                                .body(
+                                    Full::new(Bytes::from(index_html))
+                                        .map_err(|e| match e {})
+                                        .boxed(),
+                                )?),
+                            Err(e) => {
+                                error!("Failed to render template: {}", e);
+                                Ok(Response::builder()
+                                    .status(500)
+                                    .body(BoxBody::default())?)
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to fetch template data: {}", e);
+                        Ok(Response::builder()
+                            .status(500)
+                            .body(BoxBody::default())?)
+                    }
+                }
             });
         }
 
