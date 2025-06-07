@@ -1,6 +1,7 @@
 use std::fmt::{Display, Formatter};
 
 use crate::egress::EgressConfig;
+use crate::overseer::IngressInfo;
 use crate::variant::VariantStream;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -47,6 +48,8 @@ pub struct PipelineConfig {
     pub variants: Vec<VariantStream>,
     /// Output muxers
     pub egress: Vec<EgressType>,
+    /// Source stream information for placeholder generation
+    pub ingress_info: Option<IngressInfo>,
 }
 
 impl Display for PipelineConfig {

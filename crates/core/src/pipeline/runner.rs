@@ -157,23 +157,18 @@ impl PipelineRunner {
         }
         *last_frame_time = Some(Instant::now());
 
-        // Find the primary video variant to determine source frame properties
-        let video_variant = config.variants.iter().find_map(|v| {
-            if let VariantStream::Video(video) = v {
-                Some(video)
-            } else {
-                None
-            }
-        });
+        // Get source video stream info from stored ingress info
+        let video_stream = config.ingress_info.as_ref()
+            .and_then(|info| info.streams.iter().find(|s| matches!(s.stream_type, crate::overseer::IngressStreamType::Video)));
 
         let mut egress_results = vec![];
 
         // Generate one source frame and process it through all relevant variants
-        if let Some(video) = video_variant {
-            // Generate a single source placeholder video frame
-            let fps = if video.fps > 0.0 { video.fps } else { 30.0 };
+        if let Some(stream) = video_stream {
+            // Generate a single source placeholder video frame based on original stream properties
+            let fps = if stream.fps > 0.0 { stream.fps } else { 30.0 };
             let time_base = (1, fps as i32);
-            let mut source_frame = PlaceholderGenerator::generate_video_frame(video, time_base, self.frame_ctr)?;
+            let mut source_frame = PlaceholderGenerator::generate_video_frame_from_stream(stream, time_base, self.frame_ctr)?;
             
             // Set the frame time_base
             (*source_frame).time_base.num = time_base.0;
@@ -217,10 +212,19 @@ impl PipelineRunner {
         }
 
         // Generate and process audio frames separately (audio doesn't share like video)
+        let audio_stream = config.ingress_info.as_ref()
+            .and_then(|info| info.streams.iter().find(|s| matches!(s.stream_type, crate::overseer::IngressStreamType::Audio)));
+            
         for variant in &config.variants {
             if let VariantStream::Audio(a) = variant {
                 let time_base = (1, a.sample_rate as i32);
-                let mut frame = PlaceholderGenerator::generate_audio_frame(a, time_base, self.frame_ctr)?;
+                let mut frame = if let Some(stream) = audio_stream {
+                    // Use original stream properties for placeholder generation
+                    PlaceholderGenerator::generate_audio_frame_from_stream(stream, time_base, self.frame_ctr, &a.sample_fmt, a.channels)?
+                } else {
+                    // Fallback to variant properties if no stream info available
+                    PlaceholderGenerator::generate_audio_frame(a, time_base, self.frame_ctr)?
+                };
                 
                 // Set the frame time_base
                 (*frame).time_base.num = time_base.0;
@@ -543,9 +547,13 @@ impl PipelineRunner {
                 .collect(),
         };
 
-        let cfg = self
+        let mut cfg = self
             .handle
             .block_on(async { self.overseer.start_stream(&self.connection, &i_info).await })?;
+        
+        // Store ingress info in config for placeholder generation
+        cfg.ingress_info = Some(i_info.clone());
+        
         self.config = Some(cfg);
         self.info = Some(i_info);
 
