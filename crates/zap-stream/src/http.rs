@@ -46,30 +46,36 @@ struct CachedStreams {
     cached_at: Instant,
 }
 
+pub type StreamCache = Arc<RwLock<Option<CachedStreams>>>;
+
 #[derive(Clone)]
 pub struct HttpServer {
     index_template: String,
     files_dir: PathBuf,
     api: Api,
-    stream_cache: Arc<RwLock<Option<CachedStreams>>>,
+    stream_cache: StreamCache,
 }
 
 impl HttpServer {
-    pub fn new(index_template: String, files_dir: PathBuf, api: Api) -> Self {
+    pub fn new(index_template: String, files_dir: PathBuf, api: Api, stream_cache: StreamCache) -> Self {
         Self {
             index_template,
             files_dir,
             api,
-            stream_cache: Arc::new(RwLock::new(None)),
+            stream_cache,
         }
     }
 
     async fn get_cached_or_fetch_streams(&self) -> Result<IndexTemplateData> {
+        Self::get_cached_or_fetch_streams_static(&self.stream_cache, &self.api).await
+    }
+
+    async fn get_cached_or_fetch_streams_static(stream_cache: &StreamCache, api: &Api) -> Result<IndexTemplateData> {
         const CACHE_DURATION: Duration = Duration::from_secs(60); // 1 minute
 
         // Check if we have valid cached data
         {
-            let cache = self.stream_cache.read().await;
+            let cache = stream_cache.read().await;
             if let Some(ref cached) = *cache {
                 if cached.cached_at.elapsed() < CACHE_DURATION {
                     return Ok(cached.data.clone());
@@ -78,14 +84,14 @@ impl HttpServer {
         }
 
         // Cache is expired or missing, fetch new data
-        let active_streams = self.api.get_active_streams().await?;
-        let public_url = self.api.get_public_url();
+        let active_streams = api.get_active_streams().await?;
+        let public_url = api.get_public_url();
         
         let template_data = if !active_streams.is_empty() {
             let streams: Vec<StreamData> = active_streams
                 .into_iter()
                 .map(|stream| {
-                    let viewer_count = self.api.get_viewer_count(&stream.id);
+                    let viewer_count = api.get_viewer_count(&stream.id);
                     StreamData {
                         id: stream.id.clone(),
                         title: stream.title.unwrap_or_else(|| format!("Stream {}", &stream.id[..8])),
@@ -111,7 +117,7 @@ impl HttpServer {
 
         // Update cache
         {
-            let mut cache = self.stream_cache.write().await;
+            let mut cache = stream_cache.write().await;
             *cache = Some(CachedStreams {
                 data: template_data.clone(),
                 cached_at: Instant::now(),
@@ -261,72 +267,8 @@ impl Service<Request<Incoming>> for HttpServer {
             let api = self.api.clone();
             
             return Box::pin(async move {
-                // Get cached template data or fetch new ones
-                let template_data = {
-                    const CACHE_DURATION: Duration = Duration::from_secs(60); // 1 minute
-
-                    // Check if we have valid cached data
-                    let cached_data = {
-                        let cache = stream_cache.read().await;
-                        if let Some(ref cached) = *cache {
-                            if cached.cached_at.elapsed() < CACHE_DURATION {
-                                Some(cached.data.clone())
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    };
-
-                    match cached_data {
-                        Some(data) => Ok(data),
-                        None => {
-                            // Cache is expired or missing, fetch new data
-                            let active_streams = api.get_active_streams().await?;
-                            let public_url = api.get_public_url();
-                            
-                            let data = if !active_streams.is_empty() {
-                                let streams: Vec<StreamData> = active_streams
-                                    .into_iter()
-                                    .map(|stream| {
-                                        let viewer_count = api.get_viewer_count(&stream.id);
-                                        StreamData {
-                                            id: stream.id.clone(),
-                                            title: stream.title.unwrap_or_else(|| format!("Stream {}", &stream.id[..8])),
-                                            summary: stream.summary,
-                                            live_url: format!("/{}/live.m3u8", stream.id),
-                                            viewer_count: if viewer_count > 0 { Some(viewer_count) } else { None },
-                                        }
-                                    })
-                                    .collect();
-
-                                IndexTemplateData {
-                                    public_url,
-                                    has_streams: true,
-                                    streams,
-                                }
-                            } else {
-                                IndexTemplateData {
-                                    public_url,
-                                    has_streams: false,
-                                    streams: Vec::new(),
-                                }
-                            };
-
-                            // Update cache
-                            {
-                                let mut cache = stream_cache.write().await;
-                                *cache = Some(CachedStreams {
-                                    data: data.clone(),
-                                    cached_at: Instant::now(),
-                                });
-                            }
-
-                            Ok(data)
-                        }
-                    }
-                };
+                // Use the existing method to get cached template data
+                let template_data = Self::get_cached_or_fetch_streams_static(&stream_cache, &api).await;
 
                 match template_data {
                     Ok(data) => {
