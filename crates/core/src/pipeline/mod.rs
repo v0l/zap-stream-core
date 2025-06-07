@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub mod runner;
+pub mod placeholder;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum EgressType {
