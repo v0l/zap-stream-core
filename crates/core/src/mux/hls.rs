@@ -1,15 +1,15 @@
 use crate::egress::{EgressResult, EgressSegment};
 use crate::variant::{StreamMapping, VariantStream};
-use anyhow::{bail, Result};
+use anyhow::{bail, ensure, Result};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_H264;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVMediaType::AVMEDIA_TYPE_VIDEO;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
     av_free, av_opt_set, av_q2d, av_write_frame, avio_close, avio_flush, avio_open, AVPacket,
-    AVStream, AVIO_FLAG_WRITE, AV_PKT_FLAG_KEY,
+    AVStream, AVIO_FLAG_WRITE, AV_NOPTS_VALUE, AV_PKT_FLAG_KEY,
 };
 use ffmpeg_rs_raw::{cstr, Encoder, Muxer};
 use itertools::Itertools;
-use log::{info, warn};
+use log::{info, trace, warn};
 use m3u8_rs::MediaSegment;
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -72,31 +72,37 @@ impl Display for HlsVariantStream {
 
 pub struct HlsVariant {
     /// Name of this variant (720p)
-    pub name: String,
+    name: String,
     /// MPEG-TS muxer for this variant
-    pub mux: Muxer,
+    mux: Muxer,
     /// List of streams ids in this variant
-    pub streams: Vec<HlsVariantStream>,
+    streams: Vec<HlsVariantStream>,
     /// Segment length in seconds
-    pub segment_length: f32,
+    segment_length: f32,
     /// Total number of segments to store for this variant
-    pub segment_window: Option<u16>,
+    segment_window: Option<u16>,
     /// Current segment index
-    pub idx: u64,
-    /// Current segment start time in seconds (duration)
-    pub pkt_start: f32,
+    idx: u64,
     /// Output directory (base)
-    pub out_dir: String,
+    out_dir: String,
     /// List of segments to be included in the playlist
-    pub segments: Vec<SegmentInfo>,
+    segments: Vec<SegmentInfo>,
     /// Type of segments to create
-    pub segment_type: SegmentType,
+    segment_type: SegmentType,
+    /// Ending presentation timestamp
+    end_pts: i64,
+    /// Current segment duration in seconds (precise accumulation)
+    duration: f64,
+    /// Number of packets written to current segment
+    packets_written: u64,
+    /// Reference stream used to track duration
+    ref_stream_index: i32,
 }
 
 struct SegmentInfo {
-    pub index: u64,
-    pub duration: f32,
-    pub kind: SegmentType,
+    index: u64,
+    duration: f32,
+    kind: SegmentType,
 }
 
 impl SegmentInfo {
@@ -146,23 +152,35 @@ impl HlsVariant {
                 .build()?
         };
         let mut streams = Vec::new();
+        let mut ref_stream_index = -1;
+        let mut has_video = false;
+
         for (var, enc) in encoded_vars {
             match var {
                 VariantStream::Video(v) => unsafe {
                     let stream = mux.add_stream_encoder(enc)?;
+                    let stream_idx = (*stream).index as usize;
                     streams.push(HlsVariantStream::Video {
                         group,
-                        index: (*stream).index as usize,
+                        index: stream_idx,
                         id: v.id(),
-                    })
+                    });
+                    has_video = true;
+                    if ref_stream_index == -1 {
+                        ref_stream_index = stream_idx as _;
+                    }
                 },
                 VariantStream::Audio(a) => unsafe {
                     let stream = mux.add_stream_encoder(enc)?;
+                    let stream_idx = (*stream).index as usize;
                     streams.push(HlsVariantStream::Audio {
                         group,
-                        index: (*stream).index as usize,
+                        index: stream_idx,
                         id: a.id(),
-                    })
+                    });
+                    if !has_video && ref_stream_index == -1 {
+                        ref_stream_index = stream_idx as _;
+                    }
                 },
                 VariantStream::Subtitle(s) => unsafe {
                     let stream = mux.add_stream_encoder(enc)?;
@@ -175,6 +193,10 @@ impl HlsVariant {
                 _ => bail!("unsupported variant stream"),
             }
         }
+        ensure!(
+            ref_stream_index != -1,
+            "No reference stream found, cant create variant"
+        );
         unsafe {
             mux.open(Some(opts))?;
         }
@@ -185,10 +207,13 @@ impl HlsVariant {
             mux,
             streams,
             idx: 1,
-            pkt_start: 0.0,
             segments: Vec::new(), // Start with empty segments list
             out_dir: out_dir.to_string(),
             segment_type,
+            end_pts: AV_NOPTS_VALUE,
+            duration: 0.0,
+            packets_written: 0,
+            ref_stream_index,
         })
     }
 
@@ -218,34 +243,54 @@ impl HlsVariant {
         self.process_packet(pkt)
     }
 
-    /// Process a single packet through the muxer
+    /// Process a single packet through the muxer - FFmpeg-style implementation
     unsafe fn process_packet(&mut self, pkt: *mut AVPacket) -> Result<EgressResult> {
-        let mut result = EgressResult::None;
         let pkt_stream = *(*self.mux.context())
             .streams
             .add((*pkt).stream_index as usize);
 
-        // Match FFmpeg's segmentation logic exactly
-        let can_split = (*pkt).flags & AV_PKT_FLAG_KEY == AV_PKT_FLAG_KEY
-            && (*(*pkt_stream).codecpar).codec_type == AVMEDIA_TYPE_VIDEO;
+        let mut result = EgressResult::None;
+        let stream_type = (*(*pkt_stream).codecpar).codec_type;
+        let mut can_split = stream_type == AVMEDIA_TYPE_VIDEO
+            && ((*pkt).flags & AV_PKT_FLAG_KEY == AV_PKT_FLAG_KEY);
+        let mut is_ref_pkt =
+            stream_type == AVMEDIA_TYPE_VIDEO && (*pkt_stream).index == self.ref_stream_index;
 
-        if can_split {
-            let pkt_q = av_q2d((*pkt).time_base);
-            let pkt_time = (*pkt).pts as f32 * pkt_q as f32;
-            let relative_time = pkt_time - self.pkt_start;
+        if (*pkt).pts == AV_NOPTS_VALUE {
+            can_split = false;
+            is_ref_pkt = false;
+        }
 
-            // FFmpeg checks: pkt->pts - vs->end_pts > 0 to prevent zero duration
-            // and av_compare_ts for target duration
-            let has_positive_duration = relative_time > 0.0;
-            let target_duration_reached = relative_time >= self.segment_length;
+        // check if current packet is keyframe, flush current segment
+        if self.packets_written > 0 && can_split {
+            trace!(
+                "Segmentation check: pts={}, duration={:.3}, timebase={}/{}, target={:.3}",
+                (*pkt).pts,
+                self.duration,
+                (*pkt).time_base.num,
+                (*pkt).time_base.den,
+                self.segment_length
+            );
 
-            if has_positive_duration && target_duration_reached {
-                result = self.split_next_seg(pkt_time)?;
+            if self.duration >= self.segment_length as f64 {
+                result = self.split_next_seg()?;
             }
         }
 
-        // Write packet directly like FFmpeg's ff_write_chained
+        // track duration from pts
+        if is_ref_pkt {
+            if self.end_pts == AV_NOPTS_VALUE {
+                self.end_pts = (*pkt).pts;
+            }
+            let pts_diff = (*pkt).pts - self.end_pts;
+            if pts_diff > 0 {
+                self.duration += pts_diff as f64 * av_q2d((*pkt).time_base);
+            }
+            self.end_pts = (*pkt).pts;
+        }
+
         self.mux.write_packet(pkt)?;
+        self.packets_written += 1;
         Ok(result)
     }
 
@@ -254,7 +299,7 @@ impl HlsVariant {
     }
 
     /// Reset the muxer state and start the next segment
-    unsafe fn split_next_seg(&mut self, pkt_time: f32) -> Result<EgressResult> {
+    unsafe fn split_next_seg(&mut self) -> Result<EgressResult> {
         let completed_segment_idx = self.idx;
         self.idx += 1;
 
@@ -282,7 +327,6 @@ impl HlsVariant {
             0,
         );
 
-        let duration = pkt_time - self.pkt_start;
         // Log the completed segment (previous index), not the next one
         let completed_seg_path = Self::map_segment_path(
             &self.out_dir,
@@ -296,13 +340,14 @@ impl HlsVariant {
             .map(|m| m.len())
             .unwrap_or(0);
         info!(
-            "Finished segment {} [{:.3}s, {} bytes]",
+            "Finished segment {} [{:.3}s, {:.2} kB, {} pkts]",
             completed_segment_path
                 .file_name()
                 .unwrap_or_default()
                 .to_string_lossy(),
-            duration,
-            segment_size
+            self.duration,
+            segment_size as f32 / 1024f32,
+            self.packets_written
         );
 
         let video_var_id = self
@@ -332,14 +377,17 @@ impl HlsVariant {
         let created = EgressSegment {
             variant: video_var_id,
             idx: completed_segment_idx,
-            duration,
+            duration: self.duration as f32,
             path: completed_segment_path,
         };
 
-        if let Err(e) = self.push_segment(completed_segment_idx, duration) {
+        if let Err(e) = self.push_segment(completed_segment_idx, self.duration as f32) {
             warn!("Failed to update playlist: {}", e);
         }
-        self.pkt_start = pkt_time;
+
+        self.packets_written = 0;
+        self.duration = 0.0;
+
         Ok(EgressResult::Segments {
             created: vec![created],
             deleted,
@@ -381,6 +429,7 @@ impl HlsVariant {
                         e
                     );
                 }
+                info!("Removed segment file: {}", seg_path.display());
                 ret.push(seg);
             }
         }

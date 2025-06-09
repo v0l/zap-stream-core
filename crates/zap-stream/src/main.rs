@@ -29,7 +29,6 @@ use crate::monitor::BackgroundMonitor;
 use crate::overseer::ZapStreamOverseer;
 use crate::settings::Settings;
 use zap_stream_core::ingress::{file, tcp};
-use zap_stream_core::overseer::Overseer;
 
 mod api;
 mod blossom;
@@ -76,7 +75,12 @@ async fn main() -> Result<()> {
     // Create shared stream cache
     let stream_cache: StreamCache = Arc::new(RwLock::new(None));
     // HTTP server
-    let server = HttpServer::new(index_template.to_string(), PathBuf::from(settings.output_dir), api, stream_cache);
+    let server = HttpServer::new(
+        index_template.to_string(),
+        PathBuf::from(settings.output_dir),
+        api,
+        stream_cache,
+    );
     tasks.push(tokio::spawn(async move {
         let listener = TcpListener::bind(&http_addr).await?;
 

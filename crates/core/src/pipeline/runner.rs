@@ -21,8 +21,8 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_WEBP;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPictureType::AV_PICTURE_TYPE_NONE;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    av_frame_free, av_get_sample_fmt, av_packet_free, av_q2d, av_rescale_q, AVFrame, AVMediaType,
-    AVStream,
+    av_frame_free, av_get_sample_fmt, av_packet_free, av_rescale_q, AVFrame, AVMediaType, AVStream,
+    AV_NOPTS_VALUE,
 };
 use ffmpeg_rs_raw::{
     cstr, get_frame_from_hw, AudioFifo, Decoder, Demuxer, DemuxerInfo, Encoder, Resample, Scaler,
@@ -194,66 +194,91 @@ impl PipelineRunner {
 
             // scaling / resampling
             let mut new_frame = false;
-            let mut frame = match var {
+            match var {
                 VariantStream::Video(v) => {
-                    if let Some(s) = self.scalers.get_mut(&v.id()) {
+                    let mut frame = if let Some(s) = self.scalers.get_mut(&v.id()) {
                         new_frame = true;
                         s.process_frame(frame, v.width, v.height, transmute(v.pixel_format))?
                     } else {
                         frame
+                    };
+                    egress_results.extend(Self::encode_mux_frame(
+                        &mut self.egress,
+                        var,
+                        enc,
+                        frame,
+                    )?);
+                    if new_frame {
+                        av_frame_free(&mut frame);
                     }
                 }
                 VariantStream::Audio(a) => {
                     if let Some((r, f)) = self.resampler.get_mut(&a.id()) {
                         let frame_size = (*enc.codec_context()).frame_size;
-                        new_frame = true;
                         let mut resampled_frame = r.process_frame(frame)?;
-                        if let Some(ret) = f.buffer_frame(resampled_frame, frame_size as usize)? {
+                        f.buffer_frame(resampled_frame)?;
+                        av_frame_free(&mut resampled_frame);
+                        // drain FIFO
+                        while let Some(mut frame) = f.get_frame(frame_size as usize)? {
                             // Set correct timebase for audio (1/sample_rate)
-                            (*ret).time_base.num = 1;
-                            (*ret).time_base.den = a.sample_rate as i32;
-                            av_frame_free(&mut resampled_frame);
-                            ret
-                        } else {
-                            av_frame_free(&mut resampled_frame);
-                            continue;
+                            (*frame).time_base.num = 1;
+                            (*frame).time_base.den = a.sample_rate as i32;
+
+                            egress_results.extend(Self::encode_mux_frame(
+                                &mut self.egress,
+                                var,
+                                enc,
+                                frame,
+                            )?);
+                            av_frame_free(&mut frame);
                         }
                     } else {
-                        frame
+                        egress_results.extend(Self::encode_mux_frame(
+                            &mut self.egress,
+                            var,
+                            enc,
+                            frame,
+                        )?);
                     }
                 }
-                _ => frame,
-            };
-
-            // before encoding frame, rescale timestamps
-            if !frame.is_null() {
-                let enc_ctx = enc.codec_context();
-                (*frame).pict_type = AV_PICTURE_TYPE_NONE;
-                (*frame).pts = av_rescale_q((*frame).pts, (*frame).time_base, (*enc_ctx).time_base);
-                (*frame).pkt_dts =
-                    av_rescale_q((*frame).pkt_dts, (*frame).time_base, (*enc_ctx).time_base);
-                (*frame).duration =
-                    av_rescale_q((*frame).duration, (*frame).time_base, (*enc_ctx).time_base);
-                (*frame).time_base = (*enc_ctx).time_base;
-            }
-
-            let packets = enc.encode_frame(frame)?;
-            // pass new packets to egress
-            for mut pkt in packets {
-                for eg in self.egress.iter_mut() {
-                    let er = eg.process_pkt(pkt, &var.id())?;
-                    egress_results.push(er);
-                }
-                av_packet_free(&mut pkt);
-            }
-
-            if new_frame {
-                av_frame_free(&mut frame);
+                _ => {}
             }
         }
 
         av_frame_free(&mut frame);
         Ok(egress_results)
+    }
+
+    unsafe fn encode_mux_frame(
+        egress: &mut Vec<Box<dyn Egress>>,
+        var: &VariantStream,
+        encoder: &mut Encoder,
+        frame: *mut AVFrame,
+    ) -> Result<Vec<EgressResult>> {
+        let mut ret = vec![];
+        // before encoding frame, rescale timestamps
+        if !frame.is_null() {
+            let enc_ctx = encoder.codec_context();
+            (*frame).pict_type = AV_PICTURE_TYPE_NONE;
+            (*frame).pts = av_rescale_q((*frame).pts, (*frame).time_base, (*enc_ctx).time_base);
+            (*frame).pkt_dts =
+                av_rescale_q((*frame).pkt_dts, (*frame).time_base, (*enc_ctx).time_base);
+            (*frame).duration =
+                av_rescale_q((*frame).duration, (*frame).time_base, (*enc_ctx).time_base);
+            (*frame).time_base = (*enc_ctx).time_base;
+        }
+
+        let packets = encoder.encode_frame(frame)?;
+        // pass new packets to egress
+        for mut pkt in packets {
+            for eg in egress.iter_mut() {
+                let er = eg.process_pkt(pkt, &var.id())?;
+                ret.push(er);
+            }
+            av_packet_free(&mut pkt);
+        }
+
+        Ok(ret)
     }
 
     /// EOF, cleanup
@@ -362,6 +387,11 @@ impl PipelineRunner {
 
                 let mut egress_results = vec![];
                 for (frame, stream) in frames {
+                    // Adjust frame pts time without start_offset
+                    // Egress streams don't have a start time offset
+                    if (*stream).start_time != AV_NOPTS_VALUE {
+                        (*frame).pts -= (*stream).start_time;
+                    }
                     let results = self.process_frame(&config, stream, frame)?;
                     egress_results.extend(results);
                 }
@@ -404,6 +434,8 @@ impl PipelineRunner {
         }
 
         let info = self.demuxer.probe_input()?;
+
+        info!("{}", info);
 
         // convert to internal type
         let i_info = IngressInfo {

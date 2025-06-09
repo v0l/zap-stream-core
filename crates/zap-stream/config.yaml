@@ -5,7 +5,6 @@ endpoints:
   - "rtmp://127.0.0.1:3336"
   - "srt://127.0.0.1:3335"
   - "tcp://127.0.0.1:3334"
-  - "test-pattern://"
 
 # Public hostname which points to the IP address used to listen for all [endpoints]
 endpoints_public_hostname: "localhost"
