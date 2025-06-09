@@ -7,7 +7,7 @@ edition = "2021"
 default = ["srt", "rtmp", "test-pattern"]
 srt = ["zap-stream-core/srt"]
 rtmp = ["zap-stream-core/rtmp"]
-test-pattern = ["zap-stream-core/test-pattern", "zap-stream-db/test-pattern"]
+test-pattern = ["zap-stream-db/test-pattern"]
 
 [dependencies]
 zap-stream-db = { path = "../zap-stream-db" }

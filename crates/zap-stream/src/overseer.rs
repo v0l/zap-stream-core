@@ -17,14 +17,14 @@ use url::Url;
 use uuid::Uuid;
 use zap_stream_core::egress::{EgressConfig, EgressSegment};
 use zap_stream_core::ingress::ConnectionInfo;
-use zap_stream_core::overseer::{IngressInfo, IngressStreamType, Overseer};
+use zap_stream_core::overseer::{IngressInfo, IngressStream, IngressStreamType, Overseer};
 use zap_stream_core::pipeline::{EgressType, PipelineConfig};
 use zap_stream_core::variant::audio::AudioVariant;
 use zap_stream_core::variant::mapping::VariantMapping;
 use zap_stream_core::variant::video::VideoVariant;
 use zap_stream_core::variant::{StreamMapping, VariantStream};
 use zap_stream_core::viewer::ViewerTracker;
-use zap_stream_db::{UserStream, UserStreamState, ZapStreamDb};
+use zap_stream_db::{IngestEndpoint, UserStream, UserStreamState, ZapStreamDb};
 
 const STREAM_EVENT_KIND: u16 = 30_311;
 
@@ -353,22 +353,18 @@ impl Overseer for ZapStreamOverseer {
         }
 
         // Get ingest endpoint configuration based on connection type
-        let endpoint_id = self
-            .detect_endpoint(&connection)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("No ingest endpoints configured"))?;
-        let endpoint = self
-            .db
-            .get_ingest_endpoint(endpoint_id)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("Ingest endpoint not found"))?;
+        let endpoint = self.detect_endpoint(&connection).await?;
 
-        let variants = get_variants_from_endpoint(&stream_info, &endpoint)?;
+        let cfg = get_variants_from_endpoint(&stream_info, &endpoint)?;
+
+        if cfg.video_src.is_none() || cfg.variants.is_empty() {
+            bail!("No video src found");
+        }
 
         let mut egress = vec![];
         egress.push(EgressType::HLS(EgressConfig {
             name: "hls".to_string(),
-            variants: variants.iter().map(|v| v.id()).collect(),
+            variants: cfg.variants.iter().map(|v| v.id()).collect(),
         }));
 
         let stream_id = Uuid::new_v4();
@@ -378,7 +374,7 @@ impl Overseer for ZapStreamOverseer {
             user_id: uid,
             starts: Utc::now(),
             state: UserStreamState::Live,
-            endpoint_id: Some(endpoint_id),
+            endpoint_id: Some(endpoint.id),
             ..Default::default()
         };
         let stream_event = self.publish_stream_event(&new_stream, &user.pubkey).await?;
@@ -399,8 +395,11 @@ impl Overseer for ZapStreamOverseer {
 
         Ok(PipelineConfig {
             id: stream_id,
-            variants,
+            variants: cfg.variants,
             egress,
+            ingress_info: stream_info.clone(),
+            video_src: cfg.video_src.unwrap().index,
+            audio_src: cfg.audio_src.map(|s| s.index),
         })
     }
 
@@ -525,25 +524,29 @@ impl Overseer for ZapStreamOverseer {
 
 impl ZapStreamOverseer {
     /// Detect which ingest endpoint should be used based on connection info
-    async fn detect_endpoint(&self, connection: &ConnectionInfo) -> Result<Option<u64>> {
-        // Get all ingest endpoints and match by name against connection endpoint
+    async fn detect_endpoint(&self, connection: &ConnectionInfo) -> Result<IngestEndpoint> {
         let endpoints = self.db.get_ingest_endpoints().await?;
 
-        for endpoint in &endpoints {
-            if endpoint.name == connection.endpoint {
-                return Ok(Some(endpoint.id));
-            }
-        }
-
-        // No matching endpoint found, use the most expensive one
-        Ok(endpoints.into_iter().max_by_key(|e| e.cost).map(|e| e.id))
+        let default = endpoints.iter().max_by_key(|e| e.cost);
+        Ok(endpoints
+            .iter()
+            .find(|e| e.name == connection.endpoint)
+            .or(default)
+            .unwrap()
+            .clone())
     }
 }
 
-fn get_variants_from_endpoint(
-    info: &IngressInfo,
+struct EndpointConfig<'a> {
+    video_src: Option<&'a IngressStream>,
+    audio_src: Option<&'a IngressStream>,
+    variants: Vec<VariantStream>,
+}
+
+fn get_variants_from_endpoint<'a>(
+    info: &'a IngressInfo,
     endpoint: &zap_stream_db::IngestEndpoint,
-) -> Result<Vec<VariantStream>> {
+) -> Result<EndpointConfig<'a>> {
     let capabilities_str = endpoint.capabilities.as_deref().unwrap_or("");
     let capabilities: Vec<&str> = capabilities_str.split(',').collect();
 
@@ -658,5 +661,9 @@ fn get_variants_from_endpoint(
         // Handle other capabilities like dvr:720h here if needed
     }
 
-    Ok(vars)
+    Ok(EndpointConfig {
+        audio_src,
+        video_src,
+        variants: vars,
+    })
 }

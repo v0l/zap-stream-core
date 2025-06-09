@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub mod runner;
-pub mod placeholder;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum EgressType {
@@ -41,7 +40,7 @@ impl Display for EgressType {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+#[derive(Clone)]
 pub struct PipelineConfig {
     pub id: Uuid,
     /// Transcoded/Copied stream config
@@ -49,7 +48,11 @@ pub struct PipelineConfig {
     /// Output muxers
     pub egress: Vec<EgressType>,
     /// Source stream information for placeholder generation
-    pub ingress_info: Option<IngressInfo>,
+    pub ingress_info: IngressInfo,
+    /// Primary source video stream
+    pub video_src: usize,
+    /// Primary audio source stream
+    pub audio_src: Option<usize>,
 }
 
 impl Display for PipelineConfig {

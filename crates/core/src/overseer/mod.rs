@@ -8,12 +8,6 @@ use std::cmp::PartialEq;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-#[cfg(feature = "local-overseer")]
-mod local;
-
-#[cfg(feature = "webhook-overseer")]
-mod webhook;
-
 /// A copy of [ffmpeg_rs_raw::DemuxerInfo] without internal ptr
 #[derive(PartialEq, Clone)]
 pub struct IngressInfo {
@@ -32,6 +26,7 @@ pub struct IngressStream {
     pub height: usize,
     pub fps: f32,
     pub sample_rate: usize,
+    pub channels: u8,
     pub language: String,
 }
 

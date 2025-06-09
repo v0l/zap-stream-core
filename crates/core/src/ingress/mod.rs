@@ -12,7 +12,6 @@ pub mod rtmp;
 #[cfg(feature = "srt")]
 pub mod srt;
 pub mod tcp;
-#[cfg(feature = "test-pattern")]
 pub mod test;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

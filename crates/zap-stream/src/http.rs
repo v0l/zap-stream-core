@@ -11,18 +11,18 @@ use hyper::service::Service;
 use hyper::{Method, Request, Response};
 use log::error;
 use nostr_sdk::{serde_json, Alphabet, Event, Kind, PublicKey, SingleLetterTag, TagKind};
-use serde::{Serialize, Deserialize};
+use serde::Serialize;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::fs::File;  
+use tokio::fs::File;
 use tokio::sync::RwLock;
 use tokio_util::io::ReaderStream;
 use zap_stream_core::viewer::ViewerTracker;
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct StreamData {
     id: String,
     title: String,
@@ -33,7 +33,7 @@ struct StreamData {
     viewer_count: Option<u64>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct IndexTemplateData {
     public_url: String,
     has_streams: bool,
@@ -41,7 +41,7 @@ struct IndexTemplateData {
     streams: Vec<StreamData>,
 }
 
-struct CachedStreams {
+pub struct CachedStreams {
     data: IndexTemplateData,
     cached_at: Instant,
 }
@@ -57,7 +57,12 @@ pub struct HttpServer {
 }
 
 impl HttpServer {
-    pub fn new(index_template: String, files_dir: PathBuf, api: Api, stream_cache: StreamCache) -> Self {
+    pub fn new(
+        index_template: String,
+        files_dir: PathBuf,
+        api: Api,
+        stream_cache: StreamCache,
+    ) -> Self {
         Self {
             index_template,
             files_dir,
@@ -70,8 +75,11 @@ impl HttpServer {
         Self::get_cached_or_fetch_streams_static(&self.stream_cache, &self.api).await
     }
 
-    async fn get_cached_or_fetch_streams_static(stream_cache: &StreamCache, api: &Api) -> Result<IndexTemplateData> {
-        const CACHE_DURATION: Duration = Duration::from_secs(60); // 1 minute
+    async fn get_cached_or_fetch_streams_static(
+        stream_cache: &StreamCache,
+        api: &Api,
+    ) -> Result<IndexTemplateData> {
+        const CACHE_DURATION: Duration = Duration::from_secs(10);
 
         // Check if we have valid cached data
         {
@@ -86,7 +94,7 @@ impl HttpServer {
         // Cache is expired or missing, fetch new data
         let active_streams = api.get_active_streams().await?;
         let public_url = api.get_public_url();
-        
+
         let template_data = if !active_streams.is_empty() {
             let streams: Vec<StreamData> = active_streams
                 .into_iter()
@@ -94,10 +102,16 @@ impl HttpServer {
                     let viewer_count = api.get_viewer_count(&stream.id);
                     StreamData {
                         id: stream.id.clone(),
-                        title: stream.title.unwrap_or_else(|| format!("Stream {}", &stream.id[..8])),
+                        title: stream
+                            .title
+                            .unwrap_or_else(|| format!("Stream {}", &stream.id[..8])),
                         summary: stream.summary,
                         live_url: format!("/{}/live.m3u8", stream.id),
-                        viewer_count: if viewer_count > 0 { Some(viewer_count) } else { None },
+                        viewer_count: if viewer_count > 0 {
+                            Some(viewer_count as _)
+                        } else {
+                            None
+                        },
                     }
                 })
                 .collect();
@@ -140,13 +154,18 @@ impl HttpServer {
         playlist_path: &PathBuf,
     ) -> Result<Response<BoxBody<Bytes, anyhow::Error>>, anyhow::Error> {
         // Extract stream ID from path (e.g., /uuid/live.m3u8 -> uuid)
-        let path_parts: Vec<&str> = req.uri().path().trim_start_matches('/').split('/').collect();
+        let path_parts: Vec<&str> = req
+            .uri()
+            .path()
+            .trim_start_matches('/')
+            .split('/')
+            .collect();
         if path_parts.len() < 2 {
             return Ok(Response::builder().status(404).body(BoxBody::default())?);
         }
-        
+
         let stream_id = path_parts[0];
-        
+
         // Get client IP and User-Agent for tracking
         let client_ip = Self::get_client_ip(req);
         let user_agent = req
@@ -179,9 +198,10 @@ impl HttpServer {
 
         // Read the playlist file
         let playlist_content = tokio::fs::read(playlist_path).await?;
-        
+
         // Parse and modify playlist to add viewer token to URLs
-        let modified_content = Self::add_viewer_token_to_playlist(&playlist_content, &viewer_token)?;
+        let modified_content =
+            Self::add_viewer_token_to_playlist(&playlist_content, &viewer_token)?;
 
         Ok(Response::builder()
             .header("content-type", "application/vnd.apple.mpegurl")
@@ -205,7 +225,7 @@ impl HttpServer {
                 }
             }
         }
-        
+
         if let Some(real_ip) = req.headers().get("x-real-ip") {
             if let Ok(ip_str) = real_ip.to_str() {
                 return ip_str.to_string();
@@ -220,17 +240,18 @@ impl HttpServer {
         // Parse the M3U8 playlist using the m3u8-rs crate
         let (_, playlist) = m3u8_rs::parse_playlist(content)
             .map_err(|e| anyhow::anyhow!("Failed to parse M3U8 playlist: {}", e))?;
-        
+
         match playlist {
             m3u8_rs::Playlist::MasterPlaylist(mut master) => {
                 // For master playlists, add viewer token to variant streams
                 for variant in &mut master.variants {
                     variant.uri = Self::add_token_to_url(&variant.uri, viewer_token);
                 }
-                
+
                 // Write the modified playlist back to string
                 let mut output = Vec::new();
-                master.write_to(&mut output)
+                master
+                    .write_to(&mut output)
                     .map_err(|e| anyhow::anyhow!("Failed to write master playlist: {}", e))?;
                 String::from_utf8(output)
                     .map_err(|e| anyhow::anyhow!("Failed to convert playlist to string: {}", e))
@@ -242,7 +263,7 @@ impl HttpServer {
             }
         }
     }
-    
+
     fn add_token_to_url(url: &str, viewer_token: &str) -> String {
         if url.contains('?') {
             format!("{}&vt={}", url, viewer_token)
@@ -264,7 +285,7 @@ impl Service<Request<Incoming>> for HttpServer {
         {
             let stream_cache = self.stream_cache.clone();
             let api = self.api.clone();
-            
+
             // Compile template outside async move for better performance
             let template = match mustache::compile_str(&self.index_template) {
                 Ok(t) => t,
@@ -272,40 +293,36 @@ impl Service<Request<Incoming>> for HttpServer {
                     error!("Failed to compile template: {}", e);
                     return Box::pin(async move {
                         Ok(Response::builder()
-                            .status(500)  
-                            .body(BoxBody::default()).unwrap())
+                            .status(500)
+                            .body(BoxBody::default())
+                            .unwrap())
                     });
                 }
             };
-            
+
             return Box::pin(async move {
                 // Use the existing method to get cached template data
-                let template_data = Self::get_cached_or_fetch_streams_static(&stream_cache, &api).await;
+                let template_data =
+                    Self::get_cached_or_fetch_streams_static(&stream_cache, &api).await;
 
                 match template_data {
-                    Ok(data) => {
-                        match template.render_to_string(&data) {
-                            Ok(index_html) => Ok(Response::builder()
-                                .header("content-type", "text/html")
-                                .header("server", "zap-stream-core")
-                                .body(
-                                    Full::new(Bytes::from(index_html))
-                                        .map_err(|e| match e {})
-                                        .boxed(),
-                                )?),
-                            Err(e) => {
-                                error!("Failed to render template: {}", e);
-                                Ok(Response::builder()
-                                    .status(500)
-                                    .body(BoxBody::default())?)
-                            }
+                    Ok(data) => match template.render_to_string(&data) {
+                        Ok(index_html) => Ok(Response::builder()
+                            .header("content-type", "text/html")
+                            .header("server", "zap-stream-core")
+                            .body(
+                                Full::new(Bytes::from(index_html))
+                                    .map_err(|e| match e {})
+                                    .boxed(),
+                            )?),
+                        Err(e) => {
+                            error!("Failed to render template: {}", e);
+                            Ok(Response::builder().status(500).body(BoxBody::default())?)
                         }
-                    }
+                    },
                     Err(e) => {
                         error!("Failed to fetch template data: {}", e);
-                        Ok(Response::builder()
-                            .status(500)
-                            .body(BoxBody::default())?)
+                        Ok(Response::builder().status(500).body(BoxBody::default())?)
                     }
                 }
             });
@@ -415,12 +432,21 @@ pub fn check_nip98_auth(req: &Request<Incoming>, public_url: &str) -> Result<Aut
 
     // Construct full URI using public_url + path + query
     let request_uri = match req.uri().query() {
-        Some(query) => format!("{}{}?{}", public_url.trim_end_matches('/'), req.uri().path(), query),
+        Some(query) => format!(
+            "{}{}?{}",
+            public_url.trim_end_matches('/'),
+            req.uri().path(),
+            query
+        ),
         None => format!("{}{}", public_url.trim_end_matches('/'), req.uri().path()),
     };
 
     if !url_tag.eq_ignore_ascii_case(&request_uri) {
-        bail!("Invalid nostr event, URL tag invalid. Expected: {}, Got: {}", request_uri, url_tag);
+        bail!(
+            "Invalid nostr event, URL tag invalid. Expected: {}, Got: {}",
+            request_uri,
+            url_tag
+        );
     }
 
     // Check method tag
