@@ -272,12 +272,12 @@ pub async fn listen(out_dir: String, addr: String, overseer: Arc<dyn Overseer>) 
     info!("RTMP listening on: {}", &addr);
     while let Ok((socket, ip)) = listener.accept().await {
         let mut cc = RtmpClient::new(socket.into_std()?)?;
-        let addr = addr.clone();
         let overseer = overseer.clone();
         let out_dir = out_dir.clone();
         let handle = Handle::current();
+        let new_id = Uuid::new_v4();
         std::thread::Builder::new()
-            .name("rtmp-client".to_string())
+            .name(format!("client:rtmp:{}", new_id))
             .spawn(move || {
                 if let Err(e) = cc.handshake() {
                     bail!("Error during handshake: {}", e)
@@ -288,9 +288,9 @@ pub async fn listen(out_dir: String, addr: String, overseer: Arc<dyn Overseer>) 
 
                 let pr = cc.published_stream.as_ref().unwrap();
                 let info = ConnectionInfo {
-                    id: Uuid::new_v4(),
+                    id: new_id,
                     ip_addr: ip.to_string(),
-                    endpoint: addr.clone(),
+                    endpoint: "rtmp",
                     app_name: pr.0.clone(),
                     key: pr.1.clone(),
                 };
@@ -307,8 +307,6 @@ pub async fn listen(out_dir: String, addr: String, overseer: Arc<dyn Overseer>) 
                         bail!("Failed to create PipelineRunner {}", e)
                     }
                 };
-                //pl.set_demuxer_format("flv");
-                //pl.set_demuxer_buffer_size(1024 * 64);
                 pl.run();
                 Ok(())
             })?;

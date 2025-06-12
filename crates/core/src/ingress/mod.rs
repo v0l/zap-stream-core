@@ -21,8 +21,8 @@ pub struct ConnectionInfo {
     /// Unique ID of this connection / pipeline
     pub id: Uuid,
 
-    /// Endpoint of the ingress
-    pub endpoint: String,
+    /// Name of the ingest point
+    pub endpoint: &'static str,
 
     /// IP address of the connection
     pub ip_addr: String,
@@ -58,7 +58,10 @@ pub fn run_pipeline(mut pl: PipelineRunner) -> anyhow::Result<()> {
     info!("New client connected: {}", &pl.connection.ip_addr);
 
     std::thread::Builder::new()
-        .name(format!("pipeline-{}", pl.connection.id))
+        .name(format!(
+            "client:{}:{}",
+            pl.connection.endpoint, pl.connection.id
+        ))
         .spawn(move || {
             pl.run();
         })?;

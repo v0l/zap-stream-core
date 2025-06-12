@@ -15,7 +15,7 @@ pub async fn listen(out_dir: String, addr: String, overseer: Arc<dyn Overseer>) 
         let info = ConnectionInfo {
             id: Uuid::new_v4(),
             ip_addr: ip.to_string(),
-            endpoint: addr.clone(),
+            endpoint: "tcp",
             app_name: "".to_string(),
             key: "test".to_string(),
         };

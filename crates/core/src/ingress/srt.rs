@@ -22,7 +22,7 @@ pub async fn listen(out_dir: String, addr: String, overseer: Arc<dyn Overseer>) 
         let socket = request.accept(None).await?;
         let info = ConnectionInfo {
             id: Uuid::new_v4(),
-            endpoint: addr.clone(),
+            endpoint: "srt",
             ip_addr: socket.settings().remote.to_string(),
             app_name: "".to_string(),
             key: socket
