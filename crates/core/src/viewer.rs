@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
-use uuid::Uuid;
 use tokio::task;
 use log::debug;
 use sha2::{Digest, Sha256};

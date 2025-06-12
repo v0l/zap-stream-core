@@ -1,10 +1,12 @@
 use crate::overseer::Overseer;
 use crate::pipeline::runner::PipelineRunner;
-use log::{error, info};
+use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::runtime::Handle;
+use uuid::Uuid;
 
 pub mod file;
 #[cfg(feature = "rtmp")]
@@ -16,6 +18,9 @@ pub mod test;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ConnectionInfo {
+    /// Unique ID of this connection / pipeline
+    pub id: Uuid,
+
     /// Endpoint of the ingress
     pub endpoint: String,
 
@@ -36,33 +41,103 @@ pub fn spawn_pipeline(
     seer: Arc<dyn Overseer>,
     reader: Box<dyn Read + Send>,
 ) {
-    info!("New client connected: {}", &info.ip_addr);
-    let seer = seer.clone();
-    let out_dir = out_dir.to_string();
-    std::thread::spawn(move || unsafe {
-        match PipelineRunner::new(handle, out_dir, seer, info, reader) {
-            Ok(mut pl) => loop {
-                match pl.run() {
-                    Ok(c) => {
-                        if !c {
-                            if let Err(e) = pl.flush() {
-                                error!("Pipeline flush failed: {}", e);
-                            }
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        if let Err(e) = pl.flush() {
-                            error!("Pipeline flush failed: {}", e);
-                        }
-                        error!("Pipeline run failed: {}", e);
-                        break;
-                    }
-                }
-            },
+    match PipelineRunner::new(handle, out_dir, seer, info, reader, None) {
+        Ok(pl) => match run_pipeline(pl) {
+            Ok(_) => {}
             Err(e) => {
-                error!("Failed to create PipelineRunner: {}", e);
+                error!("Failed to run PipelineRunner: {}", e);
             }
+        },
+        Err(e) => {
+            error!("Failed to create PipelineRunner: {}", e);
         }
-    });
+    }
+}
+
+pub fn run_pipeline(mut pl: PipelineRunner) -> anyhow::Result<()> {
+    info!("New client connected: {}", &pl.connection.ip_addr);
+
+    std::thread::Builder::new()
+        .name(format!("pipeline-{}", pl.connection.id))
+        .spawn(move || {
+            pl.run();
+        })?;
+    Ok(())
+}
+
+/// Common buffered reader functionality for ingress sources
+pub struct BufferedReader {
+    pub buf: Vec<u8>,
+    pub max_buffer_size: usize,
+    pub last_buffer_log: Instant,
+    pub bytes_processed: u64,
+    pub packets_received: u64,
+    pub source_name: &'static str,
+}
+
+impl BufferedReader {
+    pub fn new(capacity: usize, max_size: usize, source_name: &'static str) -> Self {
+        Self {
+            buf: Vec::with_capacity(capacity),
+            max_buffer_size: max_size,
+            last_buffer_log: Instant::now(),
+            bytes_processed: 0,
+            packets_received: 0,
+            source_name,
+        }
+    }
+
+    /// Add data to buffer with size limit and performance tracking
+    pub fn add_data(&mut self, data: &[u8]) {
+        // Inline buffer management to avoid borrow issues
+        if self.buf.len() + data.len() > self.max_buffer_size {
+            let bytes_to_drop = (self.buf.len() + data.len()) - self.max_buffer_size;
+            warn!(
+                "{} buffer full ({} bytes), dropping {} oldest bytes",
+                self.source_name,
+                self.buf.len(),
+                bytes_to_drop
+            );
+            self.buf.drain(..bytes_to_drop);
+        }
+        self.buf.extend(data);
+
+        // Update performance counters
+        self.bytes_processed += data.len() as u64;
+        self.packets_received += 1;
+
+        // Log buffer status every 5 seconds
+        if self.last_buffer_log.elapsed().as_secs() >= 5 {
+            let buffer_util = (self.buf.len() as f32 / self.max_buffer_size as f32) * 100.0;
+            let elapsed = self.last_buffer_log.elapsed();
+            let mbps = (self.bytes_processed as f64 * 8.0) / (elapsed.as_secs_f64() * 1_000_000.0);
+            let pps = self.packets_received as f64 / elapsed.as_secs_f64();
+
+            info!(
+                "{} ingress: {:.1} Mbps, {:.1} packets/sec, buffer: {}% ({}/{} bytes)",
+                self.source_name,
+                mbps,
+                pps,
+                buffer_util as u32,
+                self.buf.len(),
+                self.max_buffer_size
+            );
+
+            // Reset counters
+            self.last_buffer_log = Instant::now();
+            self.bytes_processed = 0;
+            self.packets_received = 0;
+        }
+    }
+
+    /// Read data from buffer, filling the entire output buffer before returning
+    pub fn read_buffered(&mut self, buf: &mut [u8]) -> usize {
+        if self.buf.len() >= buf.len() {
+            let drain = self.buf.drain(..buf.len());
+            buf.copy_from_slice(drain.as_slice());
+            buf.len()
+        } else {
+            0
+        }
+    }
 }

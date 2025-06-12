@@ -13,7 +13,7 @@ codegen-units = 1
 panic = "unwind"
 
 [workspace.dependencies]
-ffmpeg-rs-raw = { git = "https://git.v0l.io/Kieran/ffmpeg-rs-raw.git", rev = "d79693ddb0bee2e94c1db07f789523e87bf1b0fc" }
+ffmpeg-rs-raw = { git = "https://git.v0l.io/Kieran/ffmpeg-rs-raw.git", rev = "aa1ce3edcad0fcd286d39b3e0c2fdc610c3988e7" }
 tokio = { version = "1.36.0", features = ["rt", "rt-multi-thread", "macros"] }
 anyhow = { version = "^1.0.91", features = ["backtrace"] }
 async-trait = "0.1.77"

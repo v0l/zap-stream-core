@@ -70,7 +70,6 @@ impl Settings {
                 blossom,
             } => Ok(Arc::new(
                 ZapStreamOverseer::new(
-                    &self.output_dir,
                     &self.public_url,
                     private_key,
                     database,

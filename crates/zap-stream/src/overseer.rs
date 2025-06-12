@@ -43,8 +43,6 @@ struct ActiveStreamInfo {
 /// zap.stream NIP-53 overseer
 #[derive(Clone)]
 pub struct ZapStreamOverseer {
-    /// Dir where HTTP server serves files from
-    out_dir: String,
     /// Database instance for accounts/streams
     db: ZapStreamDb,
     /// LND node connection
@@ -68,7 +66,6 @@ pub struct ZapStreamOverseer {
 
 impl ZapStreamOverseer {
     pub async fn new(
-        out_dir: &String,
         public_url: &String,
         private_key: &str,
         db: &str,
@@ -114,7 +111,6 @@ impl ZapStreamOverseer {
         client.connect().await;
 
         let overseer = Self {
-            out_dir: out_dir.clone(),
             db,
             lnd,
             client,
@@ -367,7 +363,7 @@ impl Overseer for ZapStreamOverseer {
             variants: cfg.variants.iter().map(|v| v.id()).collect(),
         }));
 
-        let stream_id = Uuid::new_v4();
+        let stream_id = connection.id.clone();
         // insert new stream record
         let mut new_stream = UserStream {
             id: stream_id.to_string(),
@@ -394,7 +390,6 @@ impl Overseer for ZapStreamOverseer {
         self.db.update_stream(&new_stream).await?;
 
         Ok(PipelineConfig {
-            id: stream_id,
             variants: cfg.variants,
             egress,
             ingress_info: stream_info.clone(),
@@ -545,7 +540,7 @@ struct EndpointConfig<'a> {
 
 fn get_variants_from_endpoint<'a>(
     info: &'a IngressInfo,
-    endpoint: &zap_stream_db::IngestEndpoint,
+    endpoint: &IngestEndpoint,
 ) -> Result<EndpointConfig<'a>> {
     let capabilities_str = endpoint.capabilities.as_deref().unwrap_or("");
     let capabilities: Vec<&str> = capabilities_str.split(',').collect();

@@ -5,6 +5,7 @@ use log::info;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::runtime::Handle;
+use uuid::Uuid;
 
 pub async fn listen(out_dir: String, addr: String, overseer: Arc<dyn Overseer>) -> Result<()> {
     let listener = TcpListener::bind(&addr).await?;
@@ -12,6 +13,7 @@ pub async fn listen(out_dir: String, addr: String, overseer: Arc<dyn Overseer>) 
     info!("TCP listening on: {}", &addr);
     while let Ok((socket, ip)) = listener.accept().await {
         let info = ConnectionInfo {
+            id: Uuid::new_v4(),
             ip_addr: ip.to_string(),
             endpoint: addr.clone(),
             app_name: "".to_string(),

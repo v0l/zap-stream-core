@@ -166,9 +166,8 @@ impl HlsVariant {
                         id: v.id(),
                     });
                     has_video = true;
-                    if ref_stream_index == -1 {
-                        ref_stream_index = stream_idx as _;
-                    }
+                    // Always use video stream as reference for segmentation
+                    ref_stream_index = stream_idx as _;
                 },
                 VariantStream::Audio(a) => unsafe {
                     let stream = mux.add_stream_encoder(enc)?;
@@ -196,6 +195,11 @@ impl HlsVariant {
         ensure!(
             ref_stream_index != -1,
             "No reference stream found, cant create variant"
+        );
+        trace!(
+            "{} will use stream index {} as reference for segmentation",
+            name,
+            ref_stream_index
         );
         unsafe {
             mux.open(Some(opts))?;
@@ -236,14 +240,7 @@ impl HlsVariant {
             .to_string()
     }
 
-    /// Mux a packet created by the encoder for this variant
-    pub unsafe fn mux_packet(&mut self, pkt: *mut AVPacket) -> Result<EgressResult> {
-        // Simply process the packet directly - no reordering needed
-        // FFmpeg's interleaving system should handle packet ordering upstream
-        self.process_packet(pkt)
-    }
-
-    /// Process a single packet through the muxer - FFmpeg-style implementation
+    /// Process a single packet through the muxer
     unsafe fn process_packet(&mut self, pkt: *mut AVPacket) -> Result<EgressResult> {
         let pkt_stream = *(*self.mux.context())
             .streams
@@ -254,7 +251,7 @@ impl HlsVariant {
         let mut can_split = stream_type == AVMEDIA_TYPE_VIDEO
             && ((*pkt).flags & AV_PKT_FLAG_KEY == AV_PKT_FLAG_KEY);
         let mut is_ref_pkt =
-            stream_type == AVMEDIA_TYPE_VIDEO && (*pkt_stream).index == self.ref_stream_index;
+            stream_type == AVMEDIA_TYPE_VIDEO && (*pkt).stream_index == self.ref_stream_index;
 
         if (*pkt).pts == AV_NOPTS_VALUE {
             can_split = false;
@@ -264,7 +261,8 @@ impl HlsVariant {
         // check if current packet is keyframe, flush current segment
         if self.packets_written > 0 && can_split {
             trace!(
-                "Segmentation check: pts={}, duration={:.3}, timebase={}/{}, target={:.3}",
+                "{} segmentation check: pts={}, duration={:.3}, timebase={}/{}, target={:.3}",
+                self.name,
                 (*pkt).pts,
                 self.duration,
                 (*pkt).time_base.num,
@@ -429,7 +427,7 @@ impl HlsVariant {
                         e
                     );
                 }
-                info!("Removed segment file: {}", seg_path.display());
+                trace!("Removed segment file: {}", seg_path.display());
                 ret.push(seg);
             }
         }
@@ -571,9 +569,16 @@ impl HlsMuxer {
             if let Some(vs) = var.streams.iter().find(|s| s.id() == variant) {
                 // very important for muxer to know which stream this pkt belongs to
                 (*pkt).stream_index = *vs.index() as _;
-                return var.mux_packet(pkt);
+                return var.process_packet(pkt);
             }
         }
-        bail!("Packet doesnt match any variants");
+
+        // This HLS muxer doesn't handle this variant, return None instead of failing
+        // This can happen when multiple egress handlers are configured with different variant sets
+        trace!(
+            "HLS muxer received packet for variant {} which it doesn't handle",
+            variant
+        );
+        Ok(EgressResult::None)
     }
 }

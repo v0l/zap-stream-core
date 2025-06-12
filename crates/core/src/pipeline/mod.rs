@@ -4,7 +4,6 @@ use crate::egress::EgressConfig;
 use crate::overseer::IngressInfo;
 use crate::variant::VariantStream;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 pub mod runner;
 
@@ -42,7 +41,6 @@ impl Display for EgressType {
 
 #[derive(Clone)]
 pub struct PipelineConfig {
-    pub id: Uuid,
     /// Transcoded/Copied stream config
     pub variants: Vec<VariantStream>,
     /// Output muxers
@@ -57,7 +55,7 @@ pub struct PipelineConfig {
 
 impl Display for PipelineConfig {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "\nPipeline Config ID={}", self.id)?;
+        write!(f, "\nPipeline Config:")?;
         write!(f, "\nVariants:")?;
         for v in &self.variants {
             write!(f, "\n\t{}", v)?;
