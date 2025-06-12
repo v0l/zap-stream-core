@@ -371,6 +371,12 @@ impl Overseer for ZapStreamOverseer {
             starts: Utc::now(),
             state: UserStreamState::Live,
             endpoint_id: Some(endpoint.id),
+            title: user.title.clone(),
+            summary: user.summary.clone(),
+            thumb: user.image.clone(),
+            content_warning: user.content_warning.clone(),
+            goal: user.goal.clone(),
+            tags: user.tags.clone(),
             ..Default::default()
         };
         let stream_event = self.publish_stream_event(&new_stream, &user.pubkey).await?;

@@ -201,7 +201,9 @@ impl RtmpClient {
                     self.published_stream = Some(RtmpPublishedStream(app_name, stream_key));
                 }
             }
-            ServerSessionEvent::PublishStreamFinished { .. } => {}
+            ServerSessionEvent::PublishStreamFinished { .. } => {
+                // TODO: shutdown pipeline
+            }
             ServerSessionEvent::StreamMetadataChanged {
                 app_name,
                 stream_key,

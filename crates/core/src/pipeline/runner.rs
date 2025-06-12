@@ -32,7 +32,7 @@ use tokio::runtime::Handle;
 use uuid::Uuid;
 
 /// Idle mode timeout in seconds
-const IDLE_TIMEOUT_SECS: u64 = 600;
+const IDLE_TIMEOUT_SECS: u64 = 60;
 
 /// Circuit breaker threshold for consecutive decode failures
 const DEFAULT_MAX_CONSECUTIVE_FAILURES: u32 = 50;
