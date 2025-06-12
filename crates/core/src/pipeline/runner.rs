@@ -21,7 +21,8 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_WEBP;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPictureType::AV_PICTURE_TYPE_NONE;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    av_frame_clone, av_frame_free, av_get_sample_fmt, av_packet_free, av_rescale_q, AVFrame, AVPacket, AV_NOPTS_VALUE,
+    av_frame_clone, av_frame_free, av_get_sample_fmt, av_packet_free, av_rescale_q, AVFrame,
+    AVPacket, AV_NOPTS_VALUE,
 };
 use ffmpeg_rs_raw::{
     cstr, get_frame_from_hw, AudioFifo, Decoder, Demuxer, Encoder, Resample, Scaler, StreamType,
@@ -30,6 +31,12 @@ use log::{error, info, warn};
 use tokio::runtime::Handle;
 use uuid::Uuid;
 
+/// Idle mode timeout in seconds
+const IDLE_TIMEOUT_SECS: u64 = 600;
+
+/// Circuit breaker threshold for consecutive decode failures
+const DEFAULT_MAX_CONSECUTIVE_FAILURES: u32 = 50;
+
 /// Runner state for handling normal vs idle modes
 pub enum RunnerState {
     /// Normal operation - processing live stream
@@ -37,9 +44,23 @@ pub enum RunnerState {
     /// Idle mode - generating placeholder content after disconnection
     Idle {
         start_time: Instant,
-        last_frame_time: Option<Instant>,
         gen: FrameGenerator,
     },
+}
+
+impl RunnerState {
+    /// Check if currently in idle mode
+    pub fn is_idle(&self) -> bool {
+        matches!(self, RunnerState::Idle { .. })
+    }
+
+    /// Get idle duration, returns None if not in idle mode
+    pub fn idle_duration(&self) -> Option<Duration> {
+        match self {
+            RunnerState::Idle { start_time, .. } => Some(start_time.elapsed()),
+            RunnerState::Normal => None,
+        }
+    }
 }
 
 /// Pipeline runner is the main entry process for stream transcoding
@@ -100,6 +121,12 @@ pub struct PipelineRunner {
 
     /// Maximum consecutive failures before triggering circuit breaker
     max_consecutive_failures: u32,
+
+    /// Last video PTS for continuity in idle mode
+    last_video_pts: i64,
+
+    /// Last audio PTS for continuity in idle mode
+    last_audio_pts: i64,
 }
 
 unsafe impl Send for PipelineRunner {}
@@ -132,12 +159,18 @@ impl PipelineRunner {
             thumb_interval: 1800,
             state: RunnerState::Normal,
             consecutive_decode_failures: 0,
-            max_consecutive_failures: 50,
+            max_consecutive_failures: DEFAULT_MAX_CONSECUTIVE_FAILURES,
+            last_video_pts: 0,
+            last_audio_pts: 0,
         })
     }
 
     pub fn set_demuxer_buffer_size(&mut self, buffer_size: usize) {
         self.demuxer.set_buffer_size(buffer_size);
+    }
+
+    pub fn set_demuxer_format(&mut self, format: &str) {
+        self.demuxer.set_format(format);
     }
 
     /// Save image to disk
@@ -200,25 +233,38 @@ impl PipelineRunner {
 
     /// Switch to idle mode with placeholder content generation
     unsafe fn switch_to_idle_mode(&mut self, config: &PipelineConfig) -> Result<()> {
-        let src_video_stream = config
-            .ingress_info
-            .streams
-            .iter()
-            .find(|s| s.index == config.video_src)
-            .unwrap();
-        let src_audio_stream = config
-            .ingress_info
-            .streams
-            .iter()
-            .find(|s| Some(s.index) == config.audio_src);
+        if self.state.is_idle() {
+            return Ok(()); // Already in idle mode
+        }
 
-        let gen = FrameGenerator::from_stream(src_video_stream, src_audio_stream)?;
+        // Get streams directly from demuxer for correct timebase and properties
+        let video_stream = self.demuxer.get_stream(config.video_src)?;
+        let audio_stream = if let Some(audio_src) = config.audio_src {
+            Some(self.demuxer.get_stream(audio_src)?)
+        } else {
+            None
+        };
+
+        let mut gen = FrameGenerator::from_av_streams(
+            video_stream as *const _,
+            audio_stream.map(|s| s as *const _),
+        )?;
+
+        // Set starting PTS to continue from last frame
+        gen.set_starting_pts(self.last_video_pts, self.last_audio_pts);
         self.state = RunnerState::Idle {
             start_time: Instant::now(),
-            last_frame_time: None,
             gen,
         };
+
+        self.consecutive_decode_failures = 0; // Reset counter when entering idle mode
+        info!("Switched to idle mode - generating placeholder content");
         Ok(())
+    }
+
+    /// Check if circuit breaker should trigger due to consecutive failures
+    fn should_trigger_circuit_breaker(&self) -> bool {
+        self.consecutive_decode_failures >= self.max_consecutive_failures
     }
 
     /// Handle decode failure with circuit breaker logic
@@ -226,28 +272,77 @@ impl PipelineRunner {
         &mut self,
         config: &PipelineConfig,
     ) -> Result<Vec<EgressResult>> {
-        // Check if we've hit the circuit breaker threshold
-        if self.consecutive_decode_failures >= self.max_consecutive_failures {
+        if self.should_trigger_circuit_breaker() {
             error!(
                 "Circuit breaker triggered: {} consecutive decode failures exceeded threshold of {}. Switching to idle mode.",
                 self.consecutive_decode_failures, self.max_consecutive_failures
             );
 
-            // Switch to idle mode to continue stream with placeholder content
-            match self.switch_to_idle_mode(config) {
-                Ok(()) => {
-                    self.consecutive_decode_failures = 0; // Reset counter
-                    info!("Switched to idle mode due to excessive decode failures");
-                }
-                Err(e) => {
-                    error!("Failed to switch to idle mode: {}", e);
-                    bail!("Circuit breaker triggered and unable to switch to idle mode");
-                }
-            }
+            self.switch_to_idle_mode(config)
+                .context("Circuit breaker triggered but unable to switch to idle mode")?;
         }
 
         // Return empty result to skip this packet
         Ok(vec![])
+    }
+
+    /// Process frame in normal mode (live stream)
+    unsafe fn process_normal_mode(&mut self, config: &PipelineConfig) -> Result<Vec<EgressResult>> {
+        let (mut pkt, _stream) = self.demuxer.get_packet()?;
+        if pkt.is_null() {
+            warn!("Demuxer get_packet failed, entering idle mode");
+            self.switch_to_idle_mode(config)
+                .context("Failed to switch to idle mode after demuxer failure")?;
+            Ok(vec![])
+        } else {
+            let res = self.process_packet(pkt)?;
+            av_packet_free(&mut pkt);
+            Ok(res)
+        }
+    }
+
+    /// Process frame in idle mode (placeholder content)
+    unsafe fn process_idle_mode(&mut self, config: &PipelineConfig) -> Result<Vec<EgressResult>> {
+        // Check if idle timeout has been reached
+        if let Some(duration) = self.state.idle_duration() {
+            if duration > Duration::from_secs(IDLE_TIMEOUT_SECS) {
+                info!(
+                    "Idle timeout reached ({} seconds), ending stream",
+                    IDLE_TIMEOUT_SECS
+                );
+                return Err(anyhow!("Idle timeout reached"));
+            }
+        }
+
+        // Generate next frame from idle mode generator
+        if let RunnerState::Idle {
+            gen, start_time, ..
+        } = &mut self.state
+        {
+            gen.begin()?;
+
+            gen.fill_color([0, 0, 0, 255])?;
+            let message = format!(
+                "Stream Offline - {} seconds",
+                start_time.elapsed().as_secs()
+            );
+            gen.write_text(&message, 48.0, 50.0, 50.0)?;
+            gen.write_text("Please reconnect to resume streaming", 24.0, 50.0, 120.0)?;
+
+            let frame = gen.next()?;
+            let stream = if (*frame).sample_rate > 0 {
+                // Audio frame
+                config
+                    .audio_src
+                    .context("got audio frame with no audio src?")?
+            } else {
+                // Video frame
+                config.video_src
+            };
+            self.process_frame(config, stream, frame)
+        } else {
+            bail!("process_idle_mode called but not in idle state")
+        }
     }
 
     unsafe fn process_packet(&mut self, packet: *mut AVPacket) -> Result<Vec<EgressResult>> {
@@ -386,11 +481,15 @@ impl PipelineRunner {
             }
         }
 
-        // count frame as processed
+        // Track last PTS values for continuity in idle mode
         if stream_index == config.video_src {
+            self.last_video_pts = (*frame).pts + (*frame).duration;
             self.generate_thumb_from_frame(frame)?;
             self.frame_ctr += 1;
+        } else if Some(stream_index) == config.audio_src {
+            self.last_audio_pts = (*frame).pts + (*frame).duration;
         }
+
         av_frame_free(&mut frame);
         Ok(egress_results)
     }
@@ -485,66 +584,15 @@ impl PipelineRunner {
         };
 
         // run transcoder pipeline
-        let (mut pkt, _) = match &self.state {
-            RunnerState::Normal => {
-                match self.demuxer.get_packet() {
-                    Ok(pkt) => pkt,
-                    Err(e) => {
-                        warn!("Demuxer get_packet failed: {}, entering idle mode", e);
-                        // Switch to idle mode when demuxer fails
-                        match self.switch_to_idle_mode(&config) {
-                            Ok(()) => (ptr::null_mut(), ptr::null_mut()),
-                            Err(switch_err) => {
-                                error!("Failed to switch to idle mode: {}", switch_err);
-                                return Err(e.into());
-                            }
-                        }
-                    }
-                }
-            }
-            RunnerState::Idle { .. } => {
-                // return empty when idle - skip demuxer completely
-                (ptr::null_mut(), ptr::null_mut())
-            }
+        let results = match &mut self.state {
+            RunnerState::Normal => self.process_normal_mode(&config)?,
+            RunnerState::Idle { .. } => self.process_idle_mode(&config)?,
         };
-
-        // Handle state transitions based on packet availability
-        match (&self.state, pkt.is_null()) {
-            (RunnerState::Normal, true) => {
-                info!("Stream input disconnected, entering idle mode");
-                self.switch_to_idle_mode(&config)?;
-            }
-            (RunnerState::Idle { start_time, .. }, true) => {
-                // Check if we've been idle for more than 1 minute
-                if start_time.elapsed() > Duration::from_secs(60) {
-                    info!("Idle timeout reached (60 seconds), ending stream");
-                    return Ok(false);
-                }
-            }
-            _ => {}
-        }
-
-        // Process based on current state
-        let result = match &mut self.state {
-            RunnerState::Idle { gen, .. } => {
-                let frame = gen.next()?;
-                let stream = if (*frame).sample_rate > 0 {
-                    config
-                        .audio_src
-                        .context("got audio frame with no audio src?")?
-                } else {
-                    config.video_src
-                };
-                self.process_frame(&config, stream, frame)?
-            }
-            RunnerState::Normal => self.process_packet(pkt)?,
-        };
-        av_packet_free(&mut pkt);
 
         // egress results - process async operations without blocking if possible
-        if !result.is_empty() {
+        if !results.is_empty() {
             self.handle.block_on(async {
-                for er in result {
+                for er in results {
                     if let EgressResult::Segments { created, deleted } = er {
                         if let Err(e) = self
                             .overseer

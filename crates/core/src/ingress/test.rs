@@ -4,7 +4,7 @@ use crate::overseer::Overseer;
 use anyhow::Result;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVSampleFormat::AV_SAMPLE_FMT_FLTP;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::{av_frame_free, av_packet_free, AV_PROFILE_H264_MAIN};
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::{av_frame_free, av_packet_free, AV_PROFILE_H264_MAIN, AVRational};
 use ffmpeg_rs_raw::{Encoder, Muxer};
 use log::info;
 use ringbuf::traits::{Observer, Split};
@@ -115,6 +115,8 @@ impl TestPatternSrc {
                 SAMPLE_RATE,
                 frame_size,
                 1,
+                AVRational { num: 1, den: VIDEO_FPS as i32 },
+                AVRational { num: 1, den: SAMPLE_RATE as i32 },
             )?,
             video_encoder,
             audio_encoder,

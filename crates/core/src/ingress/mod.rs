@@ -130,14 +130,13 @@ impl BufferedReader {
         }
     }
 
-    /// Read data from buffer, filling the entire output buffer before returning
+    /// Read data from buffer
     pub fn read_buffered(&mut self, buf: &mut [u8]) -> usize {
-        if self.buf.len() >= buf.len() {
-            let drain = self.buf.drain(..buf.len());
-            buf.copy_from_slice(drain.as_slice());
-            buf.len()
-        } else {
-            0
+        let to_drain = buf.len().min(self.buf.len());
+        if to_drain > 0 {
+            let drain = self.buf.drain(..to_drain);
+            buf[..to_drain].copy_from_slice(drain.as_slice());
         }
+        to_drain
     }
 }
