@@ -15,6 +15,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use url::Url;
 use uuid::Uuid;
+use zap_stream_core::egress::hls::HlsEgress;
 use zap_stream_core::egress::{EgressConfig, EgressSegment};
 use zap_stream_core::ingress::ConnectionInfo;
 use zap_stream_core::overseer::{IngressInfo, IngressStream, IngressStreamType, Overseer};
@@ -227,15 +228,18 @@ impl ZapStreamOverseer {
         stream: &UserStream,
         pubkey: &Vec<u8>,
     ) -> Result<Event> {
+        // TODO: remove assumption that HLS is enabled
+        let base_streaming_path = PathBuf::from(HlsEgress::PATH).join(stream.id.to_string());
         let extra_tags = vec![
             Tag::parse(["p", hex::encode(pubkey).as_str(), "", "host"])?,
             Tag::parse([
                 "streaming",
-                self.map_to_stream_public_url(stream, "live.m3u8")?.as_str(),
+                self.map_to_public_url(base_streaming_path.join("live.m3u8").to_str().unwrap())?
+                    .as_str(),
             ])?,
             Tag::parse([
                 "image",
-                self.map_to_stream_public_url(stream, "thumb.webp")?
+                self.map_to_public_url(base_streaming_path.join("thumb.webp").to_str().unwrap())?
                     .as_str(),
             ])?,
             Tag::parse(["service", self.map_to_public_url("api/v1")?.as_str()])?,
@@ -246,10 +250,6 @@ impl ZapStreamOverseer {
             .sign_with_keys(&self.keys)?;
         self.client.send_event(ev.clone()).await?;
         Ok(ev)
-    }
-
-    fn map_to_stream_public_url(&self, stream: &UserStream, path: &str) -> Result<String> {
-        self.map_to_public_url(&format!("{}/{}", stream.id, path))
     }
 
     fn map_to_public_url(&self, path: &str) -> Result<String> {
@@ -433,7 +433,7 @@ impl Overseer for ZapStreamOverseer {
             .tick_stream(pipeline_id, stream.user_id, duration, cost)
             .await?;
         if bal <= 0 {
-            bail!("Not enough balance");
+            bail!("Balance has run out");
         }
 
         // Update last segment time for this stream
@@ -514,6 +514,7 @@ impl Overseer for ZapStreamOverseer {
         viewer_states.remove(&stream.id);
 
         stream.state = UserStreamState::Ended;
+        stream.ends = Some(Utc::now());
         let event = self.publish_stream_event(&stream, &user.pubkey).await?;
         stream.event = Some(event.as_json());
         self.db.update_stream(&stream).await?;

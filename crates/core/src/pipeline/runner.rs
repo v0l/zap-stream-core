@@ -705,7 +705,7 @@ impl PipelineRunner {
                     let hls = HlsEgress::new(
                         &self.connection.id,
                         &self.out_dir,
-                        2.0, // TODO: configure segment length
+                        6.0, // TODO: configure segment length
                         encoders,
                         SegmentType::MPEGTS,
                     )?;

@@ -4,13 +4,13 @@ use anyhow::{bail, ensure, Result};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_H264;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVMediaType::AVMEDIA_TYPE_VIDEO;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    av_free, av_opt_set, av_q2d, av_write_frame, avio_close, avio_flush, avio_open, AVPacket,
-    AVStream, AVIO_FLAG_WRITE, AV_NOPTS_VALUE, AV_PKT_FLAG_KEY,
+    av_free, av_opt_set, av_q2d, av_write_frame, avio_close, avio_flush, avio_open, avio_size,
+    AVPacket, AVStream, AVIO_FLAG_WRITE, AV_NOPTS_VALUE, AV_PKT_FLAG_KEY,
 };
 use ffmpeg_rs_raw::{cstr, Encoder, Muxer};
 use itertools::Itertools;
 use log::{info, trace, warn};
-use m3u8_rs::MediaSegment;
+use m3u8_rs::{ByteRange, MediaSegment, MediaSegmentType, Part, PartInf};
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::fs::File;
@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::ptr;
 use uuid::Uuid;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum SegmentType {
     MPEGTS,
     FMP4,
@@ -79,14 +79,14 @@ pub struct HlsVariant {
     streams: Vec<HlsVariantStream>,
     /// Segment length in seconds
     segment_length: f32,
-    /// Total number of segments to store for this variant
-    segment_window: Option<u16>,
+    /// Total number of seconds of video to store
+    segment_window: f32,
     /// Current segment index
     idx: u64,
     /// Output directory (base)
     out_dir: String,
     /// List of segments to be included in the playlist
-    segments: Vec<SegmentInfo>,
+    segments: Vec<HlsSegment>,
     /// Type of segments to create
     segment_type: SegmentType,
     /// Ending presentation timestamp
@@ -97,8 +97,30 @@ pub struct HlsVariant {
     packets_written: u64,
     /// Reference stream used to track duration
     ref_stream_index: i32,
+    /// LL-HLS: Target duration for partial segments
+    partial_target_duration: f32,
+    /// HLS-LL: Current partial index
+    current_partial_index: u64,
+    /// HLS-LL: Current duration in this partial
+    current_partial_duration: f64,
 }
 
+#[derive(PartialEq)]
+enum HlsSegment {
+    Full(SegmentInfo),
+    Partial(PartialSegmentInfo),
+}
+
+impl HlsSegment {
+    fn to_media_segment(&self) -> MediaSegmentType {
+        match self {
+            HlsSegment::Full(s) => s.to_media_segment(),
+            HlsSegment::Partial(s) => s.to_media_segment(),
+        }
+    }
+}
+
+#[derive(PartialEq)]
 struct SegmentInfo {
     index: u64,
     duration: f32,
@@ -106,17 +128,45 @@ struct SegmentInfo {
 }
 
 impl SegmentInfo {
-    fn to_media_segment(&self) -> MediaSegment {
-        MediaSegment {
+    fn to_media_segment(&self) -> MediaSegmentType {
+        MediaSegmentType::Full(MediaSegment {
             uri: self.filename(),
             duration: self.duration,
-            title: None,
             ..MediaSegment::default()
-        }
+        })
     }
 
     fn filename(&self) -> String {
         HlsVariant::segment_name(self.kind, self.index)
+    }
+}
+
+#[derive(PartialEq)]
+struct PartialSegmentInfo {
+    index: u64,
+    parent_index: u64,
+    parent_kind: SegmentType,
+    duration: f64,
+    independent: bool,
+    byte_range: Option<(u64, Option<u64>)>,
+}
+
+impl PartialSegmentInfo {
+    fn to_media_segment(&self) -> MediaSegmentType {
+        MediaSegmentType::Partial(Part {
+            uri: self.filename(),
+            duration: self.duration,
+            independent: self.independent,
+            gap: false,
+            byte_range: self.byte_range.map(|r| ByteRange {
+                length: r.0,
+                offset: r.1,
+            }),
+        })
+    }
+
+    fn filename(&self) -> String {
+        HlsVariant::segment_name(self.parent_kind, self.parent_index)
     }
 }
 
@@ -207,17 +257,20 @@ impl HlsVariant {
         Ok(Self {
             name: name.clone(),
             segment_length,
-            segment_window: Some(10), //TODO: configure window
+            segment_window: 30.0,
             mux,
             streams,
             idx: 1,
-            segments: Vec::new(), // Start with empty segments list
+            segments: Vec::new(),
             out_dir: out_dir.to_string(),
             segment_type,
             end_pts: AV_NOPTS_VALUE,
             duration: 0.0,
             packets_written: 0,
             ref_stream_index,
+            partial_target_duration: 0.33,
+            current_partial_index: 0,
+            current_partial_duration: 0.0,
         })
     }
 
@@ -259,20 +312,8 @@ impl HlsVariant {
         }
 
         // check if current packet is keyframe, flush current segment
-        if self.packets_written > 0 && can_split {
-            trace!(
-                "{} segmentation check: pts={}, duration={:.3}, timebase={}/{}, target={:.3}",
-                self.name,
-                (*pkt).pts,
-                self.duration,
-                (*pkt).time_base.num,
-                (*pkt).time_base.den,
-                self.segment_length
-            );
-
-            if self.duration >= self.segment_length as f64 {
-                result = self.split_next_seg()?;
-            }
+        if self.packets_written > 1 && can_split && self.duration >= self.segment_length as f64 {
+            result = self.split_next_seg()?;
         }
 
         // track duration from pts
@@ -282,18 +323,67 @@ impl HlsVariant {
             }
             let pts_diff = (*pkt).pts - self.end_pts;
             if pts_diff > 0 {
-                self.duration += pts_diff as f64 * av_q2d((*pkt).time_base);
+                let time_delta = pts_diff as f64 * av_q2d((*pkt).time_base);
+                self.duration += time_delta;
+                self.current_partial_duration += time_delta;
             }
             self.end_pts = (*pkt).pts;
         }
 
+        // write to current segment
         self.mux.write_packet(pkt)?;
         self.packets_written += 1;
+
+        // HLS-LL: write next partial segment
+        if is_ref_pkt && self.current_partial_duration >= self.partial_target_duration as f64 {
+            self.create_partial_segment(can_split)?;
+        }
+
         Ok(result)
     }
 
     pub unsafe fn reset(&mut self) -> Result<()> {
         self.mux.close()
+    }
+
+    /// Create a partial segment for LL-HLS
+    fn create_partial_segment(&mut self, independent: bool) -> Result<()> {
+        let ctx = self.mux.context();
+        let pos = unsafe {
+            avio_flush((*ctx).pb);
+            avio_size((*ctx).pb) as u64
+        };
+
+        let previous_partial_end = self.segments.last().and_then(|s| match &s {
+            HlsSegment::Partial(p) => p.byte_range.as_ref().map(|(len, start)| start.unwrap_or(0) + len),
+            _ => None,
+        });
+        let partial_info = PartialSegmentInfo {
+            index: self.current_partial_index,
+            parent_index: self.idx,
+            parent_kind: self.segment_type,
+            duration: self.current_partial_duration,
+            independent,
+            byte_range: match previous_partial_end {
+                Some(prev_end) => Some((pos - prev_end, Some(prev_end))),
+                _ => Some((pos, Some(0))),
+            },
+        };
+
+        trace!(
+            "{} created partial segment {} [{:.3}s, independent={}]",
+            self.name,
+            partial_info.index,
+            partial_info.duration,
+            independent
+        );
+        self.segments.push(HlsSegment::Partial(partial_info));
+        self.current_partial_index += 1;
+        self.current_partial_duration = 0.0;
+
+        self.write_playlist()?;
+
+        Ok(())
     }
 
     /// Reset the muxer state and start the next segment
@@ -383,6 +473,7 @@ impl HlsVariant {
             warn!("Failed to update playlist: {}", e);
         }
 
+        // Reset counters for next segment
         self.packets_written = 0;
         self.duration = 0.0;
 
@@ -400,37 +491,62 @@ impl HlsVariant {
 
     /// Add a new segment to the variant and return a list of deleted segments
     fn push_segment(&mut self, idx: u64, duration: f32) -> Result<()> {
-        self.segments.push(SegmentInfo {
+        self.segments.push(HlsSegment::Full(SegmentInfo {
             index: idx,
             duration,
             kind: self.segment_type,
-        });
+        }));
 
         self.write_playlist()
     }
 
     /// Delete segments which are too old
     fn clean_segments(&mut self) -> Result<Vec<SegmentInfo>> {
-        const MAX_SEGMENTS: usize = 10;
-
-        let mut ret = vec![];
-        if self.segments.len() > MAX_SEGMENTS {
-            let n_drain = self.segments.len() - MAX_SEGMENTS;
-            let seg_dir = self.out_dir();
-            for seg in self.segments.drain(..n_drain) {
-                // delete file
-                let seg_path = seg_dir.join(seg.filename());
-                if let Err(e) = std::fs::remove_file(&seg_path) {
-                    warn!(
-                        "Failed to remove segment file: {} {}",
-                        seg_path.display(),
-                        e
-                    );
+        let drain_from_hls_segment = {
+            let mut acc = 0.0;
+            let mut seg_match = None;
+            for seg in self
+                .segments
+                .iter()
+                .filter(|e| matches!(e, HlsSegment::Full(_)))
+                .rev()
+            {
+                if acc >= self.segment_window {
+                    seg_match = Some(seg);
+                    break;
                 }
-                trace!("Removed segment file: {}", seg_path.display());
-                ret.push(seg);
+                acc += match seg {
+                    HlsSegment::Full(seg) => seg.duration,
+                    _ => 0.0,
+                };
+            }
+            seg_match
+        };
+        let mut ret = vec![];
+        if let Some(seg_match) = drain_from_hls_segment {
+            if let Some(drain_pos) = self.segments.iter().position(|e| e == seg_match) {
+                let seg_dir = self.out_dir();
+                for seg in self.segments.drain(..drain_pos) {
+                    match seg {
+                        HlsSegment::Full(seg) => {
+                            let seg_path = seg_dir.join(seg.filename());
+                            if let Err(e) = std::fs::remove_file(&seg_path) {
+                                warn!(
+                                    "Failed to remove segment file: {} {}",
+                                    seg_path.display(),
+                                    e
+                                );
+                            }
+                            trace!("Removed segment file: {}", seg_path.display());
+
+                            ret.push(seg);
+                        }
+                        _ => {}
+                    }
+                }
             }
         }
+
         Ok(ret)
     }
 
@@ -440,11 +556,20 @@ impl HlsVariant {
         }
 
         let mut pl = m3u8_rs::MediaPlaylist::default();
-        // Round up target duration to ensure compliance
         pl.target_duration = (self.segment_length.ceil() as u64).max(1);
         pl.segments = self.segments.iter().map(|s| s.to_media_segment()).collect();
-        pl.version = Some(3);
-        pl.media_sequence = self.segments.first().map(|s| s.index).unwrap_or(0);
+        pl.version = Some(6);
+        pl.part_inf = Some(PartInf {
+            part_target: self.partial_target_duration as f64,
+        });
+        pl.media_sequence = self
+            .segments
+            .iter()
+            .find_map(|s| match s {
+                HlsSegment::Full(ss) => Some(ss.index),
+                _ => None,
+            })
+            .unwrap_or(self.idx);
         // For live streams, don't set end list
         pl.end_list = false;
 
@@ -522,6 +647,9 @@ impl HlsMuxer {
     ) -> Result<Self> {
         let base = PathBuf::from(out_dir).join(id.to_string());
 
+        if !base.exists() {
+            std::fs::create_dir_all(&base)?;
+        }
         let mut vars = Vec::new();
         for (k, group) in &encoders
             .sorted_by(|a, b| a.0.group_id().cmp(&b.0.group_id()))
