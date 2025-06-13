@@ -94,7 +94,7 @@ impl ZapStreamDb {
 
     pub async fn update_stream(&self, user_stream: &UserStream) -> Result<()> {
         sqlx::query(
-            "update user_stream set state = ?, starts = ?, ends = ?, title = ?, summary = ?, image = ?, thumb = ?, tags = ?, content_warning = ?, goal = ?, pinned = ?, fee = ?, event = ? where id = ?",
+            "update user_stream set state = ?, starts = ?, ends = ?, title = ?, summary = ?, image = ?, thumb = ?, tags = ?, content_warning = ?, goal = ?, pinned = ?, fee = ?, event = ?, endpoint_id = ? where id = ?",
         )
             .bind(&user_stream.state)
             .bind(&user_stream.starts)
@@ -109,6 +109,7 @@ impl ZapStreamDb {
             .bind(&user_stream.pinned)
             .bind(&user_stream.fee)
             .bind(&user_stream.event)
+            .bind(&user_stream.endpoint_id)
             .bind(&user_stream.id)
             .execute(&self.db)
             .await

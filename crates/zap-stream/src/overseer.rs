@@ -419,10 +419,10 @@ impl Overseer for ZapStreamOverseer {
             if let Some(endpoint) = self.db.get_ingest_endpoint(endpoint_id).await? {
                 endpoint.cost
             } else {
-                0
+                bail!("Endpoint doesnt exist");
             }
         } else {
-            0
+            bail!("Endpoint id not set on stream");
         };
 
         // Convert duration from seconds to minutes and calculate cost
