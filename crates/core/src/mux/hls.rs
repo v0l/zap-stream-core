@@ -10,7 +10,7 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
 use ffmpeg_rs_raw::{cstr, Encoder, Muxer};
 use itertools::Itertools;
 use log::{info, trace, warn};
-use m3u8_rs::{ByteRange, MediaSegment, MediaSegmentType, Part, PartInf};
+use m3u8_rs::{ByteRange, MediaSegment, MediaSegmentType, Part, PartInf, PreloadHint};
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::fs::File;
@@ -103,6 +103,8 @@ pub struct HlsVariant {
     current_partial_index: u64,
     /// HLS-LL: Current duration in this partial
     current_partial_duration: f64,
+    /// HLS-LL: Whether the next partial segment should be marked as independent
+    next_partial_independent: bool,
 }
 
 #[derive(PartialEq)]
@@ -114,8 +116,8 @@ enum HlsSegment {
 impl HlsSegment {
     fn to_media_segment(&self) -> MediaSegmentType {
         match self {
-            HlsSegment::Full(s) => s.to_media_segment(),
-            HlsSegment::Partial(s) => s.to_media_segment(),
+            HlsSegment::Full(f) => f.to_media_segment(),
+            HlsSegment::Partial(p) => p.to_media_segment(),
         }
     }
 }
@@ -167,6 +169,13 @@ impl PartialSegmentInfo {
 
     fn filename(&self) -> String {
         HlsVariant::segment_name(self.parent_kind, self.parent_index)
+    }
+
+    /// Byte offset where this partial segment ends
+    fn end_pos(&self) -> Option<u64> {
+        self.byte_range
+            .as_ref()
+            .map(|(len, start)| start.unwrap_or(0) + len)
     }
 }
 
@@ -271,6 +280,7 @@ impl HlsVariant {
             partial_target_duration: 0.33,
             current_partial_index: 0,
             current_partial_duration: 0.0,
+            next_partial_independent: false,
         })
     }
 
@@ -311,6 +321,16 @@ impl HlsVariant {
             is_ref_pkt = false;
         }
 
+        // HLS-LL: write prev partial segment
+        if self.current_partial_duration >= self.partial_target_duration as f64 {
+            self.create_partial_segment()?;
+
+            // HLS-LL: Mark next partial as independent if this packet is a keyframe
+            if can_split {
+                self.next_partial_independent = true;
+            }
+        }
+
         // check if current packet is keyframe, flush current segment
         if self.packets_written > 1 && can_split && self.duration >= self.segment_length as f64 {
             result = self.split_next_seg()?;
@@ -334,11 +354,6 @@ impl HlsVariant {
         self.mux.write_packet(pkt)?;
         self.packets_written += 1;
 
-        // HLS-LL: write next partial segment
-        if is_ref_pkt && self.current_partial_duration >= self.partial_target_duration as f64 {
-            self.create_partial_segment(can_split)?;
-        }
-
         Ok(result)
     }
 
@@ -347,27 +362,30 @@ impl HlsVariant {
     }
 
     /// Create a partial segment for LL-HLS
-    fn create_partial_segment(&mut self, independent: bool) -> Result<()> {
+    fn create_partial_segment(&mut self) -> Result<()> {
         let ctx = self.mux.context();
-        let pos = unsafe {
+        let end_pos = unsafe {
             avio_flush((*ctx).pb);
             avio_size((*ctx).pb) as u64
         };
 
-        let previous_partial_end = self.segments.last().and_then(|s| match &s {
-            HlsSegment::Partial(p) => p.byte_range.as_ref().map(|(len, start)| start.unwrap_or(0) + len),
-            _ => None,
-        });
+        let previous_end_pos = self
+            .segments
+            .last()
+            .and_then(|s| match &s {
+                HlsSegment::Partial(p) => p.end_pos(),
+                _ => None,
+            })
+            .unwrap_or(0);
+        let independent = self.next_partial_independent;
+        let partial_size = end_pos - previous_end_pos;
         let partial_info = PartialSegmentInfo {
             index: self.current_partial_index,
             parent_index: self.idx,
             parent_kind: self.segment_type,
             duration: self.current_partial_duration,
             independent,
-            byte_range: match previous_partial_end {
-                Some(prev_end) => Some((pos - prev_end, Some(prev_end))),
-                _ => Some((pos, Some(0))),
-            },
+            byte_range: Some((partial_size, Some(previous_end_pos))),
         };
 
         trace!(
@@ -380,6 +398,7 @@ impl HlsVariant {
         self.segments.push(HlsSegment::Partial(partial_info));
         self.current_partial_index += 1;
         self.current_partial_duration = 0.0;
+        self.next_partial_independent = false;
 
         self.write_playlist()?;
 
@@ -558,6 +577,17 @@ impl HlsVariant {
         let mut pl = m3u8_rs::MediaPlaylist::default();
         pl.target_duration = (self.segment_length.ceil() as u64).max(1);
         pl.segments = self.segments.iter().map(|s| s.to_media_segment()).collect();
+
+        // append segment preload for next part segment
+        if let Some(HlsSegment::Partial(partial)) = self.segments.last() {
+            // TODO: try to estimate if there will be another partial segment
+            pl.segments.push(MediaSegmentType::PreloadHint(PreloadHint {
+                hint_type: "PART".to_string(),
+                uri: partial.filename(),
+                byte_range_start: partial.end_pos(),
+                byte_range_length: None,
+            }));
+        }
         pl.version = Some(6);
         pl.part_inf = Some(PartInf {
             part_target: self.partial_target_duration as f64,

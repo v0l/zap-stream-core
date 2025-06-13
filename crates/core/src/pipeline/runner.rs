@@ -208,13 +208,15 @@ impl PipelineRunner {
     unsafe fn generate_thumb_from_frame(&mut self, frame: *mut AVFrame) -> Result<()> {
         if self.thumb_interval > 0 && (self.frame_ctr % self.thumb_interval) == 0 {
             let frame = av_frame_clone(frame).addr();
-            let dst_pic = PathBuf::from(&self.out_dir)
-                .join(self.connection.id.to_string())
-                .join("thumb.webp");
+            let dir = PathBuf::from(&self.out_dir).join(self.connection.id.to_string());
+            if !dir.exists() {
+                std::fs::create_dir_all(&dir)?;
+            }
             std::thread::spawn(move || unsafe {
                 let mut frame = frame as *mut AVFrame; //TODO: danger??
                 let thumb_start = Instant::now();
 
+                let dst_pic = dir.join("thumb.webp");
                 if let Err(e) = Self::save_thumb(frame, &dst_pic) {
                     warn!("Failed to save thumb: {}", e);
                 }

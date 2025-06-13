@@ -24,6 +24,6 @@ url = "2.5.0"
 itertools = "0.14.0"
 chrono = { version = "^0.4.38", features = ["serde"] }
 hex = "0.4.3"
-m3u8-rs = { git = "https://github.com/v0l/m3u8-rs.git", rev = "d76ff96326814237a6d5e92288cdfe7060a43168" }
+m3u8-rs = { git = "https://git.v0l.io/Kieran/m3u8-rs.git", rev = "5b7aa0c65994b5ab2780b7ed27d84c03bc32d19f" }
 sha2 = "0.10.8"
 data-encoding = "2.9.0"
