@@ -532,7 +532,7 @@ impl ZapStreamOverseer {
         let default = endpoints.iter().max_by_key(|e| e.cost);
         Ok(endpoints
             .iter()
-            .find(|e| e.name == connection.endpoint)
+            .find(|e| e.name.eq_ignore_ascii_case(connection.endpoint))
             .or(default)
             .unwrap()
             .clone())
