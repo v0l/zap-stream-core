@@ -381,7 +381,7 @@ impl HttpServer {
             .header("server", "zap-stream-core")
             .header("access-control-allow-origin", "*")
             .header("access-control-allow-headers", "*")
-            .header("access-control-allow-methods", "HEAD, GET")
+            .header("access-control-allow-methods", "HEAD, GET, OPTIONS")
     }
 
     /// Get a response object for a file body

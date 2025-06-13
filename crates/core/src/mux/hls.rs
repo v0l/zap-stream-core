@@ -4,8 +4,8 @@ use anyhow::{bail, ensure, Result};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_H264;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVMediaType::AVMEDIA_TYPE_VIDEO;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    av_free, av_opt_set, av_q2d, av_write_frame, avio_close, avio_flush, avio_open, avio_size,
-    AVPacket, AVStream, AVIO_FLAG_WRITE, AV_NOPTS_VALUE, AV_PKT_FLAG_KEY,
+    av_free, av_interleaved_write_frame, av_opt_set, av_q2d, avio_close, avio_flush, avio_open,
+    avio_size, AVPacket, AVStream, AVIO_FLAG_WRITE, AV_NOPTS_VALUE, AV_PKT_FLAG_KEY,
 };
 use ffmpeg_rs_raw::{cstr, Encoder, Muxer};
 use itertools::Itertools;
@@ -89,8 +89,10 @@ pub struct HlsVariant {
     segments: Vec<HlsSegment>,
     /// Type of segments to create
     segment_type: SegmentType,
-    /// Ending presentation timestamp
-    end_pts: i64,
+    /// Timestamp of the previous packet
+    last_pkt_pts: i64,
+    /// Timestamp of the start of the current segment
+    current_segment_start: f64,
     /// Current segment duration in seconds (precise accumulation)
     duration: f64,
     /// Number of packets written to current segment
@@ -275,13 +277,14 @@ impl HlsVariant {
             segments: Vec::new(),
             out_dir: out_dir.to_string(),
             segment_type,
-            end_pts: AV_NOPTS_VALUE,
+            last_pkt_pts: AV_NOPTS_VALUE,
             duration: 0.0,
             packets_written: 0,
             ref_stream_index,
             partial_target_duration: 0.33,
             current_partial_index: 0,
             current_partial_duration: 0.0,
+            current_segment_start: 0.0,
             next_partial_independent: false,
             low_latency: false,
         })
@@ -312,6 +315,7 @@ impl HlsVariant {
             .streams
             .add((*pkt).stream_index as usize);
 
+        let pkt_q = av_q2d((*pkt).time_base);
         let mut result = EgressResult::None;
         let stream_type = (*(*pkt_stream).codecpar).codec_type;
         let mut can_split = stream_type == AVMEDIA_TYPE_VIDEO
@@ -334,26 +338,28 @@ impl HlsVariant {
                 self.next_partial_independent = true;
             }
         }
-
         // check if current packet is keyframe, flush current segment
         if self.packets_written > 1 && can_split && self.duration >= self.segment_length as f64 {
-            result = self.split_next_seg()?;
+            result = self.split_next_seg((*pkt).pts as f64 * pkt_q)?;
         }
 
         // track duration from pts
         if is_ref_pkt {
-            if self.end_pts == AV_NOPTS_VALUE {
-                self.end_pts = (*pkt).pts;
+            if self.last_pkt_pts == AV_NOPTS_VALUE {
+                self.last_pkt_pts = (*pkt).pts;
             }
-            let pts_diff = (*pkt).pts - self.end_pts;
-            if pts_diff > 0 {
-                let time_delta = pts_diff as f64 * av_q2d((*pkt).time_base);
+            let time_delta = if (*pkt).duration != 0 {
+                (*pkt).duration as f64 * pkt_q
+            } else {
+                ((*pkt).pts - self.last_pkt_pts) as f64 * pkt_q
+            };
+            if time_delta > 0.0 {
                 self.duration += time_delta;
                 if self.low_latency {
                     self.current_partial_duration += time_delta;
                 }
             }
-            self.end_pts = (*pkt).pts;
+            self.last_pkt_pts = (*pkt).pts;
         }
 
         // write to current segment
@@ -412,13 +418,16 @@ impl HlsVariant {
     }
 
     /// Reset the muxer state and start the next segment
-    unsafe fn split_next_seg(&mut self) -> Result<EgressResult> {
+    unsafe fn split_next_seg(&mut self, next_pkt_start: f64) -> Result<EgressResult> {
         let completed_segment_idx = self.idx;
         self.idx += 1;
 
         // Manually reset muxer avio
         let ctx = self.mux.context();
-        av_write_frame(ctx, ptr::null_mut());
+        let ret = av_interleaved_write_frame(ctx, ptr::null_mut());
+        if ret < 0 {
+            bail!("Failed to split segment {}", ret);
+        }
         avio_flush((*ctx).pb);
         avio_close((*ctx).pb);
         av_free((*ctx).url as *mut _);
@@ -452,13 +461,15 @@ impl HlsVariant {
             .metadata()
             .map(|m| m.len())
             .unwrap_or(0);
+
+        let cur_duration = next_pkt_start - self.current_segment_start;
         info!(
             "Finished segment {} [{:.3}s, {:.2} kB, {} pkts]",
             completed_segment_path
                 .file_name()
                 .unwrap_or_default()
                 .to_string_lossy(),
-            self.duration,
+            cur_duration,
             segment_size as f32 / 1024f32,
             self.packets_written
         );
@@ -490,17 +501,22 @@ impl HlsVariant {
         let created = EgressSegment {
             variant: video_var_id,
             idx: completed_segment_idx,
-            duration: self.duration as f32,
+            duration: cur_duration as f32,
             path: completed_segment_path,
         };
 
-        if let Err(e) = self.push_segment(completed_segment_idx, self.duration as f32) {
-            warn!("Failed to update playlist: {}", e);
-        }
+        self.segments.push(HlsSegment::Full(SegmentInfo {
+            index: completed_segment_idx,
+            duration: cur_duration as f32,
+            kind: self.segment_type,
+        }));
+
+        self.write_playlist()?;
 
         // Reset counters for next segment
         self.packets_written = 0;
         self.duration = 0.0;
+        self.current_segment_start = next_pkt_start;
 
         Ok(EgressResult::Segments {
             created: vec![created],
@@ -512,17 +528,6 @@ impl HlsVariant {
         self.streams
             .iter()
             .find(|a| matches!(*a, HlsVariantStream::Video { .. }))
-    }
-
-    /// Add a new segment to the variant and return a list of deleted segments
-    fn push_segment(&mut self, idx: u64, duration: f32) -> Result<()> {
-        self.segments.push(HlsSegment::Full(SegmentInfo {
-            index: idx,
-            duration,
-            kind: self.segment_type,
-        }));
-
-        self.write_playlist()
     }
 
     /// Delete segments which are too old
