@@ -229,18 +229,28 @@ impl ZapStreamOverseer {
         pubkey: &Vec<u8>,
     ) -> Result<Event> {
         // TODO: remove assumption that HLS is enabled
-        let base_streaming_path = PathBuf::from(HlsEgress::PATH).join(stream.id.to_string());
         let extra_tags = vec![
             Tag::parse(["p", hex::encode(pubkey).as_str(), "", "host"])?,
             Tag::parse([
                 "streaming",
-                self.map_to_public_url(base_streaming_path.join("live.m3u8").to_str().unwrap())?
-                    .as_str(),
+                self.map_to_public_url(
+                    PathBuf::from(HlsEgress::PATH)
+                        .join(stream.id.to_string())
+                        .join("live.m3u8")
+                        .to_str()
+                        .unwrap(),
+                )?
+                .as_str(),
             ])?,
             Tag::parse([
                 "image",
-                self.map_to_public_url(base_streaming_path.join("thumb.webp").to_str().unwrap())?
-                    .as_str(),
+                self.map_to_public_url(
+                    PathBuf::from(stream.id.to_string())
+                        .join("thumb.webp")
+                        .to_str()
+                        .unwrap(),
+                )?
+                .as_str(),
             ])?,
             Tag::parse(["service", self.map_to_public_url("api/v1")?.as_str()])?,
         ];

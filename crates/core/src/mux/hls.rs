@@ -97,6 +97,8 @@ pub struct HlsVariant {
     packets_written: u64,
     /// Reference stream used to track duration
     ref_stream_index: i32,
+    /// HLS-LL: Enable LL-output
+    low_latency: bool,
     /// LL-HLS: Target duration for partial segments
     partial_target_duration: f32,
     /// HLS-LL: Current partial index
@@ -281,6 +283,7 @@ impl HlsVariant {
             current_partial_index: 0,
             current_partial_duration: 0.0,
             next_partial_independent: false,
+            low_latency: false,
         })
     }
 
@@ -322,7 +325,8 @@ impl HlsVariant {
         }
 
         // HLS-LL: write prev partial segment
-        if self.current_partial_duration >= self.partial_target_duration as f64 {
+        if self.low_latency && self.current_partial_duration >= self.partial_target_duration as f64
+        {
             self.create_partial_segment()?;
 
             // HLS-LL: Mark next partial as independent if this packet is a keyframe
@@ -345,7 +349,9 @@ impl HlsVariant {
             if pts_diff > 0 {
                 let time_delta = pts_diff as f64 * av_q2d((*pkt).time_base);
                 self.duration += time_delta;
-                self.current_partial_duration += time_delta;
+                if self.low_latency {
+                    self.current_partial_duration += time_delta;
+                }
             }
             self.end_pts = (*pkt).pts;
         }
@@ -588,10 +594,12 @@ impl HlsVariant {
                 byte_range_length: None,
             }));
         }
-        pl.version = Some(6);
-        pl.part_inf = Some(PartInf {
-            part_target: self.partial_target_duration as f64,
-        });
+        pl.version = Some(if self.low_latency { 6 } else { 3 });
+        if self.low_latency {
+            pl.part_inf = Some(PartInf {
+                part_target: self.partial_target_duration as f64,
+            });
+        }
         pl.media_sequence = self
             .segments
             .iter()
@@ -600,7 +608,6 @@ impl HlsVariant {
                 _ => None,
             })
             .unwrap_or(self.idx);
-        // For live streams, don't set end list
         pl.end_list = false;
 
         let mut f_out = File::create(self.out_dir().join("live.m3u8"))?;
