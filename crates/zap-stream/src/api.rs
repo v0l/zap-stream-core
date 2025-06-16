@@ -571,6 +571,8 @@ impl Api {
             })
             .collect();
 
+        // TODO: past streams should include a history entry
+
         Ok(HistoryResponse {
             items,
             page: 0,

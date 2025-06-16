@@ -19,7 +19,6 @@ impl HlsEgress {
     pub fn new<'a>(
         id: &Uuid,
         out_dir: &str,
-        segment_length: f32,
         encoders: impl Iterator<Item = (&'a VariantStream, &'a Encoder)>,
         segment_type: SegmentType,
     ) -> Result<Self> {
@@ -27,7 +26,6 @@ impl HlsEgress {
             mux: HlsMuxer::new(
                 id,
                 PathBuf::from(out_dir).join(Self::PATH).to_str().unwrap(),
-                segment_length,
                 encoders,
                 segment_type,
             )?,

@@ -186,7 +186,6 @@ impl PartialSegmentInfo {
 impl HlsVariant {
     pub fn new<'a>(
         out_dir: &'a str,
-        segment_length: f32,
         group: usize,
         encoded_vars: impl Iterator<Item = (&'a VariantStream, &'a Encoder)>,
         segment_type: SegmentType,
@@ -217,6 +216,7 @@ impl HlsVariant {
         let mut streams = Vec::new();
         let mut ref_stream_index = -1;
         let mut has_video = false;
+        let mut seg_size = 1.0;
 
         for (var, enc) in encoded_vars {
             match var {
@@ -231,6 +231,10 @@ impl HlsVariant {
                     has_video = true;
                     // Always use video stream as reference for segmentation
                     ref_stream_index = stream_idx as _;
+                    let v_seg = v.keyframe_interval as f32 / v.fps;
+                    if v_seg > seg_size {
+                        seg_size = v_seg;
+                    }
                 },
                 VariantStream::Audio(a) => unsafe {
                     let stream = mux.add_stream_encoder(enc)?;
@@ -269,7 +273,7 @@ impl HlsVariant {
         }
         Ok(Self {
             name: name.clone(),
-            segment_length,
+            segment_length: seg_size,
             segment_window: 30.0,
             mux,
             streams,
@@ -683,7 +687,6 @@ impl HlsMuxer {
     pub fn new<'a>(
         id: &Uuid,
         out_dir: &str,
-        segment_length: f32,
         encoders: impl Iterator<Item = (&'a VariantStream, &'a Encoder)>,
         segment_type: SegmentType,
     ) -> Result<Self> {
@@ -697,13 +700,7 @@ impl HlsMuxer {
             .sorted_by(|a, b| a.0.group_id().cmp(&b.0.group_id()))
             .chunk_by(|a| a.0.group_id())
         {
-            let var = HlsVariant::new(
-                base.to_str().unwrap(),
-                segment_length,
-                k,
-                group,
-                segment_type,
-            )?;
+            let var = HlsVariant::new(base.to_str().unwrap(), k, group, segment_type)?;
             vars.push(var);
         }
 
