@@ -643,7 +643,7 @@ fn get_variants_from_endpoint<'a>(
                         codec: "libx264".to_string(),
                         profile: 77, // AV_PROFILE_H264_MAIN
                         level: 51,
-                        keyframe_interval: video_src.fps as u16 * 2,
+                        keyframe_interval: video_src.fps as u16,
                         pixel_format: AV_PIX_FMT_YUV420P as u32,
                     }));
                     dst_index += 1;
