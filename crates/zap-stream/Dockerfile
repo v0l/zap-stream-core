@@ -15,7 +15,8 @@ RUN apt update && \
     protobuf-compiler \
     libclang-dev && \
     rm -rf /var/lib/apt/lists/*
-RUN git clone --single-branch --branch release/7.1 https://git.v0l.io/ffmpeg/ffmpeg.git && \
+RUN wget -O ffmpeg.tar.gz https://git.v0l.io/ffmpeg/ffmpeg/archive/release/7.1.tar.gz && \
+    tar xfv ffmpeg.tar.gz && \
     cd ffmpeg && \
     ./configure \
     --prefix=$FFMPEG_DIR \
@@ -31,6 +32,7 @@ RUN git clone --single-branch --branch release/7.1 https://git.v0l.io/ffmpeg/ffm
     --disable-static \
     --enable-shared && \
     make -j$(nproc) && make install
+ENV LD_LIBRARY_PATH=$FFMPEG_DIR/lib
 RUN cargo test
 RUN cargo install --path ./crates/zap-stream --root /app/build
 
