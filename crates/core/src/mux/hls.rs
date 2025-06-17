@@ -360,14 +360,9 @@ impl HlsVariant {
             // check if current packet is keyframe, flush current segment
             if can_split && cur_duration >= self.segment_length as f64 {
                 result = self.split_next_seg(pkt_pts)?;
-            } else if cur_part_duration >= self.partial_target_duration as f64 {
+            } else if self.low_latency && cur_part_duration >= self.partial_target_duration as f64 {
                 result = self.create_partial_segment(pkt_pts)?;
-
-                // HLS-LL: Mark next partial as independent if this packet is a keyframe
-                if can_split {
-                    info!("Next partial is independent");
-                    self.next_partial_independent = true;
-                }
+                self.next_partial_independent = can_split;
             }
         }
 

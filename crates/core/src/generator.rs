@@ -22,6 +22,7 @@ pub struct FrameGenerator {
     width: u16,
     height: u16,
     video_sample_fmt: AVPixelFormat,
+    realtime: bool,
 
     audio_sample_rate: u32,
     audio_frame_size: i32,
@@ -71,6 +72,7 @@ impl FrameGenerator {
             fps,
             width,
             height,
+            realtime: true,
             video_sample_fmt: pix_fmt,
             audio_sample_rate: sample_rate,
             audio_frame_size: frame_size,
@@ -84,6 +86,10 @@ impl FrameGenerator {
             scaler: Scaler::default(),
             next_frame: ptr::null_mut(),
         })
+    }
+
+    pub fn set_realtime(&mut self, realtime: bool) {
+        self.realtime = realtime;
     }
 
     pub fn from_stream(
@@ -263,6 +269,7 @@ impl FrameGenerator {
         }
         Ok(())
     }
+
     /// Copy data directly into the frame buffer (must be RGBA data)
     pub unsafe fn copy_frame_data(&mut self, data: &[u8]) -> Result<()> {
         if self.next_frame.is_null() {
@@ -354,17 +361,19 @@ impl FrameGenerator {
             self.begin()?;
         }
 
-        let stream_time = Duration::from_secs_f64(
-            self.video_pts as f64 / self.pts_per_frame() as f64 / self.fps as f64,
-        );
-        let real_time = self.start.elapsed();
-        let wait_time = if stream_time > real_time {
-            stream_time - real_time
-        } else {
-            Duration::new(0, 0)
-        };
-        if !wait_time.is_zero() && wait_time.as_secs_f32() > 1f32 / self.fps {
-            std::thread::sleep(wait_time);
+        if self.realtime {
+            let stream_time = Duration::from_secs_f64(
+                self.video_pts as f64 / self.pts_per_frame() as f64 / self.fps as f64,
+            );
+            let real_time = self.start.elapsed();
+            let wait_time = if stream_time > real_time {
+                stream_time - real_time
+            } else {
+                Duration::new(0, 0)
+            };
+            if !wait_time.is_zero() && wait_time.as_secs_f32() > 1f32 / self.fps {
+                std::thread::sleep(wait_time);
+            }
         }
 
         // convert to output pixel format, or just return internal frame if it matches output
