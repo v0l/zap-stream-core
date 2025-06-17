@@ -182,7 +182,7 @@ impl PartialSegmentInfo {
 }
 
 impl HlsVariant {
-    const LOW_LATENCY: bool = true;
+    const LOW_LATENCY: bool = false;
     const LL_PARTS: usize = 3;
 
     pub fn new<'a>(
@@ -345,8 +345,7 @@ impl HlsVariant {
         let stream_type = (*(*pkt_stream).codecpar).codec_type;
         let mut can_split = stream_type == AVMEDIA_TYPE_VIDEO
             && ((*pkt).flags & AV_PKT_FLAG_KEY == AV_PKT_FLAG_KEY);
-        let mut is_ref_pkt =
-            stream_type == AVMEDIA_TYPE_VIDEO && (*pkt).stream_index == self.ref_stream_index;
+        let mut is_ref_pkt = (*pkt).stream_index == self.ref_stream_index;
 
         if (*pkt).pts == AV_NOPTS_VALUE {
             can_split = false;
@@ -555,7 +554,11 @@ impl HlsVariant {
 
         self.segments.push(HlsSegment::Full(SegmentInfo {
             index: completed_segment_idx,
-            duration: cur_duration as f32,
+            duration: if self.playlist_version() >= 6 {
+                cur_duration.round() as _
+            } else {
+                cur_duration as _
+            },
             kind: self.segment_type,
         }));
 
@@ -627,6 +630,16 @@ impl HlsVariant {
         Ok(ret)
     }
 
+    fn playlist_version(&self) -> usize {
+        if self.low_latency {
+            6
+        } else if self.segment_type == SegmentType::FMP4 {
+            6 // EXT-X-MAP without I-FRAMES-ONLY
+        } else {
+            3
+        }
+    }
+
     fn write_playlist(&mut self) -> Result<()> {
         if self.segments.is_empty() {
             return Ok(()); // Don't write empty playlists
@@ -655,15 +668,9 @@ impl HlsVariant {
                 byte_range_length: None,
             }));
         }
-        let pl_version = if self.low_latency {
-            6
-        } else if self.segment_type == SegmentType::FMP4 {
-            6 // EXT-X-MAP without I-FRAMES-ONLY
-        } else {
-            3
-        };
-        pl.version = Some(pl_version);
-        pl.target_duration = if pl_version >= 6 {
+
+        pl.version = Some(self.playlist_version());
+        pl.target_duration = if self.playlist_version() >= 6 {
             self.segment_length.round() as _
         } else {
             self.segment_length
