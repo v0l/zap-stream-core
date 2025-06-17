@@ -27,7 +27,7 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
 use ffmpeg_rs_raw::{
     cstr, get_frame_from_hw, AudioFifo, Decoder, Demuxer, Encoder, Resample, Scaler, StreamType,
 };
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use tokio::runtime::Handle;
 use uuid::Uuid;
 
@@ -611,7 +611,7 @@ impl PipelineRunner {
         let elapsed = Instant::now().sub(self.fps_counter_start).as_secs_f32();
         if elapsed >= 2f32 {
             let n_frames = self.frame_ctr - self.fps_last_frame_ctr;
-            info!("Average fps: {:.2}", n_frames as f32 / elapsed);
+            debug!("Average fps: {:.2}", n_frames as f32 / elapsed);
             self.fps_counter_start = Instant::now();
             self.fps_last_frame_ctr = self.frame_ctr;
         }

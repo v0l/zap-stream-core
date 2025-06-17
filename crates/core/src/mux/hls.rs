@@ -4,13 +4,13 @@ use anyhow::{bail, ensure, Result};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_H264;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVMediaType::AVMEDIA_TYPE_VIDEO;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    av_free, av_interleaved_write_frame, av_opt_set, av_q2d, avio_close, avio_flush, avio_open,
-    avio_size, AVPacket, AVStream, AVIO_FLAG_WRITE, AV_NOPTS_VALUE, AV_PKT_FLAG_KEY,
+    av_free, av_q2d, av_write_frame, avio_close, avio_flush, avio_open, avio_size, AVPacket,
+    AVIO_FLAG_WRITE, AV_NOPTS_VALUE, AV_PKT_FLAG_KEY,
 };
 use ffmpeg_rs_raw::{cstr, Encoder, Muxer};
 use itertools::Itertools;
-use log::{info, trace, warn};
-use m3u8_rs::{ByteRange, MediaSegment, MediaSegmentType, Part, PartInf, PreloadHint};
+use log::{debug, info, trace, warn};
+use m3u8_rs::{ByteRange, ExtTag, MediaSegment, MediaSegmentType, Part, PartInf, PreloadHint};
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::fs::File;
@@ -89,12 +89,10 @@ pub struct HlsVariant {
     segments: Vec<HlsSegment>,
     /// Type of segments to create
     segment_type: SegmentType,
-    /// Timestamp of the previous packet
-    last_pkt_pts: i64,
     /// Timestamp of the start of the current segment
     current_segment_start: f64,
-    /// Current segment duration in seconds (precise accumulation)
-    duration: f64,
+    /// Timestamp of the start of the current partial
+    current_partial_start: f64,
     /// Number of packets written to current segment
     packets_written: u64,
     /// Reference stream used to track duration
@@ -105,10 +103,10 @@ pub struct HlsVariant {
     partial_target_duration: f32,
     /// HLS-LL: Current partial index
     current_partial_index: u64,
-    /// HLS-LL: Current duration in this partial
-    current_partial_duration: f64,
     /// HLS-LL: Whether the next partial segment should be marked as independent
     next_partial_independent: bool,
+    /// Path to initialization segment for fMP4
+    init_segment_path: Option<String>,
 }
 
 #[derive(PartialEq)]
@@ -184,6 +182,9 @@ impl PartialSegmentInfo {
 }
 
 impl HlsVariant {
+    const LOW_LATENCY: bool = true;
+    const LL_PARTS: usize = 3;
+
     pub fn new<'a>(
         out_dir: &'a str,
         group: usize,
@@ -194,14 +195,6 @@ impl HlsVariant {
         let first_seg = Self::map_segment_path(out_dir, &name, 1, segment_type);
         std::fs::create_dir_all(PathBuf::from(&first_seg).parent().unwrap())?;
 
-        let mut opts = HashMap::new();
-        if let SegmentType::FMP4 = segment_type {
-            opts.insert("fflags".to_string(), "-autobsf".to_string());
-            opts.insert(
-                "movflags".to_string(),
-                "+frag_custom+dash+delay_moov".to_string(),
-            );
-        };
         let mut mux = unsafe {
             Muxer::builder()
                 .with_output_path(
@@ -216,7 +209,7 @@ impl HlsVariant {
         let mut streams = Vec::new();
         let mut ref_stream_index = -1;
         let mut has_video = false;
-        let mut seg_size = 1.0;
+        let mut seg_size = 2.0;
 
         for (var, enc) in encoded_vars {
             match var {
@@ -268,12 +261,32 @@ impl HlsVariant {
             name,
             ref_stream_index
         );
+
+        let min_segment_length = if Self::LOW_LATENCY {
+            (seg_size * 3.0).max(6.0) // make segments 3x longer in LL mode or minimum 6s
+        } else {
+            2.0
+        };
+        let segment_length = seg_size.max(min_segment_length);
+        let mut opts = HashMap::new();
+        if let SegmentType::FMP4 = segment_type {
+            //opts.insert("fflags".to_string(), "-autobsf".to_string());
+            opts.insert(
+                "movflags".to_string(),
+                "+frag_custom+dash+delay_moov".to_string(),
+            );
+        };
+        let mut partial_seg_size = segment_length / Self::LL_PARTS as f32;
+        partial_seg_size -= partial_seg_size % seg_size; // align to keyframe
+
         unsafe {
             mux.open(Some(opts))?;
+            //av_dump_format(mux.context(), 0, ptr::null_mut(), 0);
         }
-        Ok(Self {
+
+        let mut variant = Self {
             name: name.clone(),
-            segment_length: seg_size,
+            segment_length,
             segment_window: 30.0,
             mux,
             streams,
@@ -281,17 +294,25 @@ impl HlsVariant {
             segments: Vec::new(),
             out_dir: out_dir.to_string(),
             segment_type,
-            last_pkt_pts: AV_NOPTS_VALUE,
-            duration: 0.0,
             packets_written: 0,
             ref_stream_index,
-            partial_target_duration: 0.33,
+            partial_target_duration: partial_seg_size,
             current_partial_index: 0,
-            current_partial_duration: 0.0,
             current_segment_start: 0.0,
+            current_partial_start: 0.0,
             next_partial_independent: false,
-            low_latency: false,
-        })
+            low_latency: Self::LOW_LATENCY,
+            init_segment_path: None,
+        };
+
+        // Create initialization segment for fMP4
+        if segment_type == SegmentType::FMP4 {
+            unsafe {
+                variant.create_init_segment()?;
+            }
+        }
+
+        Ok(variant)
     }
 
     pub fn segment_name(t: SegmentType, idx: u64) -> String {
@@ -332,38 +353,23 @@ impl HlsVariant {
             is_ref_pkt = false;
         }
 
-        // HLS-LL: write prev partial segment
-        if self.low_latency && self.current_partial_duration >= self.partial_target_duration as f64
-        {
-            self.create_partial_segment()?;
+        if is_ref_pkt && self.packets_written > 0 {
+            let pkt_pts = (*pkt).pts as f64 * pkt_q;
+            let cur_duration = pkt_pts - self.current_segment_start;
+            let cur_part_duration = pkt_pts - self.current_partial_start;
 
-            // HLS-LL: Mark next partial as independent if this packet is a keyframe
-            if can_split {
-                self.next_partial_independent = true;
-            }
-        }
-        // check if current packet is keyframe, flush current segment
-        if self.packets_written > 1 && can_split && self.duration >= self.segment_length as f64 {
-            result = self.split_next_seg((*pkt).pts as f64 * pkt_q)?;
-        }
+            // check if current packet is keyframe, flush current segment
+            if can_split && cur_duration >= self.segment_length as f64 {
+                result = self.split_next_seg(pkt_pts)?;
+            } else if cur_part_duration >= self.partial_target_duration as f64 {
+                result = self.create_partial_segment(pkt_pts)?;
 
-        // track duration from pts
-        if is_ref_pkt {
-            if self.last_pkt_pts == AV_NOPTS_VALUE {
-                self.last_pkt_pts = (*pkt).pts;
-            }
-            let time_delta = if (*pkt).duration != 0 {
-                (*pkt).duration as f64 * pkt_q
-            } else {
-                ((*pkt).pts - self.last_pkt_pts) as f64 * pkt_q
-            };
-            if time_delta > 0.0 {
-                self.duration += time_delta;
-                if self.low_latency {
-                    self.current_partial_duration += time_delta;
+                // HLS-LL: Mark next partial as independent if this packet is a keyframe
+                if can_split {
+                    info!("Next partial is independent");
+                    self.next_partial_independent = true;
                 }
             }
-            self.last_pkt_pts = (*pkt).pts;
         }
 
         // write to current segment
@@ -378,12 +384,20 @@ impl HlsVariant {
     }
 
     /// Create a partial segment for LL-HLS
-    fn create_partial_segment(&mut self) -> Result<()> {
+    fn create_partial_segment(&mut self, next_pkt_start: f64) -> Result<EgressResult> {
         let ctx = self.mux.context();
         let end_pos = unsafe {
             avio_flush((*ctx).pb);
             avio_size((*ctx).pb) as u64
         };
+
+        ensure!(end_pos > 0, "End position cannot be 0");
+        if self.segment_type == SegmentType::MPEGTS {
+            ensure!(
+                end_pos % 188 == 0,
+                "Invalid end position, must be multiple of 188"
+            );
+        }
 
         let previous_end_pos = self
             .segments
@@ -393,30 +407,67 @@ impl HlsVariant {
                 _ => None,
             })
             .unwrap_or(0);
-        let independent = self.next_partial_independent;
         let partial_size = end_pos - previous_end_pos;
         let partial_info = PartialSegmentInfo {
             index: self.current_partial_index,
             parent_index: self.idx,
             parent_kind: self.segment_type,
-            duration: self.current_partial_duration,
-            independent,
+            duration: next_pkt_start - self.current_partial_start,
+            independent: self.next_partial_independent,
             byte_range: Some((partial_size, Some(previous_end_pos))),
         };
 
-        trace!(
+        debug!(
             "{} created partial segment {} [{:.3}s, independent={}]",
-            self.name,
-            partial_info.index,
-            partial_info.duration,
-            independent
+            self.name, partial_info.index, partial_info.duration, partial_info.independent,
         );
         self.segments.push(HlsSegment::Partial(partial_info));
         self.current_partial_index += 1;
-        self.current_partial_duration = 0.0;
         self.next_partial_independent = false;
+        self.current_partial_start = next_pkt_start;
 
         self.write_playlist()?;
+
+        Ok(EgressResult::None)
+    }
+
+    /// Create initialization segment for fMP4
+    unsafe fn create_init_segment(&mut self) -> Result<()> {
+        if self.segment_type != SegmentType::FMP4 || self.init_segment_path.is_some() {
+            return Ok(());
+        }
+
+        let init_path = PathBuf::from(&self.out_dir)
+            .join(&self.name)
+            .join("init.mp4")
+            .to_string_lossy()
+            .to_string();
+
+        // Create a temporary muxer for initialization segment
+        let mut init_opts = HashMap::new();
+        init_opts.insert(
+            "movflags".to_string(),
+            "+frag_custom+dash+delay_moov".to_string(),
+        );
+
+        let mut init_mux = Muxer::builder()
+            .with_output_path(init_path.as_str(), Some("mp4"))?
+            .build()?;
+
+        // Copy stream parameters from main muxer
+        let main_ctx = self.mux.context();
+        for i in 0..(*main_ctx).nb_streams {
+            let src_stream = *(*main_ctx).streams.add(i as usize);
+            let s = init_mux.add_copy_stream(src_stream)?;
+            ensure!((*s).index == (*src_stream).index, "Stream index mismatch");
+        }
+
+        init_mux.open(Some(init_opts))?;
+        av_write_frame(init_mux.context(), ptr::null_mut());
+        init_mux.close()?;
+
+        self.init_segment_path = Some("init.mp4".to_string());
+        info!("Created fMP4 initialization segment: {}", init_path);
 
         Ok(())
     }
@@ -425,10 +476,11 @@ impl HlsVariant {
     unsafe fn split_next_seg(&mut self, next_pkt_start: f64) -> Result<EgressResult> {
         let completed_segment_idx = self.idx;
         self.idx += 1;
+        self.current_partial_index = 0;
 
         // Manually reset muxer avio
         let ctx = self.mux.context();
-        let ret = av_interleaved_write_frame(ctx, ptr::null_mut());
+        let ret = av_write_frame(ctx, ptr::null_mut());
         if ret < 0 {
             bail!("Failed to split segment {}", ret);
         }
@@ -445,14 +497,6 @@ impl HlsVariant {
             bail!("Failed to re-init avio");
         }
 
-        // tell muxer it needs to write headers again
-        av_opt_set(
-            (*ctx).priv_data,
-            cstr!("events_flags"),
-            cstr!("resend_headers"),
-            0,
-        );
-
         // Log the completed segment (previous index), not the next one
         let completed_seg_path = Self::map_segment_path(
             &self.out_dir,
@@ -467,7 +511,7 @@ impl HlsVariant {
             .unwrap_or(0);
 
         let cur_duration = next_pkt_start - self.current_segment_start;
-        info!(
+        debug!(
             "Finished segment {} [{:.3}s, {:.2} kB, {} pkts]",
             completed_segment_path
                 .file_name()
@@ -519,7 +563,6 @@ impl HlsVariant {
 
         // Reset counters for next segment
         self.packets_written = 0;
-        self.duration = 0.0;
         self.current_segment_start = next_pkt_start;
 
         Ok(EgressResult::Segments {
@@ -590,8 +633,17 @@ impl HlsVariant {
         }
 
         let mut pl = m3u8_rs::MediaPlaylist::default();
-        pl.target_duration = (self.segment_length.ceil() as u64).max(1);
         pl.segments = self.segments.iter().map(|s| s.to_media_segment()).collect();
+
+        // Add EXT-X-MAP initialization segment for fMP4
+        if self.segment_type == SegmentType::FMP4 {
+            if let Some(ref init_path) = self.init_segment_path {
+                pl.unknown_tags.push(ExtTag {
+                    tag: "X-MAP".to_string(),
+                    rest: Some(format!("URI=\"{}\"", init_path)),
+                });
+            }
+        }
 
         // append segment preload for next part segment
         if let Some(HlsSegment::Partial(partial)) = self.segments.last() {
@@ -603,7 +655,19 @@ impl HlsVariant {
                 byte_range_length: None,
             }));
         }
-        pl.version = Some(if self.low_latency { 6 } else { 3 });
+        let pl_version = if self.low_latency {
+            6
+        } else if self.segment_type == SegmentType::FMP4 {
+            6 // EXT-X-MAP without I-FRAMES-ONLY
+        } else {
+            3
+        };
+        pl.version = Some(pl_version);
+        pl.target_duration = if pl_version >= 6 {
+            self.segment_length.round() as _
+        } else {
+            self.segment_length
+        };
         if self.low_latency {
             pl.part_inf = Some(PartInf {
                 part_target: self.partial_target_duration as f64,
@@ -624,31 +688,48 @@ impl HlsVariant {
         Ok(())
     }
 
-    /// https://git.ffmpeg.org/gitweb/ffmpeg.git/blob/HEAD:/libavformat/hlsenc.c#l351
-    unsafe fn to_codec_attr(&self, stream: *mut AVStream) -> Option<String> {
-        let p = (*stream).codecpar;
-        if (*p).codec_id == AV_CODEC_ID_H264 {
-            let data = (*p).extradata;
-            if !data.is_null() {
-                let mut id_ptr = ptr::null_mut();
-                let ds: *mut u16 = data as *mut u16;
-                if (*ds) == 1 && (*data.add(4)) & 0x1F == 7 {
-                    id_ptr = data.add(5);
-                } else if (*ds) == 1 && (*data.add(3)) & 0x1F == 7 {
-                    id_ptr = data.add(4);
-                } else if *data.add(0) == 1 {
-                    id_ptr = data.add(1);
-                } else {
-                    return None;
-                }
+    unsafe fn to_codec_attr(&self) -> Option<String> {
+        let mut codecs = Vec::new();
 
-                return Some(format!(
-                    "avc1.{}",
-                    hex::encode([*id_ptr.add(0), *id_ptr.add(1), *id_ptr.add(2)])
-                ));
+        // Find video and audio streams and build codec string
+        for stream in &self.streams {
+            let av_stream = *(*self.mux.context()).streams.add(*stream.index());
+            let p = (*av_stream).codecpar;
+
+            match stream {
+                HlsVariantStream::Video { .. } => {
+                    if (*p).codec_id == AV_CODEC_ID_H264 {
+                        // Use profile and level from codec parameters
+                        let profile_idc = (*p).profile as u8;
+                        let level_idc = (*p).level as u8;
+
+                        // For H.264, constraint flags are typically 0 unless specified
+                        // Common constraint flags: 0x40 (constraint_set1_flag) for baseline
+                        let constraint_flags = match profile_idc {
+                            66 => 0x40, // Baseline profile
+                            _ => 0x00,  // Main/High profiles typically have no constraints
+                        };
+
+                        let avc1_code = format!(
+                            "avc1.{:02x}{:02x}{:02x}",
+                            profile_idc, constraint_flags, level_idc
+                        );
+                        codecs.push(avc1_code);
+                    }
+                }
+                HlsVariantStream::Audio { .. } => {
+                    // Standard AAC-LC codec string
+                    codecs.push("mp4a.40.2".to_string());
+                }
+                _ => {}
             }
         }
-        None
+
+        if codecs.is_empty() {
+            None
+        } else {
+            Some(codecs.join(","))
+        }
     }
 
     pub fn to_playlist_variant(&self) -> m3u8_rs::VariantStream {
@@ -659,9 +740,9 @@ impl HlsVariant {
             m3u8_rs::VariantStream {
                 is_i_frame: false,
                 uri: format!("{}/live.m3u8", self.name),
-                bandwidth: 0,
-                average_bandwidth: Some((*codec_par).bit_rate as u64),
-                codecs: self.to_codec_attr(av_stream),
+                bandwidth: (*codec_par).bit_rate as u64,
+                average_bandwidth: None,
+                codecs: self.to_codec_attr(),
                 resolution: Some(m3u8_rs::Resolution {
                     width: (*codec_par).width as _,
                     height: (*codec_par).height as _,

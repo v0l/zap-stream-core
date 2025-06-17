@@ -85,7 +85,7 @@ impl TryInto<Encoder> for &VideoVariant {
     fn try_into(self) -> Result<Encoder, Self::Error> {
         unsafe {
             let mut opt = HashMap::new();
-            if self.codec == "x264" {
+            if self.codec == "x264" || self.codec == "libx264" {
                 opt.insert("preset".to_string(), "fast".to_string());
                 //opt.insert("tune".to_string(), "zerolatency".to_string());
             }

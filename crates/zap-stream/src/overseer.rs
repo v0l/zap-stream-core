@@ -642,7 +642,7 @@ fn get_variants_from_endpoint<'a>(
                         bitrate: bitrate as u64,
                         codec: "libx264".to_string(),
                         profile: 77, // AV_PROFILE_H264_MAIN
-                        level: 51,
+                        level: 51, // High 5.1 (4K)
                         keyframe_interval: video_src.fps as u16,
                         pixel_format: AV_PIX_FMT_YUV420P as u32,
                     }));

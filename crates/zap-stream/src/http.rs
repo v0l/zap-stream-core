@@ -104,6 +104,12 @@ impl HttpServer {
                 HttpServerPath::HlsSegmentFile,
             )
             .unwrap();
+        router
+            .insert(
+                format!("/{}/{{stream}}/{{variant}}/{{seg}}.m4s", HlsEgress::PATH),
+                HttpServerPath::HlsSegmentFile,
+            )
+            .unwrap();
 
         Self {
             index_template,
