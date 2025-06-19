@@ -115,8 +115,9 @@ impl HlsTimingTester {
 
         // Generate test stream
         let stream_id = Uuid::new_v4();
+        let out_dir = output_dir.join(stream_id.to_string());
         let hls_dir =
-            self.generate_test_stream(output_dir, &stream_id, duration_seconds, segment_type)?;
+            self.generate_test_stream(&out_dir, &stream_id, duration_seconds, segment_type)?;
 
         // Test the generated stream
         match self.test_stream_timing_internal(&hls_dir) {
@@ -340,7 +341,7 @@ impl HlsTimingTester {
             video_frames_generated as f32 / VIDEO_FPS
         );
 
-        Ok(output_dir.join(stream_id.to_string()).join("stream_0"))
+        Ok(output_dir.join("stream_0"))
     }
 
     /// Test HLS timing for a specific stream directory
