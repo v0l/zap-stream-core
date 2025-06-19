@@ -264,8 +264,11 @@ impl FrameGenerator {
             (*self.next_frame).data[0],
             (self.width as usize * self.height as usize * 4) as usize,
         );
-        for z in 0..(self.width as usize * self.height as usize) {
-            buf[z * 4..z * 4 + 4].copy_from_slice(&color32);
+        for chunk in buf.chunks_exact_mut(4) {
+            chunk[0] = color32[0];
+            chunk[1] = color32[1];
+            chunk[2] = color32[2];
+            chunk[3] = color32[3];
         }
         Ok(())
     }

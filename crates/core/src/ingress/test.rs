@@ -13,17 +13,12 @@ use ringbuf::traits::{Observer, Split};
 use ringbuf::{HeapCons, HeapRb};
 use std::io::Read;
 use std::sync::Arc;
-use std::time::Duration;
 use tiny_skia::Pixmap;
 use tokio::runtime::Handle;
 use uuid::Uuid;
 
 pub async fn listen(out_dir: String, overseer: Arc<dyn Overseer>) -> Result<()> {
     info!("Test pattern enabled");
-
-    // add a delay, there is a race condition somewhere, the test pattern doesnt always
-    // get added to active_streams
-    tokio::time::sleep(Duration::from_secs(1)).await;
 
     let info = ConnectionInfo {
         id: Uuid::new_v4(),
@@ -36,9 +31,11 @@ pub async fn listen(out_dir: String, overseer: Arc<dyn Overseer>) -> Result<()> 
     spawn_pipeline(
         Handle::current(),
         info,
-        out_dir.clone(),
-        overseer.clone(),
+        out_dir,
+        overseer,
         Box::new(src),
+        None,
+        None,
     );
     Ok(())
 }

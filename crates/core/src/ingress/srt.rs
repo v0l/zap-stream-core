@@ -1,5 +1,6 @@
 use crate::ingress::{spawn_pipeline, BufferedReader, ConnectionInfo};
 use crate::overseer::Overseer;
+use crate::pipeline::runner::PipelineCommand;
 use anyhow::Result;
 use futures_util::stream::FusedStream;
 use futures_util::StreamExt;
@@ -7,6 +8,7 @@ use log::info;
 use srt_tokio::{SrtListener, SrtSocket};
 use std::io::Read;
 use std::net::SocketAddr;
+use std::sync::mpsc::{channel, Sender};
 use std::sync::Arc;
 use tokio::runtime::Handle;
 use uuid::Uuid;
@@ -31,6 +33,7 @@ pub async fn listen(out_dir: String, addr: String, overseer: Arc<dyn Overseer>) 
                 .as_ref()
                 .map_or(String::new(), |s| s.to_string()),
         };
+        let (tx, rx) = channel();
         spawn_pipeline(
             Handle::current(),
             info,
@@ -40,7 +43,10 @@ pub async fn listen(out_dir: String, addr: String, overseer: Arc<dyn Overseer>) 
                 handle: Handle::current(),
                 socket,
                 buffer: BufferedReader::new(4096, MAX_SRT_BUFFER_SIZE, "SRT"),
+                tx,
             }),
+            None,
+            Some(rx),
         );
     }
     Ok(())
@@ -50,6 +56,7 @@ struct SrtReader {
     pub handle: Handle,
     pub socket: SrtSocket,
     pub buffer: BufferedReader,
+    pub tx: Sender<PipelineCommand>, // TODO: implement clean shutdown
 }
 
 impl Read for SrtReader {

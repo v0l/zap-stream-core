@@ -1,8 +1,9 @@
 use crate::overseer::Overseer;
-use crate::pipeline::runner::PipelineRunner;
+use crate::pipeline::runner::{PipelineCommand, PipelineRunner};
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::io::Read;
+use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::runtime::Handle;
@@ -40,8 +41,10 @@ pub fn spawn_pipeline(
     out_dir: String,
     seer: Arc<dyn Overseer>,
     reader: Box<dyn Read + Send>,
+    url: Option<String>,
+    rx: Option<Receiver<PipelineCommand>>,
 ) {
-    match PipelineRunner::new(handle, out_dir, seer, info, reader, None) {
+    match PipelineRunner::new(handle, out_dir, seer, info, reader, url, rx) {
         Ok(pl) => match run_pipeline(pl) {
             Ok(_) => {}
             Err(e) => {

@@ -4,6 +4,7 @@ use std::mem::transmute;
 use std::ops::Sub;
 use std::path::{Path, PathBuf};
 use std::ptr;
+use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -46,6 +47,8 @@ pub enum RunnerState {
         start_time: Instant,
         gen: FrameGenerator,
     },
+    /// Pipeline should shut down and do any cleanup
+    Shutdown,
 }
 
 impl RunnerState {
@@ -58,9 +61,15 @@ impl RunnerState {
     pub fn idle_duration(&self) -> Option<Duration> {
         match self {
             RunnerState::Idle { start_time, .. } => Some(start_time.elapsed()),
-            RunnerState::Normal => None,
+            _ => None,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub enum PipelineCommand {
+    /// External process requested clean shutdown
+    Shutdown,
 }
 
 /// Pipeline runner is the main entry process for stream transcoding
@@ -127,6 +136,9 @@ pub struct PipelineRunner {
 
     /// Last audio PTS for continuity in idle mode
     last_audio_pts: i64,
+
+    /// Command receiver for external process control
+    cmd_channel: Option<Receiver<PipelineCommand>>,
 }
 
 unsafe impl Send for PipelineRunner {}
@@ -139,6 +151,7 @@ impl PipelineRunner {
         connection: ConnectionInfo,
         recv: Box<dyn Read + Send>,
         url: Option<String>,
+        command: Option<Receiver<PipelineCommand>>,
     ) -> Result<Self> {
         Ok(Self {
             handle,
@@ -162,6 +175,7 @@ impl PipelineRunner {
             max_consecutive_failures: DEFAULT_MAX_CONSECUTIVE_FAILURES,
             last_video_pts: 0,
             last_audio_pts: 0,
+            cmd_channel: command,
         })
     }
 
@@ -530,6 +544,13 @@ impl PipelineRunner {
 
     /// EOF, cleanup
     unsafe fn flush(&mut self) -> Result<()> {
+        if self.config.is_some() {
+            self.handle.block_on(async {
+                if let Err(e) = self.overseer.on_end(&self.connection.id).await {
+                    error!("Failed to end stream: {e}");
+                }
+            });
+        }
         for (var, enc) in &mut self.encoders {
             for mut pkt in enc.encode_frame(ptr::null_mut())? {
                 for eg in self.egress.iter_mut() {
@@ -541,14 +562,6 @@ impl PipelineRunner {
         for eg in self.egress.iter_mut() {
             eg.reset()?;
         }
-
-        if self.config.is_some() {
-            self.handle.block_on(async {
-                if let Err(e) = self.overseer.on_end(&self.connection.id).await {
-                    error!("Failed to end stream: {e}");
-                }
-            });
-        }
         Ok(())
     }
 
@@ -558,16 +571,12 @@ impl PipelineRunner {
                 match self.once() {
                     Ok(c) => {
                         if !c {
-                            if let Err(e) = self.flush() {
-                                error!("Pipeline flush failed: {}", e);
-                            }
+                            // let drop handle flush
                             break;
                         }
                     }
                     Err(e) => {
-                        if let Err(e) = self.flush() {
-                            error!("Pipeline flush failed: {}", e);
-                        }
+                        // let drop handle flush
                         error!("Pipeline run failed: {}", e);
                         break;
                     }
@@ -576,7 +585,25 @@ impl PipelineRunner {
         }
     }
 
+    fn handle_command(&mut self) -> Result<Option<bool>> {
+        if let Some(cmd) = &self.cmd_channel {
+            while let Ok(c) = cmd.try_recv() {
+                match c {
+                    PipelineCommand::Shutdown => {
+                        self.state = RunnerState::Shutdown;
+                        return Ok(Some(true));
+                    }
+                    _ => warn!("Unexpected command: {:?}", c),
+                }
+            }
+        }
+        Ok(None)
+    }
+
     unsafe fn once(&mut self) -> Result<bool> {
+        if let Some(r) = self.handle_command()? {
+            return Ok(r);
+        }
         self.setup()?;
 
         let config = if let Some(config) = &self.config {
@@ -589,6 +616,7 @@ impl PipelineRunner {
         let results = match &mut self.state {
             RunnerState::Normal => self.process_normal_mode(&config)?,
             RunnerState::Idle { .. } => self.process_idle_mode(&config)?,
+            _ => return Ok(false), // skip once, nothing to do
         };
 
         // egress results - process async operations without blocking if possible
@@ -741,7 +769,7 @@ impl Drop for PipelineRunner {
 
             info!(
                 "PipelineRunner cleaned up resources for stream: {}",
-                self.connection.key
+                self.connection.id
             );
         }
     }

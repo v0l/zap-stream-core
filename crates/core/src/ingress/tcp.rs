@@ -27,6 +27,8 @@ pub async fn listen(out_dir: String, addr: String, overseer: Arc<dyn Overseer>) 
             out_dir.clone(),
             overseer.clone(),
             Box::new(socket),
+            None,
+            None,
         );
     }
     Ok(())

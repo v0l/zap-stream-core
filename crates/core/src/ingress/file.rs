@@ -17,6 +17,7 @@ pub async fn listen(out_dir: String, path: PathBuf, overseer: Arc<dyn Overseer>)
         app_name: "".to_string(),
         key: "test".to_string(),
     };
+    let url = path.to_str().unwrap().to_string();
     let file = std::fs::File::open(path)?;
     spawn_pipeline(
         Handle::current(),
@@ -24,6 +25,8 @@ pub async fn listen(out_dir: String, path: PathBuf, overseer: Arc<dyn Overseer>)
         out_dir.clone(),
         overseer.clone(),
         Box::new(file),
+        Some(url),
+        None,
     );
 
     Ok(())

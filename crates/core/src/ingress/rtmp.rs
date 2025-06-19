@@ -1,6 +1,6 @@
 use crate::ingress::{BufferedReader, ConnectionInfo};
 use crate::overseer::Overseer;
-use crate::pipeline::runner::PipelineRunner;
+use crate::pipeline::runner::{PipelineCommand, PipelineRunner};
 use anyhow::{anyhow, bail, Result};
 use bytes::{Bytes, BytesMut};
 use log::{error, info};
@@ -11,6 +11,7 @@ use rml_rtmp::sessions::{
 use std::collections::VecDeque;
 use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
+use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -32,10 +33,11 @@ struct RtmpClient {
     msg_queue: VecDeque<ServerSessionResult>,
     pub published_stream: Option<RtmpPublishedStream>,
     muxer: FlvMuxer,
+    tx: Sender<PipelineCommand>,
 }
 
 impl RtmpClient {
-    pub fn new(socket: TcpStream) -> Result<Self> {
+    pub fn new(socket: TcpStream, tx: Sender<PipelineCommand>) -> Result<Self> {
         socket.set_nonblocking(false)?;
         let cfg = ServerSessionConfig::new();
         let (ses, res) = ServerSession::new(cfg)?;
@@ -46,6 +48,7 @@ impl RtmpClient {
             msg_queue: VecDeque::from(res),
             published_stream: None,
             muxer: FlvMuxer::new(),
+            tx,
         })
     }
 
@@ -201,8 +204,12 @@ impl RtmpClient {
                     self.published_stream = Some(RtmpPublishedStream(app_name, stream_key));
                 }
             }
-            ServerSessionEvent::PublishStreamFinished { .. } => {
-                // TODO: shutdown pipeline
+            ServerSessionEvent::PublishStreamFinished {
+                app_name,
+                stream_key,
+            } => {
+                self.tx.send(PipelineCommand::Shutdown)?;
+                info!("Stream ending: {app_name}/{stream_key}");
             }
             ServerSessionEvent::StreamMetadataChanged {
                 app_name,
@@ -271,7 +278,6 @@ pub async fn listen(out_dir: String, addr: String, overseer: Arc<dyn Overseer>) 
 
     info!("RTMP listening on: {}", &addr);
     while let Ok((socket, ip)) = listener.accept().await {
-        let mut cc = RtmpClient::new(socket.into_std()?)?;
         let overseer = overseer.clone();
         let out_dir = out_dir.clone();
         let handle = Handle::current();
@@ -279,6 +285,8 @@ pub async fn listen(out_dir: String, addr: String, overseer: Arc<dyn Overseer>) 
         std::thread::Builder::new()
             .name(format!("client:rtmp:{}", new_id))
             .spawn(move || {
+                let (tx, rx) = std::sync::mpsc::channel();
+                let mut cc = RtmpClient::new(socket.into_std()?, tx)?;
                 if let Err(e) = cc.handshake() {
                     bail!("Error during handshake: {}", e)
                 }
@@ -301,6 +309,7 @@ pub async fn listen(out_dir: String, addr: String, overseer: Arc<dyn Overseer>) 
                     info,
                     Box::new(cc),
                     None,
+                    Some(rx),
                 ) {
                     Ok(pl) => pl,
                     Err(e) => {
