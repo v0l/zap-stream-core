@@ -116,8 +116,8 @@ impl HlsTimingTester {
         // Generate test stream
         let stream_id = Uuid::new_v4();
         let out_dir = output_dir.join(stream_id.to_string());
-        let hls_dir =
-            self.generate_test_stream(&out_dir, &stream_id, duration_seconds, segment_type)?;
+        let (_muxer, hls_dir) =
+            self.generate_test_stream(&out_dir, duration_seconds, segment_type)?;
 
         // Test the generated stream
         match self.test_stream_timing_internal(&hls_dir) {
@@ -151,10 +151,9 @@ impl HlsTimingTester {
     fn generate_test_stream(
         &self,
         output_dir: &Path,
-        stream_id: &Uuid,
         duration_seconds: f32,
         segment_type: SegmentType,
-    ) -> Result<PathBuf> {
+    ) -> Result<(HlsMuxer, PathBuf)> {
         const VIDEO_FPS: f32 = 30.0;
         const VIDEO_WIDTH: u16 = 1280;
         const VIDEO_HEIGHT: u16 = 720;
@@ -341,7 +340,7 @@ impl HlsTimingTester {
             video_frames_generated as f32 / VIDEO_FPS
         );
 
-        Ok(output_dir.join("stream_0"))
+        Ok((hls_muxer, output_dir.join("stream_0")))
     }
 
     /// Test HLS timing for a specific stream directory

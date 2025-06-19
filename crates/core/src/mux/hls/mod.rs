@@ -5,9 +5,9 @@ use anyhow::Result;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPacket;
 use ffmpeg_rs_raw::Encoder;
 use itertools::Itertools;
-use log::trace;
+use log::{trace, warn};
 use std::fmt::Display;
-use std::fs::File;
+use std::fs::{remove_dir_all, File};
 use std::path::PathBuf;
 use uuid::Uuid;
 
@@ -72,6 +72,8 @@ pub struct HlsMuxer {
 }
 
 impl HlsMuxer {
+    const MASTER_PLAYLIST: &'static str = "live.m3u8";
+
     pub fn new<'a>(
         out_dir: PathBuf,
         encoders: impl Iterator<Item = (&'a VariantStream, &'a Encoder)>,
@@ -106,7 +108,7 @@ impl HlsMuxer {
             .map(|v| v.to_playlist_variant())
             .collect();
 
-        let mut f_out = File::create(self.out_dir.join("live.m3u8"))?;
+        let mut f_out = File::create(self.out_dir.join(Self::MASTER_PLAYLIST))?;
         pl.write_to(&mut f_out)?;
         Ok(())
     }
@@ -132,5 +134,13 @@ impl HlsMuxer {
             variant
         );
         Ok(EgressResult::None)
+    }
+}
+
+impl Drop for HlsMuxer {
+    fn drop(&mut self) {
+        if let Err(e) = remove_dir_all(&self.out_dir) {
+            warn!("Failed to clean up hls dir: {} {}", self.out_dir.display(), e);
+        }
     }
 }
