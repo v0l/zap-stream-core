@@ -149,7 +149,7 @@ fn main() -> Result<()> {
 
     println!("Analyzing HLS stream: {}", hls_dir.display());
     println!("Playlist: {}", playlist_path.display());
-    
+
     // Check for initialization segment
     let init_path = hls_dir.join("init.mp4");
     if init_path.exists() {
@@ -612,7 +612,7 @@ fn analyze_init_segment(path: &Path) -> Result<InitSegmentInfo> {
 
     let file = fs::File::open(path)
         .with_context(|| format!("Failed to open init segment: {}", path.display()))?;
-    
+
     let mut demuxer = Demuxer::new_custom_io(Box::new(file), None)?;
 
     // Probe the input to get stream information
@@ -622,7 +622,7 @@ fn analyze_init_segment(path: &Path) -> Result<InitSegmentInfo> {
 
     let mut streams = Vec::new();
     let mut pixel_format_set = false;
-    
+
     // Try to get streams - we'll iterate until we hit an error
     let mut i = 0;
     loop {
@@ -631,7 +631,7 @@ fn analyze_init_segment(path: &Path) -> Result<InitSegmentInfo> {
             Ok(stream) => unsafe {
                 let codecpar = (*stream).codecpar;
                 let codec_type = (*codecpar).codec_type;
-                
+
                 let codec_name = {
                     let name_ptr = avcodec_get_name((*codecpar).codec_id);
                     if name_ptr.is_null() {
@@ -643,9 +643,17 @@ fn analyze_init_segment(path: &Path) -> Result<InitSegmentInfo> {
 
                 let (codec_type_str, width, height, pixel_format) = match codec_type {
                     AVMEDIA_TYPE_VIDEO => {
-                        let w = if (*codecpar).width > 0 { Some((*codecpar).width) } else { None };
-                        let h = if (*codecpar).height > 0 { Some((*codecpar).height) } else { None };
-                        
+                        let w = if (*codecpar).width > 0 {
+                            Some((*codecpar).width)
+                        } else {
+                            None
+                        };
+                        let h = if (*codecpar).height > 0 {
+                            Some((*codecpar).height)
+                        } else {
+                            None
+                        };
+
                         let pix_fmt = if (*codecpar).format != AV_PIX_FMT_NONE as i32 {
                             pixel_format_set = true;
                             // Skip pixel format name resolution for now due to type mismatch
@@ -653,15 +661,11 @@ fn analyze_init_segment(path: &Path) -> Result<InitSegmentInfo> {
                         } else {
                             None
                         };
-                        
+
                         ("video".to_string(), w, h, pix_fmt)
                     }
-                    AVMEDIA_TYPE_AUDIO => {
-                        ("audio".to_string(), None, None, None)
-                    }
-                    _ => {
-                        ("other".to_string(), None, None, None)
-                    }
+                    AVMEDIA_TYPE_AUDIO => ("audio".to_string(), None, None, None),
+                    _ => ("other".to_string(), None, None, None),
                 };
 
                 streams.push(StreamInfo {
@@ -671,7 +675,7 @@ fn analyze_init_segment(path: &Path) -> Result<InitSegmentInfo> {
                     height,
                     pixel_format,
                 });
-                
+
                 i += 1;
             },
             Err(_) => break, // No more streams

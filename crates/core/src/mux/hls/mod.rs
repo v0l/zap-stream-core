@@ -73,27 +73,24 @@ pub struct HlsMuxer {
 
 impl HlsMuxer {
     pub fn new<'a>(
-        id: &Uuid,
-        out_dir: &str,
+        out_dir: PathBuf,
         encoders: impl Iterator<Item = (&'a VariantStream, &'a Encoder)>,
         segment_type: SegmentType,
     ) -> Result<Self> {
-        let base = PathBuf::from(out_dir).join(id.to_string());
-
-        if !base.exists() {
-            std::fs::create_dir_all(&base)?;
+        if !out_dir.exists() {
+            std::fs::create_dir_all(&out_dir)?;
         }
         let mut vars = Vec::new();
         for (k, group) in &encoders
             .sorted_by(|a, b| a.0.group_id().cmp(&b.0.group_id()))
             .chunk_by(|a| a.0.group_id())
         {
-            let var = HlsVariant::new(base.to_str().unwrap(), k, group, segment_type)?;
+            let var = HlsVariant::new(out_dir.clone(), k, group, segment_type)?;
             vars.push(var);
         }
 
         let ret = Self {
-            out_dir: base,
+            out_dir,
             variants: vars,
         };
         ret.write_master_playlist()?;

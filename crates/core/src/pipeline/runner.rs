@@ -117,7 +117,7 @@ pub struct PipelineRunner {
     frame_ctr: u64,
 
     /// Output directory where all stream data is saved
-    out_dir: String,
+    out_dir: PathBuf,
 
     /// Thumbnail generation interval (0 = disabled)
     thumb_interval: u64,
@@ -155,7 +155,7 @@ impl PipelineRunner {
     ) -> Result<Self> {
         Ok(Self {
             handle,
-            out_dir,
+            out_dir: PathBuf::from(out_dir).join(connection.id.to_string()),
             overseer,
             connection,
             config: Default::default(),
@@ -222,15 +222,11 @@ impl PipelineRunner {
     unsafe fn generate_thumb_from_frame(&mut self, frame: *mut AVFrame) -> Result<()> {
         if self.thumb_interval > 0 && (self.frame_ctr % self.thumb_interval) == 0 {
             let frame = av_frame_clone(frame).addr();
-            let dir = PathBuf::from(&self.out_dir).join(self.connection.id.to_string());
-            if !dir.exists() {
-                std::fs::create_dir_all(&dir)?;
-            }
+            let dst_pic = self.out_dir.join("thumb.webp");
             std::thread::spawn(move || unsafe {
                 let mut frame = frame as *mut AVFrame; //TODO: danger??
                 let thumb_start = Instant::now();
 
-                let dst_pic = dir.join("thumb.webp");
                 if let Err(e) = Self::save_thumb(frame, &dst_pic) {
                     warn!("Failed to save thumb: {}", e);
                 }
@@ -732,16 +728,11 @@ impl PipelineRunner {
             });
             match e {
                 EgressType::HLS(_) => {
-                    let hls = HlsEgress::new(
-                        &self.connection.id,
-                        &self.out_dir,
-                        encoders,
-                        SegmentType::MPEGTS,
-                    )?;
+                    let hls = HlsEgress::new(self.out_dir.clone(), encoders, SegmentType::MPEGTS)?;
                     self.egress.push(Box::new(hls));
                 }
                 EgressType::Recorder(_) => {
-                    let rec = RecorderEgress::new(&self.connection.id, &self.out_dir, encoders)?;
+                    let rec = RecorderEgress::new(self.out_dir.clone(), encoders)?;
                     self.egress.push(Box::new(rec));
                 }
                 _ => warn!("{} is not implemented", e),

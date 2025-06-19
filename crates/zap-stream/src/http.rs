@@ -152,7 +152,7 @@ impl HttpServer {
                             .title
                             .unwrap_or_else(|| format!("Stream {}", &stream.id[..8])),
                         summary: stream.summary,
-                        live_url: format!("/{}/{}/live.m3u8", HlsEgress::PATH, stream.id),
+                        live_url: format!("/{}/{}/live.m3u8", stream.id, HlsEgress::PATH),
                         viewer_count: if viewer_count > 0 {
                             Some(viewer_count as _)
                         } else {

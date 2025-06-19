@@ -229,13 +229,14 @@ impl ZapStreamOverseer {
         pubkey: &Vec<u8>,
     ) -> Result<Event> {
         // TODO: remove assumption that HLS is enabled
+        let pipeline_dir = PathBuf::from(stream.id.to_string());
         let extra_tags = vec![
             Tag::parse(["p", hex::encode(pubkey).as_str(), "", "host"])?,
             Tag::parse([
                 "streaming",
                 self.map_to_public_url(
-                    PathBuf::from(HlsEgress::PATH)
-                        .join(stream.id.to_string())
+                    pipeline_dir
+                        .join(HlsEgress::PATH)
                         .join("live.m3u8")
                         .to_str()
                         .unwrap(),
@@ -244,13 +245,8 @@ impl ZapStreamOverseer {
             ])?,
             Tag::parse([
                 "image",
-                self.map_to_public_url(
-                    PathBuf::from(stream.id.to_string())
-                        .join("thumb.webp")
-                        .to_str()
-                        .unwrap(),
-                )?
-                .as_str(),
+                self.map_to_public_url(pipeline_dir.join("thumb.webp").to_str().unwrap())?
+                    .as_str(),
             ])?,
             Tag::parse(["service", self.map_to_public_url("api/v1")?.as_str()])?,
         ];
@@ -642,7 +638,7 @@ fn get_variants_from_endpoint<'a>(
                         bitrate: bitrate as u64,
                         codec: "libx264".to_string(),
                         profile: 77, // AV_PROFILE_H264_MAIN
-                        level: 51, // High 5.1 (4K)
+                        level: 51,   // High 5.1 (4K)
                         keyframe_interval: video_src.fps as u16,
                         pixel_format: AV_PIX_FMT_YUV420P as u32,
                     }));

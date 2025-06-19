@@ -225,12 +225,8 @@ impl HlsTimingTester {
         ];
 
         // Create HLS muxer
-        let mut hls_muxer = HlsMuxer::new(
-            &stream_id,
-            output_dir.to_str().unwrap(),
-            variants.into_iter(),
-            segment_type,
-        )?;
+        let mut hls_muxer =
+            HlsMuxer::new(output_dir.to_path_buf(), variants.into_iter(), segment_type)?;
 
         // Create frame generator
         let frame_size = unsafe { (*audio_encoder.codec_context()).frame_size as _ };

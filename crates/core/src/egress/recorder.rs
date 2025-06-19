@@ -10,8 +10,6 @@ use crate::egress::{Egress, EgressResult};
 use crate::variant::{StreamMapping, VariantStream};
 
 pub struct RecorderEgress {
-    /// Pipeline ID
-    id: Uuid,
     /// Internal muxer writing the output packets
     muxer: Muxer,
     /// Mapping from Variant ID to stream index
@@ -20,15 +18,10 @@ pub struct RecorderEgress {
 
 impl RecorderEgress {
     pub fn new<'a>(
-        id: &Uuid,
-        out_dir: &str,
+        out_dir: PathBuf,
         variants: impl Iterator<Item = (&'a VariantStream, &'a Encoder)>,
     ) -> Result<Self> {
-        let base = PathBuf::from(out_dir).join(id.to_string());
-
-        let out_file = base.join("recording.ts");
-        fs::create_dir_all(&base)?;
-
+        let out_file = out_dir.join("recording.ts");
         let mut var_map = HashMap::new();
         let muxer = unsafe {
             let mut m = Muxer::builder()
@@ -41,11 +34,7 @@ impl RecorderEgress {
             m.open(None)?;
             m
         };
-        Ok(Self {
-            id: *id,
-            muxer,
-            var_map,
-        })
+        Ok(Self { muxer, var_map })
     }
 }
 

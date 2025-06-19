@@ -17,18 +17,12 @@ impl HlsEgress {
     pub const PATH: &'static str = "hls";
 
     pub fn new<'a>(
-        id: &Uuid,
-        out_dir: &str,
+        out_dir: PathBuf,
         encoders: impl Iterator<Item = (&'a VariantStream, &'a Encoder)>,
         segment_type: SegmentType,
     ) -> Result<Self> {
         Ok(Self {
-            mux: HlsMuxer::new(
-                id,
-                PathBuf::from(out_dir).join(Self::PATH).to_str().unwrap(),
-                encoders,
-                segment_type,
-            )?,
+            mux: HlsMuxer::new(out_dir.join(Self::PATH), encoders, segment_type)?,
         })
     }
 }

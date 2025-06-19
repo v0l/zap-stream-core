@@ -13,7 +13,7 @@ use ffmpeg_rs_raw::{cstr, Encoder, Muxer};
 use log::{debug, info, trace, warn};
 use m3u8_rs::{ExtTag, MediaSegmentType, PartInf, PreloadHint};
 use std::collections::HashMap;
-use std::fs::File;
+use std::fs::{create_dir_all, File};
 use std::path::PathBuf;
 use std::ptr;
 
@@ -31,7 +31,7 @@ pub struct HlsVariant {
     /// Current segment index
     idx: u64,
     /// Output directory (base)
-    out_dir: String,
+    out_dir: PathBuf,
     /// List of segments to be included in the playlist
     segments: Vec<HlsSegment>,
     /// Type of segments to create
@@ -58,19 +58,22 @@ pub struct HlsVariant {
 
 impl HlsVariant {
     pub fn new<'a>(
-        out_dir: &'a str,
+        out_dir: PathBuf,
         group: usize,
         encoded_vars: impl Iterator<Item = (&'a VariantStream, &'a Encoder)>,
         segment_type: SegmentType,
     ) -> Result<Self> {
         let name = format!("stream_{}", group);
-        let first_seg = Self::map_segment_path(out_dir, &name, 1, segment_type);
-        std::fs::create_dir_all(PathBuf::from(&first_seg).parent().unwrap())?;
+
+        let var_dir = out_dir.join(&name);
+        if !var_dir.exists() {
+            create_dir_all(&var_dir)?;
+        }
 
         let mut mux = unsafe {
             Muxer::builder()
                 .with_output_path(
-                    first_seg.as_str(),
+                    var_dir.join("1.ts").to_str().unwrap(),
                     match segment_type {
                         SegmentType::MPEGTS => Some("mpegts"),
                         SegmentType::FMP4 => Some("mp4"),
@@ -155,7 +158,7 @@ impl HlsVariant {
             streams,
             idx: 1,
             segments: Vec::new(),
-            out_dir: out_dir.to_string(),
+            out_dir: var_dir,
             segment_type,
             current_segment_start: 0.0,
             current_partial_start: 0.0,
@@ -201,16 +204,8 @@ impl HlsVariant {
         }
     }
 
-    pub fn out_dir(&self) -> PathBuf {
-        PathBuf::from(&self.out_dir).join(&self.name)
-    }
-
-    pub fn map_segment_path(out_dir: &str, name: &str, idx: u64, typ: SegmentType) -> String {
-        PathBuf::from(out_dir)
-            .join(name)
-            .join(Self::segment_name(typ, idx))
-            .to_string_lossy()
-            .to_string()
+    pub fn map_segment_path(&self, idx: u64, typ: SegmentType) -> PathBuf {
+        self.out_dir.join(Self::segment_name(typ, idx))
     }
 
     /// Process a single packet through the muxer
@@ -361,9 +356,8 @@ impl HlsVariant {
         avio_close((*ctx).pb);
         av_free((*ctx).url as *mut _);
 
-        let next_seg_url =
-            Self::map_segment_path(&self.out_dir, &self.name, self.idx, self.segment_type);
-        (*ctx).url = cstr!(next_seg_url.as_str());
+        let next_seg_url = self.map_segment_path(self.idx, self.segment_type);
+        (*ctx).url = cstr!(next_seg_url.to_str().unwrap());
 
         let ret = avio_open(&mut (*ctx).pb, (*ctx).url, AVIO_FLAG_WRITE);
         if ret < 0 {
@@ -371,22 +365,13 @@ impl HlsVariant {
         }
 
         // Log the completed segment (previous index), not the next one
-        let completed_seg_path = Self::map_segment_path(
-            &self.out_dir,
-            &self.name,
-            completed_segment_idx,
-            self.segment_type,
-        );
-        let completed_segment_path = PathBuf::from(&completed_seg_path);
-        let segment_size = completed_segment_path
-            .metadata()
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let completed_seg_path = self.map_segment_path(completed_segment_idx, self.segment_type);
+        let segment_size = completed_seg_path.metadata().map(|m| m.len()).unwrap_or(0);
 
         let cur_duration = next_pkt_start - self.current_segment_start;
         debug!(
             "Finished segment {} [{:.3}s, {:.2} kB, {} pkts]",
-            completed_segment_path
+            completed_seg_path
                 .file_name()
                 .unwrap_or_default()
                 .to_string_lossy(),
@@ -409,12 +394,7 @@ impl HlsVariant {
                 variant: video_var_id,
                 idx: seg.index,
                 duration: seg.duration,
-                path: PathBuf::from(Self::map_segment_path(
-                    &self.out_dir,
-                    &self.name,
-                    seg.index,
-                    self.segment_type,
-                )),
+                path: self.map_segment_path(seg.index, self.segment_type),
             })
             .collect();
 
@@ -423,7 +403,7 @@ impl HlsVariant {
             variant: video_var_id,
             idx: completed_segment_idx,
             duration: cur_duration as f32,
-            path: completed_segment_path,
+            path: completed_seg_path,
         };
 
         self.segments.push(HlsSegment::Full(SegmentInfo {
@@ -479,11 +459,10 @@ impl HlsVariant {
         let mut ret = vec![];
         if let Some(seg_match) = drain_from_hls_segment {
             if let Some(drain_pos) = self.segments.iter().position(|e| e == seg_match) {
-                let seg_dir = self.out_dir();
                 for seg in self.segments.drain(..drain_pos) {
                     match seg {
                         HlsSegment::Full(seg) => {
-                            let seg_path = seg_dir.join(seg.filename());
+                            let seg_path = self.out_dir.join(seg.filename());
                             if let Err(e) = std::fs::remove_file(&seg_path) {
                                 warn!(
                                     "Failed to remove segment file: {} {}",
@@ -564,7 +543,7 @@ impl HlsVariant {
             .unwrap_or(self.idx);
         pl.end_list = false;
 
-        let mut f_out = File::create(self.out_dir().join("live.m3u8"))?;
+        let mut f_out = File::create(self.out_dir.join("live.m3u8"))?;
         pl.write_to(&mut f_out)?;
         Ok(())
     }
