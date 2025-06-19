@@ -88,25 +88,25 @@ impl HttpServer {
         router.insert("/index.html", HttpServerPath::Index).unwrap();
         router
             .insert(
-                format!("/{}/{{stream}}/live.m3u8", HlsEgress::PATH),
+                format!("/{{stream}}/{}/live.m3u8", HlsEgress::PATH),
                 HttpServerPath::HlsMasterPlaylist,
             )
             .unwrap();
         router
             .insert(
-                format!("/{}/{{stream}}/{{variant}}/live.m3u8", HlsEgress::PATH),
+                format!("/{{stream}}/{}/{{variant}}/live.m3u8", HlsEgress::PATH),
                 HttpServerPath::HlsVariantPlaylist,
             )
             .unwrap();
         router
             .insert(
-                format!("/{}/{{stream}}/{{variant}}/{{seg}}.ts", HlsEgress::PATH),
+                format!("/{{stream}}/{}/{{variant}}/{{seg}}.ts", HlsEgress::PATH),
                 HttpServerPath::HlsSegmentFile,
             )
             .unwrap();
         router
             .insert(
-                format!("/{}/{{stream}}/{{variant}}/{{seg}}.m4s", HlsEgress::PATH),
+                format!("/{{stream}}/{}/{{variant}}/{{seg}}.m4s", HlsEgress::PATH),
                 HttpServerPath::HlsSegmentFile,
             )
             .unwrap();
