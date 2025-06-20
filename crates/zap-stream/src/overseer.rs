@@ -16,6 +16,7 @@ use tokio::sync::RwLock;
 use url::Url;
 use uuid::Uuid;
 use zap_stream_core::egress::hls::HlsEgress;
+use zap_stream_core::egress::recorder::RecorderEgress;
 use zap_stream_core::egress::{EgressConfig, EgressSegment};
 use zap_stream_core::ingress::ConnectionInfo;
 use zap_stream_core::overseer::{IngressInfo, IngressStream, IngressStreamType, Overseer};
@@ -230,19 +231,8 @@ impl ZapStreamOverseer {
     ) -> Result<Event> {
         // TODO: remove assumption that HLS is enabled
         let pipeline_dir = PathBuf::from(stream.id.to_string());
-        let extra_tags = vec![
+        let mut extra_tags = vec![
             Tag::parse(["p", hex::encode(pubkey).as_str(), "", "host"])?,
-            Tag::parse([
-                "streaming",
-                self.map_to_public_url(
-                    pipeline_dir
-                        .join(HlsEgress::PATH)
-                        .join("live.m3u8")
-                        .to_str()
-                        .unwrap(),
-                )?
-                .as_str(),
-            ])?,
             Tag::parse([
                 "image",
                 self.map_to_public_url(pipeline_dir.join("thumb.webp").to_str().unwrap())?
@@ -250,6 +240,43 @@ impl ZapStreamOverseer {
             ])?,
             Tag::parse(["service", self.map_to_public_url("api/v1")?.as_str()])?,
         ];
+        match stream.state {
+            UserStreamState::Live => {
+                extra_tags.push(Tag::parse([
+                    "streaming",
+                    self.map_to_public_url(
+                        pipeline_dir
+                            .join(HlsEgress::PATH)
+                            .join("live.m3u8")
+                            .to_str()
+                            .unwrap(),
+                    )?
+                    .as_str(),
+                ])?);
+            }
+            UserStreamState::Ended => {
+                if let Some(ep) = stream.endpoint_id {
+                    let endpoint = self.db.get_ingest_endpoint(ep).await?;
+                    let caps = parse_capabilities(&endpoint.capabilities);
+                    let has_recording = caps
+                        .iter()
+                        .any(|c| matches!(c, EndpointCapability::DVR { .. }));
+                    if has_recording {
+                        extra_tags.push(Tag::parse([
+                            "recording",
+                            self.map_to_public_url(
+                                pipeline_dir
+                                    .join(RecorderEgress::FILENAME)
+                                    .to_str()
+                                    .unwrap(),
+                            )?
+                            .as_str(),
+                        ])?);
+                    }
+                }
+            }
+            _ => {}
+        }
         let ev = self
             .stream_to_event_builder(stream)?
             .tags(extra_tags)
@@ -357,7 +384,7 @@ impl Overseer for ZapStreamOverseer {
         // Get ingest endpoint configuration based on connection type
         let endpoint = self.detect_endpoint(&connection).await?;
 
-        let caps = parse_capabilities(&endpoint.capabilities.unwrap_or("".to_string()));
+        let caps = parse_capabilities(&endpoint.capabilities);
         let cfg = get_variants_from_endpoint(&stream_info, &caps)?;
 
         if cfg.video_src.is_none() || cfg.variants.is_empty() {
@@ -451,11 +478,8 @@ impl Overseer for ZapStreamOverseer {
 
         // Get the cost per minute from the ingest endpoint, or use default
         let cost_per_minute = if let Some(endpoint_id) = stream.endpoint_id {
-            if let Some(endpoint) = self.db.get_ingest_endpoint(endpoint_id).await? {
-                endpoint.cost
-            } else {
-                bail!("Endpoint doesnt exist");
-            }
+            let ep = self.db.get_ingest_endpoint(endpoint_id).await?;
+            ep.cost
         } else {
             bail!("Endpoint id not set on stream");
         };
@@ -586,36 +610,40 @@ enum EndpointCapability {
     DVR { height: u16 },
 }
 
-fn parse_capabilities(cap: &str) -> Vec<EndpointCapability> {
-    cap.to_ascii_lowercase()
-        .split(',')
-        .map_while(|c| {
-            let cs = c.split(':').collect::<Vec<&str>>();
-            match cs[0] {
-                "variant" if cs[1] == "source" => Some(EndpointCapability::SourceVariant),
-                "variant" if cs.len() == 3 => {
-                    if let (Ok(h), Ok(br)) = (cs[1].parse(), cs[2].parse()) {
-                        Some(EndpointCapability::Variant {
-                            height: h,
-                            bitrate: br,
-                        })
-                    } else {
-                        warn!("Invalid variant: {}", c);
-                        None
+fn parse_capabilities(cap: &Option<String>) -> Vec<EndpointCapability> {
+    if let Some(cap) = cap {
+        cap.to_ascii_lowercase()
+            .split(',')
+            .map_while(|c| {
+                let cs = c.split(':').collect::<Vec<&str>>();
+                match cs[0] {
+                    "variant" if cs[1] == "source" => Some(EndpointCapability::SourceVariant),
+                    "variant" if cs.len() == 3 => {
+                        if let (Ok(h), Ok(br)) = (cs[1].parse(), cs[2].parse()) {
+                            Some(EndpointCapability::Variant {
+                                height: h,
+                                bitrate: br,
+                            })
+                        } else {
+                            warn!("Invalid variant: {}", c);
+                            None
+                        }
                     }
-                }
-                "dvr" if cs.len() == 2 => {
-                    if let Ok(h) = cs[1].parse() {
-                        Some(EndpointCapability::DVR { height: h })
-                    } else {
-                        warn!("Invalid dvr: {}", c);
-                        None
+                    "dvr" if cs.len() == 2 => {
+                        if let Ok(h) = cs[1].parse() {
+                            Some(EndpointCapability::DVR { height: h })
+                        } else {
+                            warn!("Invalid dvr: {}", c);
+                            None
+                        }
                     }
+                    _ => None,
                 }
-                _ => None,
-            }
-        })
-        .collect()
+            })
+            .collect()
+    } else {
+        vec![]
+    }
 }
 
 fn get_variants_from_endpoint<'a>(

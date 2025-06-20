@@ -18,11 +18,13 @@ pub struct RecorderEgress {
 }
 
 impl RecorderEgress {
+    pub const FILENAME: &'static str = "recording.mp4";
+
     pub fn new<'a>(
         out_dir: PathBuf,
         variants: impl Iterator<Item = (&'a VariantStream, &'a Encoder)>,
     ) -> Result<Self> {
-        let out_file = out_dir.join("recording.mp4");
+        let out_file = out_dir.join(Self::FILENAME);
         let mut var_map = HashMap::new();
         let muxer = unsafe {
             let mut m = Muxer::builder()

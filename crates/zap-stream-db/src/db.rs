@@ -358,10 +358,10 @@ impl ZapStreamDb {
     }
 
     /// Get ingest endpoint by id
-    pub async fn get_ingest_endpoint(&self, endpoint_id: u64) -> Result<Option<IngestEndpoint>> {
+    pub async fn get_ingest_endpoint(&self, endpoint_id: u64) -> Result<IngestEndpoint> {
         Ok(sqlx::query_as("select * from ingest_endpoint where id = ?")
             .bind(endpoint_id)
-            .fetch_optional(&self.db)
+            .fetch_one(&self.db)
             .await?)
     }
 
