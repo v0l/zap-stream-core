@@ -1,6 +1,7 @@
 use anyhow::Result;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPacket;
 use ffmpeg_rs_raw::{Encoder, Muxer};
+use log::info;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -21,7 +22,7 @@ impl RecorderEgress {
         out_dir: PathBuf,
         variants: impl Iterator<Item = (&'a VariantStream, &'a Encoder)>,
     ) -> Result<Self> {
-        let out_file = out_dir.join("recording.ts");
+        let out_file = out_dir.join("recording.mp4");
         let mut var_map = HashMap::new();
         let muxer = unsafe {
             let mut m = Muxer::builder()
@@ -31,7 +32,10 @@ impl RecorderEgress {
                 let stream = m.add_stream_encoder(enc)?;
                 var_map.insert(var.id(), (*stream).index);
             }
-            m.open(None)?;
+            let mut options = HashMap::new();
+            options.insert("movflags".to_string(), "faststart".to_string());
+
+            m.open(Some(options))?;
             m
         };
         Ok(Self { muxer, var_map })

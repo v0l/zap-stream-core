@@ -22,8 +22,8 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_WEBP;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPictureType::AV_PICTURE_TYPE_NONE;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    av_frame_clone, av_frame_free, av_get_sample_fmt, av_packet_free, av_rescale_q, AVFrame,
-    AVPacket, AV_NOPTS_VALUE,
+    av_frame_clone, av_frame_free, av_get_sample_fmt, av_packet_clone, av_packet_free,
+    av_rescale_q, AVFrame, AVPacket, AV_NOPTS_VALUE,
 };
 use ffmpeg_rs_raw::{
     cstr, get_frame_from_hw, AudioFifo, Decoder, Demuxer, Encoder, Resample, Scaler, StreamType,
@@ -529,7 +529,8 @@ impl PipelineRunner {
         // pass new packets to egress
         for mut pkt in packets {
             for eg in egress.iter_mut() {
-                let er = eg.process_pkt(pkt, &var.id())?;
+                let pkt_clone = av_packet_clone(pkt);
+                let er = eg.process_pkt(pkt_clone, &var.id())?;
                 ret.push(er);
             }
             av_packet_free(&mut pkt);

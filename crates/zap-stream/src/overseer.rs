@@ -378,10 +378,17 @@ impl Overseer for ZapStreamOverseer {
                 _ => false,
             });
             match var {
-                Some(var) => egress.push(EgressType::Recorder(EgressConfig {
-                    name: "dvr".to_string(),
-                    variants: [var.id()].into(),
-                })),
+                Some(var) => {
+                    // take all streams in the same group as the matching video resolution (video+audio)
+                    let vars_in_group = cfg
+                        .variants
+                        .iter()
+                        .filter(|v| v.group_id() == var.group_id());
+                    egress.push(EgressType::Recorder(EgressConfig {
+                        name: "dvr".to_string(),
+                        variants: vars_in_group.map(|v| v.id()).collect(),
+                    }))
+                }
                 None => {
                     warn!(
                         "Invalid DVR config, no variant found with height {}",
