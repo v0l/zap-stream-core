@@ -1,4 +1,4 @@
-use crate::egress::EgressResult;
+use crate::egress::{EgressResult, EncoderOrSourceStream};
 use crate::mux::hls::variant::HlsVariant;
 use crate::variant::{StreamMapping, VariantStream};
 use anyhow::Result;
@@ -8,7 +8,9 @@ use itertools::Itertools;
 use log::{trace, warn};
 use std::fmt::Display;
 use std::fs::{remove_dir_all, File};
+use std::ops::Sub;
 use std::path::PathBuf;
+use tokio::time::Instant;
 use uuid::Uuid;
 
 mod segment;
@@ -69,14 +71,18 @@ pub enum SegmentType {
 pub struct HlsMuxer {
     pub out_dir: PathBuf,
     pub variants: Vec<HlsVariant>,
+
+    last_master_write: Instant,
 }
 
 impl HlsMuxer {
-    const MASTER_PLAYLIST: &'static str = "live.m3u8";
+    pub const MASTER_PLAYLIST: &'static str = "live.m3u8";
+
+    const MASTER_WRITE_INTERVAL: f32 = 60.0;
 
     pub fn new<'a>(
         out_dir: PathBuf,
-        encoders: impl Iterator<Item = (&'a VariantStream, &'a Encoder)>,
+        encoders: impl Iterator<Item = (&'a VariantStream, EncoderOrSourceStream<'a>)>,
         segment_type: SegmentType,
     ) -> Result<Self> {
         if !out_dir.exists() {
@@ -91,15 +97,16 @@ impl HlsMuxer {
             vars.push(var);
         }
 
-        let ret = Self {
+        let mut ret = Self {
             out_dir,
             variants: vars,
+            last_master_write: Instant::now(),
         };
         ret.write_master_playlist()?;
         Ok(ret)
     }
 
-    fn write_master_playlist(&self) -> Result<()> {
+    fn write_master_playlist(&mut self) -> Result<()> {
         let mut pl = m3u8_rs::MasterPlaylist::default();
         pl.version = Some(3);
         pl.variants = self
@@ -110,6 +117,7 @@ impl HlsMuxer {
 
         let mut f_out = File::create(self.out_dir.join(Self::MASTER_PLAYLIST))?;
         pl.write_to(&mut f_out)?;
+        self.last_master_write = Instant::now();
         Ok(())
     }
 
@@ -119,6 +127,9 @@ impl HlsMuxer {
         pkt: *mut AVPacket,
         variant: &Uuid,
     ) -> Result<EgressResult> {
+        if Instant::now().sub(self.last_master_write).as_secs_f32() > Self::MASTER_WRITE_INTERVAL {
+            self.write_master_playlist()?;
+        }
         for var in self.variants.iter_mut() {
             if let Some(vs) = var.streams.iter().find(|s| s.id() == variant) {
                 // very important for muxer to know which stream this pkt belongs to
@@ -140,7 +151,11 @@ impl HlsMuxer {
 impl Drop for HlsMuxer {
     fn drop(&mut self) {
         if let Err(e) = remove_dir_all(&self.out_dir) {
-            warn!("Failed to clean up hls dir: {} {}", self.out_dir.display(), e);
+            warn!(
+                "Failed to clean up hls dir: {} {}",
+                self.out_dir.display(),
+                e
+            );
         }
     }
 }

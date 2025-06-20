@@ -1,10 +1,9 @@
 use anyhow::Result;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPacket;
-use ffmpeg_rs_raw::Encoder;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-use crate::egress::{Egress, EgressResult};
+use crate::egress::{Egress, EgressResult, EncoderOrSourceStream};
 use crate::mux::{HlsMuxer, SegmentType};
 use crate::variant::VariantStream;
 
@@ -18,7 +17,7 @@ impl HlsEgress {
 
     pub fn new<'a>(
         out_dir: PathBuf,
-        encoders: impl Iterator<Item = (&'a VariantStream, &'a Encoder)>,
+        encoders: impl Iterator<Item = (&'a VariantStream, EncoderOrSourceStream<'a>)>,
         segment_type: SegmentType,
     ) -> Result<Self> {
         Ok(Self {

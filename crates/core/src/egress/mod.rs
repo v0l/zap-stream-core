@@ -1,5 +1,6 @@
 use anyhow::Result;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPacket;
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::{AVPacket, AVStream};
+use ffmpeg_rs_raw::Encoder;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -43,4 +44,9 @@ pub struct EgressSegment {
     pub duration: f32,
     /// Path on disk to the segment file
     pub path: PathBuf,
+}
+
+pub enum EncoderOrSourceStream<'a> {
+    Encoder(&'a Encoder),
+    SourceStream(*mut AVStream),
 }

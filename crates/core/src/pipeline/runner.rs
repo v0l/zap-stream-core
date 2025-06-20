@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use crate::egress::hls::HlsEgress;
 use crate::egress::recorder::RecorderEgress;
-use crate::egress::{Egress, EgressResult};
+use crate::egress::{Egress, EgressResult, EncoderOrSourceStream};
 use crate::generator::FrameGenerator;
 use crate::ingress::ConnectionInfo;
 use crate::mux::SegmentType;
@@ -101,9 +101,6 @@ pub struct PipelineRunner {
     /// Encoder for a variant (variant_id, Encoder)
     encoders: HashMap<Uuid, Encoder>,
 
-    /// Simple mapping to copy streams
-    copy_stream: HashMap<Uuid, Uuid>,
-
     /// All configured egress'
     egress: Vec<Box<dyn Egress>>,
 
@@ -164,7 +161,6 @@ impl PipelineRunner {
             scalers: Default::default(),
             resampler: Default::default(),
             encoders: Default::default(),
-            copy_stream: Default::default(),
             fps_counter_start: Instant::now(),
             egress: Vec::new(),
             frame_ctr: 0,
@@ -366,51 +362,65 @@ impl PipelineRunner {
 
         // Process all packets (original or converted)
         let mut egress_results = vec![];
-        // TODO: For copy streams, skip decoder
-        let frames = match self.decoder.decode_pkt(packet) {
-            Ok(f) => {
-                // Reset failure counter on successful decode
-                self.consecutive_decode_failures = 0;
-                f
-            }
-            Err(e) => {
-                self.consecutive_decode_failures += 1;
-
-                // Enhanced error logging with context
-                let packet_info = if !packet.is_null() {
-                    format!(
-                        "stream_idx={}, size={}, pts={}, dts={}",
-                        (*packet).stream_index,
-                        (*packet).size,
-                        (*packet).pts,
-                        (*packet).dts
-                    )
-                } else {
-                    "null packet".to_string()
-                };
-
-                warn!(
-                    "Error decoding packet ({}): {}. Consecutive failures: {}/{}. Skipping packet.",
-                    packet_info, e, self.consecutive_decode_failures, self.max_consecutive_failures
-                );
-
-                return self.handle_decode_failure(&config);
-            }
-        };
-
-        for (frame, stream_idx) in frames {
-            let stream = self.demuxer.get_stream(stream_idx as usize)?;
-            // Adjust frame pts time without start_offset
-            // Egress streams don't have a start time offset
-            if !stream.is_null() {
-                if (*stream).start_time != AV_NOPTS_VALUE {
-                    (*frame).pts -= (*stream).start_time;
+        // only process via decoder if there is more than 1 encoder
+        if !self.encoders.is_empty() {
+            let frames = match self.decoder.decode_pkt(packet) {
+                Ok(f) => {
+                    // Reset failure counter on successful decode
+                    self.consecutive_decode_failures = 0;
+                    f
                 }
-                (*frame).time_base = (*stream).time_base;
-            }
+                Err(e) => {
+                    self.consecutive_decode_failures += 1;
 
-            let results = self.process_frame(&config, stream_idx as usize, frame)?;
-            egress_results.extend(results);
+                    // Enhanced error logging with context
+                    let packet_info = if !packet.is_null() {
+                        format!(
+                            "stream_idx={}, size={}, pts={}, dts={}",
+                            (*packet).stream_index,
+                            (*packet).size,
+                            (*packet).pts,
+                            (*packet).dts
+                        )
+                    } else {
+                        "null packet".to_string()
+                    };
+
+                    warn!(
+                        "Error decoding packet ({}): {}. Consecutive failures: {}/{}. Skipping packet.",
+                        packet_info, e, self.consecutive_decode_failures, self.max_consecutive_failures
+                    );
+
+                    return self.handle_decode_failure(&config);
+                }
+            };
+
+            for (frame, stream_idx) in frames {
+                let stream = self.demuxer.get_stream(stream_idx as usize)?;
+                // Adjust frame pts time without start_offset
+                // Egress streams don't have a start time offset
+                if !stream.is_null() {
+                    if (*stream).start_time != AV_NOPTS_VALUE {
+                        (*frame).pts -= (*stream).start_time;
+                    }
+                    (*frame).time_base = (*stream).time_base;
+                }
+
+                let results = self.process_frame(&config, stream_idx as usize, frame)?;
+                egress_results.extend(results);
+            }
+        }
+
+        // egress (mux) copy variants
+        for var in config.variants {
+            match var {
+                VariantStream::CopyVideo(v) | VariantStream::CopyAudio(v)
+                    if v.src_index == (*packet).stream_index as _ =>
+                {
+                    egress_results.extend(Self::egress_packet(&mut self.egress, packet, &v.id())?);
+                }
+                _ => {}
+            }
         }
 
         Ok(egress_results)
@@ -436,7 +446,6 @@ impl PipelineRunner {
             let enc = if let Some(enc) = self.encoders.get_mut(&var.id()) {
                 enc
             } else {
-                warn!("Frame had nowhere to go in {} :/", var.id());
                 continue;
             };
 
@@ -512,7 +521,6 @@ impl PipelineRunner {
         encoder: &mut Encoder,
         frame: *mut AVFrame,
     ) -> Result<Vec<EgressResult>> {
-        let mut ret = vec![];
         // before encoding frame, rescale timestamps
         if !frame.is_null() {
             let enc_ctx = encoder.codec_context();
@@ -526,16 +534,25 @@ impl PipelineRunner {
         }
 
         let packets = encoder.encode_frame(frame)?;
-        // pass new packets to egress
-        for mut pkt in packets {
-            for eg in egress.iter_mut() {
-                let pkt_clone = av_packet_clone(pkt);
-                let er = eg.process_pkt(pkt_clone, &var.id())?;
-                ret.push(er);
-            }
-            av_packet_free(&mut pkt);
+        let mut ret = vec![];
+        for pkt in packets {
+            ret.extend(Self::egress_packet(egress, pkt, &var.id())?);
         }
+        Ok(ret)
+    }
 
+    unsafe fn egress_packet(
+        egress: &mut Vec<Box<dyn Egress>>,
+        mut pkt: *mut AVPacket,
+        variant: &Uuid,
+    ) -> Result<Vec<EgressResult>> {
+        let mut ret = vec![];
+        for eg in egress.iter_mut() {
+            let mut pkt_clone = av_packet_clone(pkt);
+            let er = eg.process_pkt(pkt_clone, variant)?;
+            av_packet_free(&mut pkt_clone);
+            ret.push(er);
+        }
         Ok(ret)
     }
 
@@ -714,26 +731,33 @@ impl PipelineRunner {
             }
         }
 
-        // TODO: Setup copy streams
-
         // Setup egress
         for e in &cfg.egress {
             let c = e.config();
-            let encoders = self.encoders.iter().filter_map(|(k, v)| {
-                if c.variants.contains(k) {
-                    let var = cfg.variants.iter().find(|x| x.id() == *k)?;
-                    Some((var, v))
+            let vars = c
+                .variants
+                .iter()
+                .map_while(|x| cfg.variants.iter().find(|z| z.id() == *x));
+            let variant_mapping = vars.map_while(|v| {
+                if let Some(e) = self.encoders.get(&v.id()) {
+                    Some((v, EncoderOrSourceStream::Encoder(e)))
                 } else {
-                    None
+                    Some((
+                        v,
+                        EncoderOrSourceStream::SourceStream(unsafe {
+                            self.demuxer.get_stream(v.src_index()).ok()?
+                        }),
+                    ))
                 }
             });
             match e {
                 EgressType::HLS(_) => {
-                    let hls = HlsEgress::new(self.out_dir.clone(), encoders, SegmentType::MPEGTS)?;
+                    let hls =
+                        HlsEgress::new(self.out_dir.clone(), variant_mapping, SegmentType::MPEGTS)?;
                     self.egress.push(Box::new(hls));
                 }
                 EgressType::Recorder(_) => {
-                    let rec = RecorderEgress::new(self.out_dir.clone(), encoders)?;
+                    let rec = RecorderEgress::new(self.out_dir.clone(), variant_mapping)?;
                     self.egress.push(Box::new(rec));
                 }
                 _ => warn!("{} is not implemented", e),
@@ -756,7 +780,6 @@ impl Drop for PipelineRunner {
             self.encoders.clear();
             self.scalers.clear();
             self.resampler.clear();
-            self.copy_stream.clear();
             self.egress.clear();
 
             info!(

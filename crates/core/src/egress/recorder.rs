@@ -1,13 +1,11 @@
 use anyhow::Result;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPacket;
-use ffmpeg_rs_raw::{Encoder, Muxer};
-use log::info;
+use ffmpeg_rs_raw::Muxer;
 use std::collections::HashMap;
-use std::fs;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-use crate::egress::{Egress, EgressResult};
+use crate::egress::{Egress, EgressResult, EncoderOrSourceStream};
 use crate::variant::{StreamMapping, VariantStream};
 
 pub struct RecorderEgress {
@@ -22,7 +20,7 @@ impl RecorderEgress {
 
     pub fn new<'a>(
         out_dir: PathBuf,
-        variants: impl Iterator<Item = (&'a VariantStream, &'a Encoder)>,
+        variants: impl Iterator<Item = (&'a VariantStream, EncoderOrSourceStream<'a>)>,
     ) -> Result<Self> {
         let out_file = out_dir.join(Self::FILENAME);
         let mut var_map = HashMap::new();
@@ -31,8 +29,16 @@ impl RecorderEgress {
                 .with_output_path(out_file.to_str().unwrap(), None)?
                 .build()?;
             for (var, enc) in variants {
-                let stream = m.add_stream_encoder(enc)?;
-                var_map.insert(var.id(), (*stream).index);
+                match enc {
+                    EncoderOrSourceStream::Encoder(enc) => {
+                        let stream = m.add_stream_encoder(enc)?;
+                        var_map.insert(var.id(), (*stream).index);
+                    }
+                    EncoderOrSourceStream::SourceStream(stream) => {
+                        let stream = m.add_copy_stream(stream)?;
+                        var_map.insert(var.id(), (*stream).index);
+                    }
+                }
             }
             let mut options = HashMap::new();
             options.insert("movflags".to_string(), "faststart".to_string());

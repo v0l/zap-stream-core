@@ -1,4 +1,4 @@
-use crate::egress::{EgressResult, EgressSegment};
+use crate::egress::{EgressResult, EgressSegment, EncoderOrSourceStream};
 use crate::mux::hls::segment::{HlsSegment, PartialSegmentInfo, SegmentInfo};
 use crate::mux::{HlsVariantStream, SegmentType};
 use crate::variant::{StreamMapping, VariantStream};
@@ -6,14 +6,15 @@ use anyhow::{bail, ensure, Result};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_H264;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVMediaType::AVMEDIA_TYPE_VIDEO;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    av_free, av_q2d, av_write_frame, avio_close, avio_flush, avio_open, avio_size, AVPacket,
-    AVIO_FLAG_WRITE, AV_NOPTS_VALUE, AV_PKT_FLAG_KEY,
+    av_free, av_get_bits_per_pixel, av_pix_fmt_desc_get, av_q2d, av_write_frame, avio_close,
+    avio_flush, avio_open, avio_size, AVPacket, AVIO_FLAG_WRITE, AV_NOPTS_VALUE, AV_PKT_FLAG_KEY,
 };
 use ffmpeg_rs_raw::{cstr, Encoder, Muxer};
 use log::{debug, info, trace, warn};
 use m3u8_rs::{ExtTag, MediaSegmentType, PartInf, PreloadHint};
 use std::collections::HashMap;
 use std::fs::{create_dir_all, File};
+use std::mem::transmute;
 use std::path::PathBuf;
 use std::ptr;
 
@@ -60,7 +61,7 @@ impl HlsVariant {
     pub fn new<'a>(
         out_dir: PathBuf,
         group: usize,
-        encoded_vars: impl Iterator<Item = (&'a VariantStream, &'a Encoder)>,
+        encoded_vars: impl Iterator<Item = (&'a VariantStream, EncoderOrSourceStream<'a>)>,
         segment_type: SegmentType,
     ) -> Result<Self> {
         let name = format!("stream_{}", group);
@@ -87,44 +88,71 @@ impl HlsVariant {
         let mut segment_length = 1.0;
 
         for (var, enc) in encoded_vars {
-            match var {
-                VariantStream::Video(v) => unsafe {
-                    let stream = mux.add_stream_encoder(enc)?;
-                    let stream_idx = (*stream).index as usize;
-                    streams.push(HlsVariantStream::Video {
-                        group,
-                        index: stream_idx,
-                        id: v.id(),
-                    });
-                    has_video = true;
-                    // Always use video stream as reference for segmentation
-                    ref_stream_index = stream_idx as _;
-                    let sg = v.keyframe_interval as f32 / v.fps;
-                    if sg > segment_length {
-                        segment_length = sg;
-                    }
-                },
-                VariantStream::Audio(a) => unsafe {
-                    let stream = mux.add_stream_encoder(enc)?;
-                    let stream_idx = (*stream).index as usize;
-                    streams.push(HlsVariantStream::Audio {
-                        group,
-                        index: stream_idx,
-                        id: a.id(),
-                    });
-                    if !has_video && ref_stream_index == -1 {
+            match enc {
+                EncoderOrSourceStream::Encoder(enc) => match var {
+                    VariantStream::Video(v) => unsafe {
+                        let stream = mux.add_stream_encoder(enc)?;
+                        let stream_idx = (*stream).index as usize;
+                        streams.push(HlsVariantStream::Video {
+                            group,
+                            index: stream_idx,
+                            id: v.id(),
+                        });
+                        has_video = true;
                         ref_stream_index = stream_idx as _;
-                    }
+                        let sg = v.keyframe_interval as f32 / v.fps;
+                        if sg > segment_length {
+                            segment_length = sg;
+                        }
+                    },
+                    VariantStream::Audio(a) => unsafe {
+                        let stream = mux.add_stream_encoder(enc)?;
+                        let stream_idx = (*stream).index as usize;
+                        streams.push(HlsVariantStream::Audio {
+                            group,
+                            index: stream_idx,
+                            id: a.id(),
+                        });
+                        if !has_video && ref_stream_index == -1 {
+                            ref_stream_index = stream_idx as _;
+                        }
+                    },
+                    VariantStream::Subtitle(s) => unsafe {
+                        let stream = mux.add_stream_encoder(enc)?;
+                        streams.push(HlsVariantStream::Subtitle {
+                            group,
+                            index: (*stream).index as usize,
+                            id: s.id(),
+                        })
+                    },
+                    _ => bail!("unsupported variant stream"),
                 },
-                VariantStream::Subtitle(s) => unsafe {
-                    let stream = mux.add_stream_encoder(enc)?;
-                    streams.push(HlsVariantStream::Subtitle {
-                        group,
-                        index: (*stream).index as usize,
-                        id: s.id(),
-                    })
+                EncoderOrSourceStream::SourceStream(stream) => match var {
+                    VariantStream::CopyVideo(v) => unsafe {
+                        let stream = mux.add_copy_stream(stream)?;
+                        let stream_idx = (*stream).index as usize;
+                        streams.push(HlsVariantStream::Video {
+                            group,
+                            index: stream_idx,
+                            id: v.id(),
+                        });
+                        has_video = true;
+                        ref_stream_index = stream_idx as _;
+                    },
+                    VariantStream::CopyAudio(a) => unsafe {
+                        let stream = mux.add_copy_stream(stream)?;
+                        let stream_idx = (*stream).index as usize;
+                        streams.push(HlsVariantStream::Audio {
+                            group,
+                            index: stream_idx,
+                            id: a.id(),
+                        });
+                        if !has_video && ref_stream_index == -1 {
+                            ref_stream_index = stream_idx as _;
+                        }
+                    },
+                    _ => bail!("unsupported variant stream"),
                 },
-                _ => bail!("unsupported variant stream"),
             }
         }
         ensure!(
@@ -597,17 +625,29 @@ impl HlsVariant {
             let pes = self.video_stream().unwrap_or(self.streams.first().unwrap());
             let av_stream = *(*self.mux.context()).streams.add(*pes.index());
             let codec_par = (*av_stream).codecpar;
+            let bitrate = (*codec_par).bit_rate as u64;
+            let fps = av_q2d((*codec_par).framerate);
             m3u8_rs::VariantStream {
                 is_i_frame: false,
                 uri: format!("{}/live.m3u8", self.name),
-                bandwidth: (*codec_par).bit_rate as u64,
+                bandwidth: if bitrate == 0 {
+                    // make up bitrate when unknown (copy streams)
+                    // this is the bitrate as a raw decoded stream, it's not accurate at all
+                    // It only serves the purpose of ordering the copy streams as having the highest bitrate
+                    let pix_desc = av_pix_fmt_desc_get(transmute((*codec_par).format));
+                    (*codec_par).width as u64
+                        * (*codec_par).height as u64
+                        * av_get_bits_per_pixel(pix_desc) as u64
+                } else {
+                    bitrate
+                },
                 average_bandwidth: None,
                 codecs: self.to_codec_attr(),
                 resolution: Some(m3u8_rs::Resolution {
                     width: (*codec_par).width as _,
                     height: (*codec_par).height as _,
                 }),
-                frame_rate: Some(av_q2d((*codec_par).framerate)),
+                frame_rate: if fps > 0.0 { Some(fps) } else { None },
                 hdcp_level: None,
                 audio: None,
                 video: None,
