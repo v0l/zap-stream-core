@@ -1,3 +1,4 @@
+use crate::egress::EncoderOrSourceStream;
 use crate::generator::FrameGenerator;
 use crate::mux::{HlsMuxer, SegmentType};
 use crate::variant::audio::AudioVariant;
@@ -220,8 +221,14 @@ impl HlsTimingTester {
         let video_variant = VariantStream::Video(video_stream.clone());
         let audio_variant = VariantStream::Audio(audio_stream.clone());
         let variants = vec![
-            (&video_variant, &video_encoder),
-            (&audio_variant, &audio_encoder),
+            (
+                &video_variant,
+                EncoderOrSourceStream::Encoder(&video_encoder),
+            ),
+            (
+                &audio_variant,
+                EncoderOrSourceStream::Encoder(&audio_encoder),
+            ),
         ];
 
         // Create HLS muxer
