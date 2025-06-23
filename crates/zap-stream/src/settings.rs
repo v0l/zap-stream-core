@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
-use zap_stream_core::overseer::Overseer;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {

@@ -606,7 +606,7 @@ fn analyze_partial_segment(
 
 fn analyze_init_segment(path: &Path) -> Result<InitSegmentInfo> {
     use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-        av_get_pix_fmt_name, avcodec_get_name, AVPixelFormat::AV_PIX_FMT_NONE,
+        avcodec_get_name, AVPixelFormat::AV_PIX_FMT_NONE,
     };
     use std::ffi::CStr;
 

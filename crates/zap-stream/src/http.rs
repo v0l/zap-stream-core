@@ -321,7 +321,7 @@ where
 
     fn call(&self, req: Request<Incoming>) -> Self::Future {
         let path = req.uri().path().to_owned();
-        let dst_path = self.files_dir.join(req.uri().path()[1..].to_string());
+        let dst_path = self.files_dir.join(&req.uri().path()[1..]);
 
         if let Ok(m) = self.router.at(&path) {
             match m.value {
@@ -336,7 +336,7 @@ where
                     let file_path = dst_path.clone();
                     return Box::pin(async move {
                         let _stream_id = stream_id.context("stream id missing")?;
-                        Ok(Self::handle_hls_master_playlist(&req, file_path).await?)
+                        Self::handle_hls_master_playlist(&req, file_path).await
                     });
                 }
                 HttpServerPath::HlsVariantPlaylist => {
@@ -363,7 +363,7 @@ where
                     // handle segment file (range requests)
                     let file_path = dst_path.clone();
                     return Box::pin(async move {
-                        Ok(Self::handle_hls_segment(&req, file_path).await?)
+                        Self::handle_hls_segment(&req, file_path).await
                     });
                 }
             }
@@ -417,7 +417,7 @@ pub fn check_nip98_auth(req: &Request<Incoming>, public_url: &str) -> Result<Aut
     let event: Event = serde_json::from_str(&json)?;
 
     // Verify signature
-    if !event.verify().is_ok() {
+    if event.verify().is_err() {
         bail!("Invalid nostr event, invalid signature");
     }
 
@@ -475,7 +475,7 @@ pub fn check_nip98_auth(req: &Request<Incoming>, public_url: &str) -> Result<Aut
     }
 
     Ok(AuthResult {
-        pubkey: event.pubkey.clone(),
+        pubkey: event.pubkey,
         event,
     })
 }

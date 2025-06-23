@@ -1,7 +1,6 @@
 use crate::http::{check_nip98_auth, HttpFuture, HttpServerPlugin, StreamData};
 use crate::overseer::ZapStreamOverseer;
 use crate::settings::Settings;
-use crate::stream_manager::StreamManager;
 use crate::ListenerEndpoint;
 use anyhow::{anyhow, bail, Result};
 use bytes::Bytes;
@@ -12,7 +11,7 @@ use hyper::body::Incoming;
 use hyper::{Method, Request, Response};
 use log::warn;
 use matchit::Router;
-use nostr_sdk::{serde_json, JsonUtil, PublicKey};
+use nostr_sdk::{serde_json, PublicKey};
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::net::SocketAddr;
@@ -23,7 +22,7 @@ use url::Url;
 use uuid::Uuid;
 use zap_stream_core::egress::hls::HlsEgress;
 use zap_stream_core::overseer::Overseer;
-use zap_stream_db::{UserStream, ZapStreamDb};
+use zap_stream_db::ZapStreamDb;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Route {
@@ -108,8 +107,8 @@ impl Api {
                     let auth = check_nip98_auth(&req, &self.settings.public_url)?;
                     let body = req.collect().await?.to_bytes();
                     let r_body: PatchAccount = serde_json::from_slice(&body)?;
-                    let rsp = self.update_account(&auth.pubkey, r_body).await?;
-                    Ok(base.body(Self::body_json(&rsp)?)?)
+                    self.update_account(&auth.pubkey, r_body).await?;
+                    Ok(base.body(Self::body_json(&())?)?)
                 }
                 (&Method::GET, Route::Topup) => {
                     let auth = check_nip98_auth(&req, &self.settings.public_url)?;
@@ -131,8 +130,8 @@ impl Api {
                     let auth = check_nip98_auth(&req, &self.settings.public_url)?;
                     let body = req.collect().await?.to_bytes();
                     let patch_event: PatchEvent = serde_json::from_slice(&body)?;
-                    let rsp = self.update_event(&auth.pubkey, patch_event).await?;
-                    Ok(base.body(Self::body_json(&rsp)?)?)
+                    self.update_event(&auth.pubkey, patch_event).await?;
+                    Ok(base.body(Self::body_json(&())?)?)
                 }
                 (&Method::POST, Route::Withdraw) => {
                     let auth = check_nip98_auth(&req, &self.settings.public_url)?;
@@ -167,8 +166,8 @@ impl Api {
                     let forward_id = params
                         .get("id")
                         .ok_or_else(|| anyhow!("Missing forward ID"))?;
-                    let rsp = self.delete_forward(&auth.pubkey, forward_id).await?;
-                    Ok(base.body(Self::body_json(&rsp)?)?)
+                    self.delete_forward(&auth.pubkey, forward_id).await?;
+                    Ok(base.body(Self::body_json(&())?)?)
                 }
                 (&Method::GET, Route::History) => {
                     let auth = check_nip98_auth(&req, &self.settings.public_url)?;
@@ -214,7 +213,7 @@ impl Api {
         let mut endpoints = Vec::new();
 
         for setting_endpoint in &self.settings.endpoints {
-            if let Ok(listener_endpoint) = ListenerEndpoint::from_str(&setting_endpoint) {
+            if let Ok(listener_endpoint) = ListenerEndpoint::from_str(setting_endpoint) {
                 match listener_endpoint {
                     ListenerEndpoint::SRT { endpoint } => {
                         if let Ok(addr) = endpoint.parse::<SocketAddr>() {

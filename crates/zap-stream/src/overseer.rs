@@ -1,31 +1,24 @@
 use crate::blossom::{BlobDescriptor, Blossom};
 use crate::endpoint::{get_variants_from_endpoint, parse_capabilities, EndpointCapability};
 use crate::settings::{LndSettings, OverseerConfig, Settings};
-use crate::stream_manager::{ActiveStreamInfo, StreamManager, StreamViewerState};
+use crate::stream_manager::StreamManager;
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use fedimint_tonic_lnd::verrpc::VersionRequest;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use log::{error, info, warn};
 use nostr_sdk::prelude::Coordinate;
 use nostr_sdk::{Client, Event, EventBuilder, JsonUtil, Keys, Kind, Tag, ToBech32};
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::Arc;
-use tokio::sync::RwLock;
 use url::Url;
 use uuid::Uuid;
 use zap_stream_core::egress::hls::HlsEgress;
 use zap_stream_core::egress::recorder::RecorderEgress;
 use zap_stream_core::egress::{EgressConfig, EgressSegment};
 use zap_stream_core::ingress::ConnectionInfo;
-use zap_stream_core::overseer::{IngressInfo, IngressStream, IngressStreamType, Overseer};
+use zap_stream_core::overseer::{IngressInfo, Overseer};
 use zap_stream_core::pipeline::{EgressType, PipelineConfig};
-use zap_stream_core::variant::audio::AudioVariant;
-use zap_stream_core::variant::mapping::VariantMapping;
-use zap_stream_core::variant::video::VideoVariant;
 use zap_stream_core::variant::{StreamMapping, VariantStream};
 use zap_stream_db::{IngestEndpoint, UserStream, UserStreamState, ZapStreamDb};
 
@@ -127,7 +120,7 @@ impl ZapStreamOverseer {
             blossom_servers: blossom_servers
                 .as_ref()
                 .unwrap_or(&Vec::new())
-                .into_iter()
+                .iter()
                 .map(|b| Blossom::new(b))
                 .collect(),
             public_url: public_url.clone(),
@@ -351,10 +344,10 @@ impl Overseer for ZapStreamOverseer {
         }
 
         // Get ingest endpoint configuration based on connection type
-        let endpoint = self.detect_endpoint(&connection).await?;
+        let endpoint = self.detect_endpoint(connection).await?;
 
         let caps = parse_capabilities(&endpoint.capabilities);
-        let cfg = get_variants_from_endpoint(&stream_info, &caps)?;
+        let cfg = get_variants_from_endpoint(stream_info, &caps)?;
 
         if cfg.video_src.is_none() || cfg.variants.is_empty() {
             bail!("No video src found");
@@ -392,7 +385,7 @@ impl Overseer for ZapStreamOverseer {
             }
         }
 
-        let stream_id = connection.id.clone();
+        let stream_id = connection.id;
         // insert new stream record
         let mut new_stream = UserStream {
             id: stream_id.to_string(),

@@ -16,11 +16,11 @@ pub struct ViewerTracker {
 
 impl ViewerTracker {
     pub fn new() -> Self {
-        let tracker = Self {
+        
+        Self {
             viewers: HashMap::new(),
             timeout_duration: Duration::from_secs(600), // 10 minutes
-        };
-        tracker
+        }
     }
 
     pub fn generate_viewer_token(ip_address: &str, user_agent: Option<&str>) -> String {
