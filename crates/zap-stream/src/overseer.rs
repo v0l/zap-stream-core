@@ -1,5 +1,6 @@
 use crate::blossom::{BlobDescriptor, Blossom};
 use crate::settings::LndSettings;
+use crate::stream_manager::{ActiveStreamInfo, StreamManager, StreamViewerState};
 use anyhow::{bail, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -30,18 +31,6 @@ use zap_stream_db::{IngestEndpoint, UserStream, UserStreamState, ZapStreamDb};
 
 const STREAM_EVENT_KIND: u16 = 30_311;
 
-#[derive(Clone)]
-struct StreamViewerState {
-    last_published_count: usize,
-    last_update_time: DateTime<Utc>,
-}
-
-#[derive(Clone)]
-struct ActiveStreamInfo {
-    started_at: DateTime<Utc>,
-    last_segment_time: Option<DateTime<Utc>>,
-}
-
 /// zap.stream NIP-53 overseer
 #[derive(Clone)]
 pub struct ZapStreamOverseer {
@@ -57,13 +46,8 @@ pub struct ZapStreamOverseer {
     blossom_servers: Vec<Blossom>,
     /// Public facing URL pointing to [out_dir]
     public_url: String,
-    /// Currently active streams with timing info
-    /// Any streams which are not contained in this map are dead
-    active_streams: Arc<RwLock<HashMap<Uuid, ActiveStreamInfo>>>,
-    /// Viewer tracking for active streams
-    viewer_tracker: ViewerTracker,
-    /// Track last published viewer count and update time for each stream
-    stream_viewer_states: Arc<RwLock<HashMap<String, StreamViewerState>>>,
+    /// Stream manager handles viewer tracking and Nostr publishing
+    stream_manager: StreamManager,
 }
 
 impl ZapStreamOverseer {
@@ -124,9 +108,7 @@ impl ZapStreamOverseer {
                 .map(|b| Blossom::new(b))
                 .collect(),
             public_url: public_url.clone(),
-            active_streams: Arc::new(RwLock::new(HashMap::new())),
-            viewer_tracker: ViewerTracker::new(),
-            stream_viewer_states: Arc::new(RwLock::new(HashMap::new())),
+            stream_manager: StreamManager::new(),
         };
 
         Ok(overseer)
@@ -141,7 +123,11 @@ impl ZapStreamOverseer {
     }
 
     pub fn viewer_tracker(&self) -> &ViewerTracker {
-        &self.viewer_tracker
+        self.stream_manager.viewer_tracker()
+    }
+
+    pub fn stream_manager(&self) -> &StreamManager {
+        &self.stream_manager
     }
 
     fn stream_to_event_builder(&self, stream: &UserStream) -> Result<EventBuilder> {
@@ -188,7 +174,7 @@ impl ZapStreamOverseer {
 
         // Add current viewer count for live streams
         if stream.state == UserStreamState::Live {
-            let viewer_count = self.viewer_tracker.get_viewer_count(&stream.id);
+            let viewer_count = self.stream_manager.get_viewer_count(&stream.id);
             tags.push(Tag::parse(&[
                 "current_participants".to_string(),
                 viewer_count.to_string(),
@@ -229,7 +215,6 @@ impl ZapStreamOverseer {
         stream: &UserStream,
         pubkey: &Vec<u8>,
     ) -> Result<Event> {
-        // TODO: remove assumption that HLS is enabled
         let pipeline_dir = PathBuf::from(stream.id.to_string());
         let mut extra_tags = vec![
             Tag::parse(["p", hex::encode(pubkey).as_str(), "", "host"])?,
@@ -302,22 +287,7 @@ impl Overseer for ZapStreamOverseer {
             let id = Uuid::parse_str(&stream.id)?;
             info!("Checking stream is alive: {}", stream.id);
 
-            let (is_active, should_timeout) = {
-                let streams = self.active_streams.read().await;
-                if let Some(stream_info) = streams.get(&id) {
-                    // Stream is in active map, but check if it's been inactive too long
-                    let timeout = if let Some(last_segment) = stream_info.last_segment_time {
-                        // No segments for 60 seconds = timeout
-                        (now - last_segment).num_seconds() > 60
-                    } else {
-                        // No segments yet, but allow 30 seconds for stream to start producing
-                        (now - stream_info.started_at).num_seconds() > 30
-                    };
-                    (true, timeout)
-                } else {
-                    (false, false)
-                }
-            };
+            let (is_active, should_timeout) = self.stream_manager.check_stream_status(&id).await;
 
             if !is_active || should_timeout {
                 if should_timeout {
@@ -328,37 +298,13 @@ impl Overseer for ZapStreamOverseer {
                 }
             } else {
                 // Stream is active, check if we should update viewer count in nostr event
-                let viewer_count = self.viewer_tracker.get_viewer_count(&stream.id);
-                let now = Utc::now();
-
-                let should_update = {
-                    let viewer_states = self.stream_viewer_states.read().await;
-                    if let Some(state) = viewer_states.get(&stream.id) {
-                        // Update if count changed OR if 10 minutes have passed since last update
-                        viewer_count != state.last_published_count
-                            || (now - state.last_update_time).num_minutes() >= 10
-                    } else {
-                        // First time tracking this stream, always update
-                        viewer_count > 0
-                    }
-                };
-
-                if should_update && viewer_count > 0 {
-                    if let Ok(user) = self.db.get_user(stream.user_id).await {
-                        if let Ok(_) = self.publish_stream_event(&stream, &user.pubkey).await {
-                            // Update the tracking state
-                            let mut viewer_states = self.stream_viewer_states.write().await;
-                            viewer_states.insert(
-                                stream.id.clone(),
-                                StreamViewerState {
-                                    last_published_count: viewer_count,
-                                    last_update_time: now,
-                                },
-                            );
-                        } else {
-                            warn!("Failed to update viewer count for stream {}", stream.id);
-                        }
-                    }
+                if let Ok(user) = self.db.get_user(stream.user_id).await {
+                    let _ = self
+                        .stream_manager
+                        .check_and_update_viewer_count(&stream, |s| {
+                            self.publish_stream_event(s, &user.pubkey)
+                        })
+                        .await;
                 }
             }
         }
@@ -444,15 +390,9 @@ impl Overseer for ZapStreamOverseer {
         let stream_event = self.publish_stream_event(&new_stream, &user.pubkey).await?;
         new_stream.event = Some(stream_event.as_json());
 
-        let now = Utc::now();
-        let mut streams = self.active_streams.write().await;
-        streams.insert(
-            stream_id.clone(),
-            ActiveStreamInfo {
-                started_at: now,
-                last_segment_time: None,
-            },
-        );
+        self.stream_manager
+            .add_active_stream(stream_id.clone())
+            .await;
 
         self.db.insert_stream(&new_stream).await?;
         self.db.update_stream(&new_stream).await?;
@@ -496,13 +436,9 @@ impl Overseer for ZapStreamOverseer {
         }
 
         // Update last segment time for this stream
-        let now = Utc::now();
-        {
-            let mut streams = self.active_streams.write().await;
-            if let Some(info) = streams.get_mut(pipeline_id) {
-                info.last_segment_time = Some(now);
-            }
-        }
+        self.stream_manager
+            .update_stream_segment_time(pipeline_id)
+            .await;
 
         // Upload to blossom servers if configured (N94)
         let mut blobs = vec![];
@@ -565,12 +501,7 @@ impl Overseer for ZapStreamOverseer {
         let mut stream = self.db.get_stream(pipeline_id).await?;
         let user = self.db.get_user(stream.user_id).await?;
 
-        let mut streams = self.active_streams.write().await;
-        streams.remove(pipeline_id);
-
-        // Clean up viewer tracking state for this stream
-        let mut viewer_states = self.stream_viewer_states.write().await;
-        viewer_states.remove(&stream.id);
+        self.stream_manager.remove_active_stream(pipeline_id).await;
 
         stream.state = UserStreamState::Ended;
         stream.ends = Some(Utc::now());
@@ -596,179 +527,4 @@ impl ZapStreamOverseer {
             .unwrap()
             .clone())
     }
-}
-
-struct EndpointConfig<'a> {
-    video_src: Option<&'a IngressStream>,
-    audio_src: Option<&'a IngressStream>,
-    variants: Vec<VariantStream>,
-}
-
-enum EndpointCapability {
-    SourceVariant,
-    Variant { height: u16, bitrate: u64 },
-    DVR { height: u16 },
-}
-
-fn parse_capabilities(cap: &Option<String>) -> Vec<EndpointCapability> {
-    if let Some(cap) = cap {
-        cap.to_ascii_lowercase()
-            .split(',')
-            .map_while(|c| {
-                let cs = c.split(':').collect::<Vec<&str>>();
-                match cs[0] {
-                    "variant" if cs[1] == "source" => Some(EndpointCapability::SourceVariant),
-                    "variant" if cs.len() == 3 => {
-                        if let (Ok(h), Ok(br)) = (cs[1].parse(), cs[2].parse()) {
-                            Some(EndpointCapability::Variant {
-                                height: h,
-                                bitrate: br,
-                            })
-                        } else {
-                            warn!("Invalid variant: {}", c);
-                            None
-                        }
-                    }
-                    "dvr" if cs.len() == 2 => {
-                        if let Ok(h) = cs[1].parse() {
-                            Some(EndpointCapability::DVR { height: h })
-                        } else {
-                            warn!("Invalid dvr: {}", c);
-                            None
-                        }
-                    }
-                    _ => None,
-                }
-            })
-            .collect()
-    } else {
-        vec![]
-    }
-}
-
-fn get_variants_from_endpoint<'a>(
-    info: &'a IngressInfo,
-    capabilities: &Vec<EndpointCapability>,
-) -> Result<EndpointConfig<'a>> {
-    let mut vars: Vec<VariantStream> = vec![];
-
-    let video_src = info
-        .streams
-        .iter()
-        .find(|c| c.stream_type == IngressStreamType::Video);
-    let audio_src = info
-        .streams
-        .iter()
-        .find(|c| c.stream_type == IngressStreamType::Audio);
-
-    // Parse all variant capabilities and create grouped variants
-    let mut group_id = 0usize;
-    let mut dst_index = 0;
-
-    for capability in capabilities {
-        match capability {
-            EndpointCapability::SourceVariant => {
-                // Add copy variant (group for source)
-                if let Some(video_src) = video_src {
-                    vars.push(VariantStream::CopyVideo(VariantMapping {
-                        id: Uuid::new_v4(),
-                        src_index: video_src.index,
-                        dst_index,
-                        group_id,
-                    }));
-                    dst_index += 1;
-                }
-
-                if let Some(audio_src) = audio_src {
-                    vars.push(VariantStream::CopyAudio(VariantMapping {
-                        id: Uuid::new_v4(),
-                        src_index: audio_src.index,
-                        dst_index,
-                        group_id,
-                    }));
-                    dst_index += 1;
-                }
-
-                group_id += 1;
-            }
-            EndpointCapability::Variant { height, bitrate } => {
-                // Add video variant for this group
-                if let Some(video_src) = video_src {
-                    let output_height = *height;
-                    if video_src.height < output_height as _ {
-                        info!(
-                            "Skipping variant {}p, source would be upscaled from {}p",
-                            height, video_src.height
-                        );
-                        continue;
-                    }
-
-                    // Calculate dimensions maintaining aspect ratio
-                    let input_width = video_src.width as f32;
-                    let input_height = video_src.height as f32;
-                    let aspect_ratio = input_width / input_height;
-
-                    let output_width = (output_height as f32 * aspect_ratio).round() as u16;
-
-                    // Ensure even dimensions for H.264 compatibility
-                    let output_width = if output_width % 2 == 1 {
-                        output_width + 1
-                    } else {
-                        output_width
-                    };
-                    let output_height = if output_height % 2 == 1 {
-                        output_height + 1
-                    } else {
-                        output_height
-                    };
-
-                    vars.push(VariantStream::Video(VideoVariant {
-                        mapping: VariantMapping {
-                            id: Uuid::new_v4(),
-                            src_index: video_src.index,
-                            dst_index,
-                            group_id,
-                        },
-                        width: output_width,
-                        height: output_height as _,
-                        fps: video_src.fps,
-                        bitrate: *bitrate as _,
-                        codec: "libx264".to_string(),
-                        profile: 77, // AV_PROFILE_H264_MAIN
-                        level: 51,   // High 5.1 (4K)
-                        keyframe_interval: video_src.fps as u16,
-                        pixel_format: AV_PIX_FMT_YUV420P as u32,
-                    }));
-                    dst_index += 1;
-
-                    // Add audio variant for the same group
-                    if let Some(audio_src) = audio_src {
-                        vars.push(VariantStream::Audio(AudioVariant {
-                            mapping: VariantMapping {
-                                id: Uuid::new_v4(),
-                                src_index: audio_src.index,
-                                dst_index,
-                                group_id,
-                            },
-                            bitrate: 192_000,
-                            codec: "aac".to_string(),
-                            channels: 2,
-                            sample_rate: 48_000,
-                            sample_fmt: "fltp".to_owned(),
-                        }));
-                        dst_index += 1;
-                    }
-
-                    group_id += 1;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    Ok(EndpointConfig {
-        audio_src,
-        video_src,
-        variants: vars,
-    })
 }

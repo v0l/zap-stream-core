@@ -11,7 +11,6 @@ pub mod recorder;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EgressConfig {
-    pub name: String,
     /// Which variants will be used in this muxer
     pub variants: HashSet<Uuid>,
 }

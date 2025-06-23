@@ -1,3 +1,11 @@
+#[cfg(feature = "zap-stream")]
+use crate::api::Api;
+use crate::http::HttpServer;
+use crate::local_overseer::LocalApi;
+use crate::monitor::BackgroundMonitor;
+#[cfg(feature = "zap-stream")]
+use crate::overseer::ZapStreamOverseer;
+use crate::settings::Settings;
 use anyhow::{bail, Result};
 use clap::Parser;
 use config::Config;
@@ -22,20 +30,22 @@ use zap_stream_core::ingress::rtmp;
 use zap_stream_core::ingress::srt;
 #[cfg(feature = "test-pattern")]
 use zap_stream_core::ingress::test;
-
-use crate::api::Api;
-use crate::http::{HttpServer, StreamCache};
-use crate::monitor::BackgroundMonitor;
-use crate::overseer::ZapStreamOverseer;
-use crate::settings::Settings;
 use zap_stream_core::ingress::{file, tcp};
+use zap_stream_core::overseer::Overseer;
 
+#[cfg(feature = "zap-stream")]
 mod api;
 mod blossom;
+mod endpoint;
 mod http;
+#[cfg(not(feature = "zap-stream"))]
+mod local_overseer;
 mod monitor;
+#[cfg(feature = "zap-stream")]
 mod overseer;
 mod settings;
+mod stream_manager;
+mod viewer;
 
 #[derive(Parser, Debug)]
 struct Args {}
@@ -57,7 +67,13 @@ async fn main() -> Result<()> {
         .build()?;
 
     let settings: Settings = builder.try_deserialize()?;
+    #[cfg(feature = "zap-stream")]
     let overseer = settings.get_overseer().await?;
+    #[cfg(not(feature = "zap-stream"))]
+    let (overseer, api) = {
+        let api = LocalApi::from_settings(&settings)?;
+        (Arc::new(api.clone()) as Arc<dyn Overseer>, api)
+    };
 
     // Create ingress listeners
     let mut tasks = vec![];
@@ -69,18 +85,12 @@ async fn main() -> Result<()> {
     }
 
     let http_addr: SocketAddr = settings.listen_http.parse()?;
-    let index_template = include_str!("../index.html");
 
+    #[cfg(feature = "zap-stream")]
     let api = Api::new(overseer.clone(), settings.clone());
-    // Create shared stream cache
-    let stream_cache: StreamCache = Arc::new(RwLock::new(None));
+
     // HTTP server
-    let server = HttpServer::new(
-        index_template.to_string(),
-        PathBuf::from(settings.output_dir),
-        api,
-        stream_cache,
-    );
+    let server = HttpServer::new(PathBuf::from(settings.output_dir), api);
     tasks.push(tokio::spawn(async move {
         let listener = TcpListener::bind(&http_addr).await?;
 
@@ -152,7 +162,7 @@ impl FromStr for ListenerEndpoint {
 fn try_create_listener(
     u: &str,
     out_dir: &str,
-    overseer: &Arc<ZapStreamOverseer>,
+    overseer: &Arc<dyn Overseer>,
 ) -> Result<JoinHandle<Result<()>>> {
     let ep = ListenerEndpoint::from_str(u)?;
     match ep {

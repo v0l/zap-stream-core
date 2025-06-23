@@ -7,4 +7,3 @@ pub mod pipeline;
 #[cfg(test)]
 pub mod test_hls_timing;
 pub mod variant;
-pub mod viewer;

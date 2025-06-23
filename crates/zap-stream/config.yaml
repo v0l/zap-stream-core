@@ -3,6 +3,7 @@
 # All the endpoints must be valid URI's
 endpoints:
   - "rtmp://127.0.0.1:3336"
+  - "test-pattern://"
 
 # Public hostname which points to the IP address used to listen for all [endpoints]
 endpoints_public_hostname: "localhost"
@@ -38,7 +39,7 @@ listen_http: "127.0.0.1:8080"
 #     database: <database-connection-string>
 #
 overseer:
-  zap-stream:
+  local:
     nsec: "nsec1wya428srvpu96n4h78gualaj7wqw4ecgatgja8d5ytdqrxw56r2se440y4"
     #blossom:
     #  - "http://localhost:8881"
@@ -49,3 +50,6 @@ overseer:
       address: "https://127.0.0.1:10001"
       cert: "/home/kieran/.polar/networks/1/volumes/lnd/alice/tls.cert"
       macaroon: "/home/kieran/.polar/networks/1/volumes/lnd/alice/data/chain/bitcoin/regtest/admin.macaroon"
+    variants:
+      - height: 720
+        bitrate: 3000000

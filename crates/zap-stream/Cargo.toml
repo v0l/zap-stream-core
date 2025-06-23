@@ -5,12 +5,13 @@ edition = "2021"
 
 [features]
 default = ["srt", "rtmp", "test-pattern"]
+zap-stream = ["dep:fedimint-tonic-lnd", "dep:zap-stream-db"]
 srt = ["zap-stream-core/srt"]
 rtmp = ["zap-stream-core/rtmp"]
 test-pattern = ["zap-stream-db/test-pattern"]
 
 [dependencies]
-zap-stream-db = { path = "../zap-stream-db" }
+zap-stream-db = { path = "../zap-stream-db", optional = true }
 zap-stream-core = { path = "../core" }
 
 uuid.workspace = true
@@ -24,6 +25,7 @@ chrono.workspace = true
 hex.workspace = true
 url.workspace = true
 m3u8-rs.workspace = true
+data-encoding.workspace = true
 
 # http stuff
 hyper = { version = "1.5.1", features = ["server"] }
@@ -35,7 +37,7 @@ hyper-util = "0.1.10"
 # direct deps
 config = { version = "0.15.6", features = ["yaml"] }
 nostr-sdk = { version = "0.38.0" }
-fedimint-tonic-lnd = { version = "0.2.0", default-features = false, features = ["invoicesrpc", "versionrpc"] }
+fedimint-tonic-lnd = { version = "0.2.0", default-features = false, features = ["invoicesrpc", "versionrpc"], optional = true }
 reqwest = { version = "0.12.9", features = ["stream", "json"] }
 base64 = { version = "0.22.1" }
 sha2.workspace = true

@@ -1,6 +1,10 @@
+use crate::local_overseer::LocalApi;
+#[cfg(feature = "zap-stream")]
 use crate::overseer::ZapStreamOverseer;
 use serde::{Deserialize, Serialize};
+use std::fmt::{Display, Formatter};
 use std::sync::Arc;
+use zap_stream_core::overseer::Overseer;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
@@ -29,9 +33,31 @@ pub struct Settings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+pub struct LocalOverseerVariant {
+    height: u16,
+    bitrate: u32,
+}
+
+impl Display for LocalOverseerVariant {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "variant:{}:{}", self.height, self.bitrate)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum OverseerConfig {
     /// Static output
-    Local,
+    Local {
+        /// Relays to publish events to
+        relays: Vec<String>,
+        /// Nsec to sign nostr events
+        nsec: String,
+        /// Blossom servers
+        blossom: Option<Vec<String>>,
+        /// Variant config
+        variants: Vec<LocalOverseerVariant>,
+    },
     /// Control system via external API
     Webhook {
         /// Webhook service URL
@@ -60,8 +86,9 @@ pub struct LndSettings {
 }
 
 impl Settings {
-    pub async fn get_overseer(&self) -> anyhow::Result<Arc<ZapStreamOverseer>> {
+    pub async fn get_overseer(&self) -> anyhow::Result<Arc<dyn Overseer>> {
         match &self.overseer {
+            #[cfg(feature = "zap-stream")]
             OverseerConfig::ZapStream {
                 nsec: private_key,
                 database,
@@ -79,6 +106,18 @@ impl Settings {
                 )
                 .await?,
             )),
+            OverseerConfig::Local {
+                nsec,
+                relays,
+                blossom,
+                variants,
+            } => Ok(Arc::new(LocalApi::new(
+                nsec.clone(),
+                relays.clone(),
+                blossom.clone(),
+                variants.clone(),
+                self.public_url.clone(),
+            ))),
             _ => {
                 panic!("Unsupported overseer");
             }

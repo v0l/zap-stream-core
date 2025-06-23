@@ -20,7 +20,6 @@ hex.workspace = true
 itertools.workspace = true
 m3u8-rs.workspace = true
 sha2.workspace = true
-data-encoding.workspace = true
 
 futures-util = "0.3.30"
 resvg = "0.45.1"

@@ -1,4 +1,4 @@
-use crate::api::Api;
+use crate::viewer::ViewerTracker;
 use anyhow::{bail, ensure, Context, Result};
 use base64::Engine;
 use bytes::Bytes;
@@ -17,44 +17,46 @@ use log::{error, warn};
 use matchit::Router;
 use nostr_sdk::{serde_json, Alphabet, Event, Kind, PublicKey, SingleLetterTag, TagKind};
 use serde::Serialize;
+use std::borrow::Cow;
+use std::collections::HashMap;
 use std::future::Future;
 use std::io::SeekFrom;
 use std::ops::Range;
 use std::path::PathBuf;
 use std::pin::{pin, Pin};
-use std::sync::Arc;
 use std::task::Poll;
-use std::time::{Duration, Instant};
 use tokio::fs::File;
 use tokio::io::{AsyncRead, AsyncSeek, ReadBuf};
-use tokio::sync::RwLock;
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 use zap_stream_core::egress::hls::HlsEgress;
-use zap_stream_core::viewer::ViewerTracker;
+
+/// Plugin providing stream information to the http server
+pub trait HttpServerPlugin: Clone {
+    fn get_active_streams(&self) -> Pin<Box<dyn Future<Output = Result<Vec<StreamData>>> + Send>>;
+    fn track_viewer(
+        &self,
+        stream_id: &str,
+        token: &str,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>;
+    fn handler(&self, request: Request<Incoming>) -> HttpFuture;
+}
 
 #[derive(Serialize, Clone)]
-struct StreamData {
-    id: String,
-    title: String,
+pub struct StreamData {
+    pub id: String,
+    pub title: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    summary: Option<String>,
-    live_url: String,
+    pub summary: Option<String>,
+    pub live_url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    viewer_count: Option<u64>,
+    pub viewer_count: Option<u64>,
 }
 
 #[derive(Serialize, Clone)]
 struct IndexTemplateData {
-    public_url: String,
-    has_streams: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     streams: Vec<StreamData>,
-}
-
-pub struct CachedStreams {
-    data: IndexTemplateData,
-    cached_at: Instant,
 }
 
 #[derive(Clone)]
@@ -65,24 +67,18 @@ pub enum HttpServerPath {
     HlsSegmentFile,
 }
 
-pub type StreamCache = Arc<RwLock<Option<CachedStreams>>>;
-
 #[derive(Clone)]
-pub struct HttpServer {
-    index_template: String,
+pub struct HttpServer<T> {
     files_dir: PathBuf,
-    api: Api,
-    stream_cache: StreamCache,
+    plugin: T,
     router: Router<HttpServerPath>,
 }
 
-impl HttpServer {
-    pub fn new(
-        index_template: String,
-        files_dir: PathBuf,
-        api: Api,
-        stream_cache: StreamCache,
-    ) -> Self {
+impl<T> HttpServer<T>
+where
+    T: HttpServerPlugin,
+{
+    pub fn new(files_dir: PathBuf, plugin: T) -> Self {
         let mut router = Router::new();
         router.insert("/", HttpServerPath::Index).unwrap();
         router.insert("/index.html", HttpServerPath::Index).unwrap();
@@ -112,84 +108,14 @@ impl HttpServer {
             .unwrap();
 
         Self {
-            index_template,
             files_dir,
-            api,
-            stream_cache,
+            plugin,
             router,
         }
     }
 
-    async fn get_cached_or_fetch_streams_static(
-        stream_cache: &StreamCache,
-        api: &Api,
-    ) -> Result<IndexTemplateData> {
-        const CACHE_DURATION: Duration = Duration::from_secs(10);
-
-        // Check if we have valid cached data
-        {
-            let cache = stream_cache.read().await;
-            if let Some(ref cached) = *cache {
-                if cached.cached_at.elapsed() < CACHE_DURATION {
-                    return Ok(cached.data.clone());
-                }
-            }
-        }
-
-        // Cache is expired or missing, fetch new data
-        let active_streams = api.get_active_streams().await?;
-        let public_url = api.get_public_url();
-
-        let template_data = if !active_streams.is_empty() {
-            let streams: Vec<StreamData> = active_streams
-                .into_iter()
-                .map(|stream| {
-                    let viewer_count = api.get_viewer_count(&stream.id);
-                    // TODO: remove HLS assumption
-                    StreamData {
-                        id: stream.id.clone(),
-                        title: stream
-                            .title
-                            .unwrap_or_else(|| format!("Stream {}", &stream.id[..8])),
-                        summary: stream.summary,
-                        live_url: format!("/{}/{}/live.m3u8", stream.id, HlsEgress::PATH),
-                        viewer_count: if viewer_count > 0 {
-                            Some(viewer_count as _)
-                        } else {
-                            None
-                        },
-                    }
-                })
-                .collect();
-
-            IndexTemplateData {
-                public_url,
-                has_streams: true,
-                streams,
-            }
-        } else {
-            IndexTemplateData {
-                public_url,
-                has_streams: false,
-                streams: Vec::new(),
-            }
-        };
-
-        // Update cache
-        {
-            let mut cache = stream_cache.write().await;
-            *cache = Some(CachedStreams {
-                data: template_data.clone(),
-                cached_at: Instant::now(),
-            });
-        }
-
-        Ok(template_data)
-    }
-
     async fn handle_index(
-        api: Api,
-        stream_cache: StreamCache,
+        plugin: &T,
         template: String,
     ) -> Result<Response<BoxBody<Bytes, anyhow::Error>>, anyhow::Error> {
         // Compile template outside async move for better performance
@@ -201,10 +127,9 @@ impl HttpServer {
             }
         };
 
-        let template_data = Self::get_cached_or_fetch_streams_static(&stream_cache, &api).await;
-
-        match template_data {
-            Ok(data) => match template.render_to_string(&data) {
+        let streams = plugin.get_active_streams().await;
+        match streams {
+            Ok(data) => match template.render_to_string(&IndexTemplateData { streams: data }) {
                 Ok(index_html) => Ok(Self::base_response()
                     .header("content-type", "text/html")
                     .body(
@@ -273,9 +198,7 @@ impl HttpServer {
     }
 
     async fn handle_hls_master_playlist(
-        api: Api,
         req: &Request<Incoming>,
-        stream_id: &str,
         playlist_path: PathBuf,
     ) -> Result<Response<BoxBody<Bytes, anyhow::Error>>, anyhow::Error> {
         // Get client IP and User-Agent for tracking
@@ -283,44 +206,25 @@ impl HttpServer {
         let user_agent = req
             .headers()
             .get("user-agent")
-            .and_then(|h| h.to_str().ok())
-            .map(|s| s.to_string());
+            .and_then(|h| h.to_str().ok());
 
-        // Check for existing viewer token in query params
-        let query_params: std::collections::HashMap<String, String> = req
-            .uri()
-            .query()
-            .map(|q| {
-                url::form_urlencoded::parse(q.as_bytes())
-                    .into_owned()
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let viewer_token = if let Some(token) = query_params.get("vt") {
-            // Track existing viewer
-            api.track_viewer(token, stream_id, &client_ip, user_agent.clone());
-            token.clone()
-        } else {
-            // Generate new viewer token based on IP and user agent fingerprint
-            let token = ViewerTracker::generate_viewer_token(&client_ip, user_agent.as_deref());
-            api.track_viewer(&token, stream_id, &client_ip, user_agent);
-            token
-        };
+        let token = ViewerTracker::generate_viewer_token(&client_ip, user_agent);
 
         // Read the playlist file
         let playlist_content = tokio::fs::read(playlist_path).await?;
 
         // Parse and modify playlist to add viewer token to URLs
-        let modified_content =
-            Self::add_viewer_token_to_playlist(&playlist_content, &viewer_token)?;
+        let modified_content = Self::add_viewer_token_to_playlist(&playlist_content, &token)?;
 
         let response = Self::base_response()
             .header("content-type", "application/vnd.apple.mpegurl")
             .body(
-                Full::new(Bytes::from(modified_content))
-                    .map_err(|e| match e {})
-                    .boxed(),
+                Full::new(match modified_content {
+                    Cow::Borrowed(b) => Bytes::copy_from_slice(b.as_bytes()),
+                    Cow::Owned(o) => Bytes::from(o),
+                })
+                .map_err(|e| match e {})
+                .boxed(),
             )?;
 
         Ok(response)
@@ -346,7 +250,10 @@ impl HttpServer {
         Uuid::new_v4().to_string()
     }
 
-    fn add_viewer_token_to_playlist(content: &[u8], viewer_token: &str) -> Result<String> {
+    fn add_viewer_token_to_playlist<'a>(
+        content: &'a [u8],
+        viewer_token: &str,
+    ) -> Result<Cow<'a, str>> {
         // Parse the M3U8 playlist using the m3u8-rs crate
         let (_, playlist) = m3u8_rs::parse_playlist(content)
             .map_err(|e| anyhow::anyhow!("Failed to parse M3U8 playlist: {}", e))?;
@@ -364,13 +271,10 @@ impl HttpServer {
                     .write_to(&mut output)
                     .map_err(|e| anyhow::anyhow!("Failed to write master playlist: {}", e))?;
                 String::from_utf8(output)
+                    .map(Cow::Owned)
                     .map_err(|e| anyhow::anyhow!("Failed to convert playlist to string: {}", e))
             }
-            m3u8_rs::Playlist::MediaPlaylist(_) => {
-                // For media playlists, return original content unchanged
-                String::from_utf8(content.to_vec())
-                    .map_err(|e| anyhow::anyhow!("Failed to convert playlist to string: {}", e))
-            }
+            m3u8_rs::Playlist::MediaPlaylist(_) => Ok(Cow::Borrowed(str::from_utf8(content)?)),
         }
     }
 
@@ -382,7 +286,7 @@ impl HttpServer {
         }
     }
 
-    fn base_response() -> Builder {
+    pub fn base_response() -> Builder {
         Response::builder()
             .header("server", "zap-stream-core")
             .header("access-control-allow-origin", "*")
@@ -403,40 +307,57 @@ impl HttpServer {
         Ok(Self::base_response().body(body)?)
     }
 }
+type HttpResponse = Response<BoxBody<Bytes, HttpError>>;
+type HttpError = anyhow::Error;
+pub(crate) type HttpFuture = Pin<Box<dyn Future<Output = Result<HttpResponse, HttpError>> + Send>>;
 
-impl Service<Request<Incoming>> for HttpServer {
-    type Response = Response<BoxBody<Bytes, Self::Error>>;
-    type Error = anyhow::Error;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+impl<T> Service<Request<Incoming>> for HttpServer<T>
+where
+    T: HttpServerPlugin + Send + Sync + 'static,
+{
+    type Response = HttpResponse;
+    type Error = HttpError;
+    type Future = HttpFuture;
 
     fn call(&self, req: Request<Incoming>) -> Self::Future {
         let path = req.uri().path().to_owned();
-        // request path as a file path pointing to the output directory
         let dst_path = self.files_dir.join(req.uri().path()[1..].to_string());
 
         if let Ok(m) = self.router.at(&path) {
             match m.value {
                 HttpServerPath::Index => {
-                    let api = self.api.clone();
-                    let cache = self.stream_cache.clone();
-                    let template = self.index_template.clone();
-                    return Box::pin(async move { Self::handle_index(api, cache, template).await });
+                    let plugin = self.plugin.clone();
+                    let template = include_str!("../index.html");
+                    let template = template.to_string();
+                    return Box::pin(async move { Self::handle_index(&plugin, template).await });
                 }
                 HttpServerPath::HlsMasterPlaylist => {
-                    let api = self.api.clone();
                     let stream_id = m.params.get("stream").map(|s| s.to_string());
                     let file_path = dst_path.clone();
                     return Box::pin(async move {
-                        let stream_id = stream_id.context("stream id missing")?;
-                        Ok(
-                            Self::handle_hls_master_playlist(api, &req, &stream_id, file_path)
-                                .await?,
-                        )
+                        let _stream_id = stream_id.context("stream id missing")?;
+                        Ok(Self::handle_hls_master_playlist(&req, file_path).await?)
                     });
                 }
                 HttpServerPath::HlsVariantPlaylist => {
-                    // let file handler handle this one, may be used later for HLS-LL to create
-                    // delta updates
+                    // extract the viewer token and track every hit
+                    let stream_id = m.params.get("stream").map(|s| s.to_string());
+                    let query_params: HashMap<String, String> = req
+                        .uri()
+                        .query()
+                        .map(|q| {
+                            url::form_urlencoded::parse(q.as_bytes())
+                                .into_owned()
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let plugin = self.plugin.clone();
+                    return Box::pin(async move {
+                        if let (Some(stream_id), Some(vt)) = (stream_id, query_params.get("vt")) {
+                            plugin.track_viewer(&stream_id, vt).await?;
+                        }
+                        Self::path_to_response(dst_path).await
+                    });
                 }
                 HttpServerPath::HlsSegmentFile => {
                     // handle segment file (range requests)
@@ -454,9 +375,9 @@ impl Service<Request<Incoming>> for HttpServer {
         }
 
         // fallback to api handler
-        let api = self.api.clone();
+        let plugin = self.plugin.clone();
         Box::pin(async move {
-            match api.handler(req).await {
+            match plugin.handler(req).await {
                 Ok(res) => Ok(res),
                 Err(e) => {
                     error!("{}", e);

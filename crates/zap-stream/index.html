@@ -71,7 +71,6 @@
     <h1>Welcome to {{public_url}}</h1>
 
     <h2>Active Streams</h2>
-    {{#has_streams}}
     <div class="stream-list">
         {{#streams}}
         <div class="stream-item">
@@ -90,10 +89,6 @@
         </div>
         {{/streams}}
     </div>
-    {{/has_streams}}
-    {{^has_streams}}
-    <div class="no-streams">No active streams</div>
-    {{/has_streams}}
 
     <div class="player-section">
         <h2>Stream Player</h2>
