@@ -543,7 +543,7 @@ impl PipelineRunner {
 
     unsafe fn egress_packet(
         egress: &mut Vec<Box<dyn Egress>>,
-        mut pkt: *mut AVPacket,
+        pkt: *mut AVPacket,
         variant: &Uuid,
     ) -> Result<Vec<EgressResult>> {
         let mut ret = vec![];
@@ -553,7 +553,6 @@ impl PipelineRunner {
             av_packet_free(&mut pkt_clone);
             ret.push(er);
         }
-        av_packet_free(&mut pkt);
         Ok(ret)
     }
 

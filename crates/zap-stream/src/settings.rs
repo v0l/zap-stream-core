@@ -1,9 +1,5 @@
-use crate::local_overseer::LocalApi;
-#[cfg(feature = "zap-stream")]
-use crate::overseer::ZapStreamOverseer;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
-use std::sync::Arc;
 use zap_stream_core::overseer::Overseer;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,44 +79,4 @@ pub struct LndSettings {
     pub address: String,
     pub cert: String,
     pub macaroon: String,
-}
-
-impl Settings {
-    pub async fn get_overseer(&self) -> anyhow::Result<Arc<dyn Overseer>> {
-        match &self.overseer {
-            #[cfg(feature = "zap-stream")]
-            OverseerConfig::ZapStream {
-                nsec: private_key,
-                database,
-                lnd,
-                relays,
-                blossom,
-            } => Ok(Arc::new(
-                ZapStreamOverseer::new(
-                    &self.public_url,
-                    private_key,
-                    database,
-                    lnd,
-                    relays,
-                    blossom,
-                )
-                .await?,
-            )),
-            OverseerConfig::Local {
-                nsec,
-                relays,
-                blossom,
-                variants,
-            } => Ok(Arc::new(LocalApi::new(
-                nsec.clone(),
-                relays.clone(),
-                blossom.clone(),
-                variants.clone(),
-                self.public_url.clone(),
-            ))),
-            _ => {
-                panic!("Unsupported overseer");
-            }
-        }
-    }
 }

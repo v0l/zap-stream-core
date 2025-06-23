@@ -72,4 +72,7 @@ pub trait Overseer: Send + Sync {
 
     /// Stream is finished
     async fn on_end(&self, pipeline_id: &Uuid) -> Result<()>;
+
+    /// Force update stream
+    async fn on_update(&self, pipeline_id: &Uuid) -> Result<()>;
 }

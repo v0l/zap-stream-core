@@ -110,7 +110,7 @@ impl HttpServerPlugin for LocalApi {
         })
     }
 
-    fn handler(&self, _request: Request<Incoming>) -> crate::http::HttpFuture {
+    fn handler(self, _request: Request<Incoming>) -> crate::http::HttpFuture {
         // local overseer doesnt implement any of its own endpoints
         Box::pin(async move { Ok(Response::builder().status(404).body(BoxBody::default())?) })
     }
@@ -187,6 +187,12 @@ impl Overseer for LocalApi {
         self.stream_manager
             .remove_active_stream(&pipeline_id.to_string())
             .await;
+
+        Ok(())
+    }
+
+    async fn on_update(&self, pipeline_id: &Uuid) -> anyhow::Result<()> {
+        // TODO: update stream event
 
         Ok(())
     }

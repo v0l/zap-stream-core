@@ -1,7 +1,8 @@
 use crate::blossom::{BlobDescriptor, Blossom};
-use crate::settings::LndSettings;
+use crate::endpoint::{get_variants_from_endpoint, parse_capabilities, EndpointCapability};
+use crate::settings::{LndSettings, OverseerConfig, Settings};
 use crate::stream_manager::{ActiveStreamInfo, StreamManager, StreamViewerState};
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use fedimint_tonic_lnd::verrpc::VersionRequest;
@@ -26,7 +27,6 @@ use zap_stream_core::variant::audio::AudioVariant;
 use zap_stream_core::variant::mapping::VariantMapping;
 use zap_stream_core::variant::video::VideoVariant;
 use zap_stream_core::variant::{StreamMapping, VariantStream};
-use zap_stream_core::viewer::ViewerTracker;
 use zap_stream_db::{IngestEndpoint, UserStream, UserStreamState, ZapStreamDb};
 
 const STREAM_EVENT_KIND: u16 = 30_311;
@@ -51,6 +51,27 @@ pub struct ZapStreamOverseer {
 }
 
 impl ZapStreamOverseer {
+    pub async fn from_settings(settings: &Settings) -> Result<Self> {
+        match &settings.overseer {
+            OverseerConfig::ZapStream {
+                nsec: private_key,
+                database,
+                lnd,
+                relays,
+                blossom,
+            } => Ok(ZapStreamOverseer::new(
+                &settings.public_url,
+                private_key,
+                database,
+                lnd,
+                relays,
+                blossom,
+            )
+            .await?),
+            _ => bail!("Overseer not supported"),
+        }
+    }
+
     pub async fn new(
         public_url: &String,
         private_key: &str,
@@ -81,12 +102,14 @@ impl ZapStreamOverseer {
             PathBuf::from(&lnd.cert),
             PathBuf::from(&lnd.macaroon),
         )
-        .await?;
+        .await
+        .context("Failed to connect to LND")?;
 
         let version = lnd
             .versioner()
             .get_version(VersionRequest::default())
-            .await?;
+            .await
+            .context("Failed to get LND version")?;
         info!("LND connected: v{}", version.into_inner().version);
 
         let keys = Keys::from_str(private_key)?;
@@ -122,15 +145,11 @@ impl ZapStreamOverseer {
         self.lnd.clone()
     }
 
-    pub fn viewer_tracker(&self) -> &ViewerTracker {
-        self.stream_manager.viewer_tracker()
+    pub fn stream_manager(&self) -> StreamManager {
+        self.stream_manager.clone()
     }
 
-    pub fn stream_manager(&self) -> &StreamManager {
-        &self.stream_manager
-    }
-
-    fn stream_to_event_builder(&self, stream: &UserStream) -> Result<EventBuilder> {
+    async fn stream_to_event_builder(&self, stream: &UserStream) -> Result<EventBuilder> {
         let mut tags = vec![
             Tag::parse(&["d".to_string(), stream.id.to_string()])?,
             Tag::parse(&["status".to_string(), stream.state.to_string()])?,
@@ -174,7 +193,7 @@ impl ZapStreamOverseer {
 
         // Add current viewer count for live streams
         if stream.state == UserStreamState::Live {
-            let viewer_count = self.stream_manager.get_viewer_count(&stream.id);
+            let viewer_count = self.stream_manager.get_viewer_count(&stream.id).await;
             tags.push(Tag::parse(&[
                 "current_participants".to_string(),
                 viewer_count.to_string(),
@@ -263,10 +282,12 @@ impl ZapStreamOverseer {
             _ => {}
         }
         let ev = self
-            .stream_to_event_builder(stream)?
+            .stream_to_event_builder(stream)
+            .await?
             .tags(extra_tags)
             .sign_with_keys(&self.keys)?;
         self.client.send_event(ev.clone()).await?;
+        info!("Published stream event {}", ev.id.to_hex());
         Ok(ev)
     }
 
@@ -287,7 +308,8 @@ impl Overseer for ZapStreamOverseer {
             let id = Uuid::parse_str(&stream.id)?;
             info!("Checking stream is alive: {}", stream.id);
 
-            let (is_active, should_timeout) = self.stream_manager.check_stream_status(&id).await;
+            let (is_active, should_timeout) =
+                self.stream_manager.check_stream_status(&stream.id).await;
 
             if !is_active || should_timeout {
                 if should_timeout {
@@ -299,12 +321,13 @@ impl Overseer for ZapStreamOverseer {
             } else {
                 // Stream is active, check if we should update viewer count in nostr event
                 if let Ok(user) = self.db.get_user(stream.user_id).await {
-                    let _ = self
+                    if self
                         .stream_manager
-                        .check_and_update_viewer_count(&stream, |s| {
-                            self.publish_stream_event(s, &user.pubkey)
-                        })
-                        .await;
+                        .check_and_update_viewer_count(&stream.id)
+                        .await?
+                    {
+                        self.publish_stream_event(&stream, &user.pubkey).await?;
+                    }
                 }
             }
         }
@@ -339,7 +362,6 @@ impl Overseer for ZapStreamOverseer {
 
         let mut egress = vec![];
         egress.push(EgressType::HLS(EgressConfig {
-            name: "hls".to_string(),
             variants: cfg.variants.iter().map(|v| v.id()).collect(),
         }));
         if let Some(EndpointCapability::DVR { height }) = caps
@@ -358,7 +380,6 @@ impl Overseer for ZapStreamOverseer {
                         .iter()
                         .filter(|v| v.group_id() == var.group_id());
                     egress.push(EgressType::Recorder(EgressConfig {
-                        name: "dvr".to_string(),
                         variants: vars_in_group.map(|v| v.id()).collect(),
                     }))
                 }
@@ -390,9 +411,7 @@ impl Overseer for ZapStreamOverseer {
         let stream_event = self.publish_stream_event(&new_stream, &user.pubkey).await?;
         new_stream.event = Some(stream_event.as_json());
 
-        self.stream_manager
-            .add_active_stream(stream_id.clone())
-            .await;
+        self.stream_manager.add_active_stream(&new_stream.id).await;
 
         self.db.insert_stream(&new_stream).await?;
         self.db.update_stream(&new_stream).await?;
@@ -437,7 +456,7 @@ impl Overseer for ZapStreamOverseer {
 
         // Update last segment time for this stream
         self.stream_manager
-            .update_stream_segment_time(pipeline_id)
+            .update_stream_segment_time(&stream.id)
             .await;
 
         // Upload to blossom servers if configured (N94)
@@ -501,7 +520,7 @@ impl Overseer for ZapStreamOverseer {
         let mut stream = self.db.get_stream(pipeline_id).await?;
         let user = self.db.get_user(stream.user_id).await?;
 
-        self.stream_manager.remove_active_stream(pipeline_id).await;
+        self.stream_manager.remove_active_stream(&stream.id).await;
 
         stream.state = UserStreamState::Ended;
         stream.ends = Some(Utc::now());
@@ -510,6 +529,16 @@ impl Overseer for ZapStreamOverseer {
         self.db.update_stream(&stream).await?;
 
         info!("Stream ended {}", stream.id);
+        Ok(())
+    }
+
+    async fn on_update(&self, pipeline_id: &Uuid) -> Result<()> {
+        let mut stream = self.db.get_stream(pipeline_id).await?;
+        let user = self.db.get_user(stream.user_id).await?;
+
+        let event = self.publish_stream_event(&stream, &user.pubkey).await?;
+        stream.event = Some(event.as_json());
+        self.db.update_stream(&stream).await?;
         Ok(())
     }
 }

@@ -1,6 +1,7 @@
 #[cfg(feature = "zap-stream")]
 use crate::api::Api;
 use crate::http::HttpServer;
+#[cfg(not(feature = "zap-stream"))]
 use crate::local_overseer::LocalApi;
 use crate::monitor::BackgroundMonitor;
 #[cfg(feature = "zap-stream")]
@@ -20,7 +21,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
-use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use url::Url;
@@ -68,7 +68,12 @@ async fn main() -> Result<()> {
 
     let settings: Settings = builder.try_deserialize()?;
     #[cfg(feature = "zap-stream")]
-    let overseer = settings.get_overseer().await?;
+    let (overseer, api) = {
+        let overseer = ZapStreamOverseer::from_settings(&settings).await?;
+        let arc = Arc::new(overseer.clone());
+        let api = Api::new(arc.clone(), settings.clone());
+        (arc as Arc<dyn Overseer>, api)
+    };
     #[cfg(not(feature = "zap-stream"))]
     let (overseer, api) = {
         let api = LocalApi::from_settings(&settings)?;
@@ -85,9 +90,6 @@ async fn main() -> Result<()> {
     }
 
     let http_addr: SocketAddr = settings.listen_http.parse()?;
-
-    #[cfg(feature = "zap-stream")]
-    let api = Api::new(overseer.clone(), settings.clone());
 
     // HTTP server
     let server = HttpServer::new(PathBuf::from(settings.output_dir), api);

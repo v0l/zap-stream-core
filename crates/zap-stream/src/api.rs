@@ -1,6 +1,7 @@
-use crate::http::check_nip98_auth;
+use crate::http::{check_nip98_auth, HttpFuture, HttpServerPlugin, StreamData};
 use crate::overseer::ZapStreamOverseer;
 use crate::settings::Settings;
+use crate::stream_manager::StreamManager;
 use crate::ListenerEndpoint;
 use anyhow::{anyhow, bail, Result};
 use bytes::Bytes;
@@ -13,11 +14,15 @@ use log::warn;
 use matchit::Router;
 use nostr_sdk::{serde_json, JsonUtil, PublicKey};
 use serde::{Deserialize, Serialize};
+use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
 use url::Url;
 use uuid::Uuid;
+use zap_stream_core::egress::hls::HlsEgress;
+use zap_stream_core::overseer::Overseer;
 use zap_stream_db::{UserStream, ZapStreamDb};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -416,10 +421,7 @@ impl Api {
             self.db.update_stream(&stream).await?;
 
             // Update the nostr event and republish like C# version
-            if let Err(e) = self
-                .republish_stream_event(&stream, pubkey.to_bytes())
-                .await
-            {
+            if let Err(e) = self.overseer.on_update(&stream_uuid).await {
                 warn!(
                     "Failed to republish nostr event for stream {}: {}",
                     stream.id, e
@@ -635,48 +637,45 @@ impl Api {
             event: None, // TODO: Build proper nostr event like C# version
         })
     }
+}
 
-    /// Republish stream event to nostr relays using the same code as overseer
-    async fn republish_stream_event(&self, stream: &UserStream, pubkey: [u8; 32]) -> Result<()> {
-        let event = self
-            .overseer
-            .publish_stream_event(stream, &pubkey.to_vec())
-            .await?;
-
-        // Update the stream with the new event JSON
-        let mut updated_stream = stream.clone();
-        updated_stream.event = Some(event.as_json());
-        self.db.update_stream(&updated_stream).await?;
-
-        Ok(())
+impl HttpServerPlugin for Api {
+    fn get_active_streams(&self) -> Pin<Box<dyn Future<Output = Result<Vec<StreamData>>> + Send>> {
+        let db = self.db.clone();
+        let viewers = self.overseer.stream_manager();
+        Box::pin(async move {
+            let streams = db.list_live_streams().await?;
+            let mut ret = Vec::with_capacity(streams.len());
+            for stream in streams {
+                let viewers = viewers.get_viewer_count(&stream.id).await;
+                ret.push(StreamData {
+                    live_url: format!("{}/{}/live.m3u8", stream.id, HlsEgress::PATH),
+                    id: stream.id,
+                    title: stream.title.unwrap_or_default(),
+                    summary: stream.summary,
+                    viewer_count: Some(viewers as _),
+                });
+            }
+            Ok(ret)
+        })
     }
 
-    /// Track a viewer for viewer count analytics
-    pub fn track_viewer(
+    fn track_viewer(
         &self,
-        token: &str,
         stream_id: &str,
-        ip_address: &str,
-        user_agent: Option<String>,
-    ) {
-        self.overseer
-            .viewer_tracker()
-            .track_viewer(token, stream_id, ip_address, user_agent);
+        token: &str,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
+        let mgr = self.overseer.stream_manager();
+        let stream_id = stream_id.to_string();
+        let token = token.to_string();
+        Box::pin(async move {
+            mgr.track_viewer(&stream_id, &token).await;
+            Ok(())
+        })
     }
 
-    /// Get current viewer count for a stream
-    pub fn get_viewer_count(&self, stream_id: &str) -> usize {
-        self.overseer.viewer_tracker().get_viewer_count(stream_id)
-    }
-
-    /// Get active streams from database
-    pub async fn get_active_streams(&self) -> Result<Vec<UserStream>> {
-        self.db.list_live_streams().await
-    }
-
-    /// Get the public URL from settings
-    pub fn get_public_url(&self) -> String {
-        self.settings.public_url.clone()
+    fn handler(self, request: Request<Incoming>) -> HttpFuture {
+        Box::pin(async move { self.handler(request).await })
     }
 }
 

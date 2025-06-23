@@ -39,7 +39,7 @@ pub trait HttpServerPlugin: Clone {
         stream_id: &str,
         token: &str,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>;
-    fn handler(&self, request: Request<Incoming>) -> HttpFuture;
+    fn handler(self, request: Request<Incoming>) -> HttpFuture;
 }
 
 #[derive(Serialize, Clone)]

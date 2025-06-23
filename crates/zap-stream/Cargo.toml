@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-default = ["srt", "rtmp", "test-pattern"]
+default = ["srt", "rtmp", "test-pattern", "zap-stream"]
 zap-stream = ["dep:fedimint-tonic-lnd", "dep:zap-stream-db"]
 srt = ["zap-stream-core/srt"]
 rtmp = ["zap-stream-core/rtmp"]
