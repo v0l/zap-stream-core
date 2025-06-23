@@ -294,7 +294,6 @@ impl ZapStreamOverseer {
 impl Overseer for ZapStreamOverseer {
     async fn check_streams(&self) -> Result<()> {
         let active_streams = self.db.list_live_streams().await?;
-        let now = Utc::now();
 
         for stream in active_streams {
             // check if stream is alive

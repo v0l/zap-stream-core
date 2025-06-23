@@ -3,7 +3,6 @@ use crate::mux::hls::variant::HlsVariant;
 use crate::variant::{StreamMapping, VariantStream};
 use anyhow::Result;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPacket;
-use ffmpeg_rs_raw::Encoder;
 use itertools::Itertools;
 use log::{trace, warn};
 use std::fmt::Display;

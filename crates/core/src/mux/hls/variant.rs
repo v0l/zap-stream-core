@@ -9,7 +9,7 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
     av_free, av_get_bits_per_pixel, av_pix_fmt_desc_get, av_q2d, av_write_frame, avio_close,
     avio_flush, avio_open, avio_size, AVPacket, AVIO_FLAG_WRITE, AV_NOPTS_VALUE, AV_PKT_FLAG_KEY,
 };
-use ffmpeg_rs_raw::{cstr, Encoder, Muxer};
+use ffmpeg_rs_raw::{cstr, Muxer};
 use log::{debug, info, trace, warn};
 use m3u8_rs::{ExtTag, MediaSegmentType, PartInf, PreloadHint};
 use std::collections::HashMap;

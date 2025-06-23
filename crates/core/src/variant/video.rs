@@ -3,7 +3,7 @@ use ffmpeg_rs_raw::Encoder;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
-use std::intrinsics::transmute;
+use std::mem::transmute;
 use uuid::Uuid;
 
 use crate::variant::{StreamMapping, VariantMapping};
