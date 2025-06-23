@@ -7,8 +7,8 @@ This guide covers deploying zap.stream core streaming server in a production env
 zap.stream requires several services to operate:
 
 - **MariaDB/MySQL Database** - Stores user accounts, stream metadata, and transaction history
-- **Strfry Nostr Relay** - Handles Nostr protocol events for stream announcements and chat
-- **Blossom File Storage** (Optional) - Provides decentralized file storage for thumbnails and metadata
+- **Public Nostr Relays** - Uses existing public Nostr relays for stream announcements and chat
+- **Public Blossom Servers** (Optional) - Uses existing public Blossom servers for decentralized file storage
 - **Lightning Network Daemon (LND)** - Processes Bitcoin Lightning payments
 - **zap.stream Core Service** - Main streaming server handling RTMP/SRT ingestion and HLS output
 
@@ -16,21 +16,25 @@ zap.stream requires several services to operate:
 
 ### 1. Database (MariaDB/MySQL)
 
-The application requires two databases:
+The application requires a database for storing user accounts, stream metadata, and transaction history:
 - `zap_stream` - Main application database
-- `route96` - Blossom file storage database (if using Blossom)
 
-### 2. Nostr Relay (Strfry)
+### 2. Public Nostr Relays
 
-Used for publishing stream events and handling real-time communication.
+zap.stream connects to existing public Nostr relays for publishing stream events and handling real-time communication. Popular public relays include:
+- `wss://relay.damus.io`
+- `wss://nos.lol` 
+- `wss://relay.snort.social`
 
-### 3. Blossom File Storage (Optional)
+### 3. Public Blossom Servers (Optional)
 
-Provides decentralized file storage for stream thumbnails and metadata.
+For file storage, zap.stream can use existing public Blossom servers for thumbnails and metadata. Popular public Blossom servers include:
+- `https://blossom.oxtr.dev`
+- `https://cdn.satellite.earth`
 
 ### 4. Lightning Network Daemon
 
-Required for processing Bitcoin payments and withdrawals.
+Required for processing Bitcoin payments and withdrawals. You'll need access to an LND node.
 
 ## Docker Deployment
 
@@ -54,36 +58,11 @@ services:
       - ./init.sql:/docker-entrypoint-initdb.d/00-init.sql
     restart: unless-stopped
 
-  # Nostr relay
-  relay:
-    image: dockurr/strfry:latest
-    ports:
-      - "7777:7777"
-    volumes:
-      - relay_data:/app/strfry-db
-      - ./strfry.conf:/etc/strfry.conf
-    restart: unless-stopped
-
-  # Blossom file storage (optional)
-  blossom:
-    image: voidic/route96:latest
-    depends_on:
-      - db
-    environment:
-      RUST_LOG: info
-    ports:
-      - "8881:8000"
-    volumes:
-      - blossom_data:/app/data
-      - ./route96.yaml:/app/config.yaml
-    restart: unless-stopped
-
   # zap.stream core service
   zap-stream:
     image: voidic/zap-stream:latest  # Replace with actual image
     depends_on:
       - db
-      - relay
     ports:
       - "8080:8080"  # HTTP server
       - "1935:1935"  # RTMP ingestion
@@ -99,8 +78,6 @@ services:
 
 volumes:
   db_data:
-  relay_data:
-  blossom_data:
   stream_output:
 ```
 
@@ -117,13 +94,15 @@ LND_ADDRESS=your.lnd.node:10009
 LND_CERT_PATH=/app/lnd_tls.cert
 LND_MACAROON_PATH=/app/admin.macaroon
 
-# Nostr
+# Nostr (public relays)
 NOSTR_PRIVATE_KEY=nsec1your_private_key_here
-RELAY_URL=ws://relay:7777
+RELAY_URL=wss://relay.damus.io
+
+# Blossom (public servers)
+BLOSSOM_URL=https://blossom.oxtr.dev
 
 # Public URLs
 PUBLIC_URL=https://your-domain.com
-BLOSSOM_URL=https://blossom.your-domain.com
 ```
 
 ### Configuration Files
@@ -131,7 +110,6 @@ BLOSSOM_URL=https://blossom.your-domain.com
 #### Database Initialization (init.sql)
 ```sql
 CREATE DATABASE IF NOT EXISTS zap_stream;
-CREATE DATABASE IF NOT EXISTS route96;
 ```
 
 #### zap.stream Configuration (config.yaml)
@@ -152,6 +130,8 @@ overseer:
       - "${BLOSSOM_URL}"
     relays:
       - "${RELAY_URL}"
+      - "wss://nos.lol"
+      - "wss://relay.snort.social"
     database: "mysql://root:${DB_ROOT_PASSWORD}@db:3306/zap_stream"
     lnd:
       address: "${LND_ADDRESS}"
@@ -159,29 +139,6 @@ overseer:
       macaroon: "${LND_MACAROON_PATH}"
 ```
 
-#### Strfry Configuration (strfry.conf)
-```conf
-db = "/app/strfry-db/"
-relay {
-    bind = "0.0.0.0"
-    port = 7777
-    info {
-        name = "zap.stream relay"
-        description = "Nostr relay for zap.stream"
-        pubkey = "your_relay_pubkey_here"
-        contact = "admin@your-domain.com"
-    }
-}
-```
-
-#### Blossom Configuration (route96.yaml)
-```yaml
-listen: "0.0.0.0:8000"
-database: "mysql://root:${DB_ROOT_PASSWORD}@db:3306/route96"
-storage_dir: "/app/data"
-max_upload_bytes: 5000000000  # 5GB
-public_url: "${BLOSSOM_URL}"
-```
 
 ## Production Deployment Steps
 
@@ -191,6 +148,8 @@ public_url: "${BLOSSOM_URL}"
 - Lightning Network node (LND) running and accessible
 - Domain name and SSL certificates configured
 - Reverse proxy (nginx/traefik) for SSL termination
+- Access to public Nostr relays (most are free to use)
+- Access to public Blossom servers (optional, for file storage)
 
 ### 2. Initial Setup
 
@@ -210,8 +169,6 @@ cp ../crates/zap-stream/dev-setup/* ./
 # Edit configuration files for production
 nano config.yaml
 nano .env
-nano strfry.conf
-nano route96.yaml
 ```
 
 ### 3. SSL and Reverse Proxy
@@ -232,30 +189,8 @@ server {
         proxy_pass http://localhost:8080;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-    }
-    
-    # WebSocket for Nostr relay
-    location /relay {
-        proxy_pass http://localhost:7777;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-    }
-}
-
-# Blossom file storage
-server {
-    listen 443 ssl http2;
-    server_name blossom.your-domain.com;
-    
-    ssl_certificate /path/to/cert.pem;
-    ssl_certificate_key /path/to/key.pem;
-    
-    location / {
-        proxy_pass http://localhost:8881;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        client_max_body_size 5G;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 }
 ```
@@ -281,14 +216,14 @@ Verify each service is working:
 # Database
 docker-compose exec db mysql -u root -p -e "SHOW DATABASES;"
 
-# Relay
-curl -H "Accept: application/nostr+json" http://localhost:7777
-
-# Blossom (if configured)
-curl http://localhost:8881/health
-
 # zap.stream API
 curl http://localhost:8080/api/v1/health
+
+# Test Nostr relay connectivity (using public relay)
+curl -H "Accept: application/nostr+json" https://relay.damus.io
+
+# Test Blossom server connectivity (using public server)
+curl https://blossom.oxtr.dev
 ```
 
 ## Security Considerations
@@ -330,6 +265,8 @@ Set up monitoring for:
 - Service availability
 - Database connections
 - Lightning Network connectivity
+- Public Nostr relay connectivity
+- Public Blossom server connectivity (if used)
 - Disk space for stream output
 - Memory and CPU usage
 
