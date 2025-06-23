@@ -553,6 +553,7 @@ impl PipelineRunner {
             av_packet_free(&mut pkt_clone);
             ret.push(er);
         }
+        av_packet_free(&mut pkt);
         Ok(ret)
     }
 
