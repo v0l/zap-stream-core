@@ -8,5 +8,6 @@ Rust zap.stream core streaming server
 
 ## Documentation
 
-- [API Documentation](./API.md) - Complete REST API reference
+- [API Documentation](./docs/API.md) - Complete REST API reference
+- [Deployment Guide](./docs/DEPLOYMENT.md) - Production deployment with Docker
 
