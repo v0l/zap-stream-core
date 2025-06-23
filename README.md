@@ -6,4 +6,7 @@ Rust zap.stream core streaming server
 
 ![diagram](./crates/zap-stream/zap.stream.svg)
 
+## Documentation
+
+- [API Documentation](./API.md) - Complete REST API reference
 
