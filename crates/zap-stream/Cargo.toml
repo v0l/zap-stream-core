@@ -5,13 +5,13 @@ edition = "2021"
 
 [features]
 default = ["srt", "rtmp", "test-pattern", "zap-stream"]
-zap-stream = ["dep:fedimint-tonic-lnd", "dep:zap-stream-db"]
+zap-stream = ["dep:fedimint-tonic-lnd"]
 srt = ["zap-stream-core/srt"]
 rtmp = ["zap-stream-core/rtmp"]
 test-pattern = ["zap-stream-db/test-pattern"]
 
 [dependencies]
-zap-stream-db = { path = "../zap-stream-db", optional = true }
+zap-stream-db = { path = "../zap-stream-db" }
 zap-stream-core = { path = "../core" }
 
 uuid.workspace = true
