@@ -11,5 +11,6 @@ test-pattern = []
 anyhow.workspace = true
 chrono.workspace = true
 uuid.workspace = true
+rand.workspace = true
 
 sqlx = { version = "0.8.1", features = ["runtime-tokio", "migrate", "mysql", "chrono"] }

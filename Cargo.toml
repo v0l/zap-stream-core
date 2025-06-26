@@ -27,3 +27,4 @@ hex = "0.4.3"
 m3u8-rs = { git = "https://git.v0l.io/Kieran/m3u8-rs.git", rev = "6803eefca2838a8bfae9e19fd516ef36d7d89997" }
 sha2 = "0.10.8"
 data-encoding = "2.9.0"
+rand = "0.9.1"

@@ -2,6 +2,7 @@ use crate::{
     IngestEndpoint, Payment, PaymentType, User, UserStream, UserStreamForward, UserStreamKey,
 };
 use anyhow::Result;
+use rand::random;
 use sqlx::{MySqlPool, Row};
 use uuid::Uuid;
 
@@ -280,22 +281,26 @@ impl ZapStreamDb {
         Ok(())
     }
 
-    /// Mark payment as paid
-    pub async fn mark_payment_paid(&self, payment_hash: &[u8]) -> Result<()> {
-        sqlx::query("update payment set is_paid = true where payment_hash = ?")
-            .bind(payment_hash)
-            .execute(&self.db)
-            .await?;
-        Ok(())
-    }
-
-    /// Update payment fee and mark as paid
+    /// Update payment fee and mark as paid, also update users balance (for deposits/credits)
     pub async fn complete_payment(&self, payment_hash: &[u8], fee: u64) -> Result<()> {
-        sqlx::query("update payment set fee = ?, is_paid = true where payment_hash = ?")
+        sqlx::query("update payment p join user u on p.user_id = u.id set p.fee = ?, p.is_paid = true, u.balance = u.balance + p.amount where p.payment_hash = ?")
             .bind(fee)
             .bind(payment_hash)
             .execute(&self.db)
             .await?;
+
+        Ok(())
+    }
+
+    /// Update payment fee and mark as paid for withdrawals (subtracts fee from balance)
+    pub async fn complete_withdrawal(&self, payment_hash: &[u8], fee: u64) -> Result<()> {
+        sqlx::query("update payment p join user u on p.user_id = u.id set p.fee = ?, p.is_paid = true, u.balance = u.balance - ? where p.payment_hash = ?")
+            .bind(fee)
+            .bind(fee)
+            .bind(payment_hash)
+            .execute(&self.db)
+            .await?;
+
         Ok(())
     }
 
@@ -380,5 +385,77 @@ impl ZapStreamDb {
                 .execute(&self.db)
                 .await?;
         Ok(result.last_insert_id())
+    }
+
+    /// Check if user is admin
+    pub async fn is_admin(&self, uid: u64) -> Result<bool> {
+        Ok(sqlx::query("select is_admin from user where id = ?")
+            .bind(uid)
+            .fetch_one(&self.db)
+            .await?
+            .try_get(0)?)
+    }
+
+    /// Set user admin status
+    pub async fn set_admin(&self, uid: u64, is_admin: bool) -> Result<()> {
+        sqlx::query("update user set is_admin = ? where id = ?")
+            .bind(is_admin)
+            .bind(uid)
+            .execute(&self.db)
+            .await?;
+        Ok(())
+    }
+
+    /// Set user blocked status
+    pub async fn set_blocked(&self, uid: u64, is_blocked: bool) -> Result<()> {
+        sqlx::query("update user set is_blocked = ? where id = ?")
+            .bind(is_blocked)
+            .bind(uid)
+            .execute(&self.db)
+            .await?;
+        Ok(())
+    }
+
+    /// Get user by pubkey
+    pub async fn get_user_by_pubkey(&self, pubkey: &[u8; 32]) -> Result<Option<User>> {
+        Ok(sqlx::query_as("select * from user where pubkey = ?")
+            .bind(pubkey.as_slice())
+            .fetch_optional(&self.db)
+            .await?)
+    }
+
+    /// List all users with pagination
+    pub async fn list_users(&self, offset: u64, limit: u64) -> Result<Vec<User>> {
+        Ok(
+            sqlx::query_as("select * from user order by created desc limit ? offset ?")
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(&self.db)
+                .await?,
+        )
+    }
+
+    /// Search users by pubkey prefix (hex encoded)
+    pub async fn search_users_by_pubkey(&self, pubkey_prefix: &str) -> Result<Vec<User>> {
+        let search_pattern = format!("%{}%", pubkey_prefix);
+        Ok(sqlx::query_as(
+            "select * from user where hex(pubkey) like ? order by created desc limit 50",
+        )
+        .bind(search_pattern)
+        .fetch_all(&self.db)
+        .await?)
+    }
+
+    /// Add credit to user balance (admin operation)
+    pub async fn add_admin_credit(&self, uid: u64, amount: u64, memo: Option<&str>) -> Result<()> {
+        // Create payment record for admin credit
+        let payment_hash: [u8; 32] = random();
+        self.create_payment(&payment_hash, uid, None, amount, PaymentType::Credit, 0)
+            .await?;
+
+        // complete the payment
+        self.complete_payment(&payment_hash, 0).await?;
+
+        Ok(())
     }
 }

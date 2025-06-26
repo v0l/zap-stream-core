@@ -36,6 +36,8 @@ enum Route {
     ForwardId,
     History,
     Keys,
+    AdminUsers,
+    AdminUsersId,
 }
 
 #[derive(Clone)]
@@ -66,6 +68,12 @@ impl Api {
             .unwrap();
         router.insert("/api/v1/history", Route::History).unwrap();
         router.insert("/api/v1/keys", Route::Keys).unwrap();
+        router
+            .insert("/api/v1/admin/users", Route::AdminUsers)
+            .unwrap();
+        router
+            .insert("/api/v1/admin/users/{id}", Route::AdminUsersId)
+            .unwrap();
 
         Self {
             db: overseer.database(),
@@ -98,14 +106,15 @@ impl Api {
         }
 
         // Route matching
-        let path = req.uri().path();
-        let matched = self.router.at(path);
+        let path = req.uri().path().to_string();
+        let method = req.method().clone();
+        let matched = self.router.at(&path);
 
         if let Ok(matched) = matched {
             let route = *matched.value;
             let params = matched.params;
 
-            match (req.method(), route) {
+            match (&method, route) {
                 (&Method::GET, Route::Account) => {
                     let auth = check_nip98_auth(&req, &self.settings.public_url)?;
                     let rsp = self.get_account(&auth.pubkey).await?;
@@ -195,6 +204,44 @@ impl Api {
                     let create_req: CreateStreamKeyRequest = serde_json::from_slice(&body)?;
                     let rsp = self.create_stream_key(&auth.pubkey, create_req).await?;
                     Ok(base.body(Self::body_json(&rsp)?)?)
+                }
+                (&Method::GET, Route::AdminUsers) => {
+                    let auth = check_nip98_auth(&req, &self.settings.public_url)?;
+                    self.check_admin_access(&auth.pubkey).await?;
+                    let full_url = format!(
+                        "{}{}",
+                        self.settings.public_url.trim_end_matches('/'),
+                        req.uri()
+                    );
+                    let url: url::Url = full_url.parse()?;
+                    let page: u64 = url
+                        .query_pairs()
+                        .find_map(|(k, v)| if k == "page" { Some(v) } else { None })
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(0);
+                    let limit: u64 = url
+                        .query_pairs()
+                        .find_map(|(k, v)| if k == "limit" { Some(v) } else { None })
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(50);
+                    let search = url.query_pairs().find_map(|(k, v)| {
+                        if k == "search" {
+                            Some(v.to_string())
+                        } else {
+                            None
+                        }
+                    });
+                    let rsp = self.admin_list_users(page, limit, search).await?;
+                    Ok(base.body(Self::body_json(&rsp)?)?)
+                }
+                (&Method::POST, Route::AdminUsersId) => {
+                    let auth = check_nip98_auth(&req, &self.settings.public_url)?;
+                    self.check_admin_access(&auth.pubkey).await?;
+                    let user_id = params.get("id").ok_or_else(|| anyhow!("Missing user ID"))?;
+                    let body = req.collect().await?.to_bytes();
+                    let admin_req: AdminUserRequest = serde_json::from_slice(&body)?;
+                    self.admin_manage_user(user_id, admin_req).await?;
+                    Ok(base.body(Self::body_json(&())?)?)
                 }
                 _ => Ok(base.status(405).body(Default::default())?), // Method not allowed
             }
@@ -511,13 +558,10 @@ impl Api {
                         .map(|r| r.total_fees_msat)
                         .unwrap_or(0);
 
-                    // Update payment record with fee and mark as paid
-                    self.db.complete_payment(&payment_hash, fee as u64).await?;
-
-                    // Deduct additional fee if any
-                    if fee > 0 {
-                        self.db.update_user_balance(uid, -fee).await?;
-                    }
+                    // Update payment record with fee and mark as paid (for withdrawals - subtracts fee)
+                    self.db
+                        .complete_withdrawal(&payment_hash, fee as u64)
+                        .await?;
 
                     Ok(WithdrawResponse {
                         fee,
@@ -647,6 +691,96 @@ impl Api {
             key,
             event: None, // TODO: Build proper nostr event like C# version
         })
+    }
+
+    async fn check_admin_access(&self, pubkey: &PublicKey) -> Result<()> {
+        let uid = self.db.upsert_user(&pubkey.to_bytes()).await?;
+        let is_admin = self.db.is_admin(uid).await?;
+        if !is_admin {
+            bail!("Access denied: Admin privileges required");
+        }
+        Ok(())
+    }
+
+    async fn admin_list_users(
+        &self,
+        page: u64,
+        limit: u64,
+        search: Option<String>,
+    ) -> Result<AdminUsersResponse> {
+        let offset = page * limit;
+
+        let users = if let Some(search_term) = search {
+            self.db.search_users_by_pubkey(&search_term).await?
+        } else {
+            self.db.list_users(offset, limit).await?
+        };
+
+        let total = users.len() as u32;
+        let users_info: Vec<AdminUserInfo> = users
+            .into_iter()
+            .map(|user| AdminUserInfo {
+                id: user.id,
+                pubkey: hex::encode(user.pubkey),
+                created: user.created.timestamp() as u64,
+                balance: user.balance,
+                is_admin: user.is_admin,
+                is_blocked: user.is_blocked,
+                tos_accepted: user.tos_accepted.map(|t| t.timestamp() as u64),
+                title: user.title,
+                summary: user.summary,
+            })
+            .collect();
+
+        Ok(AdminUsersResponse {
+            users: users_info,
+            page: page as u32,
+            limit: limit as u32,
+            total,
+        })
+    }
+
+    async fn admin_manage_user(&self, user_id: &str, req: AdminUserRequest) -> Result<()> {
+        let uid: u64 = user_id.parse()?;
+
+        if let Some(is_admin) = req.set_admin {
+            self.db.set_admin(uid, is_admin).await?;
+        }
+
+        if let Some(is_blocked) = req.set_blocked {
+            self.db.set_blocked(uid, is_blocked).await?;
+        }
+
+        if let Some(credit_amount) = req.add_credit {
+            if credit_amount > 0 {
+                self.db
+                    .add_admin_credit(uid, credit_amount, req.memo.as_deref())
+                    .await?;
+            }
+        }
+
+        // Update user default stream details if any are provided
+        if req.title.is_some()
+            || req.summary.is_some()
+            || req.image.is_some()
+            || req.tags.is_some()
+            || req.content_warning.is_some()
+            || req.goal.is_some()
+        {
+            self.db
+                .update_user_defaults(
+                    uid,
+                    req.title.as_deref(),
+                    req.summary.as_deref(),
+                    req.image.as_deref(),
+                    req.tags.as_ref().map(|tags| tags.join(",")).as_deref(),
+                    req.content_warning.as_deref(),
+                    req.goal.as_deref(),
+                )
+                .await?;
+        }
+
+        Ok(())
     }
 }
 
@@ -815,4 +949,39 @@ struct PatchEventDetails {
 struct ForwardDest {
     pub id: u64,
     pub name: String,
+}
+
+#[derive(Deserialize, Serialize)]
+struct AdminUserInfo {
+    pub id: u64,
+    pub pubkey: String,
+    pub created: u64,
+    pub balance: i64,
+    pub is_admin: bool,
+    pub is_blocked: bool,
+    pub tos_accepted: Option<u64>,
+    pub title: Option<String>,
+    pub summary: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct AdminUsersResponse {
+    pub users: Vec<AdminUserInfo>,
+    pub page: u32,
+    pub limit: u32,
+    pub total: u32,
+}
+
+#[derive(Deserialize, Serialize)]
+struct AdminUserRequest {
+    pub set_admin: Option<bool>,
+    pub set_blocked: Option<bool>,
+    pub add_credit: Option<u64>,
+    pub memo: Option<String>,
+    pub title: Option<String>,
+    pub summary: Option<String>,
+    pub image: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub content_warning: Option<String>,
+    pub goal: Option<String>,
 }

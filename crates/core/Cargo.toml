@@ -33,7 +33,7 @@ libc = "0.2.169"
 srt-tokio = { version = "0.4.4", optional = true }
 
 # rtmp
-rml_rtmp = { git = "https://github.com/v0l/rust-media-libs.git", optional = true }
+rml_rtmp = { version = "0.8.0", optional = true }
 bytes = "1.9.0"
 xflv = "0.4.4"
 futures = "0.3.30"
