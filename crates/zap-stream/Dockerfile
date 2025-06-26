@@ -2,8 +2,9 @@ FROM voidic/rust-ffmpeg AS build
 WORKDIR /app/src
 COPY . .
 ENV LD_LIBRARY_PATH=$FFMPEG_DIR/lib
-RUN cargo test
-RUN cargo install --path ./crates/zap-stream --root /app/build
+ARG CARGO_FEATURES=""
+RUN cargo test ${CARGO_FEATURES}
+RUN cargo install --path ./crates/zap-stream --root /app/build ${CARGO_FEATURES}
 
 FROM rust:bookworm
 WORKDIR /app

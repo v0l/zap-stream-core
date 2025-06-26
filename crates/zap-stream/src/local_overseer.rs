@@ -11,10 +11,9 @@ use nostr_sdk::Keys;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
-use url::Url;
 use uuid::Uuid;
 use zap_stream_core::egress::hls::HlsEgress;
-use zap_stream_core::egress::{EgressConfig, EgressSegment};
+use zap_stream_core::egress::EgressSegment;
 use zap_stream_core::ingress::ConnectionInfo;
 use zap_stream_core::overseer::{IngressInfo, Overseer};
 use zap_stream_core::pipeline::{EgressType, PipelineConfig};
@@ -138,9 +137,9 @@ impl Overseer for LocalApi {
 
         let cfg = get_variants_from_endpoint(stream_info, &caps)?;
 
-        let egress = vec![EgressType::HLS(EgressConfig {
-            variants: cfg.variants.iter().map(|v| v.id()).collect(),
-        })];
+        let egress = vec![EgressType::HLS(
+            cfg.variants.iter().map(|v| v.id()).collect(),
+        )];
 
         // TODO: update stream event
 
