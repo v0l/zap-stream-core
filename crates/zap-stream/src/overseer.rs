@@ -146,6 +146,10 @@ impl ZapStreamOverseer {
         self.stream_manager.clone()
     }
 
+    pub fn nostr_client(&self) -> Client {
+        self.client.clone()
+    }
+
     async fn stream_to_event_builder(&self, stream: &UserStream) -> Result<EventBuilder> {
         let mut tags = vec![
             Tag::parse(&["d".to_string(), stream.id.to_string()])?,

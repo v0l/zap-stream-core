@@ -10,9 +10,10 @@ use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::{Method, Request, Response};
-use log::warn;
+use log::{info, warn};
 use matchit::Router;
-use nostr_sdk::{serde_json, PublicKey};
+use nostr_sdk::util::EventIdOrCoordinate;
+use nostr_sdk::{serde_json, Client, PublicKey, Tag};
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::net::SocketAddr;
@@ -38,6 +39,9 @@ enum Route {
     Keys,
     AdminUsers,
     AdminUsersId,
+    AdminUserHistory,
+    AdminUserStreams,
+    DeleteStream,
 }
 
 #[derive(Clone)]
@@ -49,6 +53,7 @@ pub struct Api {
     router: Router<Route>,
     overseer: Arc<dyn Overseer>,
     stream_manager: StreamManager,
+    nostr_client: Client,
 }
 
 impl Api {
@@ -74,6 +79,15 @@ impl Api {
         router
             .insert("/api/v1/admin/users/{id}", Route::AdminUsersId)
             .unwrap();
+        router
+            .insert("/api/v1/admin/users/{id}/history", Route::AdminUserHistory)
+            .unwrap();
+        router
+            .insert("/api/v1/admin/users/{id}/streams", Route::AdminUserStreams)
+            .unwrap();
+        router
+            .insert("/api/v1/stream/{id}", Route::DeleteStream)
+            .unwrap();
 
         Self {
             db: overseer.database(),
@@ -82,6 +96,7 @@ impl Api {
             lnd: overseer.lnd_client(),
             router,
             stream_manager: overseer.stream_manager(),
+            nostr_client: overseer.nostr_client(),
             overseer,
         }
     }
@@ -241,6 +256,62 @@ impl Api {
                     let body = req.collect().await?.to_bytes();
                     let admin_req: AdminUserRequest = serde_json::from_slice(&body)?;
                     self.admin_manage_user(user_id, admin_req).await?;
+                    Ok(base.body(Self::body_json(&())?)?)
+                }
+                (&Method::GET, Route::AdminUserHistory) => {
+                    let auth = check_nip98_auth(&req, &self.settings.public_url)?;
+                    self.check_admin_access(&auth.pubkey).await?;
+                    let user_id = params.get("id").ok_or_else(|| anyhow!("Missing user ID"))?;
+                    let full_url = format!(
+                        "{}{}",
+                        self.settings.public_url.trim_end_matches('/'),
+                        req.uri()
+                    );
+                    let url: url::Url = full_url.parse()?;
+                    let page: u64 = url
+                        .query_pairs()
+                        .find_map(|(k, v)| if k == "page" { Some(v) } else { None })
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(0);
+                    let limit: u64 = url
+                        .query_pairs()
+                        .find_map(|(k, v)| if k == "limit" { Some(v) } else { None })
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(50);
+                    let uid: u64 = user_id.parse()?;
+                    let rsp = self.get_user_history(uid, page, limit).await?;
+                    Ok(base.body(Self::body_json(&rsp)?)?)
+                }
+                (&Method::GET, Route::AdminUserStreams) => {
+                    let auth = check_nip98_auth(&req, &self.settings.public_url)?;
+                    self.check_admin_access(&auth.pubkey).await?;
+                    let user_id = params.get("id").ok_or_else(|| anyhow!("Missing user ID"))?;
+                    let full_url = format!(
+                        "{}{}",
+                        self.settings.public_url.trim_end_matches('/'),
+                        req.uri()
+                    );
+                    let url: url::Url = full_url.parse()?;
+                    let page: u64 = url
+                        .query_pairs()
+                        .find_map(|(k, v)| if k == "page" { Some(v) } else { None })
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(0);
+                    let limit: u64 = url
+                        .query_pairs()
+                        .find_map(|(k, v)| if k == "limit" { Some(v) } else { None })
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(50);
+                    let uid: u64 = user_id.parse()?;
+                    let rsp = self.admin_get_user_streams(uid, page, limit).await?;
+                    Ok(base.body(Self::body_json(&rsp)?)?)
+                }
+                (&Method::DELETE, Route::DeleteStream) => {
+                    let auth = check_nip98_auth(&req, &self.settings.public_url)?;
+                    let stream_id = params
+                        .get("id")
+                        .ok_or_else(|| anyhow!("Missing stream ID"))?;
+                    self.delete_stream(&auth.pubkey, stream_id).await?;
                     Ok(base.body(Self::body_json(&())?)?)
                 }
                 _ => Ok(base.status(405).body(Default::default())?), // Method not allowed
@@ -605,11 +676,14 @@ impl Api {
 
     async fn get_account_history(&self, pubkey: &PublicKey) -> Result<HistoryResponse> {
         let uid = self.db.upsert_user(&pubkey.to_bytes()).await?;
+        self.get_user_history(uid, 0, 100).await
+    }
 
-        // For now, just get first page with default page size
-        let payments = self.db.get_payment_history(uid, 0, 100).await?;
+    async fn get_user_history(&self, uid: u64, page: u64, limit: u64) -> Result<HistoryResponse> {
+        let offset = page * limit;
+        let payments = self.db.get_payment_history(uid, offset, limit).await?;
 
-        let items = payments
+        let mut items: Vec<HistoryEntry> = payments
             .into_iter()
             .filter(|p| p.is_paid) // Only include paid payments like C# version
             .map(|p| HistoryEntry {
@@ -628,12 +702,30 @@ impl Api {
             })
             .collect();
 
-        // TODO: past streams should include a history entry
+        // Add ended streams as debit entries
+        let ended_streams = self.db.get_user_ended_streams(uid).await?;
+        let stream_entries: Vec<HistoryEntry> = ended_streams
+            .into_iter()
+            .map(|s| HistoryEntry {
+                created: s.ends.unwrap_or(s.starts).timestamp() as u64, // Use end time, fallback to start time
+                entry_type: 1,                                          // Debit
+                amount: s.cost as f64 / 1000.0, // Convert from milli-sats to sats
+                desc: Some(format!(
+                    "Stream: {}",
+                    s.title.unwrap_or_else(|| s.id.clone())
+                )),
+            })
+            .collect();
+
+        items.extend(stream_entries);
+
+        // Sort all items by created time (descending)
+        items.sort_by(|a, b| b.created.cmp(&a.created));
 
         Ok(HistoryResponse {
             items,
-            page: 0,
-            page_size: 100,
+            page: page as i32,
+            page_size: limit as i32,
         })
     }
 
@@ -702,6 +794,38 @@ impl Api {
         Ok(())
     }
 
+    async fn delete_stream(&self, pubkey: &PublicKey, stream_id: &str) -> Result<()> {
+        let uid = self.db.upsert_user(&pubkey.to_bytes()).await?;
+        let stream_uuid = Uuid::parse_str(stream_id)?;
+        let stream = self.db.get_stream(&stream_uuid).await?;
+
+        // Verify the user owns this stream
+        if stream.user_id != uid {
+            bail!("Access denied: You can only delete your own streams");
+        }
+
+        // Publish Nostr deletion request event if the stream has an associated event
+        if let Some(event_json) = &stream.event {
+            if let Ok(stream_event) = serde_json::from_str::<nostr_sdk::Event>(event_json) {
+                let deletion_event = nostr_sdk::EventBuilder::delete([
+                    EventIdOrCoordinate::Id(stream_event.id),
+                    EventIdOrCoordinate::Coordinate(stream_event.coordinate().unwrap()),
+                ]);
+
+                if let Err(e) = self.nostr_client.send_event_builder(deletion_event).await {
+                    warn!(
+                        "Failed to publish deletion event for stream {}: {}",
+                        stream_id, e
+                    );
+                } else {
+                    info!("Published deletion request event for stream {}", stream_id);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     async fn admin_list_users(
         &self,
         page: u64,
@@ -710,13 +834,12 @@ impl Api {
     ) -> Result<AdminUsersResponse> {
         let offset = page * limit;
 
-        let users = if let Some(search_term) = search {
+        let (users, total) = if let Some(search_term) = search {
             self.db.search_users_by_pubkey(&search_term).await?
         } else {
             self.db.list_users(offset, limit).await?
         };
 
-        let total = users.len() as u32;
         let users_info: Vec<AdminUserInfo> = users
             .into_iter()
             .map(|user| AdminUserInfo {
@@ -736,7 +859,7 @@ impl Api {
             users: users_info,
             page: page as u32,
             limit: limit as u32,
-            total,
+            total: total as u32,
         })
     }
 
@@ -781,6 +904,46 @@ impl Api {
         }
 
         Ok(())
+    }
+
+    async fn admin_get_user_streams(
+        &self,
+        user_id: u64,
+        page: u64,
+        limit: u64,
+    ) -> Result<AdminUserStreamsResponse> {
+        let offset = page * limit;
+        let (streams, total) = self.db.get_user_streams(user_id, offset, limit).await?;
+
+        let streams_info: Vec<AdminStreamInfo> = streams
+            .into_iter()
+            .map(|stream| AdminStreamInfo {
+                id: stream.id,
+                starts: stream.starts.timestamp() as u64,
+                ends: stream.ends.map(|e| e.timestamp() as u64),
+                state: stream.state.to_string(),
+                title: stream.title,
+                summary: stream.summary,
+                image: stream.image,
+                thumb: stream.thumb,
+                tags: stream
+                    .tags
+                    .map(|t| t.split(',').map(|s| s.trim().to_string()).collect()),
+                content_warning: stream.content_warning,
+                goal: stream.goal,
+                cost: stream.cost,
+                duration: stream.duration,
+                fee: stream.fee,
+                endpoint_id: stream.endpoint_id,
+            })
+            .collect();
+
+        Ok(AdminUserStreamsResponse {
+            streams: streams_info,
+            page: page as u32,
+            limit: limit as u32,
+            total: total as u32,
+        })
     }
 }
 
@@ -984,4 +1147,31 @@ struct AdminUserRequest {
     pub tags: Option<Vec<String>>,
     pub content_warning: Option<String>,
     pub goal: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct AdminStreamInfo {
+    pub id: String,
+    pub starts: u64,
+    pub ends: Option<u64>,
+    pub state: String,
+    pub title: Option<String>,
+    pub summary: Option<String>,
+    pub image: Option<String>,
+    pub thumb: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub content_warning: Option<String>,
+    pub goal: Option<String>,
+    pub cost: u64,
+    pub duration: f32,
+    pub fee: Option<u32>,
+    pub endpoint_id: Option<u64>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct AdminUserStreamsResponse {
+    pub streams: Vec<AdminStreamInfo>,
+    pub page: u32,
+    pub limit: u32,
+    pub total: u32,
 }

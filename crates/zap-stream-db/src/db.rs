@@ -425,25 +425,37 @@ impl ZapStreamDb {
     }
 
     /// List all users with pagination
-    pub async fn list_users(&self, offset: u64, limit: u64) -> Result<Vec<User>> {
-        Ok(
-            sqlx::query_as("select * from user order by created desc limit ? offset ?")
-                .bind(limit)
-                .bind(offset)
-                .fetch_all(&self.db)
-                .await?,
-        )
+    pub async fn list_users(&self, offset: u64, limit: u64) -> Result<(Vec<User>, u64)> {
+        let total: i64 = sqlx::query_scalar("select count(*) from user")
+            .fetch_one(&self.db)
+            .await?;
+
+        let users = sqlx::query_as("select * from user order by created desc limit ? offset ?")
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&self.db)
+            .await?;
+
+        Ok((users, total as u64))
     }
 
     /// Search users by pubkey prefix (hex encoded)
-    pub async fn search_users_by_pubkey(&self, pubkey_prefix: &str) -> Result<Vec<User>> {
+    pub async fn search_users_by_pubkey(&self, pubkey_prefix: &str) -> Result<(Vec<User>, u64)> {
         let search_pattern = format!("%{}%", pubkey_prefix);
-        Ok(sqlx::query_as(
+        
+        let total: i64 = sqlx::query_scalar("select count(*) from user where hex(pubkey) like ?")
+            .bind(&search_pattern)
+            .fetch_one(&self.db)
+            .await?;
+
+        let users = sqlx::query_as(
             "select * from user where hex(pubkey) like ? order by created desc limit 50",
         )
         .bind(search_pattern)
         .fetch_all(&self.db)
-        .await?)
+        .await?;
+
+        Ok((users, total as u64))
     }
 
     /// Add credit to user balance (admin operation)
@@ -457,5 +469,39 @@ impl ZapStreamDb {
         self.complete_payment(&payment_hash, 0).await?;
 
         Ok(())
+    }
+
+    /// Get streams for a user with pagination
+    pub async fn get_user_streams(
+        &self,
+        user_id: u64,
+        offset: u64,
+        limit: u64,
+    ) -> Result<(Vec<UserStream>, u64)> {
+        let total: i64 = sqlx::query_scalar("select count(*) from user_stream where user_id = ?")
+            .bind(user_id)
+            .fetch_one(&self.db)
+            .await?;
+
+        let streams = sqlx::query_as(
+            "select * from user_stream where user_id = ? order by starts desc limit ? offset ?",
+        )
+        .bind(user_id)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.db)
+        .await?;
+
+        Ok((streams, total as u64))
+    }
+
+    /// Get ended streams with costs for a user (for balance history)
+    pub async fn get_user_ended_streams(&self, user_id: u64) -> Result<Vec<UserStream>> {
+        Ok(sqlx::query_as(
+            "select * from user_stream where user_id = ? and state = 3 and cost > 0 order by ends desc",
+        )
+        .bind(user_id)
+        .fetch_all(&self.db)
+        .await?)
     }
 }
