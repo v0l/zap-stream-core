@@ -536,8 +536,9 @@ impl PipelineRunner {
 
         let packets = encoder.encode_frame(frame)?;
         let mut ret = vec![];
-        for pkt in packets {
+        for mut pkt in packets {
             ret.extend(Self::egress_packet(egress, pkt, &var.id())?);
+            av_packet_free(&mut pkt);
         }
         Ok(ret)
     }
