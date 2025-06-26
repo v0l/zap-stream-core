@@ -1,10 +1,6 @@
-#[cfg(feature = "zap-stream")]
 use crate::api::Api;
 use crate::http::HttpServer;
-#[cfg(not(feature = "zap-stream"))]
-use crate::local_overseer::LocalApi;
 use crate::monitor::BackgroundMonitor;
-#[cfg(feature = "zap-stream")]
 use crate::overseer::ZapStreamOverseer;
 use crate::settings::Settings;
 use anyhow::{bail, Result};
@@ -33,15 +29,11 @@ use zap_stream_core::ingress::test;
 use zap_stream_core::ingress::{file, tcp};
 use zap_stream_core::overseer::Overseer;
 
-#[cfg(feature = "zap-stream")]
 mod api;
 mod blossom;
 mod endpoint;
 mod http;
-#[cfg(not(feature = "zap-stream"))]
-mod local_overseer;
 mod monitor;
-#[cfg(feature = "zap-stream")]
 mod overseer;
 mod settings;
 mod stream_manager;
@@ -53,6 +45,11 @@ struct Args {}
 #[tokio::main]
 async fn main() -> Result<()> {
     pretty_env_logger::init();
+
+    #[cfg(feature = "zap-stream")]
+    info!("Starting zap-stream");
+    #[cfg(not(feature = "zap-stream"))]
+    info!("Starting zap-stream (standalone mode)");
 
     let _args = Args::parse();
 
@@ -67,19 +64,12 @@ async fn main() -> Result<()> {
         .build()?;
 
     let settings: Settings = builder.try_deserialize()?;
-    #[cfg(feature = "zap-stream")]
     let (overseer, api) = {
         let overseer = ZapStreamOverseer::from_settings(&settings).await?;
         let arc = Arc::new(overseer.clone());
         let api = Api::new(arc.clone(), settings.clone());
         (arc as Arc<dyn Overseer>, api)
     };
-    #[cfg(not(feature = "zap-stream"))]
-    let (overseer, api) = {
-        let api = LocalApi::from_settings(&settings)?;
-        (Arc::new(api.clone()) as Arc<dyn Overseer>, api)
-    };
-
     // Create ingress listeners
     let mut tasks = vec![];
     for e in &settings.endpoints {

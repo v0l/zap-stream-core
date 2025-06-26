@@ -3072,8 +3072,7 @@ dependencies = [
 [[package]]
 name = "rml_amf0"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "63551cfcd4d1f42733c190e4b58dd268b1eacb73410d9afbf62784aa12cac240"
+source = "git+https://github.com/v0l/rust-media-libs.git#953fc41df2369d64e9c677369c706da797592e49"
 dependencies = [
  "byteorder",
  "thiserror 1.0.69",
@@ -3082,8 +3081,7 @@ dependencies = [
 [[package]]
 name = "rml_rtmp"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a354e80eb7aa2a6fed09b3bd25c19bcfd32cf51f81f1219f4ec04f34519989da"
+source = "git+https://github.com/v0l/rust-media-libs.git#953fc41df2369d64e9c677369c706da797592e49"
 dependencies = [
  "byteorder",
  "bytes",
@@ -5116,6 +5114,7 @@ dependencies = [
  "tempfile",
  "tiny-skia",
  "tokio",
+ "url",
  "usvg",
  "uuid",
  "xflv",

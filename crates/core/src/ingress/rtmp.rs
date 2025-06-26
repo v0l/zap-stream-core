@@ -3,7 +3,7 @@ use crate::overseer::Overseer;
 use crate::pipeline::runner::{PipelineCommand, PipelineRunner};
 use anyhow::{anyhow, bail, Result};
 use bytes::{Bytes, BytesMut};
-use log::{error, info};
+use log::{error, info, warn};
 use rml_rtmp::handshake::{Handshake, HandshakeProcessResult, PeerType};
 use rml_rtmp::sessions::{
     ServerSession, ServerSessionConfig, ServerSessionEvent, ServerSessionResult,
@@ -52,50 +52,46 @@ impl RtmpClient {
         })
     }
 
-    pub fn handshake(&mut self) -> Result<()> {
-        let mut hs = Handshake::new(PeerType::Server);
-
-        let exchange = hs.generate_outbound_p0_and_p1()?;
-        self.socket.write_all(&exchange)?;
-
-        let mut buf = [0; 4096];
-        loop {
-            let r = self.socket.read(&mut buf)?;
-            if r == 0 {
-                bail!("EOF reached while reading");
-            }
-
-            match hs.process_bytes(&buf[..r])? {
-                HandshakeProcessResult::InProgress { response_bytes } => {
-                    self.socket.write_all(&response_bytes)?;
-                }
-                HandshakeProcessResult::Completed {
-                    response_bytes,
-                    remaining_bytes,
-                } => {
-                    self.socket.write_all(&response_bytes)?;
-
-                    let q = self.session.handle_input(&remaining_bytes)?;
-                    self.msg_queue.extend(q);
-                    return Ok(());
-                }
-            }
-        }
-    }
-
     /// Read data until we get the publish request
     pub fn read_until_publish_request(&mut self, timeout: Duration) -> Result<()> {
         let start = Instant::now();
+        let mut hs = Handshake::new(PeerType::Server);
+        let mut handshake_complete = false;
         while self.published_stream.is_none() {
             if (Instant::now() - start) > timeout {
                 bail!("Timed out waiting for publish request");
             }
-            self.read_data()?;
+
+            if let Some(data) = self.read_data()? {
+                if !handshake_complete {
+                    match hs.process_bytes(&data)? {
+                        HandshakeProcessResult::InProgress { response_bytes } => {
+                            if response_bytes.len() > 0 {
+                                self.socket.write_all(&response_bytes)?;
+                            }
+                        }
+                        HandshakeProcessResult::Completed {
+                            response_bytes,
+                            remaining_bytes,
+                        } => {
+                            if response_bytes.len() > 0 {
+                                self.socket.write_all(&response_bytes)?;
+                            }
+                            if remaining_bytes.len() > 0 {
+                                self.process_bytes(&remaining_bytes)?;
+                            }
+                            handshake_complete = true;
+                        }
+                    }
+                } else {
+                    self.process_bytes(&data)?;
+                }
+            }
         }
         Ok(())
     }
 
-    fn read_data(&mut self) -> Result<Option<usize>> {
+    fn read_data(&mut self) -> Result<Option<Vec<u8>>> {
         let mut buf = [0; 4096];
         let r = match self.socket.read(&mut buf) {
             Ok(r) => r,
@@ -108,15 +104,18 @@ impl RtmpClient {
             }
         };
         if r == 0 {
-            return Ok(Some(0));
+            return Ok(Some(Vec::new()));
         }
 
-        let mx = self.session.handle_input(&buf[..r])?;
-        if !mx.is_empty() {
-            self.msg_queue.extend(mx);
-            self.process_msg_queue()?;
+        Ok(Some(buf[..r].to_vec()))
+    }
+
+    fn process_bytes(&mut self, data: &[u8]) -> Result<()> {
+        let msg = self.session.handle_input(data)?;
+        if !msg.is_empty() {
+            self.msg_queue.extend(msg);
         }
-        Ok(Some(r))
+        self.process_msg_queue()
     }
 
     fn process_msg_queue(&mut self) -> Result<()> {
@@ -182,7 +181,6 @@ impl RtmpClient {
                 let mx = self.session.accept_request(request_id)?;
                 self.msg_queue.extend(mx);
             }
-            ServerSessionEvent::ReleaseStreamRequested { .. } => {}
             ServerSessionEvent::PublishStreamRequested {
                 request_id,
                 app_name,
@@ -234,16 +232,13 @@ impl RtmpClient {
                 self.write_flv_tag(9, timestamp.value, data)
                     .map_err(|e| anyhow!("failed to write flv tag: {}", e))?;
             }
-            ServerSessionEvent::UnhandleableAmf0Command { .. } => {}
             ServerSessionEvent::PlayStreamRequested { request_id, .. } => {
                 let mx = self
                     .session
                     .reject_request(request_id, "0", "playback not supported")?;
                 self.msg_queue.extend(mx);
             }
-            ServerSessionEvent::PlayStreamFinished { .. } => {}
-            ServerSessionEvent::AcknowledgementReceived { .. } => {}
-            ServerSessionEvent::PingResponseReceived { .. } => {}
+            e => warn!("Unhandled ServerSessionEvent: {:?}", e),
         }
         Ok(())
     }
@@ -254,12 +249,18 @@ impl Read for RtmpClient {
         // Block until we have enough data to fill the buffer
         while self.buffer.buf.len() < buf.len() {
             match self.read_data() {
-                Ok(Some(0)) => {
+                Ok(Some(data)) if data.len() == 0 => {
                     let r = self.buffer.read_buffered(buf);
                     if r == 0 {
                         return Err(std::io::Error::other(anyhow!("EOF")));
                     }
                     return Ok(r);
+                }
+                Ok(Some(data)) => {
+                    if let Err(e) = self.process_bytes(&data) {
+                        error!("Error processing bytes: {}", e);
+                        return Ok(0);
+                    }
                 }
                 Err(e) => {
                     error!("Error reading data: {}", e);
@@ -287,9 +288,6 @@ pub async fn listen(out_dir: String, addr: String, overseer: Arc<dyn Overseer>) 
             .spawn(move || {
                 let (tx, rx) = std::sync::mpsc::channel();
                 let mut cc = RtmpClient::new(socket.into_std()?, tx)?;
-                if let Err(e) = cc.handshake() {
-                    bail!("Error during handshake: {}", e)
-                }
                 if let Err(e) = cc.read_until_publish_request(Duration::from_secs(10)) {
                     bail!("Error waiting for publish request: {}", e)
                 }

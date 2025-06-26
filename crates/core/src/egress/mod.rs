@@ -2,18 +2,12 @@ use anyhow::Result;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{AVPacket, AVStream};
 use ffmpeg_rs_raw::Encoder;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 use std::path::PathBuf;
 use uuid::Uuid;
 
 pub mod hls;
 pub mod recorder;
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct EgressConfig {
-    /// Which variants will be used in this muxer
-    pub variants: HashSet<Uuid>,
-}
+pub mod rtmp;
 
 pub trait Egress {
     unsafe fn process_pkt(&mut self, packet: *mut AVPacket, variant: &Uuid)

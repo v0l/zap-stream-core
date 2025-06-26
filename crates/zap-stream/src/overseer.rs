@@ -5,17 +5,19 @@ use crate::stream_manager::StreamManager;
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use chrono::Utc;
+#[cfg(feature = "zap-stream")]
 use fedimint_tonic_lnd::verrpc::VersionRequest;
 use log::{error, info, warn};
 use nostr_sdk::prelude::Coordinate;
 use nostr_sdk::{Client, Event, EventBuilder, JsonUtil, Keys, Kind, Tag, ToBech32};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::str::FromStr;
 use url::Url;
 use uuid::Uuid;
 use zap_stream_core::egress::hls::HlsEgress;
 use zap_stream_core::egress::recorder::RecorderEgress;
-use zap_stream_core::egress::{EgressConfig, EgressSegment};
+use zap_stream_core::egress::EgressSegment;
 use zap_stream_core::ingress::ConnectionInfo;
 use zap_stream_core::overseer::{IngressInfo, Overseer};
 use zap_stream_core::pipeline::{EgressType, PipelineConfig};
@@ -29,6 +31,7 @@ const STREAM_EVENT_KIND: u16 = 30_311;
 pub struct ZapStreamOverseer {
     /// Database instance for accounts/streams
     db: ZapStreamDb,
+    #[cfg(feature = "zap-stream")]
     /// LND node connection
     lnd: fedimint_tonic_lnd::Client,
     /// Nostr client for publishing events
@@ -45,30 +48,23 @@ pub struct ZapStreamOverseer {
 
 impl ZapStreamOverseer {
     pub async fn from_settings(settings: &Settings) -> Result<Self> {
-        match &settings.overseer {
-            OverseerConfig::ZapStream {
-                nsec: private_key,
-                database,
-                lnd,
-                relays,
-                blossom,
-            } => Ok(ZapStreamOverseer::new(
-                &settings.public_url,
-                private_key,
-                database,
-                lnd,
-                relays,
-                blossom,
-            )
-            .await?),
-            _ => bail!("Overseer not supported"),
-        }
+        Ok(ZapStreamOverseer::new(
+            &settings.public_url,
+            &settings.overseer.nsec,
+            &settings.overseer.database,
+            #[cfg(feature = "zap-stream")]
+            &settings.overseer.lnd,
+            &settings.overseer.relays,
+            &settings.overseer.blossom,
+        )
+            .await?)
     }
 
     pub async fn new(
         public_url: &String,
         private_key: &str,
         db: &str,
+        #[cfg(feature = "zap-stream")]
         lnd: &LndSettings,
         relays: &Vec<String>,
         blossom_servers: &Option<Vec<String>>,
@@ -90,20 +86,25 @@ impl ZapStreamOverseer {
             );
         }
 
-        let mut lnd = fedimint_tonic_lnd::connect(
-            lnd.address.clone(),
-            PathBuf::from(&lnd.cert),
-            PathBuf::from(&lnd.macaroon),
-        )
-        .await
-        .context("Failed to connect to LND")?;
-
-        let version = lnd
-            .versioner()
-            .get_version(VersionRequest::default())
+        #[cfg(feature = "zap-stream")]
+        let lnd = {
+            let mut lnd = fedimint_tonic_lnd::connect(
+                lnd.address.clone(),
+                PathBuf::from(&lnd.cert),
+                PathBuf::from(&lnd.macaroon),
+            )
             .await
-            .context("Failed to get LND version")?;
-        info!("LND connected: v{}", version.into_inner().version);
+            .context("Failed to connect to LND")?;
+
+            let version = lnd
+                .versioner()
+                .get_version(VersionRequest::default())
+                .await
+                .context("Failed to get LND version")?;
+            info!("LND connected: v{}", version.into_inner().version);
+
+            lnd
+        };
 
         let keys = Keys::from_str(private_key)?;
         let client = nostr_sdk::ClientBuilder::new().signer(keys.clone()).build();
@@ -114,6 +115,7 @@ impl ZapStreamOverseer {
 
         let overseer = Self {
             db,
+            #[cfg(feature = "zap-stream")]
             lnd,
             client,
             keys,
@@ -134,6 +136,8 @@ impl ZapStreamOverseer {
         self.db.clone()
     }
 
+
+    #[cfg(feature = "zap-stream")]
     pub fn lnd_client(&self) -> fedimint_tonic_lnd::Client {
         self.lnd.clone()
     }
@@ -353,9 +357,8 @@ impl Overseer for ZapStreamOverseer {
         }
 
         let mut egress = vec![];
-        egress.push(EgressType::HLS(EgressConfig {
-            variants: cfg.variants.iter().map(|v| v.id()).collect(),
-        }));
+        let all_var_ids: HashSet<Uuid> = cfg.variants.iter().map(|v| v.id()).collect();
+        egress.push(EgressType::HLS(all_var_ids.clone()));
         if let Some(EndpointCapability::DVR { height }) = caps
             .iter()
             .find(|c| matches!(c, EndpointCapability::DVR { .. }))
@@ -371,9 +374,9 @@ impl Overseer for ZapStreamOverseer {
                         .variants
                         .iter()
                         .filter(|v| v.group_id() == var.group_id());
-                    egress.push(EgressType::Recorder(EgressConfig {
-                        variants: vars_in_group.map(|v| v.id()).collect(),
-                    }))
+                    egress.push(EgressType::Recorder(
+                        vars_in_group.map(|v| v.id()).collect(),
+                    ))
                 }
                 None => {
                     warn!(
@@ -382,6 +385,11 @@ impl Overseer for ZapStreamOverseer {
                     );
                 }
             }
+        }
+
+        let forward_dest = self.db.get_user_forwards(user.id).await?;
+        for fwd in forward_dest {
+            egress.push(EgressType::RTMPForwarder(all_var_ids.clone(), fwd.target));
         }
 
         let stream_id = connection.id;

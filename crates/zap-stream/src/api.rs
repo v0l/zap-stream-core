@@ -1,6 +1,7 @@
 use crate::http::{check_nip98_auth, HttpFuture, HttpServerPlugin, StreamData};
 use crate::overseer::ZapStreamOverseer;
 use crate::settings::Settings;
+use crate::stream_manager::StreamManager;
 use crate::ListenerEndpoint;
 use anyhow::{anyhow, bail, Result};
 use bytes::Bytes;
@@ -18,7 +19,6 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
-use url::Url;
 use uuid::Uuid;
 use zap_stream_core::egress::hls::HlsEgress;
 use zap_stream_core::overseer::Overseer;
@@ -27,8 +27,10 @@ use zap_stream_db::ZapStreamDb;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Route {
     Account,
+    #[cfg(feature = "zap-stream")]
     Topup,
     Event,
+    #[cfg(feature = "zap-stream")]
     Withdraw,
     Forward,
     ForwardId,
@@ -40,9 +42,11 @@ enum Route {
 pub struct Api {
     db: ZapStreamDb,
     settings: Settings,
+    #[cfg(feature = "zap-stream")]
     lnd: fedimint_tonic_lnd::Client,
     router: Router<Route>,
-    overseer: Arc<ZapStreamOverseer>,
+    overseer: Arc<dyn Overseer>,
+    stream_manager: StreamManager,
 }
 
 impl Api {
@@ -51,8 +55,10 @@ impl Api {
 
         // Define routes (path only, method will be matched separately)
         router.insert("/api/v1/account", Route::Account).unwrap();
+        #[cfg(feature = "zap-stream")]
         router.insert("/api/v1/topup", Route::Topup).unwrap();
         router.insert("/api/v1/event", Route::Event).unwrap();
+        #[cfg(feature = "zap-stream")]
         router.insert("/api/v1/withdraw", Route::Withdraw).unwrap();
         router.insert("/api/v1/forward", Route::Forward).unwrap();
         router
@@ -64,8 +70,10 @@ impl Api {
         Self {
             db: overseer.database(),
             settings,
+            #[cfg(feature = "zap-stream")]
             lnd: overseer.lnd_client(),
             router,
+            stream_manager: overseer.stream_manager(),
             overseer,
         }
     }
@@ -110,6 +118,7 @@ impl Api {
                     self.update_account(&auth.pubkey, r_body).await?;
                     Ok(base.body(Self::body_json(&())?)?)
                 }
+                #[cfg(feature = "zap-stream")]
                 (&Method::GET, Route::Topup) => {
                     let auth = check_nip98_auth(&req, &self.settings.public_url)?;
                     let full_url = format!(
@@ -117,7 +126,7 @@ impl Api {
                         self.settings.public_url.trim_end_matches('/'),
                         req.uri()
                     );
-                    let url: Url = full_url.parse()?;
+                    let url: url::Url = full_url.parse()?;
                     let amount: usize = url
                         .query_pairs()
                         .find_map(|(k, v)| if k == "amount" { Some(v) } else { None })
@@ -133,6 +142,7 @@ impl Api {
                     self.update_event(&auth.pubkey, patch_event).await?;
                     Ok(base.body(Self::body_json(&())?)?)
                 }
+                #[cfg(feature = "zap-stream")]
                 (&Method::POST, Route::Withdraw) => {
                     let auth = check_nip98_auth(&req, &self.settings.public_url)?;
                     let full_url = format!(
@@ -140,7 +150,7 @@ impl Api {
                         self.settings.public_url.trim_end_matches('/'),
                         req.uri()
                     );
-                    let url: Url = full_url.parse()?;
+                    let url: url::Url = full_url.parse()?;
                     let invoice = url
                         .query_pairs()
                         .find_map(|(k, v)| {
@@ -341,6 +351,7 @@ impl Api {
         Ok(())
     }
 
+    #[cfg(feature = "zap-stream")]
     async fn topup(&self, pubkey: &PublicKey, amount: usize) -> Result<TopupResponse> {
         let uid = self.db.upsert_user(&pubkey.to_bytes()).await?;
 
@@ -444,6 +455,7 @@ impl Api {
         Ok(())
     }
 
+    #[cfg(feature = "zap-stream")]
     async fn withdraw(&self, pubkey: &PublicKey, invoice: String) -> Result<WithdrawResponse> {
         let uid = self.db.upsert_user(&pubkey.to_bytes()).await?;
         let user = self.db.get_user(uid).await?;
@@ -641,7 +653,7 @@ impl Api {
 impl HttpServerPlugin for Api {
     fn get_active_streams(&self) -> Pin<Box<dyn Future<Output = Result<Vec<StreamData>>> + Send>> {
         let db = self.db.clone();
-        let viewers = self.overseer.stream_manager();
+        let viewers = self.stream_manager.clone();
         Box::pin(async move {
             let streams = db.list_live_streams().await?;
             let mut ret = Vec::with_capacity(streams.len());
@@ -664,7 +676,7 @@ impl HttpServerPlugin for Api {
         stream_id: &str,
         token: &str,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
-        let mgr = self.overseer.stream_manager();
+        let mgr = self.stream_manager.clone();
         let stream_id = stream_id.to_string();
         let token = token.to_string();
         Box::pin(async move {

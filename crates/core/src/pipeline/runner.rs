@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use crate::egress::hls::HlsEgress;
 use crate::egress::recorder::RecorderEgress;
+use crate::egress::rtmp::RtmpEgress;
 use crate::egress::{Egress, EgressResult, EncoderOrSourceStream};
 use crate::generator::FrameGenerator;
 use crate::ingress::ConnectionInfo;
@@ -733,9 +734,8 @@ impl PipelineRunner {
 
         // Setup egress
         for e in &cfg.egress {
-            let c = e.config();
+            let c = e.variants();
             let vars = c
-                .variants
                 .iter()
                 .map_while(|x| cfg.variants.iter().find(|z| z.id() == *x));
             let variant_mapping = vars.map_while(|v| {
@@ -759,6 +759,14 @@ impl PipelineRunner {
                 EgressType::Recorder(_) => {
                     let rec = RecorderEgress::new(self.out_dir.clone(), variant_mapping)?;
                     self.egress.push(Box::new(rec));
+                }
+                EgressType::RTMPForwarder(_, dst) => {
+                    let mut fwd = RtmpEgress::new(dst, variant_mapping)?;
+                    if let Err(e) = self.handle.block_on(async { fwd.connect().await }) {
+                        error!("Failed to connect forwarder: {}", e);
+                    } else {
+                        self.egress.push(Box::new(fwd));
+                    }
                 }
                 _ => warn!("{} is not implemented", e),
             }

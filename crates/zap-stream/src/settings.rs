@@ -41,36 +41,18 @@ impl Display for LocalOverseerVariant {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum OverseerConfig {
-    /// Static output
-    Local {
-        /// Relays to publish events to
-        relays: Vec<String>,
-        /// Nsec to sign nostr events
-        nsec: String,
-        /// Blossom servers
-        blossom: Option<Vec<String>>,
-        /// Variant config
-        variants: Vec<LocalOverseerVariant>,
-    },
-    /// Control system via external API
-    Webhook {
-        /// Webhook service URL
-        url: String,
-    },
-    /// NIP-53 service (i.e. zap.stream backend)
-    ZapStream {
-        /// MYSQL database connection string
-        database: String,
-        /// LND node connection details
-        lnd: LndSettings,
-        /// Relays to publish events to
-        relays: Vec<String>,
-        /// Nsec to sign nostr events
-        nsec: String,
-        /// Blossom servers
-        blossom: Option<Vec<String>>,
-    },
+pub struct OverseerConfig {
+    /// MySQL connection string
+    pub database: String,
+    #[cfg(feature = "zap-stream")]
+    /// LND node connection details
+    pub lnd: LndSettings,
+    /// Relays to publish events to
+    pub relays: Vec<String>,
+    /// Nsec to sign nostr events
+    pub nsec: String,
+    /// Blossom servers
+    pub blossom: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

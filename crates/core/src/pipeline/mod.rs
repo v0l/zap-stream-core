@@ -1,30 +1,31 @@
+use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
 
-use crate::egress::EgressConfig;
 use crate::overseer::IngressInfo;
 use crate::variant::VariantStream;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 pub mod runner;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum EgressType {
     /// HLS output egress
-    HLS(EgressConfig),
+    HLS(HashSet<Uuid>),
 
     /// Record streams to local disk
-    Recorder(EgressConfig),
+    Recorder(HashSet<Uuid>),
 
     /// Forward streams to another RTMP server
-    RTMPForwarder(EgressConfig),
+    RTMPForwarder(HashSet<Uuid>, String),
 }
 
 impl EgressType {
-    pub fn config(&self) -> &EgressConfig {
+    pub fn variants(&self) -> &HashSet<Uuid> {
         match self {
-            EgressType::HLS(c) => c,
-            EgressType::Recorder(c) => c,
-            EgressType::RTMPForwarder(c) => c,
+            EgressType::HLS(a) => a,
+            EgressType::Recorder(a) => a,
+            EgressType::RTMPForwarder(a, _) => a,
         }
     }
 }
@@ -34,7 +35,7 @@ impl Display for EgressType {
         match self {
             EgressType::HLS(_) => write!(f, "HLS"),
             EgressType::Recorder(_) => write!(f, "Recorder"),
-            EgressType::RTMPForwarder(_) => write!(f, "RTMPForwarder"),
+            EgressType::RTMPForwarder(_, d) => write!(f, "RTMPForwarder => {}", d),
         }
     }
 }
