@@ -515,6 +515,11 @@ impl Api {
                 bail!("Unauthorized: Stream belongs to different user");
             }
 
+            // Don't allow modifications of ended streams
+            if stream.state == zap_stream_db::UserStreamState::Ended {
+                bail!("Cannot modify ended stream");
+            }
+
             // Update stream with patch data
             if let Some(title) = patch_event.title {
                 stream.title = Some(title);
