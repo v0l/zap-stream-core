@@ -285,6 +285,248 @@ POST /api/v1/keys
 
 **Description:** Creates a new stream key with associated event metadata and optional expiration time.
 
+## WebSocket API
+
+### Real-time Metrics WebSocket
+```
+WS /api/v1/ws
+```
+
+**Protocol:** WebSocket
+
+**Description:** Provides real-time streaming metrics via WebSocket connection for both streamer dashboards and admin interfaces. Supports role-based access control with different metric types based on user permissions.
+
+#### Authentication
+
+WebSocket authentication uses NIP-98 (Nostr HTTP Auth) via JSON messages after connection establishment. The token should be a base64-encoded NIP-98 event (without the "Authorization: Nostr " prefix).
+
+```json
+{
+  "type": "Auth",
+  "data": {
+    "token": "base64_encoded_nip98_event_here"
+  }
+}
+```
+
+**NIP-98 Event Requirements:**
+- Event kind: 27235 (NIP-98 HTTP Auth)
+- Valid signature and timestamp (within 120 seconds)
+- URL tag: `ws://yourserver.com/api/v1/ws` (WebSocket URL)
+- Method tag: `GET`
+- The event's pubkey determines user permissions (admin status checked via database)
+
+#### Message Types
+
+##### Authentication Response
+```json
+{
+  "type": "AuthResponse", 
+  "data": {
+    "success": true,
+    "is_admin": true,
+    "pubkey": "npub1..."
+  }
+}
+```
+
+or for regular users:
+```json
+{
+  "type": "AuthResponse",
+  "data": {
+    "success": true, 
+    "is_admin": false,
+    "pubkey": "npub1..."
+  }
+}
+```
+
+##### Subscribe to Stream Metrics
+```json
+{
+  "type": "SubscribeStream",
+  "data": {
+    "stream_id": "stream_123"
+  }
+}
+```
+
+**Authorization:** Authenticated users can subscribe to stream metrics. Regular users can only access their own streams, while admins can access any stream.
+
+##### Subscribe to Overall Metrics
+```json
+{
+  "type": "SubscribeOverall",
+  "data": null
+}
+```
+
+**Authorization:** Admin access required.
+
+##### Stream Metrics (Broadcast)
+```json
+{
+  "type": "StreamMetrics",
+  "data": {
+    "stream_id": "stream_123",
+    "started_at": "2024-01-01T12:00:00Z",
+    "last_segment_time": "2024-01-01T13:00:00Z",
+    "average_fps": 30.0,
+    "target_fps": 30.0,
+    "frame_count": 108000,
+    "ingress_throughput_bps": 2500000,
+    "ingress_name": "RTMP",
+    "endpoint_name": "Standard",
+    "input_resolution": "1920x1080",
+    "ip_address": "192.168.1.100"
+  }
+}
+```
+
+**Description:** Real-time metrics for individual streams containing pipeline performance data. Broadcast automatically when metrics are updated for subscribed streams.
+
+##### Overall Metrics (Broadcast)
+```json
+{
+  "type": "OverallMetrics",
+  "data": {
+    "total_streams": 5,
+    "total_viewers": 127,
+    "total_bandwidth": 12500000,
+    "cpu_load": 1.23,
+    "memory_load": 0.65,
+    "uptime_seconds": 86400,
+    "timestamp": 1703123456
+  }
+}
+```
+
+**Description:** System-wide metrics where subscribers receive real-time aggregate data computed from all active streams. The system tracks all active streams and automatically computes totals (total_streams, total_viewers, total_bandwidth) along with system performance metrics (CPU load, memory usage, uptime). Available only to admin users.
+
+##### Error Messages
+```json
+{
+  "type": "Error",
+  "data": {
+    "message": "Authentication required"
+  }
+}
+```
+
+#### Usage Examples
+
+##### JavaScript Client Example
+```javascript
+const ws = new WebSocket('ws://localhost:8080/api/v1/ws');
+
+ws.onopen = function() {
+  // Create NIP-98 event and base64 encode it
+  const nip98Event = createNIP98Event('GET', 'ws://localhost:8080/api/v1/ws');
+  const token = btoa(JSON.stringify(nip98Event));
+  
+  // Authenticate with NIP-98 token
+  ws.send(JSON.stringify({
+    type: 'Auth',
+    data: { token: token }
+  }));
+};
+
+ws.onmessage = function(event) {
+  const message = JSON.parse(event.data);
+  
+  switch(message.type) {
+    case 'AuthResponse':
+      if(message.data.success && message.data.is_admin) {
+        // Subscribe to overall metrics (admin only)
+        ws.send(JSON.stringify({
+          type: 'SubscribeOverall',
+          data: null
+        }));
+      }
+      break;
+      
+    case 'OverallMetrics':
+      console.log('System metrics:', message.data);
+      break;
+      
+    case 'StreamMetrics':
+      console.log('Stream metrics:', message.data);
+      break;
+      
+    case 'Error':
+      console.error('WebSocket error:', message.data.message);
+      break;
+  }
+};
+
+function createNIP98Event(method, url) {
+  // This is a simplified example - you'd use a proper Nostr library
+  // to create and sign the event with your private key
+  return {
+    kind: 27235,
+    created_at: Math.floor(Date.now() / 1000),
+    tags: [
+      ['u', url],
+      ['method', method]
+    ],
+    content: '',
+    pubkey: 'your_public_key_hex',
+    sig: 'your_signature_hex'
+  };
+}
+```
+
+##### Streamer Dashboard Example
+```javascript
+const ws = new WebSocket('ws://localhost:8080/api/v1/ws');
+
+ws.onopen = function() {
+  // Create NIP-98 event and authenticate
+  const nip98Event = createNIP98Event('GET', 'ws://localhost:8080/api/v1/ws');
+  const token = btoa(JSON.stringify(nip98Event));
+  
+  ws.send(JSON.stringify({
+    type: 'Auth',
+    data: { token: token }
+  }));
+};
+
+ws.onmessage = function(event) {
+  const message = JSON.parse(event.data);
+  
+  if(message.type === 'AuthResponse' && message.data.success) {
+    // Subscribe to specific stream metrics
+    ws.send(JSON.stringify({
+      type: 'SubscribeStream', 
+      data: { stream_id: 'your_stream_id' }
+    }));
+  } else if(message.type === 'StreamMetrics') {
+    // Update dashboard with real-time metrics
+    updateDashboard(message.data);
+  }
+};
+
+function updateDashboard(metrics) {
+  document.getElementById('viewer-count').textContent = metrics.viewer_count;
+  document.getElementById('bitrate').textContent = metrics.bitrate;
+  document.getElementById('fps').textContent = metrics.fps;
+  // ... update other UI elements
+}
+```
+
+#### Connection Management
+
+- **Automatic Reconnection:** Clients should implement automatic reconnection with exponential backoff
+- **Heartbeat:** The server sends metrics every second; clients can detect disconnection if no messages received for 5+ seconds
+- **Error Handling:** Always handle `Error` message types and display appropriate user feedback
+
+#### Rate Limiting
+
+- Metrics are broadcast at 1-second intervals
+- Each client connection can subscribe to multiple streams (admin) or one stream (streamer)
+- No additional rate limiting is currently implemented for WebSocket connections
+
 ## Error Handling
 
 All endpoints return appropriate HTTP status codes:

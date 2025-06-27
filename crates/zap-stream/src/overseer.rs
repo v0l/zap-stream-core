@@ -1,6 +1,6 @@
 use crate::blossom::{BlobDescriptor, Blossom};
 use crate::endpoint::{get_variants_from_endpoint, parse_capabilities, EndpointCapability};
-use crate::settings::{LndSettings, OverseerConfig, Settings};
+use crate::settings::{LndSettings, Settings};
 use crate::stream_manager::StreamManager;
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
@@ -19,7 +19,7 @@ use zap_stream_core::egress::hls::HlsEgress;
 use zap_stream_core::egress::recorder::RecorderEgress;
 use zap_stream_core::egress::EgressSegment;
 use zap_stream_core::ingress::ConnectionInfo;
-use zap_stream_core::overseer::{IngressInfo, Overseer};
+use zap_stream_core::overseer::{IngressInfo, Overseer, StatsType};
 use zap_stream_core::pipeline::{EgressType, PipelineConfig};
 use zap_stream_core::variant::{StreamMapping, VariantStream};
 use zap_stream_db::{IngestEndpoint, UserStream, UserStreamState, ZapStreamDb};
@@ -57,15 +57,14 @@ impl ZapStreamOverseer {
             &settings.overseer.relays,
             &settings.overseer.blossom,
         )
-            .await?)
+        .await?)
     }
 
     pub async fn new(
         public_url: &String,
         private_key: &str,
         db: &str,
-        #[cfg(feature = "zap-stream")]
-        lnd: &LndSettings,
+        #[cfg(feature = "zap-stream")] lnd: &LndSettings,
         relays: &Vec<String>,
         blossom_servers: &Option<Vec<String>>,
     ) -> Result<Self> {
@@ -136,7 +135,6 @@ impl ZapStreamOverseer {
         self.db.clone()
     }
 
-
     #[cfg(feature = "zap-stream")]
     pub fn lnd_client(&self) -> fedimint_tonic_lnd::Client {
         self.lnd.clone()
@@ -205,7 +203,14 @@ impl ZapStreamOverseer {
         let coord = Coordinate::new(kind, self.keys.public_key).identifier(&stream.id);
         tags.push(Tag::parse([
             "alt",
-            &format!("Watch live on https://zap.stream/{}", coord.to_bech32()?),
+            &format!(
+                "Watch live on https://zap.stream/{}",
+                nostr_sdk::nips::nip19::Nip19Coordinate {
+                    coordinate: coord,
+                    relays: vec![]
+                }
+                .to_bech32()?
+            ),
         ])?);
         Ok(EventBuilder::new(kind, "").tags(tags))
     }
@@ -287,7 +292,7 @@ impl ZapStreamOverseer {
             .await?
             .tags(extra_tags)
             .sign_with_keys(&self.keys)?;
-        self.client.send_event(ev.clone()).await?;
+        self.client.send_event(&ev).await?;
         info!("Published stream event {}", ev.id.to_hex());
         Ok(ev)
     }
@@ -415,7 +420,19 @@ impl Overseer for ZapStreamOverseer {
         let stream_event = self.publish_stream_event(&new_stream, &user.pubkey).await?;
         new_stream.event = Some(stream_event.as_json());
 
-        self.stream_manager.add_active_stream(&new_stream.id).await;
+        self.stream_manager
+            .add_active_stream(
+                &new_stream.id,
+                cfg.video_src.map(|s| s.fps).unwrap(),
+                &endpoint.name,
+                cfg.video_src
+                    .map(|s| format!("{}x{}", s.width, s.height))
+                    .unwrap()
+                    .as_str(),
+                connection.endpoint,
+                &connection.ip_addr,
+            )
+            .await;
 
         self.db.insert_stream(&new_stream).await?;
         self.db.update_stream(&new_stream).await?;
@@ -498,7 +515,7 @@ impl Overseer for ZapStreamOverseer {
                 let n94 = n94.sign_with_keys(&self.keys)?;
                 let cc = self.client.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = cc.send_event(n94).await {
+                    if let Err(e) = cc.send_event(&n94).await {
                         warn!("Error sending event: {}", e);
                     }
                 });
@@ -543,6 +560,24 @@ impl Overseer for ZapStreamOverseer {
         let event = self.publish_stream_event(&stream, &user.pubkey).await?;
         stream.event = Some(event.as_json());
         self.db.update_stream(&stream).await?;
+        Ok(())
+    }
+
+    async fn on_stats(&self, pipeline_id: &Uuid, stats: StatsType) -> Result<()> {
+        let id = pipeline_id.to_string();
+        match stats {
+            StatsType::Ingress(i) => {
+                self.stream_manager
+                    .update_ingress_metrics(&id, i.bitrate)
+                    .await;
+            }
+            StatsType::Pipeline(p) => {
+                self.stream_manager
+                    .update_pipeline_metrics(&id, p.average_fps, p.total_frames)
+                    .await;
+            }
+        }
+
         Ok(())
     }
 }

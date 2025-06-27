@@ -2,6 +2,7 @@ use crate::http::{check_nip98_auth, HttpFuture, HttpServerPlugin, StreamData};
 use crate::overseer::ZapStreamOverseer;
 use crate::settings::Settings;
 use crate::stream_manager::StreamManager;
+use crate::websocket_metrics::WebSocketMetricsServer;
 use crate::ListenerEndpoint;
 use anyhow::{anyhow, bail, Result};
 use bytes::Bytes;
@@ -10,10 +11,10 @@ use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::{Method, Request, Response};
-use log::{info, warn};
+use log::{error, info, warn};
 use matchit::Router;
-use nostr_sdk::util::EventIdOrCoordinate;
-use nostr_sdk::{serde_json, Client, PublicKey, Tag};
+use nostr_sdk::prelude::EventDeletionRequest;
+use nostr_sdk::{serde_json, Client, PublicKey};
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::net::SocketAddr;
@@ -120,6 +121,9 @@ impl Api {
             return Ok(base.body(Default::default())?);
         }
 
+        // Authenticate all API requests
+        let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
+
         // Route matching
         let path = req.uri().path().to_string();
         let method = req.method().clone();
@@ -131,12 +135,10 @@ impl Api {
 
             match (&method, route) {
                 (&Method::GET, Route::Account) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url)?;
                     let rsp = self.get_account(&auth.pubkey).await?;
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::PATCH, Route::Account) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url)?;
                     let body = req.collect().await?.to_bytes();
                     let r_body: PatchAccount = serde_json::from_slice(&body)?;
                     self.update_account(&auth.pubkey, r_body).await?;
@@ -144,7 +146,6 @@ impl Api {
                 }
                 #[cfg(feature = "zap-stream")]
                 (&Method::GET, Route::Topup) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url)?;
                     let full_url = format!(
                         "{}{}",
                         self.settings.public_url.trim_end_matches('/'),
@@ -160,7 +161,6 @@ impl Api {
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::PATCH, Route::Event) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url)?;
                     let body = req.collect().await?.to_bytes();
                     let patch_event: PatchEvent = serde_json::from_slice(&body)?;
                     self.update_event(&auth.pubkey, patch_event).await?;
@@ -168,7 +168,6 @@ impl Api {
                 }
                 #[cfg(feature = "zap-stream")]
                 (&Method::POST, Route::Withdraw) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url)?;
                     let full_url = format!(
                         "{}{}",
                         self.settings.public_url.trim_end_matches('/'),
@@ -189,14 +188,12 @@ impl Api {
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::POST, Route::Forward) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url)?;
                     let body = req.collect().await?.to_bytes();
                     let forward_req: ForwardRequest = serde_json::from_slice(&body)?;
                     let rsp = self.create_forward(&auth.pubkey, forward_req).await?;
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::DELETE, Route::ForwardId) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url)?;
                     let forward_id = params
                         .get("id")
                         .ok_or_else(|| anyhow!("Missing forward ID"))?;
@@ -204,24 +201,20 @@ impl Api {
                     Ok(base.body(Self::body_json(&())?)?)
                 }
                 (&Method::GET, Route::History) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url)?;
                     let rsp = self.get_account_history(&auth.pubkey).await?;
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::GET, Route::Keys) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url)?;
                     let rsp = self.get_account_keys(&auth.pubkey).await?;
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::POST, Route::Keys) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url)?;
                     let body = req.collect().await?.to_bytes();
                     let create_req: CreateStreamKeyRequest = serde_json::from_slice(&body)?;
                     let rsp = self.create_stream_key(&auth.pubkey, create_req).await?;
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::GET, Route::AdminUsers) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url)?;
                     self.check_admin_access(&auth.pubkey).await?;
                     let full_url = format!(
                         "{}{}",
@@ -250,7 +243,6 @@ impl Api {
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::POST, Route::AdminUsersId) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url)?;
                     self.check_admin_access(&auth.pubkey).await?;
                     let user_id = params.get("id").ok_or_else(|| anyhow!("Missing user ID"))?;
                     let body = req.collect().await?.to_bytes();
@@ -259,7 +251,6 @@ impl Api {
                     Ok(base.body(Self::body_json(&())?)?)
                 }
                 (&Method::GET, Route::AdminUserHistory) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url)?;
                     self.check_admin_access(&auth.pubkey).await?;
                     let user_id = params.get("id").ok_or_else(|| anyhow!("Missing user ID"))?;
                     let full_url = format!(
@@ -283,7 +274,6 @@ impl Api {
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::GET, Route::AdminUserStreams) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url)?;
                     self.check_admin_access(&auth.pubkey).await?;
                     let user_id = params.get("id").ok_or_else(|| anyhow!("Missing user ID"))?;
                     let full_url = format!(
@@ -307,7 +297,6 @@ impl Api {
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::DELETE, Route::DeleteStream) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url)?;
                     let stream_id = params
                         .get("id")
                         .ok_or_else(|| anyhow!("Missing stream ID"))?;
@@ -807,10 +796,11 @@ impl Api {
         // Publish Nostr deletion request event if the stream has an associated event
         if let Some(event_json) = &stream.event {
             if let Ok(stream_event) = serde_json::from_str::<nostr_sdk::Event>(event_json) {
-                let deletion_event = nostr_sdk::EventBuilder::delete([
-                    EventIdOrCoordinate::Id(stream_event.id),
-                    EventIdOrCoordinate::Coordinate(stream_event.coordinate().unwrap()),
-                ]);
+                let deletion_event = nostr_sdk::EventBuilder::delete(
+                    EventDeletionRequest::new()
+                        .id(stream_event.id)
+                        .coordinate(stream_event.coordinate().unwrap().into_owned()),
+                );
 
                 if let Err(e) = self.nostr_client.send_event_builder(deletion_event).await {
                     warn!(
@@ -984,6 +974,30 @@ impl HttpServerPlugin for Api {
 
     fn handler(self, request: Request<Incoming>) -> HttpFuture {
         Box::pin(async move { self.handler(request).await })
+    }
+
+    fn handle_websocket_metrics(self, request: Request<Incoming>) -> HttpFuture {
+        let ws_server = WebSocketMetricsServer::new(
+            self.db.clone(),
+            self.stream_manager.clone(),
+            self.settings.public_url.clone(),
+        );
+        Box::pin(async move {
+            // Handle the WebSocket upgrade
+            match ws_server.handle_websocket_upgrade(request) {
+                Ok(response) => Ok(response),
+                Err(e) => {
+                    let msg = format!("WebSocket error: {}", e);
+                    error!("{}", msg);
+                    let error_response = Response::builder().status(500).body(
+                        Full::new(bytes::Bytes::from(msg))
+                            .map_err(|e| match e {})
+                            .boxed(),
+                    )?;
+                    Ok(error_response)
+                }
+            }
+        })
     }
 }
 

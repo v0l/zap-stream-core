@@ -1,6 +1,7 @@
 use crate::generator::FrameGenerator;
-use crate::ingress::{spawn_pipeline, ConnectionInfo};
+use crate::ingress::{spawn_pipeline, ConnectionInfo, IngressStats};
 use crate::overseer::Overseer;
+use crate::pipeline::runner::PipelineCommand;
 use anyhow::Result;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVSampleFormat::AV_SAMPLE_FMT_FLTP;
@@ -8,13 +9,16 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
     av_frame_free, av_packet_free, AVRational, AV_PROFILE_H264_MAIN,
 };
 use ffmpeg_rs_raw::{Encoder, Muxer};
-use log::info;
+use log::{info, warn};
 use ringbuf::traits::{Observer, Split};
 use ringbuf::{HeapCons, HeapRb};
 use std::io::Read;
 use std::sync::Arc;
+use std::time::Duration;
 use tiny_skia::Pixmap;
 use tokio::runtime::Handle;
+use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
+use tokio::time::Instant;
 use uuid::Uuid;
 
 pub async fn listen(out_dir: String, overseer: Arc<dyn Overseer>) -> Result<()> {
@@ -27,7 +31,8 @@ pub async fn listen(out_dir: String, overseer: Arc<dyn Overseer>) -> Result<()> 
         app_name: "".to_string(),
         key: "test".to_string(),
     };
-    let src = TestPatternSrc::new()?;
+    let (tx, rx) = unbounded_channel();
+    let src = TestPatternSrc::new(tx)?;
     spawn_pipeline(
         Handle::current(),
         info,
@@ -35,7 +40,7 @@ pub async fn listen(out_dir: String, overseer: Arc<dyn Overseer>) -> Result<()> 
         overseer,
         Box::new(src),
         None,
-        None,
+        Some(rx),
     );
     Ok(())
 }
@@ -47,6 +52,9 @@ struct TestPatternSrc {
     background: Pixmap,
     muxer: Muxer,
     reader: HeapCons<u8>,
+    tx: UnboundedSender<PipelineCommand>,
+    last_metrics: Instant,
+    data_sent: u64,
 }
 
 unsafe impl Send for TestPatternSrc {}
@@ -57,7 +65,7 @@ const VIDEO_HEIGHT: u16 = 720;
 const SAMPLE_RATE: u32 = 44100;
 
 impl TestPatternSrc {
-    pub fn new() -> Result<Self> {
+    pub fn new(tx: UnboundedSender<PipelineCommand>) -> Result<Self> {
         let video_encoder = unsafe {
             Encoder::new_with_name("libx264")?
                 .with_stream_index(0)
@@ -128,6 +136,9 @@ impl TestPatternSrc {
             muxer,
             background: pixmap,
             reader,
+            tx,
+            last_metrics: Instant::now(),
+            data_sent: 0,
         })
     }
 
@@ -145,11 +156,13 @@ impl TestPatternSrc {
         // if sample_rate is set this frame is audio
         if (*frame).sample_rate > 0 {
             for mut pkt in self.audio_encoder.encode_frame(frame)? {
+                self.data_sent += (*pkt).size as u64;
                 self.muxer.write_packet(pkt)?;
                 av_packet_free(&mut pkt);
             }
         } else {
             for mut pkt in self.video_encoder.encode_frame(frame)? {
+                self.data_sent += (*pkt).size as u64;
                 self.muxer.write_packet(pkt)?;
                 av_packet_free(&mut pkt);
             }
@@ -157,6 +170,16 @@ impl TestPatternSrc {
 
         av_frame_free(&mut frame);
 
+        let metric_duration = Instant::now().duration_since(self.last_metrics);
+        if metric_duration > Duration::from_secs(5) {
+            if let Err(e) = self.tx.send(PipelineCommand::IngressMetrics(IngressStats {
+                bitrate: ((self.data_sent as f64 / metric_duration.as_secs_f64()) * 8.0) as usize,
+            })) {
+                warn!("Failed to send pipeline metrics: {}", e);
+            }
+            self.data_sent = 0;
+            self.last_metrics = Instant::now();
+        }
         Ok(())
     }
 }

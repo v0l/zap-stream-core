@@ -4,7 +4,6 @@ use std::mem::transmute;
 use std::ops::Sub;
 use std::path::{Path, PathBuf};
 use std::ptr;
-use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -13,9 +12,9 @@ use crate::egress::recorder::RecorderEgress;
 use crate::egress::rtmp::RtmpEgress;
 use crate::egress::{Egress, EgressResult, EncoderOrSourceStream};
 use crate::generator::FrameGenerator;
-use crate::ingress::ConnectionInfo;
+use crate::ingress::{ConnectionInfo, IngressStats};
 use crate::mux::SegmentType;
-use crate::overseer::{IngressInfo, IngressStream, IngressStreamType, Overseer};
+use crate::overseer::{IngressInfo, IngressStream, IngressStreamType, Overseer, StatsType};
 use crate::pipeline::{EgressType, PipelineConfig};
 use crate::variant::{StreamMapping, VariantStream};
 use anyhow::{anyhow, bail, Context, Result};
@@ -23,14 +22,15 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_WEBP;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPictureType::AV_PICTURE_TYPE_NONE;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    av_frame_clone, av_frame_free, av_get_sample_fmt, av_packet_clone, av_packet_free,
-    av_rescale_q, AVFrame, AVPacket, AV_NOPTS_VALUE,
+    av_frame_clone, av_frame_free, av_get_sample_fmt, av_packet_free, av_rescale_q, AVFrame,
+    AVPacket, AV_NOPTS_VALUE,
 };
 use ffmpeg_rs_raw::{
     cstr, get_frame_from_hw, AudioFifo, Decoder, Demuxer, Encoder, Resample, Scaler, StreamType,
 };
 use log::{debug, error, info, warn};
 use tokio::runtime::Handle;
+use tokio::sync::mpsc::UnboundedReceiver;
 use uuid::Uuid;
 
 /// Idle mode timeout in seconds
@@ -71,6 +71,16 @@ impl RunnerState {
 pub enum PipelineCommand {
     /// External process requested clean shutdown
     Shutdown,
+    /// Metrics provided by the ingress
+    IngressMetrics(IngressStats),
+}
+
+#[derive(Debug, Clone)]
+pub struct PipelineStats {
+    pub average_fps: f32,
+    pub total_frames: u64,
+    /// If pipeline is in normal running state
+    pub is_running: bool,
 }
 
 /// Pipeline runner is the main entry process for stream transcoding
@@ -108,7 +118,7 @@ pub struct PipelineRunner {
     /// Overseer managing this pipeline
     overseer: Arc<dyn Overseer>,
 
-    fps_counter_start: Instant,
+    stats_start: Instant,
     fps_last_frame_ctr: u64,
 
     /// Total number of frames produced
@@ -136,7 +146,7 @@ pub struct PipelineRunner {
     last_audio_pts: i64,
 
     /// Command receiver for external process control
-    cmd_channel: Option<Receiver<PipelineCommand>>,
+    cmd_channel: Option<UnboundedReceiver<PipelineCommand>>,
 }
 
 unsafe impl Send for PipelineRunner {}
@@ -149,7 +159,7 @@ impl PipelineRunner {
         connection: ConnectionInfo,
         recv: Box<dyn Read + Send>,
         url: Option<String>,
-        command: Option<Receiver<PipelineCommand>>,
+        command: Option<UnboundedReceiver<PipelineCommand>>,
     ) -> Result<Self> {
         Ok(Self {
             handle,
@@ -162,7 +172,7 @@ impl PipelineRunner {
             scalers: Default::default(),
             resampler: Default::default(),
             encoders: Default::default(),
-            fps_counter_start: Instant::now(),
+            stats_start: Instant::now(),
             egress: Vec::new(),
             frame_ctr: 0,
             fps_last_frame_ctr: 0,
@@ -297,16 +307,14 @@ impl PipelineRunner {
 
     /// Process frame in normal mode (live stream)
     unsafe fn process_normal_mode(&mut self, config: &PipelineConfig) -> Result<Vec<EgressResult>> {
-        let (mut pkt, _stream) = self.demuxer.get_packet()?;
+        let (pkt, _stream) = self.demuxer.get_packet()?;
         if pkt.is_null() {
             warn!("Demuxer get_packet failed, entering idle mode");
             self.switch_to_idle_mode(config)
                 .context("Failed to switch to idle mode after demuxer failure")?;
             Ok(vec![])
         } else {
-            let res = self.process_packet(pkt)?;
-            av_packet_free(&mut pkt);
-            Ok(res)
+            self.process_packet(pkt)
         }
     }
 
@@ -354,7 +362,7 @@ impl PipelineRunner {
         }
     }
 
-    unsafe fn process_packet(&mut self, packet: *mut AVPacket) -> Result<Vec<EgressResult>> {
+    unsafe fn process_packet(&mut self, mut packet: *mut AVPacket) -> Result<Vec<EgressResult>> {
         let config = if let Some(config) = &self.config {
             config.clone()
         } else {
@@ -424,6 +432,7 @@ impl PipelineRunner {
             }
         }
 
+        av_packet_free(&mut packet);
         Ok(egress_results)
     }
 
@@ -550,9 +559,7 @@ impl PipelineRunner {
     ) -> Result<Vec<EgressResult>> {
         let mut ret = vec![];
         for eg in egress.iter_mut() {
-            let mut pkt_clone = av_packet_clone(pkt);
-            let er = eg.process_pkt(pkt_clone, variant)?;
-            av_packet_free(&mut pkt_clone);
+            let er = eg.process_pkt(pkt, variant)?;
             ret.push(er);
         }
         Ok(ret)
@@ -602,12 +609,21 @@ impl PipelineRunner {
     }
 
     fn handle_command(&mut self) -> Result<Option<bool>> {
-        if let Some(cmd) = &self.cmd_channel {
+        if let Some(cmd) = &mut self.cmd_channel {
             while let Ok(c) = cmd.try_recv() {
                 match c {
                     PipelineCommand::Shutdown => {
                         self.state = RunnerState::Shutdown;
                         return Ok(Some(true));
+                    }
+                    PipelineCommand::IngressMetrics(s) => {
+                        let id = self.connection.id.clone();
+                        let overseer = self.overseer.clone();
+                        self.handle.spawn(async move {
+                            if let Err(e) = overseer.on_stats(&id, StatsType::Ingress(s)).await {
+                                warn!("Pipeline stats error: {e}");
+                            }
+                        });
                     }
                     _ => warn!("Unexpected command: {:?}", c),
                 }
@@ -652,12 +668,27 @@ impl PipelineRunner {
                 Ok(())
             })?;
         }
-        let elapsed = Instant::now().sub(self.fps_counter_start).as_secs_f32();
+        let elapsed = Instant::now().sub(self.stats_start).as_secs_f32();
         if elapsed >= 2f32 {
             let n_frames = self.frame_ctr - self.fps_last_frame_ctr;
-            debug!("Average fps: {:.2}", n_frames as f32 / elapsed);
-            self.fps_counter_start = Instant::now();
+            let avg_fps = n_frames as f32 / elapsed;
+            debug!("Average fps: {:.2}", avg_fps);
+            self.stats_start = Instant::now();
             self.fps_last_frame_ctr = self.frame_ctr;
+
+            // emit metrics every 2s to overseer
+            let overseer = self.overseer.clone();
+            let metrics = PipelineStats {
+                average_fps: avg_fps,
+                total_frames: self.frame_ctr,
+                is_running: matches!(self.state, RunnerState::Normal),
+            };
+            let id = self.connection.id.clone();
+            self.handle.spawn(async move {
+                if let Err(e) = overseer.on_stats(&id, StatsType::Pipeline(metrics)).await {
+                    warn!("Pipeline stats error: {e}");
+                }
+            });
         }
         Ok(true)
     }

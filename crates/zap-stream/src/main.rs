@@ -30,6 +30,7 @@ use zap_stream_core::ingress::{file, tcp};
 use zap_stream_core::overseer::Overseer;
 
 mod api;
+mod auth;
 mod blossom;
 mod endpoint;
 mod http;
@@ -38,6 +39,7 @@ mod overseer;
 mod settings;
 mod stream_manager;
 mod viewer;
+mod websocket_metrics;
 
 #[derive(Parser, Debug)]
 struct Args {}
@@ -90,8 +92,11 @@ async fn main() -> Result<()> {
             let (socket, _) = listener.accept().await?;
             let io = TokioIo::new(socket);
             let server = server.clone();
+            let mut b = http1::Builder::new();
+            b.keep_alive(true);
+
             tokio::spawn(async move {
-                if let Err(e) = http1::Builder::new().serve_connection(io, server).await {
+                if let Err(e) = b.serve_connection(io, server).with_upgrades().await {
                     error!("Failed to handle request: {}", e);
                 }
             });

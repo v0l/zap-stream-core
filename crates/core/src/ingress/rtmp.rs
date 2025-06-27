@@ -11,11 +11,11 @@ use rml_rtmp::sessions::{
 use std::collections::VecDeque;
 use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
-use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::runtime::Handle;
+use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use tokio::time::Instant;
 use uuid::Uuid;
 use xflv::errors::FlvMuxerError;
@@ -33,18 +33,23 @@ struct RtmpClient {
     msg_queue: VecDeque<ServerSessionResult>,
     pub published_stream: Option<RtmpPublishedStream>,
     muxer: FlvMuxer,
-    tx: Sender<PipelineCommand>,
+    tx: UnboundedSender<PipelineCommand>,
 }
 
 impl RtmpClient {
-    pub fn new(socket: TcpStream, tx: Sender<PipelineCommand>) -> Result<Self> {
+    pub fn new(socket: TcpStream, tx: UnboundedSender<PipelineCommand>) -> Result<Self> {
         socket.set_nonblocking(false)?;
         let cfg = ServerSessionConfig::new();
         let (ses, res) = ServerSession::new(cfg)?;
         Ok(Self {
             socket,
             session: ses,
-            buffer: BufferedReader::new(1024 * 1024, MAX_MEDIA_BUFFER_SIZE, "RTMP"),
+            buffer: BufferedReader::new(
+                1024 * 1024,
+                MAX_MEDIA_BUFFER_SIZE,
+                "RTMP",
+                Some(tx.clone()),
+            ),
             msg_queue: VecDeque::from(res),
             published_stream: None,
             muxer: FlvMuxer::new(),
@@ -286,7 +291,7 @@ pub async fn listen(out_dir: String, addr: String, overseer: Arc<dyn Overseer>) 
         std::thread::Builder::new()
             .name(format!("client:rtmp:{}", new_id))
             .spawn(move || {
-                let (tx, rx) = std::sync::mpsc::channel();
+                let (tx, rx) = unbounded_channel();
                 let mut cc = RtmpClient::new(socket.into_std()?, tx)?;
                 if let Err(e) = cc.read_until_publish_request(Duration::from_secs(10)) {
                     bail!("Error waiting for publish request: {}", e)

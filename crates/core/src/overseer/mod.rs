@@ -1,6 +1,7 @@
-use crate::ingress::ConnectionInfo;
+use crate::ingress::{ConnectionInfo, IngressStats};
 
 use crate::egress::EgressSegment;
+use crate::pipeline::runner::PipelineStats;
 use crate::pipeline::PipelineConfig;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -35,6 +36,11 @@ pub enum IngressStreamType {
     Video,
     Audio,
     Subtitle,
+}
+
+pub enum StatsType {
+    Ingress(IngressStats),
+    Pipeline(PipelineStats),
 }
 
 #[async_trait]
@@ -75,4 +81,7 @@ pub trait Overseer: Send + Sync {
 
     /// Force update stream
     async fn on_update(&self, pipeline_id: &Uuid) -> Result<()>;
+
+    /// Stats emitted by the pipeline periodically
+    async fn on_stats(&self, pipeline_id: &Uuid, stats: StatsType) -> Result<()>;
 }

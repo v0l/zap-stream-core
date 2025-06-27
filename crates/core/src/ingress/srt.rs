@@ -8,9 +8,9 @@ use log::info;
 use srt_tokio::{SrtListener, SrtSocket};
 use std::io::Read;
 use std::net::SocketAddr;
-use std::sync::mpsc::{channel, Sender};
 use std::sync::Arc;
 use tokio::runtime::Handle;
+use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use uuid::Uuid;
 
 const MAX_SRT_BUFFER_SIZE: usize = 10 * 1024 * 1024; // 10MB limit
@@ -33,7 +33,7 @@ pub async fn listen(out_dir: String, addr: String, overseer: Arc<dyn Overseer>) 
                 .as_ref()
                 .map_or(String::new(), |s| s.to_string()),
         };
-        let (tx, rx) = channel();
+        let (tx, rx) = unbounded_channel();
         spawn_pipeline(
             Handle::current(),
             info,
@@ -42,7 +42,7 @@ pub async fn listen(out_dir: String, addr: String, overseer: Arc<dyn Overseer>) 
             Box::new(SrtReader {
                 handle: Handle::current(),
                 socket,
-                buffer: BufferedReader::new(4096, MAX_SRT_BUFFER_SIZE, "SRT"),
+                buffer: BufferedReader::new(4096, MAX_SRT_BUFFER_SIZE, "SRT", Some(tx.clone())),
                 tx,
             }),
             None,
@@ -56,7 +56,7 @@ struct SrtReader {
     pub handle: Handle,
     pub socket: SrtSocket,
     pub buffer: BufferedReader,
-    pub tx: Sender<PipelineCommand>, // TODO: implement clean shutdown
+    pub tx: UnboundedSender<PipelineCommand>, // TODO: implement clean shutdown
 }
 
 impl Read for SrtReader {

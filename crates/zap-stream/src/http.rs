@@ -1,8 +1,7 @@
+use crate::auth::{authenticate_nip98, AuthRequest, AuthResult, TokenSource};
 use crate::viewer::ViewerTracker;
 use anyhow::{bail, ensure, Context, Result};
-use base64::Engine;
 use bytes::Bytes;
-use chrono::{DateTime, Utc};
 use futures_util::TryStreamExt;
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full, StreamBody};
@@ -15,7 +14,6 @@ use hyper::service::Service;
 use hyper::{Request, Response, StatusCode};
 use log::{error, warn};
 use matchit::Router;
-use nostr_sdk::{serde_json, Alphabet, Event, Kind, PublicKey, SingleLetterTag, TagKind};
 use serde::Serialize;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -40,6 +38,7 @@ pub trait HttpServerPlugin: Clone {
         token: &str,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>;
     fn handler(self, request: Request<Incoming>) -> HttpFuture;
+    fn handle_websocket_metrics(self, request: Request<Incoming>) -> HttpFuture;
 }
 
 #[derive(Serialize, Clone)]
@@ -65,6 +64,7 @@ pub enum HttpServerPath {
     HlsMasterPlaylist,
     HlsVariantPlaylist,
     HlsSegmentFile,
+    WebSocketMetrics,
 }
 
 #[derive(Clone)]
@@ -105,6 +105,9 @@ where
                 format!("/{{stream}}/{}/{{variant}}/{{seg}}.m4s", HlsEgress::PATH),
                 HttpServerPath::HlsSegmentFile,
             )
+            .unwrap();
+        router
+            .insert("/api/v1/ws", HttpServerPath::WebSocketMetrics)
             .unwrap();
 
         Self {
@@ -362,9 +365,13 @@ where
                 HttpServerPath::HlsSegmentFile => {
                     // handle segment file (range requests)
                     let file_path = dst_path.clone();
-                    return Box::pin(async move {
-                        Self::handle_hls_segment(&req, file_path).await
-                    });
+                    return Box::pin(
+                        async move { Self::handle_hls_segment(&req, file_path).await },
+                    );
+                }
+                HttpServerPath::WebSocketMetrics => {
+                    let plugin = self.plugin.clone();
+                    return plugin.handle_websocket_metrics(req);
                 }
             }
         }
@@ -388,60 +395,16 @@ where
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct AuthResult {
-    pub pubkey: PublicKey,
-    pub event: Event,
-}
-
-pub fn check_nip98_auth(req: &Request<Incoming>, public_url: &str) -> Result<AuthResult> {
+pub async fn check_nip98_auth(
+    req: &Request<Incoming>,
+    public_url: &str,
+    db: &zap_stream_db::ZapStreamDb,
+) -> Result<AuthResult> {
     let auth = if let Some(a) = req.headers().get("authorization") {
         a.to_str()?
     } else {
         bail!("Authorization header missing");
     };
-
-    if !auth.starts_with("Nostr ") {
-        bail!("Invalid authorization scheme");
-    }
-
-    let token = &auth[6..];
-    let decoded = base64::engine::general_purpose::STANDARD.decode(token.as_bytes())?;
-
-    // Check if decoded data starts with '{'
-    if decoded.is_empty() || decoded[0] != b'{' {
-        bail!("Invalid token");
-    }
-
-    let json = String::from_utf8(decoded)?;
-    let event: Event = serde_json::from_str(&json)?;
-
-    // Verify signature
-    if event.verify().is_err() {
-        bail!("Invalid nostr event, invalid signature");
-    }
-
-    // Check event kind (NIP-98: HTTP Auth, kind 27235)
-    if event.kind != Kind::Custom(27235) {
-        bail!("Invalid nostr event, wrong kind");
-    }
-
-    // Check timestamp (within 120 seconds)
-    let now = Utc::now();
-    let event_time = DateTime::from_timestamp(event.created_at.as_u64() as i64, 0)
-        .ok_or_else(|| anyhow::anyhow!("Invalid timestamp"))?;
-    let diff_seconds = (now - event_time).num_seconds().abs();
-    if diff_seconds > 120 {
-        bail!("Invalid nostr event, timestamp out of range");
-    }
-
-    // Check URL tag (full URI)
-    let url_tag = event
-        .tags
-        .iter()
-        .find(|tag| tag.kind() == TagKind::SingleLetter(SingleLetterTag::lowercase(Alphabet::U)))
-        .and_then(|tag| tag.content())
-        .ok_or_else(|| anyhow::anyhow!("Missing URL tag"))?;
 
     // Construct full URI using public_url + path + query
     let request_uri = match req.uri().query() {
@@ -454,30 +417,13 @@ pub fn check_nip98_auth(req: &Request<Incoming>, public_url: &str) -> Result<Aut
         None => format!("{}{}", public_url.trim_end_matches('/'), req.uri().path()),
     };
 
-    if !url_tag.eq_ignore_ascii_case(&request_uri) {
-        bail!(
-            "Invalid nostr event, URL tag invalid. Expected: {}, Got: {}",
-            request_uri,
-            url_tag
-        );
-    }
+    let auth_request = AuthRequest {
+        token_source: TokenSource::HttpHeader(auth.to_string()),
+        expected_url: request_uri,
+        expected_method: req.method().as_str().to_string(),
+    };
 
-    // Check method tag
-    let method_tag = event
-        .tags
-        .iter()
-        .find(|tag| tag.kind() == TagKind::Method)
-        .and_then(|tag| tag.content())
-        .ok_or_else(|| anyhow::anyhow!("Missing method tag"))?;
-
-    if !method_tag.eq_ignore_ascii_case(req.method().as_str()) {
-        bail!("Invalid nostr event, method tag invalid");
-    }
-
-    Ok(AuthResult {
-        pubkey: event.pubkey,
-        event,
-    })
+    authenticate_nip98(auth_request, db).await
 }
 
 /// Range request handler over file handle

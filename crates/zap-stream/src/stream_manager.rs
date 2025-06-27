@@ -1,8 +1,10 @@
 use crate::viewer::ViewerTracker;
 use chrono::{DateTime, Utc};
+use log::warn;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 
 #[derive(Clone)]
 pub struct StreamViewerState {
@@ -10,13 +12,24 @@ pub struct StreamViewerState {
     pub last_update_time: DateTime<Utc>,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActiveStreamInfo {
+    pub stream_id: String,
     pub started_at: DateTime<Utc>,
     pub last_segment_time: Option<DateTime<Utc>>,
+
+    pub viewers: u32,
+    pub average_fps: f32,
+    pub target_fps: f32,
+    pub frame_count: u64,
+    pub ingress_throughput_bps: u64,
+    pub ingress_name: String,
+    pub endpoint_name: String,
+    pub input_resolution: String,
+    pub ip_address: String,
 }
 
-/// Manages active streams, viewer tracking, and Nostr publishing
+/// Manages active streams, viewer tracking
 #[derive(Clone)]
 pub struct StreamManager {
     /// Currently active streams with timing info
@@ -26,14 +39,20 @@ pub struct StreamManager {
     viewer_tracker: Arc<RwLock<ViewerTracker>>,
     /// Track last published viewer count and update time for each stream
     stream_viewer_states: Arc<RwLock<HashMap<String, StreamViewerState>>>,
+    /// Broadcast channel to listen to metrics updates
+    metric_sender: broadcast::Sender<ActiveStreamInfo>,
 }
 
 impl StreamManager {
     pub fn new() -> Self {
+        let (tx, rx) = broadcast::channel(16);
+        std::mem::forget(rx); //TODO: clean this
+
         let r = Self {
             active_streams: Arc::new(RwLock::new(HashMap::new())),
             viewer_tracker: Arc::new(RwLock::new(ViewerTracker::new())),
             stream_viewer_states: Arc::new(RwLock::new(HashMap::new())),
+            metric_sender: tx,
         };
 
         let mgr = r.clone();
@@ -49,15 +68,37 @@ impl StreamManager {
         r
     }
 
+    pub fn listen_metrics(&self) -> broadcast::Receiver<ActiveStreamInfo> {
+        self.metric_sender.subscribe()
+    }
+
     /// Add a new active stream
-    pub async fn add_active_stream(&self, stream_id: &str) {
+    pub async fn add_active_stream(
+        &self,
+        stream_id: &str,
+        target_fps: f32,
+        endpoint_name: &str,
+        input_resolution: &str,
+        ingress_name: &str,
+        ip: &str,
+    ) {
         let now = Utc::now();
         let mut streams = self.active_streams.write().await;
         streams.insert(
             stream_id.to_string(),
             ActiveStreamInfo {
+                stream_id: stream_id.to_string(),
                 started_at: now,
                 last_segment_time: None,
+                average_fps: 0.0,
+                viewers: 0,
+                target_fps,
+                frame_count: 0,
+                ingress_throughput_bps: 0,
+                input_resolution: input_resolution.to_string(),
+                endpoint_name: endpoint_name.to_string(),
+                ingress_name: ingress_name.to_string(),
+                ip_address: ip.to_string(),
             },
         );
     }
@@ -149,8 +190,41 @@ impl StreamManager {
         viewers.track_viewer(stream_id, token);
     }
 
-    pub async fn get_active_stream_ids(&self) -> Vec<String> {
+    pub async fn update_pipeline_metrics(
+        &self,
+        stream_id: &str,
+        average_fps: f32,
+        frame_count: u64,
+    ) {
+        let mut streams = self.active_streams.write().await;
+        if let Some(info) = streams.get_mut(stream_id) {
+            info.average_fps = average_fps;
+            info.frame_count = frame_count;
+            info.viewers = self.get_viewer_count(stream_id).await as _;
+            if let Err(e) = self.metric_sender.send(info.clone()) {
+                warn!(
+                    "Failed to send pipeline metrics to the active stream: {}",
+                    e
+                );
+            }
+        }
+    }
+
+    pub async fn update_ingress_metrics(&self, stream_id: &str, bitrate: usize) {
+        let mut streams = self.active_streams.write().await;
+        if let Some(info) = streams.get_mut(stream_id) {
+            info.ingress_throughput_bps = bitrate as u64;
+            if let Err(e) = self.metric_sender.send(info.clone()) {
+                warn!(
+                    "Failed to send pipeline metrics to the active stream: {}",
+                    e
+                );
+            }
+        }
+    }
+
+    pub async fn get_active_streams(&self) -> HashMap<String, ActiveStreamInfo> {
         let streams = self.active_streams.read().await;
-        streams.keys().cloned().collect()
+        streams.clone()
     }
 }
