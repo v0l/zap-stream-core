@@ -797,7 +797,7 @@ mod tests {
 
     #[test]
     fn test_generated_hls_stream_mpegts() {
-        pretty_env_logger::init();
+        pretty_env_logger::try_init().ok();
 
         let temp_dir = tempdir().unwrap();
         let tester = HlsTimingTester::new(0.2, 1.0, 0.5); // More lenient thresholds for test
@@ -835,7 +835,7 @@ mod tests {
     #[ignore]
     #[test]
     fn test_generated_hls_stream_fmp4() {
-        pretty_env_logger::init();
+        pretty_env_logger::try_init().ok();
 
         let temp_dir = tempdir().unwrap();
         let tester = HlsTimingTester::new(0.2, 1.0, 0.5); // More lenient thresholds for test
@@ -872,7 +872,7 @@ mod tests {
 
     #[test]
     fn test_30_second_stream() {
-        pretty_env_logger::init();
+        pretty_env_logger::try_init().ok();
 
         let temp_dir = tempdir().unwrap();
         let tester = HlsTimingTester::default();
