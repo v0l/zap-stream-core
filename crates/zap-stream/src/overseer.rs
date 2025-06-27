@@ -555,6 +555,12 @@ impl Overseer for ZapStreamOverseer {
 
     async fn on_update(&self, pipeline_id: &Uuid) -> Result<()> {
         let mut stream = self.db.get_stream(pipeline_id).await?;
+        
+        // Don't republish events for ended streams
+        if stream.state == UserStreamState::Ended {
+            return Ok(());
+        }
+        
         let user = self.db.get_user(stream.user_id).await?;
 
         let event = self.publish_stream_event(&stream, &user.pubkey).await?;
