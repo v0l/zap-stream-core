@@ -418,7 +418,7 @@ impl Api {
 
         Ok(AccountInfo {
             endpoints,
-            balance: user.balance as u64,
+            balance: (user.balance / 1000) as _,
             tos: AccountTos {
                 accepted: user.tos_accepted.is_some(),
                 link: "https://zap.stream/tos".to_string(),
