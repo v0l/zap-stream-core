@@ -245,8 +245,13 @@ impl ZapStreamOverseer {
             Tag::parse(["p", hex::encode(pubkey).as_str(), "", "host"])?,
             Tag::parse([
                 "image",
-                self.map_to_public_url(pipeline_dir.join("thumb.webp").to_str().unwrap())?
-                    .as_str(),
+                self.map_to_public_url(
+                    pipeline_dir
+                        .join(format!("thumb.webp?n={}", Utc::now().timestamp()))
+                        .to_str()
+                        .unwrap(),
+                )?
+                .as_str(),
             ])?,
             Tag::parse(["service", self.map_to_public_url("api/v1")?.as_str()])?,
         ];
