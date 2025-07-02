@@ -59,7 +59,6 @@ impl Egress for RecorderEgress {
         if let Some(stream) = self.var_map.get(variant) {
             // very important for muxer to know which stream this pkt belongs to
             (*packet).stream_index = *stream;
-
             self.muxer.write_packet(packet)?;
         }
         Ok(EgressResult::None)
