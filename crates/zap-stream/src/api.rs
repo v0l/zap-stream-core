@@ -42,6 +42,9 @@ enum Route {
     AdminUsersId,
     AdminUserHistory,
     AdminUserStreams,
+    AdminUserStreamKey,
+    AdminUserStreamKeyRegen,
+    AdminAuditLog,
     DeleteStream,
 }
 
@@ -85,6 +88,15 @@ impl Api {
             .unwrap();
         router
             .insert("/api/v1/admin/users/{id}/streams", Route::AdminUserStreams)
+            .unwrap();
+        router
+            .insert("/api/v1/admin/users/{id}/stream-key", Route::AdminUserStreamKey)
+            .unwrap();
+        router
+            .insert("/api/v1/admin/users/{id}/stream-key/regenerate", Route::AdminUserStreamKeyRegen)
+            .unwrap();
+        router
+            .insert("/api/v1/admin/audit-log", Route::AdminAuditLog)
             .unwrap();
         router
             .insert("/api/v1/stream/{id}", Route::DeleteStream)
@@ -215,7 +227,7 @@ impl Api {
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::GET, Route::AdminUsers) => {
-                    self.check_admin_access(&auth.pubkey).await?;
+                    let _admin_uid = self.check_admin_access(&auth.pubkey).await?;
                     let full_url = format!(
                         "{}{}",
                         self.settings.public_url.trim_end_matches('/'),
@@ -243,15 +255,15 @@ impl Api {
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::POST, Route::AdminUsersId) => {
-                    self.check_admin_access(&auth.pubkey).await?;
+                    let admin_uid = self.check_admin_access(&auth.pubkey).await?;
                     let user_id = params.get("id").ok_or_else(|| anyhow!("Missing user ID"))?;
                     let body = req.collect().await?.to_bytes();
                     let admin_req: AdminUserRequest = serde_json::from_slice(&body)?;
-                    self.admin_manage_user(user_id, admin_req).await?;
+                    self.admin_manage_user(admin_uid, user_id, admin_req).await?;
                     Ok(base.body(Self::body_json(&())?)?)
                 }
                 (&Method::GET, Route::AdminUserHistory) => {
-                    self.check_admin_access(&auth.pubkey).await?;
+                    let _admin_uid = self.check_admin_access(&auth.pubkey).await?;
                     let user_id = params.get("id").ok_or_else(|| anyhow!("Missing user ID"))?;
                     let full_url = format!(
                         "{}{}",
@@ -274,7 +286,7 @@ impl Api {
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::GET, Route::AdminUserStreams) => {
-                    self.check_admin_access(&auth.pubkey).await?;
+                    let _admin_uid = self.check_admin_access(&auth.pubkey).await?;
                     let user_id = params.get("id").ok_or_else(|| anyhow!("Missing user ID"))?;
                     let full_url = format!(
                         "{}{}",
@@ -294,6 +306,41 @@ impl Api {
                         .unwrap_or(50);
                     let uid: u64 = user_id.parse()?;
                     let rsp = self.admin_get_user_streams(uid, page, limit).await?;
+                    Ok(base.body(Self::body_json(&rsp)?)?)
+                }
+                (&Method::GET, Route::AdminUserStreamKey) => {
+                    let _admin_uid = self.check_admin_access(&auth.pubkey).await?;
+                    let user_id = params.get("id").ok_or_else(|| anyhow!("Missing user ID"))?;
+                    let uid: u64 = user_id.parse()?;
+                    let rsp = self.admin_get_user_stream_key(uid).await?;
+                    Ok(base.body(Self::body_json(&rsp)?)?)
+                }
+                (&Method::POST, Route::AdminUserStreamKeyRegen) => {
+                    let admin_uid = self.check_admin_access(&auth.pubkey).await?;
+                    let user_id = params.get("id").ok_or_else(|| anyhow!("Missing user ID"))?;
+                    let uid: u64 = user_id.parse()?;
+                    let rsp = self.admin_regenerate_user_stream_key(admin_uid, uid).await?;
+                    Ok(base.body(Self::body_json(&rsp)?)?)
+                }
+                (&Method::GET, Route::AdminAuditLog) => {
+                    let _admin_uid = self.check_admin_access(&auth.pubkey).await?;
+                    let full_url = format!(
+                        "{}{}",
+                        self.settings.public_url.trim_end_matches('/'),
+                        req.uri()
+                    );
+                    let url: url::Url = full_url.parse()?;
+                    let page: u64 = url
+                        .query_pairs()
+                        .find_map(|(k, v)| if k == "page" { Some(v) } else { None })
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(0);
+                    let limit: u64 = url
+                        .query_pairs()
+                        .find_map(|(k, v)| if k == "limit" { Some(v) } else { None })
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(50);
+                    let rsp = self.admin_get_audit_logs(page, limit).await?;
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::DELETE, Route::DeleteStream) => {
@@ -779,13 +826,13 @@ impl Api {
         })
     }
 
-    async fn check_admin_access(&self, pubkey: &PublicKey) -> Result<()> {
+    async fn check_admin_access(&self, pubkey: &PublicKey) -> Result<u64> {
         let uid = self.db.upsert_user(&pubkey.to_bytes()).await?;
         let is_admin = self.db.is_admin(uid).await?;
         if !is_admin {
             bail!("Access denied: Admin privileges required");
         }
-        Ok(())
+        Ok(uid)
     }
 
     async fn delete_stream(&self, pubkey: &PublicKey, stream_id: &str) -> Result<()> {
@@ -793,8 +840,9 @@ impl Api {
         let stream_uuid = Uuid::parse_str(stream_id)?;
         let stream = self.db.get_stream(&stream_uuid).await?;
 
-        // Verify the user owns this stream
-        if stream.user_id != uid {
+        // Verify the user owns this stream OR is an admin
+        let is_admin = self.db.is_admin(uid).await?;
+        if stream.user_id != uid && !is_admin {
             bail!("Access denied: You can only delete your own streams");
         }
 
@@ -816,6 +864,24 @@ impl Api {
                     info!("Published deletion request event for stream {}", stream_id);
                 }
             }
+        }
+
+        // Log admin action if this is an admin deleting someone else's stream
+        if is_admin && stream.user_id != uid {
+            let message = format!("Admin deleted stream {} belonging to user {}", stream_id, stream.user_id);
+            let metadata = serde_json::json!({
+                "target_stream_id": stream_id,
+                "target_user_id": stream.user_id,
+                "stream_title": stream.title
+            });
+            self.db.log_admin_action(
+                uid,
+                "delete_stream",
+                Some("stream"),
+                Some(stream_id),
+                &message,
+                Some(&metadata.to_string()),
+            ).await?;
         }
 
         Ok(())
@@ -858,15 +924,47 @@ impl Api {
         })
     }
 
-    async fn admin_manage_user(&self, user_id: &str, req: AdminUserRequest) -> Result<()> {
+    async fn admin_manage_user(&self, admin_uid: u64, user_id: &str, req: AdminUserRequest) -> Result<()> {
         let uid: u64 = user_id.parse()?;
 
         if let Some(is_admin) = req.set_admin {
             self.db.set_admin(uid, is_admin).await?;
+            
+            // Log admin action
+            let action = if is_admin { "grant_admin" } else { "revoke_admin" };
+            let message = format!("Admin status {} for user {}", if is_admin { "granted to" } else { "revoked from" }, uid);
+            let metadata = serde_json::json!({
+                "target_user_id": uid,
+                "admin_status": is_admin
+            });
+            self.db.log_admin_action(
+                admin_uid,
+                action,
+                Some("user"),
+                Some(&uid.to_string()),
+                &message,
+                Some(&metadata.to_string()),
+            ).await?;
         }
 
         if let Some(is_blocked) = req.set_blocked {
             self.db.set_blocked(uid, is_blocked).await?;
+            
+            // Log admin action
+            let action = if is_blocked { "block_user" } else { "unblock_user" };
+            let message = format!("User {} {}", uid, if is_blocked { "blocked" } else { "unblocked" });
+            let metadata = serde_json::json!({
+                "target_user_id": uid,
+                "blocked_status": is_blocked
+            });
+            self.db.log_admin_action(
+                admin_uid,
+                action,
+                Some("user"),
+                Some(&uid.to_string()),
+                &message,
+                Some(&metadata.to_string()),
+            ).await?;
         }
 
         if let Some(credit_amount) = req.add_credit {
@@ -874,6 +972,22 @@ impl Api {
                 self.db
                     .add_admin_credit(uid, credit_amount, req.memo.as_deref())
                     .await?;
+                
+                // Log admin action
+                let message = format!("Added {} credits to user {}", credit_amount, uid);
+                let metadata = serde_json::json!({
+                    "target_user_id": uid,
+                    "credit_amount": credit_amount,
+                    "memo": req.memo
+                });
+                self.db.log_admin_action(
+                    admin_uid,
+                    "add_credit",
+                    Some("user"),
+                    Some(&uid.to_string()),
+                    &message,
+                    Some(&metadata.to_string()),
+                ).await?;
             }
         }
 
@@ -896,6 +1010,26 @@ impl Api {
                     req.goal.as_deref(),
                 )
                 .await?;
+            
+            // Log admin action
+            let message = format!("Updated default stream settings for user {}", uid);
+            let metadata = serde_json::json!({
+                "target_user_id": uid,
+                "title": req.title,
+                "summary": req.summary,
+                "image": req.image,
+                "tags": req.tags,
+                "content_warning": req.content_warning,
+                "goal": req.goal
+            });
+            self.db.log_admin_action(
+                admin_uid,
+                "update_user_defaults",
+                Some("user"),
+                Some(&uid.to_string()),
+                &message,
+                Some(&metadata.to_string()),
+            ).await?;
         }
 
         Ok(())
@@ -935,6 +1069,66 @@ impl Api {
 
         Ok(AdminUserStreamsResponse {
             streams: streams_info,
+            page: page as u32,
+            limit: limit as u32,
+            total: total as u32,
+        })
+    }
+
+    async fn admin_get_user_stream_key(&self, user_id: u64) -> Result<AdminStreamKeyResponse> {
+        let user = self.db.get_user(user_id).await?;
+        Ok(AdminStreamKeyResponse {
+            stream_key: user.stream_key,
+        })
+    }
+
+    async fn admin_regenerate_user_stream_key(&self, admin_uid: u64, user_id: u64) -> Result<AdminStreamKeyResponse> {
+        // Generate a new UUID for the stream key
+        let new_key = Uuid::new_v4().to_string();
+        
+        // Update the user's main stream key
+        self.db.update_user_stream_key(user_id, &new_key).await?;
+        
+        // Log admin action
+        let message = format!("Regenerated stream key for user {}", user_id);
+        let metadata = serde_json::json!({
+            "target_user_id": user_id,
+            "new_key": new_key
+        });
+        self.db.log_admin_action(
+            admin_uid,
+            "regenerate_stream_key",
+            Some("user"),
+            Some(&user_id.to_string()),
+            &message,
+            Some(&metadata.to_string()),
+        ).await?;
+        
+        Ok(AdminStreamKeyResponse {
+            stream_key: new_key,
+        })
+    }
+
+    async fn admin_get_audit_logs(&self, page: u64, limit: u64) -> Result<AdminAuditLogResponse> {
+        let offset = page * limit;
+        let (logs, total) = self.db.get_audit_logs(offset, limit).await?;
+
+        let logs_info: Vec<AdminAuditLogEntry> = logs
+            .into_iter()
+            .map(|log| AdminAuditLogEntry {
+                id: log.id,
+                admin_id: log.admin_id,
+                action: log.action,
+                target_type: log.target_type,
+                target_id: log.target_id,
+                message: log.message,
+                metadata: log.metadata,
+                created: log.created.timestamp() as u64,
+            })
+            .collect();
+
+        Ok(AdminAuditLogResponse {
+            logs: logs_info,
             page: page as u32,
             limit: limit as u32,
             total: total as u32,
@@ -1190,6 +1384,31 @@ struct AdminStreamInfo {
 #[derive(Deserialize, Serialize)]
 struct AdminUserStreamsResponse {
     pub streams: Vec<AdminStreamInfo>,
+    pub page: u32,
+    pub limit: u32,
+    pub total: u32,
+}
+
+#[derive(Deserialize, Serialize)]
+struct AdminStreamKeyResponse {
+    pub stream_key: String,
+}
+
+#[derive(Deserialize, Serialize)]
+struct AdminAuditLogEntry {
+    pub id: u64,
+    pub admin_id: u64,
+    pub action: String,
+    pub target_type: Option<String>,
+    pub target_id: Option<String>,
+    pub message: String,
+    pub metadata: Option<String>,
+    pub created: u64,
+}
+
+#[derive(Deserialize, Serialize)]
+struct AdminAuditLogResponse {
+    pub logs: Vec<AdminAuditLogEntry>,
     pub page: u32,
     pub limit: u32,
     pub total: u32,

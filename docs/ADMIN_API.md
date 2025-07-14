@@ -213,6 +213,8 @@ When building a web UI for these endpoints:
 6. **Confirmation Dialogs**: Require confirmation for destructive actions (blocking, admin changes)
 7. **Success/Error Messages**: Clear feedback for all operations
 8. **Admin Indicators**: Visual indicators for admin users and blocked users
+9. **Stream Key Management**: Include buttons to view and regenerate stream keys with proper confirmation
+10. **Stream Key Display**: Show stream keys in a copyable format with masking for security
 
 ### 3. List User Streams
 
@@ -332,38 +334,185 @@ GET /api/v1/admin/users/123/history?page=1&limit=25
 - `amount`: Amount in satoshis (converted from millisatoshis)
 - `desc`: Description of the transaction
 
-## Example cURL Commands
+### 5. Get User Stream Key
+
+**Endpoint**: `GET /api/v1/admin/users/{id}/stream-key`
+
+**Description**: Retrieve the stream key for a specific user.
+
+**Path Parameters**:
+- `id`: User ID (numeric)
+
+**Example Requests**:
+```http
+GET /api/v1/admin/users/123/stream-key
+```
+
+**Response Format**:
+```json
+{
+  "stream_key": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+}
+```
+
+**Response Fields**:
+- `stream_key`: The user's current stream key (UUID format)
+
+### 6. Regenerate User Stream Key
+
+**Endpoint**: `POST /api/v1/admin/users/{id}/stream-key/regenerate`
+
+**Description**: Generate a new stream key for a specific user, replacing their current one.
+
+**Path Parameters**:
+- `id`: User ID (numeric)
+
+**Request Body**: Empty (no body required)
+
+**Example Requests**:
+```http
+POST /api/v1/admin/users/123/stream-key/regenerate
+```
+
+**Response Format**:
+```json
+{
+  "stream_key": "f9e8d7c6-b5a4-3210-9876-543210abcdef"
+}
+```
+
+**Response Fields**:
+- `stream_key`: The user's new stream key (UUID format)
+
+**Security Note**: This operation immediately invalidates the user's previous stream key. Any ongoing streams using the old key will be disconnected.
+
+### 7. Get Audit Logs
+
+**Endpoint**: `GET /api/v1/admin/audit-log`
+
+**Description**: Retrieve a paginated list of audit logs for all admin actions. Logs are sorted by creation time in descending order (most recent first).
+
+**Query Parameters**:
+- `page` (optional, default: 0): Page number for pagination
+- `limit` (optional, default: 50): Number of audit log entries per page
+
+**Example Requests**:
+```http
+GET /api/v1/admin/audit-log
+GET /api/v1/admin/audit-log?page=1&limit=25
+```
+
+**Response Format**:
+```json
+{
+  "logs": [
+    {
+      "id": 1,
+      "admin_id": 123,
+      "action": "grant_admin",
+      "target_type": "user",
+      "target_id": "456",
+      "message": "Admin status granted to user 456",
+      "metadata": "{\"target_user_id\":456,\"admin_status\":true}",
+      "created": 1640995200
+    },
+    {
+      "id": 2,
+      "admin_id": 123,
+      "action": "add_credit",
+      "target_type": "user",
+      "target_id": "456",
+      "message": "Added 50000 credits to user 456",
+      "metadata": "{\"target_user_id\":456,\"credit_amount\":50000,\"memo\":\"Welcome bonus\"}",
+      "created": 1640995100
+    }
+  ],
+  "page": 0,
+  "limit": 50,
+  "total": 2
+}
+```
+
+**Response Fields**:
+- `logs`: Array of audit log entry objects
+- `page`: Current page number
+- `limit`: Number of entries per page
+- `total`: Total number of audit log entries returned
+- `id`: Unique audit log entry ID
+- `admin_id`: ID of the admin user who performed the action
+- `action`: Type of action performed (e.g., "grant_admin", "add_credit", "block_user")
+- `target_type`: Type of resource the action was performed on (e.g., "user", "stream")
+- `target_id`: ID of the target resource (string format)
+- `message`: Human-readable description of the action
+- `metadata`: JSON string containing additional structured data about the action
+- `created`: Unix timestamp when the action was performed
+
+**Action Types**:
+- `grant_admin`: Admin privileges granted to a user
+- `revoke_admin`: Admin privileges revoked from a user
+- `block_user`: User account blocked
+- `unblock_user`: User account unblocked
+- `add_credit`: Credits added to user account
+- `regenerate_stream_key`: Stream key regenerated for a user
+- `update_user_defaults`: User's default stream settings updated
+- `delete_stream`: Stream deleted by admin
+
+**Metadata Format**:
+The metadata field contains JSON with action-specific information:
+- **grant_admin/revoke_admin**: `{"target_user_id": 456, "admin_status": true}`
+- **block_user/unblock_user**: `{"target_user_id": 456, "blocked_status": true}`
+- **add_credit**: `{"target_user_id": 456, "credit_amount": 50000, "memo": "Welcome bonus"}`
+- **regenerate_stream_key**: `{"target_user_id": 456, "new_key": "uuid-string"}`
+- **update_user_defaults**: `{"target_user_id": 456, "title": "New Title", "tags": ["tag1", "tag2"]}`
+- **delete_stream**: `{"target_stream_id": "stream-uuid", "target_user_id": 456, "stream_title": "Stream Title"}`
+
+## Example Commands
+
+First, set your Nostr secret key as an environment variable:
+```bash
+export NOSTR_SECRET_KEY="your-nsec-here"
+```
 
 **List Users**:
 ```bash
-curl -X GET "https://api.zap.stream/api/v1/admin/users?page=0&limit=10" \
-  -H "Authorization: Nostr <base64-encoded-event>"
+nak curl -X GET "https://api.zap.stream/api/v1/admin/users?page=0&limit=10"
 ```
 
 **Grant Admin Privileges**:
 ```bash
-curl -X POST "https://api.zap.stream/api/v1/admin/users/123" \
+nak curl -X POST "https://api.zap.stream/api/v1/admin/users/123" \
   -H "Content-Type: application/json" \
-  -H "Authorization: Nostr <base64-encoded-event>" \
   -d '{"set_admin": true}'
 ```
 
 **Add Credits**:
 ```bash
-curl -X POST "https://api.zap.stream/api/v1/admin/users/123" \
+nak curl -X POST "https://api.zap.stream/api/v1/admin/users/123" \
   -H "Content-Type: application/json" \
-  -H "Authorization: Nostr <base64-encoded-event>" \
   -d '{"add_credit": 50000, "memo": "Welcome bonus"}'
 ```
 
 **List User Streams**:
 ```bash
-curl -X GET "https://api.zap.stream/api/v1/admin/users/123/streams?page=0&limit=10" \
-  -H "Authorization: Nostr <base64-encoded-event>"
+nak curl -X GET "https://api.zap.stream/api/v1/admin/users/123/streams?page=0&limit=10"
 ```
 
 **List User Balance History**:
 ```bash
-curl -X GET "https://api.zap.stream/api/v1/admin/users/123/history?page=0&limit=10" \
-  -H "Authorization: Nostr <base64-encoded-event>"
+nak curl -X GET "https://api.zap.stream/api/v1/admin/users/123/history?page=0&limit=10"
+```
+
+**Get User Stream Key**:
+```bash
+nak curl -X GET "https://api.zap.stream/api/v1/admin/users/123/stream-key"
+```
+
+**Regenerate User Stream Key**:
+```bash
+nak curl -X POST "https://api.zap.stream/api/v1/admin/users/123/stream-key/regenerate"
+```
+
+**Get Audit Logs**:
+```bash
+nak curl -X GET "https://api.zap.stream/api/v1/admin/audit-log?page=0&limit=10"
 ```

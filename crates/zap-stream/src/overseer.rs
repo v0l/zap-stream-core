@@ -581,6 +581,7 @@ impl Overseer for ZapStreamOverseer {
                     .update_pipeline_metrics(&id, p.average_fps, p.total_frames)
                     .await;
             }
+            StatsType::Egress(_) => {}
         }
 
         Ok(())

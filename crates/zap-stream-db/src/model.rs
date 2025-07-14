@@ -129,3 +129,15 @@ pub struct IngestEndpoint {
     pub cost: u64,
     pub capabilities: Option<String>, // JSON array stored as string
 }
+
+#[derive(Debug, Clone, FromRow)]
+pub struct AuditLog {
+    pub id: u64,
+    pub admin_id: u64,
+    pub action: String,
+    pub target_type: Option<String>,
+    pub target_id: Option<String>,
+    pub message: String,
+    pub metadata: Option<String>, // JSON stored as string
+    pub created: DateTime<Utc>,
+}

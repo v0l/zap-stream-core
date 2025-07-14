@@ -1,5 +1,5 @@
 use crate::{
-    IngestEndpoint, Payment, PaymentType, User, UserStream, UserStreamForward, UserStreamKey,
+    AuditLog, IngestEndpoint, Payment, PaymentType, User, UserStream, UserStreamForward, UserStreamKey,
 };
 use anyhow::Result;
 use rand::random;
@@ -416,6 +416,16 @@ impl ZapStreamDb {
         Ok(())
     }
 
+    /// Update user's main stream key
+    pub async fn update_user_stream_key(&self, uid: u64, new_key: &str) -> Result<()> {
+        sqlx::query("update user set stream_key = ? where id = ?")
+            .bind(new_key)
+            .bind(uid)
+            .execute(&self.db)
+            .await?;
+        Ok(())
+    }
+
     /// Get user by pubkey
     pub async fn get_user_by_pubkey(&self, pubkey: &[u8; 32]) -> Result<Option<User>> {
         Ok(sqlx::query_as("select * from user where pubkey = ?")
@@ -503,5 +513,125 @@ impl ZapStreamDb {
         .bind(user_id)
         .fetch_all(&self.db)
         .await?)
+    }
+
+    /// Log an admin action to the audit table
+    pub async fn log_admin_action(
+        &self,
+        admin_id: u64,
+        action: &str,
+        target_type: Option<&str>,
+        target_id: Option<&str>,
+        message: &str,
+        metadata: Option<&str>,
+    ) -> Result<u64> {
+        let result = sqlx::query(
+            "insert into audit_log (admin_id, action, target_type, target_id, message, metadata) values (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(admin_id)
+        .bind(action)
+        .bind(target_type)
+        .bind(target_id)
+        .bind(message)
+        .bind(metadata)
+        .execute(&self.db)
+        .await?;
+        Ok(result.last_insert_id())
+    }
+
+    /// Get audit logs with pagination
+    pub async fn get_audit_logs(
+        &self,
+        offset: u64,
+        limit: u64,
+    ) -> Result<(Vec<AuditLog>, u64)> {
+        let total: i64 = sqlx::query_scalar("select count(*) from audit_log")
+            .fetch_one(&self.db)
+            .await?;
+
+        let logs = sqlx::query_as(
+            "select * from audit_log order by created desc limit ? offset ?",
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.db)
+        .await?;
+
+        Ok((logs, total as u64))
+    }
+
+    /// Get audit logs by admin with pagination
+    pub async fn get_audit_logs_by_admin(
+        &self,
+        admin_id: u64,
+        offset: u64,
+        limit: u64,
+    ) -> Result<(Vec<AuditLog>, u64)> {
+        let total: i64 = sqlx::query_scalar("select count(*) from audit_log where admin_id = ?")
+            .bind(admin_id)
+            .fetch_one(&self.db)
+            .await?;
+
+        let logs = sqlx::query_as(
+            "select * from audit_log where admin_id = ? order by created desc limit ? offset ?",
+        )
+        .bind(admin_id)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.db)
+        .await?;
+
+        Ok((logs, total as u64))
+    }
+
+    /// Get audit logs by action with pagination
+    pub async fn get_audit_logs_by_action(
+        &self,
+        action: &str,
+        offset: u64,
+        limit: u64,
+    ) -> Result<(Vec<AuditLog>, u64)> {
+        let total: i64 = sqlx::query_scalar("select count(*) from audit_log where action = ?")
+            .bind(action)
+            .fetch_one(&self.db)
+            .await?;
+
+        let logs = sqlx::query_as(
+            "select * from audit_log where action = ? order by created desc limit ? offset ?",
+        )
+        .bind(action)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.db)
+        .await?;
+
+        Ok((logs, total as u64))
+    }
+
+    /// Get audit logs by target with pagination
+    pub async fn get_audit_logs_by_target(
+        &self,
+        target_type: &str,
+        target_id: &str,
+        offset: u64,
+        limit: u64,
+    ) -> Result<(Vec<AuditLog>, u64)> {
+        let total: i64 = sqlx::query_scalar("select count(*) from audit_log where target_type = ? and target_id = ?")
+            .bind(target_type)
+            .bind(target_id)
+            .fetch_one(&self.db)
+            .await?;
+
+        let logs = sqlx::query_as(
+            "select * from audit_log where target_type = ? and target_id = ? order by created desc limit ? offset ?",
+        )
+        .bind(target_type)
+        .bind(target_id)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.db)
+        .await?;
+
+        Ok((logs, total as u64))
     }
 }
