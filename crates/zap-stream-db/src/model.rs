@@ -138,6 +138,6 @@ pub struct AuditLog {
     pub target_type: Option<String>,
     pub target_id: Option<String>,
     pub message: String,
-    pub metadata: Option<String>, // JSON stored as string
+    pub metadata: Option<Vec<u8>>, // JSON stored as BLOB
     pub created: DateTime<Utc>,
 }
