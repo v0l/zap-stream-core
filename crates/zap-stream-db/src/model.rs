@@ -141,3 +141,17 @@ pub struct AuditLog {
     pub metadata: Option<Vec<u8>>, // JSON stored as BLOB
     pub created: DateTime<Utc>,
 }
+
+#[derive(Debug, Clone, FromRow)]
+pub struct AuditLogWithPubkeys {
+    pub id: u64,
+    pub admin_id: u64,
+    pub action: String,
+    pub target_type: Option<String>,
+    pub target_id: Option<String>,
+    pub message: String,
+    pub metadata: Option<Vec<u8>>, // JSON stored as BLOB
+    pub created: DateTime<Utc>,
+    pub admin_pubkey: Vec<u8>,
+    pub target_pubkey: Option<Vec<u8>>,
+}

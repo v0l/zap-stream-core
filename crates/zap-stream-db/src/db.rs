@@ -1,5 +1,5 @@
 use crate::{
-    AuditLog, IngestEndpoint, Payment, PaymentType, User, UserStream, UserStreamForward, UserStreamKey,
+    AuditLog, AuditLogWithPubkeys, IngestEndpoint, Payment, PaymentType, User, UserStream, UserStreamForward, UserStreamKey,
 };
 use anyhow::Result;
 use rand::random;
@@ -551,6 +551,44 @@ impl ZapStreamDb {
 
         let logs = sqlx::query_as(
             "select * from audit_log order by created desc limit ? offset ?",
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.db)
+        .await?;
+
+        Ok((logs, total as u64))
+    }
+
+    /// Get audit logs with pubkeys included via SQL joins
+    pub async fn get_audit_logs_with_pubkeys(
+        &self,
+        offset: u64,
+        limit: u64,
+    ) -> Result<(Vec<AuditLogWithPubkeys>, u64)> {
+        let total: i64 = sqlx::query_scalar("select count(*) from audit_log")
+            .fetch_one(&self.db)
+            .await?;
+
+        let logs = sqlx::query_as(
+            r#"
+            select 
+                al.id,
+                al.admin_id,
+                al.action,
+                al.target_type,
+                al.target_id,
+                al.message,
+                al.metadata,
+                al.created,
+                admin_user.pubkey as admin_pubkey,
+                target_user.pubkey as target_pubkey
+            from audit_log al
+            join user admin_user on al.admin_id = admin_user.id
+            left join user target_user on al.target_type = 'user' and al.target_id = cast(target_user.id as char)
+            order by al.created desc
+            limit ? offset ?
+            "#,
         )
         .bind(limit)
         .bind(offset)

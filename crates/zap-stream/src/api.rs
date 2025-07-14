@@ -1175,44 +1175,25 @@ impl Api {
 
     async fn admin_get_audit_logs(&self, page: u64, limit: u64) -> Result<AdminAuditLogResponse> {
         let offset = page * limit;
-        let (logs, total) = self.db.get_audit_logs(offset, limit).await?;
+        let (logs, total) = self.db.get_audit_logs_with_pubkeys(offset, limit).await?;
 
-        let mut logs_info: Vec<AdminAuditLogEntry> = Vec::new();
-        
-        for log in logs {
-            // Fetch admin user to get public key
-            let admin_user = self.db.get_user(log.admin_id).await?;
-            let admin_pubkey = hex::encode(admin_user.pubkey);
-            
-            // Fetch target user public key if target_type is "user" and target_id is present
-            let target_pubkey = if log.target_type.as_deref() == Some("user") && log.target_id.is_some() {
-                if let Ok(target_user_id) = log.target_id.as_ref().unwrap().parse::<u64>() {
-                    match self.db.get_user(target_user_id).await {
-                        Ok(target_user) => Some(hex::encode(target_user.pubkey)),
-                        Err(_) => None,
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-            logs_info.push(AdminAuditLogEntry {
+        let logs_info: Vec<AdminAuditLogEntry> = logs
+            .into_iter()
+            .map(|log| AdminAuditLogEntry {
                 id: log.id,
                 admin_id: log.admin_id,
-                admin_pubkey: Some(admin_pubkey),
+                admin_pubkey: Some(hex::encode(log.admin_pubkey)),
                 action: log.action,
                 target_type: log.target_type,
                 target_id: log.target_id,
-                target_pubkey,
+                target_pubkey: log.target_pubkey.map(|pubkey| hex::encode(pubkey)),
                 message: log.message,
                 metadata: log
                     .metadata
                     .map(|a| String::from_utf8_lossy(&a).to_string()),
                 created: log.created.timestamp() as u64,
-            });
-        }
+            })
+            .collect();
 
         Ok(AdminAuditLogResponse {
             logs: logs_info,
