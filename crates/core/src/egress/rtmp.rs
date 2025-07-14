@@ -1,10 +1,11 @@
 use crate::egress::{Egress, EgressResult, EncoderOrSourceStream};
-use crate::mux;
 use crate::variant::{StreamMapping, VariantStream};
-use anyhow::{anyhow, bail, Context, Result};
-use bytes::{Bytes, BytesMut};
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::{av_q2d, AVPacket};
-use ffmpeg_rs_raw::Muxer;
+use crate::metrics::PacketMetrics;
+use anyhow::{anyhow, bail, ensure, Context, Result};
+use bytes::{BufMut, Bytes, BytesMut};
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
+    av_packet_clone, av_packet_copy_props, av_q2d, AVPacket,
+};
 use log::{error, info, trace, warn};
 use rml_rtmp::chunk_io::Packet;
 use rml_rtmp::handshake::{Handshake, HandshakeProcessResult, PeerType};
@@ -13,6 +14,7 @@ use rml_rtmp::sessions::{
     ClientSessionResult, PublishRequestType, StreamMetadata,
 };
 use rml_rtmp::time::RtmpTimestamp;
+use std::collections::VecDeque;
 use std::fmt::Display;
 use std::io::Write;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -109,6 +111,11 @@ impl Display for ConnectionState {
     }
 }
 
+struct QueuedPacket {
+    variant: Uuid,
+    packet: *mut AVPacket,
+}
+
 /// Forwards RTMP stream to another server
 pub struct RtmpEgress {
     state: ConnectionState,
@@ -118,15 +125,21 @@ pub struct RtmpEgress {
     video_variant: VariantStream,
     audio_variant: Option<VariantStream>,
     muxer: FlvMuxer,
-    avc_processor: Mpeg4AvcProcessor,
-    aac_processor: Mpeg4AacProcessor,
 
     out_tx: Option<UnboundedSender<ClientSessionResult>>,
     in_rx: Option<UnboundedReceiver<Vec<u8>>>,
 
     // Monotonic timestamp tracking
-    video_timestamp: u32,
-    audio_timestamp: u32,
+    video_pts: i64,
+    audio_pts: i64,
+
+    // packets which are held until the connection is ready
+    pkt_queue: VecDeque<QueuedPacket>,
+
+    flv_dump: std::fs::File,
+
+    // Packet metrics tracking
+    metrics: PacketMetrics,
 }
 
 struct StreamKey {
@@ -202,12 +215,13 @@ impl RtmpEgress {
             video_variant: video_var.cloned().context("video stream missing")?,
             audio_variant: audio_var.cloned(),
             muxer: FlvMuxer::new(),
-            avc_processor: Default::default(),
-            aac_processor: Default::default(),
             out_tx: None,
             in_rx: None,
-            video_timestamp: 0,
-            audio_timestamp: 0,
+            video_pts: 0,
+            audio_pts: 0,
+            pkt_queue: VecDeque::new(),
+            flv_dump: std::fs::File::create("./dump.flv")?,
+            metrics: PacketMetrics::new("RTMP Egress", None),
         })
     }
 
@@ -352,38 +366,157 @@ impl RtmpEgress {
         Ok(self.muxer.writer.extract_current_bytes())
     }
 
+    /// Check if packet contains SPS/PPS sequence headers
+    fn is_sequence_header(data: &[u8]) -> bool {
+        // Look for SPS (NAL type 7) or PPS (NAL type 8) in the packet
+        let mut i = 0;
+        while i < data.len() {
+            // Look for start codes: 0x00 0x00 0x00 0x01 or 0x00 0x00 0x01
+            if i + 3 < data.len()
+                && data[i] == 0x00
+                && data[i + 1] == 0x00
+                && data[i + 2] == 0x00
+                && data[i + 3] == 0x01
+            {
+                // 4-byte start code
+                if i + 4 < data.len() {
+                    let nal_type = data[i + 4] & 0x1F;
+                    if nal_type == 7 || nal_type == 8 {
+                        // SPS or PPS
+                        return true;
+                    }
+                }
+                i += 4;
+            } else if i + 2 < data.len()
+                && data[i] == 0x00
+                && data[i + 1] == 0x00
+                && data[i + 2] == 0x01
+            {
+                // 3-byte start code
+                if i + 3 < data.len() {
+                    let nal_type = data[i + 3] & 0x1F;
+                    if nal_type == 7 || nal_type == 8 {
+                        // SPS or PPS
+                        return true;
+                    }
+                }
+                i += 3;
+            } else {
+                i += 1;
+            }
+        }
+        false
+    }
+
+    /// Check if audio packet contains AAC sequence header
+    fn is_aac_sequence_header(data: &[u8]) -> bool {
+        // AAC sequence headers are typically very small (usually 2-5 bytes)
+        // and contain AudioSpecificConfig data
+        // For now, we'll use a simple heuristic: very small packets are likely sequence headers
+        // A more robust implementation would parse the AudioSpecificConfig structure
+        data.len() <= 16 && data.len() >= 2
+    }
+
     unsafe fn send_packet(&mut self, variant: &Uuid, packet: *mut AVPacket) -> Result<()> {
         if packet.is_null() || (*packet).size == 0 {
             return Ok(());
         }
         let data = std::slice::from_raw_parts((*packet).data, (*packet).size as _);
-        let timestamp_ms = ((*packet).pts as f64 * av_q2d((*packet).time_base) * 1000.0).round() as u32;
+        
+        // Update metrics with packet data (auto-reports when interval elapsed)
+        self.metrics.update((*packet).size as usize);
 
         if *variant == self.video_variant.id() {
-            // let bytes = BytesMut::from(data);
-            // let data = self
-            //     .avc_processor
-            //     .nalus_to_mpeg4avc(vec![bytes])
-            //     .map_err(|e| anyhow!(e))?;
-            let data = self
-                .write_flv_tag(9, timestamp_ms, Bytes::from(data))
-                .map_err(|e| anyhow!("Muxer failed: {}", e))?;
+            // TODO: figure out why encoded video frames have no duration
+            let duration_ms = (av_q2d((*packet).time_base) * 1000.0).round() as i64; // 1 frame
+                                                                                     // Create proper FLV video data format
+            let mut video_data = BytesMut::new();
+
+            // VideoTagHeader: FrameType (4 bits) + CodecID (4 bits)
+            // FrameType: 1 = keyframe, 2 = inter frame
+            // CodecID: 7 = AVC (H.264)
+            let frame_type =
+                if (*packet).flags & ffmpeg_rs_raw::ffmpeg_sys_the_third::AV_PKT_FLAG_KEY != 0 {
+                    1
+                } else {
+                    2
+                };
+            let video_tag_header = (frame_type << 4) | 7; // CodecID = 7 for AVC
+            video_data.put_u8(video_tag_header);
+
+            // AVCPacketType: 0 = sequence header (SPS/PPS), 1 = AVC NALU, 2 = end of sequence
+            let avc_packet_type = if Self::is_sequence_header(data) {
+                0 // Sequence header for SPS/PPS
+            } else {
+                1 // Regular NAL units
+            };
+            video_data.put_u8(avc_packet_type);
+
+            // CompositionTime: 24-bit signed offset (PTS - DTS)
+            // For sequence headers, composition time should be 0
+            let composition_time = if avc_packet_type == 0 {
+                0
+            } else {
+                self.video_pts
+            };
+            video_data.put_u8(((composition_time >> 16) & 0xFF) as u8);
+            video_data.put_u8(((composition_time >> 8) & 0xFF) as u8);
+            video_data.put_u8((composition_time & 0xFF) as u8);
+
+            // Video data (raw H.264 NAL units)
+            video_data.extend_from_slice(data);
+
+            // Use write_flv_tag to create proper FLV tag structure
+            let flv_tag = self
+                .write_flv_tag(9, self.video_pts as u32, video_data.freeze())
+                .map_err(|e| anyhow!("Failed to write FLV video tag: {}", e))?;
+
+            self.flv_dump.write_all(flv_tag.as_ref())?;
             let res = self.session.publish_video_data(
-                Bytes::from(data),
-                RtmpTimestamp::new(timestamp_ms),
+                flv_tag.freeze(),
+                RtmpTimestamp::new(self.video_pts as u32), // Use DTS for RTMP timestamp
                 false,
             );
             self.handle_session_result(res)?;
+            self.video_pts += duration_ms;
         } else if Some(*variant) == self.audio_variant.as_ref().map(|v| v.id()) {
-            let data = self
-                .write_flv_tag(8, timestamp_ms, Bytes::from(data))
-                .map_err(|e| anyhow!("Muxer failed: {}", e))?;
+            let duration_ms =
+                (av_q2d((*packet).time_base) * 1000.0 * (*packet).duration as f64).round() as i64;
+            // Create proper FLV audio data format
+            let mut audio_data = BytesMut::new();
+
+            // AudioTagHeader: SoundFormat (4 bits) + SoundRate (2 bits) + SoundSize (1 bit) + SoundType (1 bit)
+            // SoundFormat: 10 = AAC
+            // SoundRate: 3 = 44kHz (we'll use this as default)
+            // SoundSize: 1 = 16-bit
+            // SoundType: 1 = stereo
+            let audio_tag_header = (10 << 4) | (3 << 2) | (1 << 1) | 1;
+            audio_data.put_u8(audio_tag_header);
+
+            // AACPacketType: 0 = sequence header (AudioSpecificConfig), 1 = AAC raw
+            let aac_packet_type = if Self::is_aac_sequence_header(data) {
+                0 // Sequence header for AudioSpecificConfig
+            } else {
+                1 // Regular AAC frames
+            };
+            audio_data.put_u8(aac_packet_type);
+
+            // Audio data (raw AAC frames or AudioSpecificConfig)
+            audio_data.extend_from_slice(data);
+
+            // Use write_flv_tag to create proper FLV tag structure
+            let flv_tag = self
+                .write_flv_tag(8, self.audio_pts as _, audio_data.freeze())
+                .map_err(|e| anyhow!("Failed to write FLV audio tag: {}", e))?;
+
+            self.flv_dump.write_all(flv_tag.as_ref())?;
             let res = self.session.publish_audio_data(
-                Bytes::from(data),
-                RtmpTimestamp::new(timestamp_ms),
+                flv_tag.freeze(),
+                RtmpTimestamp::new(self.audio_pts as _),
                 false,
             );
             self.handle_session_result(res)?;
+            self.audio_pts += duration_ms;
         } else {
             // ignored
         }
@@ -424,6 +557,26 @@ impl RtmpEgress {
         }
         Ok(())
     }
+
+    fn queue_packet(&mut self, packet: *mut AVPacket, variant: &Uuid) -> Result<()> {
+        // clone the packet again so that it's not freed later
+        let pkt = unsafe {
+            let np = av_packet_clone(packet);
+            if np.is_null() {
+                bail!("Failed to clone packet");
+            }
+            let ret = av_packet_copy_props(np, packet);
+            if ret != 0 {
+                bail!("Failed to copy packet props");
+            }
+            np
+        };
+        self.pkt_queue.push_back(QueuedPacket {
+            variant: *variant,
+            packet: pkt,
+        });
+        Ok(())
+    }
 }
 
 impl Egress for RtmpEgress {
@@ -432,6 +585,16 @@ impl Egress for RtmpEgress {
         packet: *mut AVPacket,
         variant: &Uuid,
     ) -> Result<EgressResult> {
+        // skip packet if not forwarding
+        if *variant != self.video_variant.id()
+            && self
+                .audio_variant
+                .as_ref()
+                .map(|v| v.id() != *variant)
+                .unwrap_or(true)
+        {
+            return Ok(EgressResult::None);
+        }
         loop {
             self.read_drain()?;
             match self.state {
@@ -443,6 +606,7 @@ impl Egress for RtmpEgress {
                         .context("TX channel missing")?
                         .send(data)?;
                     self.state = ConnectionState::RequestedConnection;
+                    self.queue_packet(packet, variant)?;
                 }
                 ConnectionState::Connected => {
                     let k = self.stream_key()?;
@@ -454,6 +618,7 @@ impl Egress for RtmpEgress {
                         .context("TX channel missing")?
                         .send(data)?;
                     self.state = ConnectionState::RequestedPublish;
+                    self.queue_packet(packet, variant)?;
                 }
                 ConnectionState::PublishingMetadata => {
                     let data = self.session.publish_metadata(&self.metadata)?;
@@ -462,24 +627,28 @@ impl Egress for RtmpEgress {
                         .context("TX channel missing")?
                         .send(data)?;
 
-                    // let data = self.write_flv_header(true, self.audio_variant.is_some())?;
-                    // let res = self.session.publish_video_data(
-                    //     data.freeze(),
-                    //     RtmpTimestamp::new(0),
-                    //     false,
-                    // )?;
-                    // self.out_tx
-                    //     .as_ref()
-                    //     .context("TX channel missing")?
-                    //     .send(res)?;
+                    // Write FLV header at start of stream
+                    let flv_tag = self.write_flv_header(true, self.audio_variant.is_some())?;
+                    self.flv_dump.write_all(flv_tag.as_ref())?;
 
                     self.state = ConnectionState::Publishing;
+                    self.queue_packet(packet, variant)?;
                 }
                 ConnectionState::Disconnected => {
                     // nothing, (yet)
+                    self.queue_packet(packet, variant)?;
                     break;
                 }
                 ConnectionState::Publishing => {
+                    // push first the queued packets
+                    if self.pkt_queue.len() > 0 {
+                        let pkts: Vec<QueuedPacket> = self.pkt_queue.drain(..).collect();
+                        info!("Sending {} queued packets", pkts.len());
+                        for pkt in pkts {
+                            self.send_packet(&pkt.variant, pkt.packet)?;
+                        }
+                    }
+
                     self.send_packet(variant, packet)?;
                     break;
                 }

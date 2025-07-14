@@ -1,5 +1,6 @@
 use crate::overseer::Overseer;
 use crate::pipeline::runner::{PipelineCommand, PipelineRunner};
+use crate::metrics::PacketMetrics;
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::io::Read;
@@ -76,15 +77,17 @@ pub struct IngressStats {
     pub bitrate: usize,
 }
 
+#[derive(Clone, Debug)]
+pub struct EgressStats {
+    pub bitrate: usize,
+}
+
 /// Common buffered reader functionality for ingress sources
 pub struct BufferedReader {
     pub buf: Vec<u8>,
     pub max_buffer_size: usize,
     pub last_buffer_log: Instant,
-    pub bytes_processed: u64,
-    pub packets_received: u64,
-    pub source_name: &'static str,
-    pub metrics: Option<UnboundedSender<PipelineCommand>>,
+    pub metrics: PacketMetrics,
 }
 
 impl BufferedReader {
@@ -92,16 +95,13 @@ impl BufferedReader {
         capacity: usize,
         max_size: usize,
         source_name: &'static str,
-        metrics: Option<UnboundedSender<PipelineCommand>>,
+        metrics_sender: Option<UnboundedSender<PipelineCommand>>,
     ) -> Self {
         Self {
             buf: Vec::with_capacity(capacity),
             max_buffer_size: max_size,
             last_buffer_log: Instant::now(),
-            bytes_processed: 0,
-            packets_received: 0,
-            source_name,
-            metrics,
+            metrics: PacketMetrics::new(source_name, metrics_sender),
         }
     }
 
@@ -112,7 +112,7 @@ impl BufferedReader {
             let bytes_to_drop = (self.buf.len() + data.len()) - self.max_buffer_size;
             warn!(
                 "{} buffer full ({} bytes), dropping {} oldest bytes",
-                self.source_name,
+                self.metrics.source_name,
                 self.buf.len(),
                 bytes_to_drop
             );
@@ -120,40 +120,8 @@ impl BufferedReader {
         }
         self.buf.extend(data);
 
-        // Update performance counters
-        self.bytes_processed += data.len() as u64;
-        self.packets_received += 1;
-
-        // Log buffer status every 5 seconds
-        if self.last_buffer_log.elapsed().as_secs() >= 2 {
-            let buffer_util = (self.buf.len() as f32 / self.max_buffer_size as f32) * 100.0;
-            let elapsed = self.last_buffer_log.elapsed();
-            let bps = (self.bytes_processed as f64 * 8.0) / elapsed.as_secs_f64();
-            let pps = self.packets_received as f64 / elapsed.as_secs_f64();
-
-            debug!(
-                "{} ingress: {:.1} Mbps, {:.1} packets/sec, buffer: {}% ({}/{} bytes)",
-                self.source_name,
-                bps / 1_000_000.0,
-                pps,
-                buffer_util as u32,
-                self.buf.len(),
-                self.max_buffer_size
-            );
-
-            // send metrics to pipeline
-            if let Some(m) = &mut self.metrics {
-                if let Err(e) = m.send(PipelineCommand::IngressMetrics(IngressStats {
-                    bitrate: bps as _,
-                })) {
-                    error!("Error sending metrics: {}", e);
-                }
-            }
-            // Reset counters
-            self.last_buffer_log = Instant::now();
-            self.bytes_processed = 0;
-            self.packets_received = 0;
-        }
+        // Update performance counters using PacketMetrics (auto-reports when interval elapsed)
+        self.metrics.update(data.len());
     }
 
     /// Read data from buffer

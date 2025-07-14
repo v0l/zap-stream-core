@@ -7,12 +7,15 @@ use uuid::Uuid;
 
 use crate::egress::{Egress, EgressResult, EncoderOrSourceStream};
 use crate::variant::{StreamMapping, VariantStream};
+use crate::metrics::PacketMetrics;
 
 pub struct RecorderEgress {
     /// Internal muxer writing the output packets
     muxer: Muxer,
     /// Mapping from Variant ID to stream index
     var_map: HashMap<Uuid, i32>,
+    /// Packet metrics tracking
+    metrics: PacketMetrics,
 }
 
 impl RecorderEgress {
@@ -46,7 +49,11 @@ impl RecorderEgress {
             m.open(Some(options))?;
             m
         };
-        Ok(Self { muxer, var_map })
+        Ok(Self { 
+            muxer, 
+            var_map,
+            metrics: PacketMetrics::new("Recorder Egress", None),
+        })
     }
 }
 
@@ -57,6 +64,9 @@ impl Egress for RecorderEgress {
         variant: &Uuid,
     ) -> Result<EgressResult> {
         if let Some(stream) = self.var_map.get(variant) {
+            // Update metrics with packet data (auto-reports when interval elapsed)
+            self.metrics.update((*packet).size as usize);
+            
             // very important for muxer to know which stream this pkt belongs to
             (*packet).stream_index = *stream;
             self.muxer.write_packet(packet)?;

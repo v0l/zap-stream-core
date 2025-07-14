@@ -22,13 +22,13 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_WEBP;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPictureType::AV_PICTURE_TYPE_NONE;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    av_frame_clone, av_frame_free, av_get_sample_fmt, av_packet_clone, av_packet_free,
-    av_rescale_q, AVFrame, AVPacket, AV_NOPTS_VALUE,
+    av_frame_clone, av_frame_free, av_get_sample_fmt, av_packet_clone, av_packet_copy_props,
+    av_packet_free, av_rescale_q, AVFrame, AVPacket, AV_NOPTS_VALUE,
 };
 use ffmpeg_rs_raw::{
     cstr, get_frame_from_hw, AudioFifo, Decoder, Demuxer, Encoder, Resample, Scaler, StreamType,
 };
-use log::{debug, error, info, warn};
+use log::{debug, error, info, trace, warn};
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::UnboundedReceiver;
 use uuid::Uuid;
@@ -73,6 +73,8 @@ pub enum PipelineCommand {
     Shutdown,
     /// Metrics provided by the ingress
     IngressMetrics(IngressStats),
+    /// Metrics provided by egress components
+    EgressMetrics(crate::ingress::EgressStats),
 }
 
 #[derive(Debug, Clone)]
@@ -562,6 +564,14 @@ impl PipelineRunner {
             // packet needs to be cloned because AVFormat output context always consumes the packet
             // if we have more than 1 egress it should be cloned
             let mut pkt_clone = av_packet_clone(pkt);
+            av_packet_copy_props(pkt_clone, pkt);
+            trace!(
+                "EGRESS PKT: var={}, idx={}, pts={}, dur={}",
+                variant,
+                (*pkt_clone).stream_index,
+                (*pkt_clone).pts,
+                (*pkt_clone).duration
+            );
             let er = eg.process_pkt(pkt_clone, variant)?;
             ret.push(er);
             av_packet_free(&mut pkt_clone);
@@ -629,7 +639,15 @@ impl PipelineRunner {
                             }
                         });
                     }
-                    _ => warn!("Unexpected command: {:?}", c),
+                    PipelineCommand::EgressMetrics(s) => {
+                        let id = self.connection.id.clone();
+                        let overseer = self.overseer.clone();
+                        self.handle.spawn(async move {
+                            if let Err(e) = overseer.on_stats(&id, StatsType::Egress(s)).await {
+                                warn!("Pipeline egress stats error: {e}");
+                            }
+                        });
+                    }
                 }
             }
         }

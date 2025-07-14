@@ -1,4 +1,4 @@
-use crate::ingress::{ConnectionInfo, IngressStats};
+use crate::ingress::{ConnectionInfo, IngressStats, EgressStats};
 
 use crate::egress::EgressSegment;
 use crate::pipeline::runner::PipelineStats;
@@ -41,6 +41,7 @@ pub enum IngressStreamType {
 pub enum StatsType {
     Ingress(IngressStats),
     Pipeline(PipelineStats),
+    Egress(EgressStats),
 }
 
 #[async_trait]

@@ -46,14 +46,15 @@ impl Display for VideoVariant {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Video #{}->{}: {}, {}x{}, {}fps, {}kbps",
+            "Video #{}->{}: {}, {}x{}, {}fps, {}kbps ({})",
             self.mapping.src_index,
             self.mapping.dst_index,
             self.codec,
             self.width,
             self.height,
             self.fps,
-            self.bitrate / 1000
+            self.bitrate / 1000,
+            self.mapping.id
         )
     }
 }

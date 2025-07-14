@@ -1,6 +1,7 @@
 pub mod egress;
 mod generator;
 pub mod ingress;
+pub mod metrics;
 pub mod mux;
 pub mod overseer;
 pub mod pipeline;

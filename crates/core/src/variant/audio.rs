@@ -32,11 +32,12 @@ impl Display for AudioVariant {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Audio #{}->{}: {}, {}kbps",
+            "Audio #{}->{}: {}, {}kbps ({})",
             self.mapping.src_index,
             self.mapping.dst_index,
             self.codec,
-            self.bitrate / 1000
+            self.bitrate / 1000,
+            self.mapping.id,
         )
     }
 }
