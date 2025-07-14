@@ -386,6 +386,8 @@ POST /api/v1/admin/users/123/stream-key/regenerate
 
 **Security Note**: This operation immediately invalidates the user's previous stream key. Any ongoing streams using the old key will be disconnected.
 
+**Audit Note**: Both stream key viewing and regeneration operations are logged in the audit system for security compliance.
+
 ### 7. Get Audit Logs
 
 **Endpoint**: `GET /api/v1/admin/audit-log`
@@ -409,9 +411,11 @@ GET /api/v1/admin/audit-log?page=1&limit=25
     {
       "id": 1,
       "admin_id": 123,
+      "admin_pubkey": "02a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef1234",
       "action": "grant_admin",
       "target_type": "user",
       "target_id": "456",
+      "target_pubkey": "03f6e5d4c3b2a1098765432109876543210987654321fedcba0987654321fedcba",
       "message": "Admin status granted to user 456",
       "metadata": "{\"target_user_id\":456,\"admin_status\":true}",
       "created": 1640995200
@@ -419,17 +423,43 @@ GET /api/v1/admin/audit-log?page=1&limit=25
     {
       "id": 2,
       "admin_id": 123,
+      "admin_pubkey": "02a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef1234",
       "action": "add_credit",
       "target_type": "user",
       "target_id": "456",
+      "target_pubkey": "03f6e5d4c3b2a1098765432109876543210987654321fedcba0987654321fedcba",
       "message": "Added 50000 credits to user 456",
       "metadata": "{\"target_user_id\":456,\"credit_amount\":50000,\"memo\":\"Welcome bonus\"}",
       "created": 1640995100
+    },
+    {
+      "id": 3,
+      "admin_id": 123,
+      "admin_pubkey": "02a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef1234",
+      "action": "view_stream_key",
+      "target_type": "user",
+      "target_id": "456",
+      "target_pubkey": "03f6e5d4c3b2a1098765432109876543210987654321fedcba0987654321fedcba",
+      "message": "Admin viewed stream key for user 456",
+      "metadata": "{\"target_user_id\":456}",
+      "created": 1640995050
+    },
+    {
+      "id": 4,
+      "admin_id": 123,
+      "admin_pubkey": "02a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef1234",
+      "action": "delete_stream",
+      "target_type": "stream",
+      "target_id": "stream-uuid-123",
+      "target_pubkey": null,
+      "message": "Admin deleted stream stream-uuid-123 belonging to user 456",
+      "metadata": "{\"target_stream_id\":\"stream-uuid-123\",\"target_user_id\":456,\"stream_title\":\"Stream Title\"}",
+      "created": 1640995000
     }
   ],
   "page": 0,
   "limit": 50,
-  "total": 2
+  "total": 4
 }
 ```
 
@@ -440,9 +470,11 @@ GET /api/v1/admin/audit-log?page=1&limit=25
 - `total`: Total number of audit log entries returned
 - `id`: Unique audit log entry ID
 - `admin_id`: ID of the admin user who performed the action
+- `admin_pubkey`: Nostr public key of the admin user (hex encoded, always present)
 - `action`: Type of action performed (e.g., "grant_admin", "add_credit", "block_user")
 - `target_type`: Type of resource the action was performed on (e.g., "user", "stream")
 - `target_id`: ID of the target resource (string format)
+- `target_pubkey`: Nostr public key of the target user (hex encoded, only present when target_type is "user")
 - `message`: Human-readable description of the action
 - `metadata`: JSON string containing additional structured data about the action
 - `created`: Unix timestamp when the action was performed
@@ -453,6 +485,7 @@ GET /api/v1/admin/audit-log?page=1&limit=25
 - `block_user`: User account blocked
 - `unblock_user`: User account unblocked
 - `add_credit`: Credits added to user account
+- `view_stream_key`: Stream key viewed by admin
 - `regenerate_stream_key`: Stream key regenerated for a user
 - `update_user_defaults`: User's default stream settings updated
 - `delete_stream`: Stream deleted by admin
@@ -462,6 +495,7 @@ The metadata field contains JSON with action-specific information:
 - **grant_admin/revoke_admin**: `{"target_user_id": 456, "admin_status": true}`
 - **block_user/unblock_user**: `{"target_user_id": 456, "blocked_status": true}`
 - **add_credit**: `{"target_user_id": 456, "credit_amount": 50000, "memo": "Welcome bonus"}`
+- **view_stream_key**: `{"target_user_id": 456}`
 - **regenerate_stream_key**: `{"target_user_id": 456, "new_key": "uuid-string"}`
 - **update_user_defaults**: `{"target_user_id": 456, "title": "New Title", "tags": ["tag1", "tag2"]}`
 - **delete_stream**: `{"target_stream_id": "stream-uuid", "target_user_id": 456, "stream_title": "Stream Title"}`
