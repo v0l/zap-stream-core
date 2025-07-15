@@ -45,6 +45,8 @@ enum Route {
     AdminUserStreamKey,
     AdminUserStreamKeyRegen,
     AdminAuditLog,
+    AdminIngestEndpoints,
+    AdminIngestEndpointsId,
     DeleteStream,
 }
 
@@ -103,6 +105,12 @@ impl Api {
             .unwrap();
         router
             .insert("/api/v1/admin/audit-log", Route::AdminAuditLog)
+            .unwrap();
+        router
+            .insert("/api/v1/admin/ingest-endpoints", Route::AdminIngestEndpoints)
+            .unwrap();
+        router
+            .insert("/api/v1/admin/ingest-endpoints/{id}", Route::AdminIngestEndpointsId)
             .unwrap();
         router
             .insert("/api/v1/stream/{id}", Route::DeleteStream)
@@ -351,6 +359,57 @@ impl Api {
                         .unwrap_or(50);
                     let rsp = self.admin_get_audit_logs(page, limit).await?;
                     Ok(base.body(Self::body_json(&rsp)?)?)
+                }
+                (&Method::GET, Route::AdminIngestEndpoints) => {
+                    let admin_uid = self.check_admin_access(&auth.pubkey).await?;
+                    let full_url = format!(
+                        "{}{}",
+                        self.settings.public_url.trim_end_matches('/'),
+                        req.uri()
+                    );
+                    let url: url::Url = full_url.parse()?;
+                    let page: u64 = url
+                        .query_pairs()
+                        .find_map(|(k, v)| if k == "page" { Some(v) } else { None })
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(0);
+                    let limit: u64 = url
+                        .query_pairs()
+                        .find_map(|(k, v)| if k == "limit" { Some(v) } else { None })
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(50);
+                    let rsp = self.admin_list_ingest_endpoints(admin_uid, page, limit).await?;
+                    Ok(base.body(Self::body_json(&rsp)?)?)
+                }
+                (&Method::POST, Route::AdminIngestEndpoints) => {
+                    let admin_uid = self.check_admin_access(&auth.pubkey).await?;
+                    let body = req.collect().await?.to_bytes();
+                    let endpoint_req: AdminIngestEndpointRequest = serde_json::from_slice(&body)?;
+                    let rsp = self.admin_create_ingest_endpoint(admin_uid, endpoint_req).await?;
+                    Ok(base.body(Self::body_json(&rsp)?)?)
+                }
+                (&Method::GET, Route::AdminIngestEndpointsId) => {
+                    let admin_uid = self.check_admin_access(&auth.pubkey).await?;
+                    let endpoint_id = params.get("id").ok_or_else(|| anyhow!("Missing endpoint ID"))?;
+                    let id: u64 = endpoint_id.parse()?;
+                    let rsp = self.admin_get_ingest_endpoint(admin_uid, id).await?;
+                    Ok(base.body(Self::body_json(&rsp)?)?)
+                }
+                (&Method::PATCH, Route::AdminIngestEndpointsId) => {
+                    let admin_uid = self.check_admin_access(&auth.pubkey).await?;
+                    let endpoint_id = params.get("id").ok_or_else(|| anyhow!("Missing endpoint ID"))?;
+                    let id: u64 = endpoint_id.parse()?;
+                    let body = req.collect().await?.to_bytes();
+                    let endpoint_req: AdminIngestEndpointRequest = serde_json::from_slice(&body)?;
+                    let rsp = self.admin_update_ingest_endpoint(admin_uid, id, endpoint_req).await?;
+                    Ok(base.body(Self::body_json(&rsp)?)?)
+                }
+                (&Method::DELETE, Route::AdminIngestEndpointsId) => {
+                    let admin_uid = self.check_admin_access(&auth.pubkey).await?;
+                    let endpoint_id = params.get("id").ok_or_else(|| anyhow!("Missing endpoint ID"))?;
+                    let id: u64 = endpoint_id.parse()?;
+                    self.admin_delete_ingest_endpoint(admin_uid, id).await?;
+                    Ok(base.body(Self::body_json(&())?)?)
                 }
                 (&Method::DELETE, Route::DeleteStream) => {
                     let stream_id = params
@@ -1202,6 +1261,140 @@ impl Api {
             total: total as u32,
         })
     }
+
+    async fn admin_list_ingest_endpoints(&self, _admin_uid: u64, page: u64, limit: u64) -> Result<AdminIngestEndpointsResponse> {
+        let offset = page * limit;
+        let endpoints = self.db.get_ingest_endpoints().await?;
+        let total = endpoints.len() as u64;
+
+        let paginated_endpoints = endpoints
+            .into_iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .map(|endpoint| AdminIngestEndpointResponse {
+                id: endpoint.id,
+                name: endpoint.name,
+                cost: endpoint.cost,
+                capabilities: endpoint.capabilities.map(|c| {
+                    c.split(',').map(|s| s.trim().to_string()).collect()
+                }),
+            })
+            .collect();
+
+        Ok(AdminIngestEndpointsResponse {
+            endpoints: paginated_endpoints,
+            page: page as u32,
+            limit: limit as u32,
+            total: total as u32,
+        })
+    }
+
+    async fn admin_create_ingest_endpoint(&self, admin_uid: u64, req: AdminIngestEndpointRequest) -> Result<AdminIngestEndpointResponse> {
+        let capabilities_str = req.capabilities.as_ref().map(|caps| caps.join(","));
+        let endpoint_id = self.db.create_ingest_endpoint(
+            &req.name,
+            req.cost,
+            capabilities_str.as_deref(),
+        ).await?;
+
+        // Log admin action
+        let message = format!("Created ingest endpoint: {} (cost: {})", req.name, req.cost);
+        let metadata = serde_json::json!({
+            "endpoint_id": endpoint_id,
+            "name": req.name,
+            "cost": req.cost,
+            "capabilities": req.capabilities
+        });
+        self.db.log_admin_action(
+            admin_uid,
+            "create_ingest_endpoint",
+            Some("ingest_endpoint"),
+            Some(&endpoint_id.to_string()),
+            &message,
+            Some(&metadata.to_string()),
+        ).await?;
+
+        Ok(AdminIngestEndpointResponse {
+            id: endpoint_id,
+            name: req.name,
+            cost: req.cost,
+            capabilities: req.capabilities,
+        })
+    }
+
+    async fn admin_get_ingest_endpoint(&self, _admin_uid: u64, endpoint_id: u64) -> Result<AdminIngestEndpointResponse> {
+        let endpoint = self.db.get_ingest_endpoint(endpoint_id).await?;
+
+        Ok(AdminIngestEndpointResponse {
+            id: endpoint.id,
+            name: endpoint.name,
+            cost: endpoint.cost,
+            capabilities: endpoint.capabilities.map(|c| {
+                c.split(',').map(|s| s.trim().to_string()).collect()
+            }),
+        })
+    }
+
+    async fn admin_update_ingest_endpoint(&self, admin_uid: u64, endpoint_id: u64, req: AdminIngestEndpointRequest) -> Result<AdminIngestEndpointResponse> {
+        let capabilities_str = req.capabilities.as_ref().map(|caps| caps.join(","));
+        self.db.update_ingest_endpoint(
+            endpoint_id,
+            &req.name,
+            req.cost,
+            capabilities_str.as_deref(),
+        ).await?;
+
+        // Log admin action
+        let message = format!("Updated ingest endpoint {}: {} (cost: {})", endpoint_id, req.name, req.cost);
+        let metadata = serde_json::json!({
+            "endpoint_id": endpoint_id,
+            "name": req.name,
+            "cost": req.cost,
+            "capabilities": req.capabilities
+        });
+        self.db.log_admin_action(
+            admin_uid,
+            "update_ingest_endpoint",
+            Some("ingest_endpoint"),
+            Some(&endpoint_id.to_string()),
+            &message,
+            Some(&metadata.to_string()),
+        ).await?;
+
+        Ok(AdminIngestEndpointResponse {
+            id: endpoint_id,
+            name: req.name,
+            cost: req.cost,
+            capabilities: req.capabilities,
+        })
+    }
+
+    async fn admin_delete_ingest_endpoint(&self, admin_uid: u64, endpoint_id: u64) -> Result<()> {
+        // Get the endpoint first for logging
+        let endpoint = self.db.get_ingest_endpoint(endpoint_id).await?;
+        
+        // Delete the endpoint
+        self.db.delete_ingest_endpoint(endpoint_id).await?;
+
+        // Log admin action
+        let message = format!("Deleted ingest endpoint {}: {}", endpoint_id, endpoint.name);
+        let metadata = serde_json::json!({
+            "endpoint_id": endpoint_id,
+            "name": endpoint.name,
+            "cost": endpoint.cost,
+            "capabilities": endpoint.capabilities
+        });
+        self.db.log_admin_action(
+            admin_uid,
+            "delete_ingest_endpoint",
+            Some("ingest_endpoint"),
+            Some(&endpoint_id.to_string()),
+            &message,
+            Some(&metadata.to_string()),
+        ).await?;
+
+        Ok(())
+    }
 }
 
 impl HttpServerPlugin for Api {
@@ -1479,6 +1672,29 @@ struct AdminAuditLogEntry {
 #[derive(Deserialize, Serialize)]
 struct AdminAuditLogResponse {
     pub logs: Vec<AdminAuditLogEntry>,
+    pub page: u32,
+    pub limit: u32,
+    pub total: u32,
+}
+
+#[derive(Deserialize, Serialize)]
+struct AdminIngestEndpointRequest {
+    pub name: String,
+    pub cost: u64,
+    pub capabilities: Option<Vec<String>>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct AdminIngestEndpointResponse {
+    pub id: u64,
+    pub name: String,
+    pub cost: u64,
+    pub capabilities: Option<Vec<String>>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct AdminIngestEndpointsResponse {
+    pub endpoints: Vec<AdminIngestEndpointResponse>,
     pub page: u32,
     pub limit: u32,
     pub total: u32,

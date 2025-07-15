@@ -489,6 +489,9 @@ GET /api/v1/admin/audit-log?page=1&limit=25
 - `regenerate_stream_key`: Stream key regenerated for a user
 - `update_user_defaults`: User's default stream settings updated
 - `delete_stream`: Stream deleted by admin
+- `create_ingest_endpoint`: New ingest endpoint created
+- `update_ingest_endpoint`: Ingest endpoint configuration updated
+- `delete_ingest_endpoint`: Ingest endpoint deleted
 
 **Metadata Format**:
 The metadata field contains JSON with action-specific information:
@@ -499,6 +502,9 @@ The metadata field contains JSON with action-specific information:
 - **regenerate_stream_key**: `{"target_user_id": 456, "new_key": "uuid-string"}`
 - **update_user_defaults**: `{"target_user_id": 456, "title": "New Title", "tags": ["tag1", "tag2"]}`
 - **delete_stream**: `{"target_stream_id": "stream-uuid", "target_user_id": 456, "stream_title": "Stream Title"}`
+- **create_ingest_endpoint**: `{"endpoint_id": 3, "name": "Premium Quality", "cost": 30000, "capabilities": ["variant:source", "variant:1080:6000000"]}`
+- **update_ingest_endpoint**: `{"endpoint_id": 1, "name": "Updated Premium Quality", "cost": 35000, "capabilities": ["variant:source", "variant:1080:7000000"]}`
+- **delete_ingest_endpoint**: `{"endpoint_id": 1, "name": "Premium Quality", "cost": 30000}`
 
 ## Example Commands
 
@@ -549,4 +555,254 @@ nak curl -X POST "https://api.zap.stream/api/v1/admin/users/123/stream-key/regen
 **Get Audit Logs**:
 ```bash
 nak curl -X GET "https://api.zap.stream/api/v1/admin/audit-log?page=0&limit=10"
+```
+
+### 8. Ingest Endpoint Management
+
+The ingest endpoint management APIs allow administrators to manage streaming ingest endpoints, which control pipeline configuration and stream processing costs.
+
+#### 8.1 List Ingest Endpoints
+
+**Endpoint**: `GET /api/v1/admin/ingest-endpoints`
+
+**Description**: Retrieve a paginated list of all ingest endpoints.
+
+**Query Parameters**:
+- `page` (optional, default: 0): Page number for pagination
+- `limit` (optional, default: 50): Number of endpoints per page
+
+**Example Requests**:
+```http
+GET /api/v1/admin/ingest-endpoints
+GET /api/v1/admin/ingest-endpoints?page=1&limit=25
+```
+
+**Response Format**:
+```json
+{
+  "endpoints": [
+    {
+      "id": 1,
+      "name": "Standard Quality",
+      "cost": 10000,
+      "capabilities": ["variant:source", "variant:720:3000000", "variant:480:1500000"]
+    },
+    {
+      "id": 2,
+      "name": "High Quality",
+      "cost": 25000,
+      "capabilities": ["variant:source", "variant:1080:5000000", "variant:720:3000000", "variant:480:1500000"]
+    }
+  ],
+  "page": 0,
+  "limit": 50,
+  "total": 2
+}
+```
+
+**Response Fields**:
+- `endpoints`: Array of ingest endpoint objects
+- `page`: Current page number
+- `limit`: Number of endpoints per page
+- `total`: Total number of endpoints returned
+- `id`: Unique ingest endpoint ID
+- `name`: Human-readable name for the endpoint
+- `cost`: Cost per minute in millisatoshis for using this endpoint
+- `capabilities`: Array of capability strings defining supported variants
+
+#### 8.2 Get Ingest Endpoint
+
+**Endpoint**: `GET /api/v1/admin/ingest-endpoints/{id}`
+
+**Description**: Retrieve details for a specific ingest endpoint.
+
+**Path Parameters**:
+- `id`: Ingest endpoint ID (numeric)
+
+**Example Requests**:
+```http
+GET /api/v1/admin/ingest-endpoints/1
+```
+
+**Response Format**:
+```json
+{
+  "id": 1,
+  "name": "Standard Quality",
+  "cost": 10000,
+  "capabilities": ["variant:source", "variant:720:3000000", "variant:480:1500000"]
+}
+```
+
+**Response Fields**:
+- `id`: Unique ingest endpoint ID
+- `name`: Human-readable name for the endpoint
+- `cost`: Cost per minute in millisatoshis for using this endpoint
+- `capabilities`: Array of capability strings defining supported variants
+
+#### 8.3 Create Ingest Endpoint
+
+**Endpoint**: `POST /api/v1/admin/ingest-endpoints`
+
+**Description**: Create a new ingest endpoint configuration.
+
+**Request Body**:
+```json
+{
+  "name": "Ultra High Quality",
+  "cost": 50000,
+  "capabilities": ["variant:source", "variant:1080:8000000", "variant:720:4000000", "variant:480:1500000"]
+}
+```
+
+**Request Fields**:
+- `name`: Human-readable name for the endpoint (required)
+- `cost`: Cost per minute in millisatoshis (required)
+- `capabilities`: Array of capability strings (optional)
+
+**Response Format**:
+```json
+{
+  "id": 3,
+  "name": "Ultra High Quality",
+  "cost": 50000,
+  "capabilities": ["variant:source", "variant:1080:8000000", "variant:720:4000000", "variant:480:1500000"]
+}
+```
+
+**Audit Log**: This operation is logged with action type `create_ingest_endpoint`.
+
+#### 8.4 Update Ingest Endpoint
+
+**Endpoint**: `PATCH /api/v1/admin/ingest-endpoints/{id}`
+
+**Description**: Update an existing ingest endpoint configuration.
+
+**Path Parameters**:
+- `id`: Ingest endpoint ID (numeric)
+
+**Request Body**:
+```json
+{
+  "name": "Updated Standard Quality",
+  "cost": 15000,
+  "capabilities": ["variant:source", "variant:720:3500000", "variant:480:1500000"]
+}
+```
+
+**Request Fields**:
+- `name`: Human-readable name for the endpoint (required)
+- `cost`: Cost per minute in millisatoshis (required)
+- `capabilities`: Array of capability strings (optional)
+
+**Response Format**:
+```json
+{
+  "id": 1,
+  "name": "Updated Standard Quality",
+  "cost": 15000,
+  "capabilities": ["variant:source", "variant:720:3500000", "variant:480:1500000"]
+}
+```
+
+**Audit Log**: This operation is logged with action type `update_ingest_endpoint`.
+
+#### 8.5 Delete Ingest Endpoint
+
+**Endpoint**: `DELETE /api/v1/admin/ingest-endpoints/{id}`
+
+**Description**: Delete an ingest endpoint configuration.
+
+**Path Parameters**:
+- `id`: Ingest endpoint ID (numeric)
+
+**Example Requests**:
+```http
+DELETE /api/v1/admin/ingest-endpoints/1
+```
+
+**Response**: 
+```json
+{}
+```
+Empty JSON object on success.
+
+**Audit Log**: This operation is logged with action type `delete_ingest_endpoint`.
+
+**Security Note**: Deleting an endpoint that is currently in use by active streams may cause those streams to fail. Ensure no active streams are using the endpoint before deletion.
+
+#### 8.6 Capability String Format
+
+Ingest endpoints support various capability strings that define the streaming variants and features available:
+
+**Variant Capabilities**:
+- `variant:source` - Include source quality variant (direct copy)
+- `variant:{height}:{bitrate}` - Include transcoded variant at specified resolution and bitrate
+  - `height`: Video height in pixels (e.g., 720, 1080)
+  - `bitrate`: Video bitrate in bits per second (e.g., 3000000 for 3 Mbps)
+
+**DVR Capabilities**:
+- `dvr:{height}` - Enable DVR recording at specified resolution
+  - `height`: Video height for DVR recording
+
+**Example Capability Configurations**:
+```json
+{
+  "capabilities": [
+    "variant:source",
+    "variant:1080:5000000",
+    "variant:720:3000000",
+    "variant:480:1500000",
+    "dvr:720"
+  ]
+}
+```
+
+#### 8.7 Cost Structure
+
+- **Cost Unit**: Millisatoshis per minute of streaming
+- **Billing**: Users are charged based on the endpoint's cost rate while streaming
+- **Balance Deduction**: Costs are deducted from user balances in real-time during streaming
+- **Typical Costs**:
+  - Source-only endpoint: ~10,000 msat/min
+  - Multi-variant endpoint: ~25,000 msat/min
+  - High-resolution with DVR: ~50,000+ msat/min
+
+#### 8.8 Example Commands
+
+**List Ingest Endpoints**:
+```bash
+nak curl -X GET "https://api.zap.stream/api/v1/admin/ingest-endpoints?page=0&limit=10"
+```
+
+**Get Specific Endpoint**:
+```bash
+nak curl -X GET "https://api.zap.stream/api/v1/admin/ingest-endpoints/1"
+```
+
+**Create New Endpoint**:
+```bash
+nak curl -X POST "https://api.zap.stream/api/v1/admin/ingest-endpoints" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Premium Quality",
+    "cost": 30000,
+    "capabilities": ["variant:source", "variant:1080:6000000", "variant:720:3000000"]
+  }'
+```
+
+**Update Endpoint**:
+```bash
+nak curl -X PATCH "https://api.zap.stream/api/v1/admin/ingest-endpoints/1" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Updated Premium Quality",
+    "cost": 35000,
+    "capabilities": ["variant:source", "variant:1080:7000000", "variant:720:4000000"]
+  }'
+```
+
+**Delete Endpoint**:
+```bash
+nak curl -X DELETE "https://api.zap.stream/api/v1/admin/ingest-endpoints/1"
 ```

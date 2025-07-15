@@ -387,6 +387,33 @@ impl ZapStreamDb {
         Ok(result.last_insert_id())
     }
 
+    /// Update ingest endpoint
+    pub async fn update_ingest_endpoint(
+        &self,
+        id: u64,
+        name: &str,
+        cost: u64,
+        capabilities: Option<&str>,
+    ) -> Result<()> {
+        sqlx::query("update ingest_endpoint set name = ?, cost = ?, capabilities = ? where id = ?")
+            .bind(name)
+            .bind(cost)
+            .bind(capabilities)
+            .bind(id)
+            .execute(&self.db)
+            .await?;
+        Ok(())
+    }
+
+    /// Delete ingest endpoint
+    pub async fn delete_ingest_endpoint(&self, id: u64) -> Result<()> {
+        sqlx::query("delete from ingest_endpoint where id = ?")
+            .bind(id)
+            .execute(&self.db)
+            .await?;
+        Ok(())
+    }
+
     /// Check if user is admin
     pub async fn is_admin(&self, uid: u64) -> Result<bool> {
         Ok(sqlx::query("select is_admin from user where id = ?")
