@@ -1,7 +1,8 @@
-use std::time::{Duration, Instant};
-use tokio::sync::mpsc::UnboundedSender;
+use crate::ingress::EndpointStats;
 use crate::pipeline::runner::PipelineCommand;
 use log::{debug, warn};
+use std::time::{Duration, Instant};
+use tokio::sync::mpsc::UnboundedSender;
 
 /// Generic packet metrics collection for ingress and egress components
 #[derive(Debug, Clone)]
@@ -11,22 +12,22 @@ pub struct PacketMetrics {
     pub last_metrics_update: Instant,
     pub source_name: &'static str,
     pub reporting_interval: Duration,
-    metrics_sender: Option<UnboundedSender<PipelineCommand>>,
+    sender: Option<UnboundedSender<PipelineCommand>>,
 }
 
 impl PacketMetrics {
     /// Create new packet metrics instance with default 2-second reporting interval
     pub fn new(
         source_name: &'static str,
-        metrics_sender: Option<UnboundedSender<PipelineCommand>>,
+        sender: Option<UnboundedSender<PipelineCommand>>,
     ) -> Self {
-        Self::new_with_interval(source_name, metrics_sender, Duration::from_secs(2))
+        Self::new_with_interval(source_name, sender, Duration::from_secs(2))
     }
 
     /// Create new packet metrics instance with custom reporting interval
     pub fn new_with_interval(
         source_name: &'static str,
-        metrics_sender: Option<UnboundedSender<PipelineCommand>>,
+        sender: Option<UnboundedSender<PipelineCommand>>,
         reporting_interval: Duration,
     ) -> Self {
         Self {
@@ -35,7 +36,7 @@ impl PacketMetrics {
             last_metrics_update: Instant::now(),
             source_name,
             reporting_interval,
-            metrics_sender,
+            sender,
         }
     }
 
@@ -43,7 +44,7 @@ impl PacketMetrics {
     pub fn update(&mut self, bytes: usize) {
         self.bytes_processed += bytes as u64;
         self.packets_processed += 1;
-        
+
         // Auto-report if interval has elapsed
         if self.should_report() {
             self.report_and_reset();
@@ -54,7 +55,7 @@ impl PacketMetrics {
     pub fn update_with_extra(&mut self, bytes: usize, extra_info: Option<&str>) {
         self.bytes_processed += bytes as u64;
         self.packets_processed += 1;
-        
+
         // Auto-report if interval has elapsed
         if self.should_report() {
             self.report_and_reset_with_extra(extra_info);
@@ -126,18 +127,20 @@ impl PacketMetrics {
         }
 
         // Send metrics to pipeline if sender is available
-        if let Some(sender) = &self.metrics_sender {
+        if let Some(sender) = &self.sender {
             let bitrate_bps = self.calculate_bitrate() as usize;
             if bitrate_bps > 0 {
                 let stats = match self.source_name.contains("Egress") {
-                    true => PipelineCommand::EgressMetrics(crate::ingress::EgressStats {
+                    true => PipelineCommand::EgressMetrics(EndpointStats {
+                        name: self.source_name.to_string(),
                         bitrate: bitrate_bps,
                     }),
-                    false => PipelineCommand::IngressMetrics(crate::ingress::IngressStats {
+                    false => PipelineCommand::IngressMetrics(EndpointStats {
+                        name: self.source_name.to_string(),
                         bitrate: bitrate_bps,
                     }),
                 };
-                
+
                 if let Err(e) = sender.send(stats) {
                     warn!("Failed to send {} metrics: {}", self.source_name, e);
                 }

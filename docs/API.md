@@ -372,19 +372,29 @@ or for regular users:
     "stream_id": "stream_123",
     "started_at": "2024-01-01T12:00:00Z",
     "last_segment_time": "2024-01-01T13:00:00Z",
+    "viewers": 42,
     "average_fps": 30.0,
     "target_fps": 30.0,
     "frame_count": 108000,
-    "ingress_throughput_bps": 2500000,
-    "ingress_name": "RTMP",
     "endpoint_name": "Standard",
     "input_resolution": "1920x1080",
-    "ip_address": "192.168.1.100"
+    "ip_address": "192.168.1.100",
+    "ingress_name": "RTMP",
+    "endpoint_stats": {
+      "RTMP": {
+        "name": "RTMP",
+        "bitrate": 2500000
+      },
+      "HLS": {
+        "name": "HLS",
+        "bitrate": 2400000
+      }
+    }
   }
 }
 ```
 
-**Description:** Real-time metrics for individual streams containing pipeline performance data. Broadcast automatically when metrics are updated for subscribed streams.
+**Description:** Real-time metrics for individual streams containing pipeline performance data and viewer counts. Broadcast automatically when metrics are updated for subscribed streams. The `endpoint_stats` field contains per-endpoint bitrate information for all active ingress and egress endpoints.
 
 ##### Overall Metrics (Broadcast)
 ```json
@@ -508,23 +518,33 @@ ws.onmessage = function(event) {
 };
 
 function updateDashboard(metrics) {
-  document.getElementById('viewer-count').textContent = metrics.viewer_count;
-  document.getElementById('bitrate').textContent = metrics.bitrate;
-  document.getElementById('fps').textContent = metrics.fps;
-  // ... update other UI elements
+  document.getElementById('viewer-count').textContent = metrics.viewers;
+  document.getElementById('fps').textContent = metrics.average_fps;
+  document.getElementById('frame-count').textContent = metrics.frame_count;
+  document.getElementById('resolution').textContent = metrics.input_resolution;
+  document.getElementById('ingress').textContent = metrics.ingress_name;
+  
+  // Display endpoint bitrates
+  const endpointStats = metrics.endpoint_stats;
+  for (const [name, stats] of Object.entries(endpointStats)) {
+    const bitrateMbps = (stats.bitrate / 1000000).toFixed(1);
+    document.getElementById(`bitrate-${name.toLowerCase()}`).textContent = `${bitrateMbps} Mbps`;
+  }
 }
 ```
 
 #### Connection Management
 
 - **Automatic Reconnection:** Clients should implement automatic reconnection with exponential backoff
-- **Heartbeat:** The server sends metrics every second; clients can detect disconnection if no messages received for 5+ seconds
+- **Heartbeat:** The server sends overall metrics every 5 seconds; clients can detect disconnection if no messages received for 10+ seconds
 - **Error Handling:** Always handle `Error` message types and display appropriate user feedback
 
 #### Rate Limiting
 
-- Metrics are broadcast at 1-second intervals
-- Each client connection can subscribe to multiple streams (admin) or one stream (streamer)
+- **Overall Metrics:** Broadcast every 5 seconds for subscribed admin clients
+- **Stream Metrics:** Broadcast in real-time when stream metrics are updated
+- **Stream Ownership:** Regular users can only access their own streams; admins can access any stream
+- Each client connection can subscribe to multiple streams (admin) or specific streams they own (regular users)
 - No additional rate limiting is currently implemented for WebSocket connections
 
 ## Error Handling

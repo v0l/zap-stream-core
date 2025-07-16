@@ -3,7 +3,6 @@ use crate::overseer::ZapStreamOverseer;
 use crate::settings::Settings;
 use crate::stream_manager::StreamManager;
 use crate::websocket_metrics::WebSocketMetricsServer;
-use crate::ListenerEndpoint;
 use anyhow::{anyhow, bail, Result};
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
@@ -23,6 +22,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use uuid::Uuid;
 use zap_stream_core::egress::hls::HlsEgress;
+use zap_stream_core::listen::ListenerEndpoint;
 use zap_stream_core::overseer::Overseer;
 use zap_stream_db::ZapStreamDb;
 
@@ -107,10 +107,16 @@ impl Api {
             .insert("/api/v1/admin/audit-log", Route::AdminAuditLog)
             .unwrap();
         router
-            .insert("/api/v1/admin/ingest-endpoints", Route::AdminIngestEndpoints)
+            .insert(
+                "/api/v1/admin/ingest-endpoints",
+                Route::AdminIngestEndpoints,
+            )
             .unwrap();
         router
-            .insert("/api/v1/admin/ingest-endpoints/{id}", Route::AdminIngestEndpointsId)
+            .insert(
+                "/api/v1/admin/ingest-endpoints/{id}",
+                Route::AdminIngestEndpointsId,
+            )
             .unwrap();
         router
             .insert("/api/v1/stream/{id}", Route::DeleteStream)
@@ -378,35 +384,47 @@ impl Api {
                         .find_map(|(k, v)| if k == "limit" { Some(v) } else { None })
                         .and_then(|v| v.parse().ok())
                         .unwrap_or(50);
-                    let rsp = self.admin_list_ingest_endpoints(admin_uid, page, limit).await?;
+                    let rsp = self
+                        .admin_list_ingest_endpoints(admin_uid, page, limit)
+                        .await?;
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::POST, Route::AdminIngestEndpoints) => {
                     let admin_uid = self.check_admin_access(&auth.pubkey).await?;
                     let body = req.collect().await?.to_bytes();
                     let endpoint_req: AdminIngestEndpointRequest = serde_json::from_slice(&body)?;
-                    let rsp = self.admin_create_ingest_endpoint(admin_uid, endpoint_req).await?;
+                    let rsp = self
+                        .admin_create_ingest_endpoint(admin_uid, endpoint_req)
+                        .await?;
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::GET, Route::AdminIngestEndpointsId) => {
                     let admin_uid = self.check_admin_access(&auth.pubkey).await?;
-                    let endpoint_id = params.get("id").ok_or_else(|| anyhow!("Missing endpoint ID"))?;
+                    let endpoint_id = params
+                        .get("id")
+                        .ok_or_else(|| anyhow!("Missing endpoint ID"))?;
                     let id: u64 = endpoint_id.parse()?;
                     let rsp = self.admin_get_ingest_endpoint(admin_uid, id).await?;
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::PATCH, Route::AdminIngestEndpointsId) => {
                     let admin_uid = self.check_admin_access(&auth.pubkey).await?;
-                    let endpoint_id = params.get("id").ok_or_else(|| anyhow!("Missing endpoint ID"))?;
+                    let endpoint_id = params
+                        .get("id")
+                        .ok_or_else(|| anyhow!("Missing endpoint ID"))?;
                     let id: u64 = endpoint_id.parse()?;
                     let body = req.collect().await?.to_bytes();
                     let endpoint_req: AdminIngestEndpointRequest = serde_json::from_slice(&body)?;
-                    let rsp = self.admin_update_ingest_endpoint(admin_uid, id, endpoint_req).await?;
+                    let rsp = self
+                        .admin_update_ingest_endpoint(admin_uid, id, endpoint_req)
+                        .await?;
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::DELETE, Route::AdminIngestEndpointsId) => {
                     let admin_uid = self.check_admin_access(&auth.pubkey).await?;
-                    let endpoint_id = params.get("id").ok_or_else(|| anyhow!("Missing endpoint ID"))?;
+                    let endpoint_id = params
+                        .get("id")
+                        .ok_or_else(|| anyhow!("Missing endpoint ID"))?;
                     let id: u64 = endpoint_id.parse()?;
                     self.admin_delete_ingest_endpoint(admin_uid, id).await?;
                     Ok(base.body(Self::body_json(&())?)?)
@@ -1181,19 +1199,25 @@ impl Api {
         })
     }
 
-    async fn admin_get_user_stream_key(&self, user_id: u64, admin_uid: u64) -> Result<AdminStreamKeyResponse> {
+    async fn admin_get_user_stream_key(
+        &self,
+        user_id: u64,
+        admin_uid: u64,
+    ) -> Result<AdminStreamKeyResponse> {
         let user = self.db.get_user(user_id).await?;
-        
+
         // Log the admin action
-        self.db.log_admin_action(
-            admin_uid,
-            "view_stream_key",
-            Some("user"),
-            Some(&user_id.to_string()),
-            &format!("Admin viewed stream key for user {}", user_id),
-            Some(&format!(r#"{{"target_user_id": {}}}"#, user_id)),
-        ).await?;
-        
+        self.db
+            .log_admin_action(
+                admin_uid,
+                "view_stream_key",
+                Some("user"),
+                Some(&user_id.to_string()),
+                &format!("Admin viewed stream key for user {}", user_id),
+                Some(&format!(r#"{{"target_user_id": {}}}"#, user_id)),
+            )
+            .await?;
+
         Ok(AdminStreamKeyResponse {
             stream_key: user.stream_key,
         })
@@ -1262,7 +1286,12 @@ impl Api {
         })
     }
 
-    async fn admin_list_ingest_endpoints(&self, _admin_uid: u64, page: u64, limit: u64) -> Result<AdminIngestEndpointsResponse> {
+    async fn admin_list_ingest_endpoints(
+        &self,
+        _admin_uid: u64,
+        page: u64,
+        limit: u64,
+    ) -> Result<AdminIngestEndpointsResponse> {
         let offset = page * limit;
         let endpoints = self.db.get_ingest_endpoints().await?;
         let total = endpoints.len() as u64;
@@ -1275,9 +1304,9 @@ impl Api {
                 id: endpoint.id,
                 name: endpoint.name,
                 cost: endpoint.cost,
-                capabilities: endpoint.capabilities.map(|c| {
-                    c.split(',').map(|s| s.trim().to_string()).collect()
-                }),
+                capabilities: endpoint
+                    .capabilities
+                    .map(|c| c.split(',').map(|s| s.trim().to_string()).collect()),
             })
             .collect();
 
@@ -1289,13 +1318,16 @@ impl Api {
         })
     }
 
-    async fn admin_create_ingest_endpoint(&self, admin_uid: u64, req: AdminIngestEndpointRequest) -> Result<AdminIngestEndpointResponse> {
+    async fn admin_create_ingest_endpoint(
+        &self,
+        admin_uid: u64,
+        req: AdminIngestEndpointRequest,
+    ) -> Result<AdminIngestEndpointResponse> {
         let capabilities_str = req.capabilities.as_ref().map(|caps| caps.join(","));
-        let endpoint_id = self.db.create_ingest_endpoint(
-            &req.name,
-            req.cost,
-            capabilities_str.as_deref(),
-        ).await?;
+        let endpoint_id = self
+            .db
+            .create_ingest_endpoint(&req.name, req.cost, capabilities_str.as_deref())
+            .await?;
 
         // Log admin action
         let message = format!("Created ingest endpoint: {} (cost: {})", req.name, req.cost);
@@ -1305,14 +1337,16 @@ impl Api {
             "cost": req.cost,
             "capabilities": req.capabilities
         });
-        self.db.log_admin_action(
-            admin_uid,
-            "create_ingest_endpoint",
-            Some("ingest_endpoint"),
-            Some(&endpoint_id.to_string()),
-            &message,
-            Some(&metadata.to_string()),
-        ).await?;
+        self.db
+            .log_admin_action(
+                admin_uid,
+                "create_ingest_endpoint",
+                Some("ingest_endpoint"),
+                Some(&endpoint_id.to_string()),
+                &message,
+                Some(&metadata.to_string()),
+            )
+            .await?;
 
         Ok(AdminIngestEndpointResponse {
             id: endpoint_id,
@@ -1322,44 +1356,60 @@ impl Api {
         })
     }
 
-    async fn admin_get_ingest_endpoint(&self, _admin_uid: u64, endpoint_id: u64) -> Result<AdminIngestEndpointResponse> {
+    async fn admin_get_ingest_endpoint(
+        &self,
+        _admin_uid: u64,
+        endpoint_id: u64,
+    ) -> Result<AdminIngestEndpointResponse> {
         let endpoint = self.db.get_ingest_endpoint(endpoint_id).await?;
 
         Ok(AdminIngestEndpointResponse {
             id: endpoint.id,
             name: endpoint.name,
             cost: endpoint.cost,
-            capabilities: endpoint.capabilities.map(|c| {
-                c.split(',').map(|s| s.trim().to_string()).collect()
-            }),
+            capabilities: endpoint
+                .capabilities
+                .map(|c| c.split(',').map(|s| s.trim().to_string()).collect()),
         })
     }
 
-    async fn admin_update_ingest_endpoint(&self, admin_uid: u64, endpoint_id: u64, req: AdminIngestEndpointRequest) -> Result<AdminIngestEndpointResponse> {
+    async fn admin_update_ingest_endpoint(
+        &self,
+        admin_uid: u64,
+        endpoint_id: u64,
+        req: AdminIngestEndpointRequest,
+    ) -> Result<AdminIngestEndpointResponse> {
         let capabilities_str = req.capabilities.as_ref().map(|caps| caps.join(","));
-        self.db.update_ingest_endpoint(
-            endpoint_id,
-            &req.name,
-            req.cost,
-            capabilities_str.as_deref(),
-        ).await?;
+        self.db
+            .update_ingest_endpoint(
+                endpoint_id,
+                &req.name,
+                req.cost,
+                capabilities_str.as_deref(),
+            )
+            .await?;
 
         // Log admin action
-        let message = format!("Updated ingest endpoint {}: {} (cost: {})", endpoint_id, req.name, req.cost);
+        let message = format!(
+            "Updated ingest endpoint {}: {} (cost: {})",
+            endpoint_id, req.name, req.cost
+        );
         let metadata = serde_json::json!({
             "endpoint_id": endpoint_id,
             "name": req.name,
             "cost": req.cost,
             "capabilities": req.capabilities
         });
-        self.db.log_admin_action(
-            admin_uid,
-            "update_ingest_endpoint",
-            Some("ingest_endpoint"),
-            Some(&endpoint_id.to_string()),
-            &message,
-            Some(&metadata.to_string()),
-        ).await?;
+        self.db
+            .log_admin_action(
+                admin_uid,
+                "update_ingest_endpoint",
+                Some("ingest_endpoint"),
+                Some(&endpoint_id.to_string()),
+                &message,
+                Some(&metadata.to_string()),
+            )
+            .await?;
 
         Ok(AdminIngestEndpointResponse {
             id: endpoint_id,
@@ -1372,7 +1422,7 @@ impl Api {
     async fn admin_delete_ingest_endpoint(&self, admin_uid: u64, endpoint_id: u64) -> Result<()> {
         // Get the endpoint first for logging
         let endpoint = self.db.get_ingest_endpoint(endpoint_id).await?;
-        
+
         // Delete the endpoint
         self.db.delete_ingest_endpoint(endpoint_id).await?;
 
@@ -1384,14 +1434,16 @@ impl Api {
             "cost": endpoint.cost,
             "capabilities": endpoint.capabilities
         });
-        self.db.log_admin_action(
-            admin_uid,
-            "delete_ingest_endpoint",
-            Some("ingest_endpoint"),
-            Some(&endpoint_id.to_string()),
-            &message,
-            Some(&metadata.to_string()),
-        ).await?;
+        self.db
+            .log_admin_action(
+                admin_uid,
+                "delete_ingest_endpoint",
+                Some("ingest_endpoint"),
+                Some(&endpoint_id.to_string()),
+                &message,
+                Some(&metadata.to_string()),
+            )
+            .await?;
 
         Ok(())
     }

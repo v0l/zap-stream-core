@@ -203,7 +203,7 @@ impl WebSocketMetricsServer {
                         let overall = OverallMetrics {
                             total_streams: all_streams.len() as _,
                             total_viewers: all_streams.iter().fold(0u32, |acc,v| acc + v.1.viewers),
-                            total_bandwidth: all_streams.iter().fold(0u64, |acc,v| acc + v.1.ingress_throughput_bps),
+                            total_bandwidth: all_streams.iter().fold(0u64, |acc,v| acc + v.1.endpoint_stats.values().fold(0u64, |acc2, v2| acc2 + v2.bitrate as u64)),
                             cpu_load: cpu,
                             memory_load: mem,
                             uptime_seconds: 0,

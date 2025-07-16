@@ -1,3 +1,9 @@
+use sha2::{Digest, Sha256};
+use std::io::Read;
+use std::io::Seek;
+use std::io::SeekFrom;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
 pub mod egress;
 mod generator;
 pub mod ingress;
@@ -8,3 +14,21 @@ pub mod pipeline;
 #[cfg(test)]
 pub mod test_hls_timing;
 pub mod variant;
+pub mod listen;
+pub mod endpoint;
+
+/// Compute SHA-256 hash of a file
+pub fn hash_file_sync(f: &mut std::fs::File) -> anyhow::Result<[u8; 32]> {
+    let mut hash = Sha256::new();
+    let mut buf = [0; 4096];
+    f.seek(SeekFrom::Start(0))?;
+    while let Ok(data) = f.read(&mut buf[..]) {
+        if data == 0 {
+            break;
+        }
+        hash.update(&buf[..data]);
+    }
+    let hash = hash.finalize();
+    f.seek(SeekFrom::Start(0))?;
+    Ok(hash.into())
+}

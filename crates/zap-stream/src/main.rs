@@ -1,9 +1,8 @@
 use crate::api::Api;
 use crate::http::HttpServer;
-use crate::monitor::BackgroundMonitor;
 use crate::overseer::ZapStreamOverseer;
 use crate::settings::Settings;
-use anyhow::{bail, Result};
+use anyhow::Result;
 use clap::Parser;
 use config::Config;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{av_log_set_callback, av_version_info};
@@ -13,28 +12,16 @@ use hyper_util::rt::TokioIo;
 use log::{error, info};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
-use tokio::task::JoinHandle;
 use tokio::time::sleep;
-use url::Url;
-#[cfg(feature = "rtmp")]
-use zap_stream_core::ingress::rtmp;
-#[cfg(feature = "srt")]
-use zap_stream_core::ingress::srt;
-#[cfg(feature = "test-pattern")]
-use zap_stream_core::ingress::test;
-use zap_stream_core::ingress::{file, tcp};
+use zap_stream_core::listen::try_create_listener;
 use zap_stream_core::overseer::Overseer;
 
 mod api;
 mod auth;
-mod blossom;
-mod endpoint;
 mod http;
-mod monitor;
 mod overseer;
 mod settings;
 mod stream_manager;
@@ -48,10 +35,7 @@ struct Args {}
 async fn main() -> Result<()> {
     pretty_env_logger::init();
 
-    #[cfg(feature = "zap-stream")]
     info!("Starting zap-stream");
-    #[cfg(not(feature = "zap-stream"))]
-    info!("Starting zap-stream (standalone mode)");
 
     let _args = Args::parse();
 
@@ -103,11 +87,11 @@ async fn main() -> Result<()> {
         }
     }));
 
-    // Background worker
-    let mut bg = BackgroundMonitor::new(overseer.clone());
+    // Background worker to check streams
+    let bg = overseer.clone();
     tasks.push(tokio::spawn(async move {
         loop {
-            if let Err(e) = bg.check().await {
+            if let Err(e) = bg.check_streams().await {
                 error!("{}", e);
             }
             sleep(Duration::from_secs(10)).await;
@@ -122,76 +106,4 @@ async fn main() -> Result<()> {
     }
     info!("Server closed");
     Ok(())
-}
-
-pub enum ListenerEndpoint {
-    SRT { endpoint: String },
-    RTMP { endpoint: String },
-    TCP { endpoint: String },
-    File { path: PathBuf },
-    TestPattern,
-}
-
-impl FromStr for ListenerEndpoint {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        let url: Url = s.parse()?;
-        match url.scheme() {
-            "srt" => Ok(Self::SRT {
-                endpoint: format!("{}:{}", url.host().unwrap(), url.port().unwrap()),
-            }),
-            "rtmp" => Ok(Self::RTMP {
-                endpoint: format!("{}:{}", url.host().unwrap(), url.port().unwrap()),
-            }),
-            "tcp" => Ok(Self::TCP {
-                endpoint: format!("{}:{}", url.host().unwrap(), url.port().unwrap()),
-            }),
-            "file" => Ok(Self::File {
-                path: PathBuf::from(url.path()),
-            }),
-            "test-pattern" => Ok(Self::TestPattern),
-            _ => bail!("Unsupported endpoint scheme: {}", url.scheme()),
-        }
-    }
-}
-
-fn try_create_listener(
-    u: &str,
-    out_dir: &str,
-    overseer: &Arc<dyn Overseer>,
-) -> Result<JoinHandle<Result<()>>> {
-    let ep = ListenerEndpoint::from_str(u)?;
-    match ep {
-        #[cfg(feature = "srt")]
-        ListenerEndpoint::SRT { endpoint } => Ok(tokio::spawn(srt::listen(
-            out_dir.to_string(),
-            endpoint,
-            overseer.clone(),
-        ))),
-        #[cfg(feature = "rtmp")]
-        ListenerEndpoint::RTMP { endpoint } => Ok(tokio::spawn(rtmp::listen(
-            out_dir.to_string(),
-            endpoint,
-            overseer.clone(),
-        ))),
-        ListenerEndpoint::TCP { endpoint } => Ok(tokio::spawn(tcp::listen(
-            out_dir.to_string(),
-            endpoint,
-            overseer.clone(),
-        ))),
-        ListenerEndpoint::File { path } => Ok(tokio::spawn(file::listen(
-            out_dir.to_string(),
-            path,
-            overseer.clone(),
-        ))),
-        #[cfg(feature = "test-pattern")]
-        ListenerEndpoint::TestPattern => Ok(tokio::spawn(test::listen(
-            out_dir.to_string(),
-            overseer.clone(),
-        ))),
-        _ => {
-            bail!("Unknown endpoint config: {u}");
-        }
-    }
 }

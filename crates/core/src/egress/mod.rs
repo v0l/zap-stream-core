@@ -37,6 +37,8 @@ pub struct EgressSegment {
     pub duration: f32,
     /// Path on disk to the segment file
     pub path: PathBuf,
+    /// SHA-256 hash of the file
+    pub sha256: [u8; 32],
 }
 
 pub enum EncoderOrSourceStream<'a> {

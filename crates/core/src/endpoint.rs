@@ -1,12 +1,16 @@
+use crate::overseer::{IngressInfo, IngressStream, IngressStreamType};
+use crate::variant::audio::AudioVariant;
+use crate::variant::mapping::VariantMapping;
+use crate::variant::video::VideoVariant;
+use crate::variant::VariantStream;
 use anyhow::Result;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::{av_get_sample_fmt_name, avcodec_get_name};
+use ffmpeg_rs_raw::rstr;
 use log::{info, warn};
+use std::fmt::{Display, Formatter};
+use std::mem::transmute;
 use uuid::Uuid;
-use zap_stream_core::overseer::{IngressInfo, IngressStream, IngressStreamType};
-use zap_stream_core::variant::audio::AudioVariant;
-use zap_stream_core::variant::mapping::VariantMapping;
-use zap_stream_core::variant::video::VideoVariant;
-use zap_stream_core::variant::VariantStream;
 
 pub struct EndpointConfig<'a> {
     pub video_src: Option<&'a IngressStream>,
@@ -14,10 +18,23 @@ pub struct EndpointConfig<'a> {
     pub variants: Vec<VariantStream>,
 }
 
+#[derive(Debug, Clone)]
 pub enum EndpointCapability {
     SourceVariant,
     Variant { height: u16, bitrate: u64 },
     DVR { height: u16 },
+}
+
+impl Display for EndpointCapability {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EndpointCapability::SourceVariant => write!(f, "variant:source"),
+            EndpointCapability::Variant { height, bitrate } => {
+                write!(f, "variant:{}:{}", height, bitrate)
+            }
+            EndpointCapability::DVR { height } => write!(f, "dvr:{}", height),
+        }
+    }
 }
 
 pub fn parse_capabilities(cap: &Option<String>) -> Vec<EndpointCapability> {
@@ -80,21 +97,46 @@ pub fn get_variants_from_endpoint<'a>(
             EndpointCapability::SourceVariant => {
                 // Add copy variant (group for source)
                 if let Some(video_src) = video_src {
-                    vars.push(VariantStream::CopyVideo(VariantMapping {
-                        id: Uuid::new_v4(),
-                        src_index: video_src.index,
-                        dst_index,
-                        group_id,
+                    vars.push(VariantStream::CopyVideo(VideoVariant {
+                        mapping: VariantMapping {
+                            id: Uuid::new_v4(),
+                            src_index: video_src.index,
+                            dst_index,
+                            group_id,
+                        },
+                        width: video_src.width as _,
+                        height: video_src.height as _,
+                        fps: video_src.fps,
+                        bitrate: 0,
+                        codec: unsafe {
+                            rstr!(avcodec_get_name(transmute(video_src.codec as i32))).to_string()
+                        },
+                        profile: 0,
+                        level: 0,
+                        keyframe_interval: 0,
+                        pixel_format: video_src.format as _,
                     }));
                     dst_index += 1;
                 }
 
                 if let Some(audio_src) = audio_src {
-                    vars.push(VariantStream::CopyAudio(VariantMapping {
-                        id: Uuid::new_v4(),
-                        src_index: audio_src.index,
-                        dst_index,
-                        group_id,
+                    vars.push(VariantStream::CopyAudio(AudioVariant {
+                        mapping: VariantMapping {
+                            id: Uuid::new_v4(),
+                            src_index: audio_src.index,
+                            dst_index,
+                            group_id,
+                        },
+                        bitrate: 0,
+                        codec: unsafe {
+                            rstr!(avcodec_get_name(transmute(audio_src.codec as i32))).to_string()
+                        },
+                        channels: audio_src.channels as _,
+                        sample_rate: audio_src.sample_rate as _,
+                        sample_fmt: unsafe {
+                            rstr!(av_get_sample_fmt_name(transmute(audio_src.codec as i32)))
+                                .to_string()
+                        },
                     }));
                     dst_index += 1;
                 }

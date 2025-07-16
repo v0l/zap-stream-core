@@ -1,19 +1,17 @@
+use crate::hash_file;
 use anyhow::Result;
 use base64::Engine;
-use nostr_sdk::{EventBuilder, JsonUtil, Keys, Kind, Tag, Timestamp};
+use log::error;
+use nostr_sdk::{EventBuilder, JsonUtil, Kind, NostrSigner, Tag, Timestamp, serde_json};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use std::collections::HashMap;
-use std::io::SeekFrom;
 use std::ops::Add;
 use std::path::PathBuf;
 use tokio::fs::File;
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use url::Url;
 
 #[derive(Clone)]
 pub struct Blossom {
-    url: Url,
+    pub url: Url,
     client: reqwest::Client,
 }
 
@@ -24,9 +22,8 @@ pub struct BlobDescriptor {
     pub size: u64,
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub mime_type: Option<String>,
-    pub created: u64,
     #[serde(rename = "nip94", skip_serializing_if = "Option::is_none")]
-    pub nip94: Option<HashMap<String, String>>,
+    pub nip94: Option<Vec<Vec<String>>>,
 }
 
 impl Blossom {
@@ -37,38 +34,49 @@ impl Blossom {
         }
     }
 
-    async fn hash_file(f: &mut File) -> Result<String> {
-        let mut hash = Sha256::new();
-        let mut buf: [u8; 1024] = [0; 1024];
-        f.seek(SeekFrom::Start(0)).await?;
-        while let Ok(data) = f.read(&mut buf[..]).await {
-            if data == 0 {
-                break;
-            }
-            hash.update(&buf[..data]);
-        }
-        let hash = hash.finalize();
-        f.seek(SeekFrom::Start(0)).await?;
-        Ok(hex::encode(hash))
+    pub async fn delete(&self, hash: &[u8; 32], signer: &impl NostrSigner) -> Result<()> {
+        let id = hex::encode(hash);
+        let auth_event = EventBuilder::new(Kind::Custom(24242), "Delete blob").tags([
+            Tag::hashtag("delete"),
+            Tag::parse(["x", &id])?,
+            Tag::expiration(Timestamp::now().add(5)),
+        ]);
+
+        let auth_event = auth_event.sign(signer).await?;
+
+        self.client
+            .delete(self.url.join(&id).unwrap())
+            .header(
+                "Authorization",
+                &format!(
+                    "Nostr {}",
+                    base64::engine::general_purpose::STANDARD
+                        .encode(auth_event.as_json().as_bytes())
+                ),
+            )
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
     }
 
     pub async fn upload(
         &self,
         from_file: &PathBuf,
-        keys: &Keys,
+        signer: &impl NostrSigner,
         mime: Option<&str>,
     ) -> Result<BlobDescriptor> {
         let mut f = File::open(from_file).await?;
-        let hash = Self::hash_file(&mut f).await?;
+        let hash = hex::encode(hash_file(&mut f).await?);
         let auth_event = EventBuilder::new(Kind::Custom(24242), "Upload blob").tags([
             Tag::hashtag("upload"),
             Tag::parse(["x", &hash])?,
-            Tag::expiration(Timestamp::now().add(60)),
+            Tag::expiration(Timestamp::now().add(5)),
         ]);
 
-        let auth_event = auth_event.sign_with_keys(keys)?;
+        let auth_event = auth_event.sign(signer).await?;
 
-        let rsp: BlobDescriptor = self
+        let json = self
             .client
             .put(self.url.join("/upload").unwrap())
             .header("Content-Type", mime.unwrap_or("application/octet-stream"))
@@ -83,9 +91,15 @@ impl Blossom {
             .body(f)
             .send()
             .await?
-            .json()
+            .text()
             .await?;
 
-        Ok(rsp)
+        match serde_json::from_str::<BlobDescriptor>(&json) {
+            Ok(blob) => Ok(blob),
+            Err(e) => {
+                error!("'{}' {}", json, e);
+                Err(e.into())
+            }
+        }
     }
 }

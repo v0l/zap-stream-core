@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
+use zap_stream_core::ingress::EndpointStats;
 
 #[derive(Clone)]
 pub struct StreamViewerState {
@@ -22,11 +23,11 @@ pub struct ActiveStreamInfo {
     pub average_fps: f32,
     pub target_fps: f32,
     pub frame_count: u64,
-    pub ingress_throughput_bps: u64,
-    pub ingress_name: String,
     pub endpoint_name: String,
     pub input_resolution: String,
     pub ip_address: String,
+    pub ingress_name: String,
+    pub endpoint_stats: HashMap<String, EndpointStats>,
 }
 
 /// Manages active streams, viewer tracking
@@ -40,7 +41,7 @@ pub struct StreamManager {
     /// Track last published viewer count and update time for each stream
     stream_viewer_states: Arc<RwLock<HashMap<String, StreamViewerState>>>,
     /// Broadcast channel to listen to metrics updates
-    metric_sender: broadcast::Sender<ActiveStreamInfo>,
+    broadcaster: broadcast::Sender<ActiveStreamInfo>,
 }
 
 impl StreamManager {
@@ -52,7 +53,7 @@ impl StreamManager {
             active_streams: Arc::new(RwLock::new(HashMap::new())),
             viewer_tracker: Arc::new(RwLock::new(ViewerTracker::new())),
             stream_viewer_states: Arc::new(RwLock::new(HashMap::new())),
-            metric_sender: tx,
+            broadcaster: tx,
         };
 
         let mgr = r.clone();
@@ -69,7 +70,7 @@ impl StreamManager {
     }
 
     pub fn listen_metrics(&self) -> broadcast::Receiver<ActiveStreamInfo> {
-        self.metric_sender.subscribe()
+        self.broadcaster.subscribe()
     }
 
     /// Add a new active stream
@@ -94,11 +95,11 @@ impl StreamManager {
                 viewers: 0,
                 target_fps,
                 frame_count: 0,
-                ingress_throughput_bps: 0,
                 input_resolution: input_resolution.to_string(),
                 endpoint_name: endpoint_name.to_string(),
                 ingress_name: ingress_name.to_string(),
                 ip_address: ip.to_string(),
+                endpoint_stats: HashMap::new(),
             },
         );
     }
@@ -201,7 +202,7 @@ impl StreamManager {
             info.average_fps = average_fps;
             info.frame_count = frame_count;
             info.viewers = self.get_viewer_count(stream_id).await as _;
-            if let Err(e) = self.metric_sender.send(info.clone()) {
+            if let Err(e) = self.broadcaster.send(info.clone()) {
                 warn!(
                     "Failed to send pipeline metrics to the active stream: {}",
                     e
@@ -210,11 +211,15 @@ impl StreamManager {
         }
     }
 
-    pub async fn update_ingress_metrics(&self, stream_id: &str, bitrate: usize) {
+    pub async fn update_endpoint_metrics(&self, stream_id: &str, metrics: EndpointStats) {
         let mut streams = self.active_streams.write().await;
         if let Some(info) = streams.get_mut(stream_id) {
-            info.ingress_throughput_bps = bitrate as u64;
-            if let Err(e) = self.metric_sender.send(info.clone()) {
+            if let Some(x) = info.endpoint_stats.get_mut(&metrics.name) {
+                x.bitrate = metrics.bitrate;
+            } else {
+                info.endpoint_stats.insert(metrics.name.clone(), metrics);
+            }
+            if let Err(e) = self.broadcaster.send(info.clone()) {
                 warn!(
                     "Failed to send pipeline metrics to the active stream: {}",
                     e

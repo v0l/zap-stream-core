@@ -1,5 +1,5 @@
 use crate::generator::FrameGenerator;
-use crate::ingress::{spawn_pipeline, ConnectionInfo, IngressStats};
+use crate::ingress::{spawn_pipeline, ConnectionInfo, EndpointStats};
 use crate::overseer::Overseer;
 use crate::pipeline::runner::PipelineCommand;
 use anyhow::Result;
@@ -42,6 +42,8 @@ pub async fn listen(out_dir: String, overseer: Arc<dyn Overseer>) -> Result<()> 
         None,
         Some(rx),
     );
+
+    tokio::time::sleep(Duration::MAX).await;
     Ok(())
 }
 
@@ -172,7 +174,8 @@ impl TestPatternSrc {
 
         let metric_duration = Instant::now().duration_since(self.last_metrics);
         if metric_duration > Duration::from_secs(5) {
-            if let Err(e) = self.tx.send(PipelineCommand::IngressMetrics(IngressStats {
+            if let Err(e) = self.tx.send(PipelineCommand::IngressMetrics(EndpointStats {
+                name: "test".to_string(),
                 bitrate: ((self.data_sent as f64 / metric_duration.as_secs_f64()) * 8.0) as usize,
             })) {
                 warn!("Failed to send pipeline metrics: {}", e);

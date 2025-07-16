@@ -12,7 +12,7 @@ use crate::egress::recorder::RecorderEgress;
 use crate::egress::rtmp::RtmpEgress;
 use crate::egress::{Egress, EgressResult, EncoderOrSourceStream};
 use crate::generator::FrameGenerator;
-use crate::ingress::{ConnectionInfo, IngressStats};
+use crate::ingress::{ConnectionInfo, EndpointStats};
 use crate::mux::SegmentType;
 use crate::overseer::{IngressInfo, IngressStream, IngressStreamType, Overseer, StatsType};
 use crate::pipeline::{EgressType, PipelineConfig};
@@ -72,9 +72,9 @@ pub enum PipelineCommand {
     /// External process requested clean shutdown
     Shutdown,
     /// Metrics provided by the ingress
-    IngressMetrics(IngressStats),
+    IngressMetrics(EndpointStats),
     /// Metrics provided by egress components
-    EgressMetrics(crate::ingress::EgressStats),
+    EgressMetrics(EndpointStats),
 }
 
 #[derive(Debug, Clone)]
@@ -425,9 +425,10 @@ impl PipelineRunner {
         // egress (mux) copy variants
         for var in config.variants {
             match var {
-                VariantStream::CopyVideo(v) | VariantStream::CopyAudio(v)
-                    if v.src_index == (*packet).stream_index as _ =>
-                {
+                VariantStream::CopyAudio(v) if v.src_index() == (*packet).stream_index as _ => {
+                    egress_results.extend(Self::egress_packet(&mut self.egress, packet, &v.id())?);
+                }
+                VariantStream::CopyVideo(v) if v.src_index() == (*packet).stream_index as _ => {
                     egress_results.extend(Self::egress_packet(&mut self.egress, packet, &v.id())?);
                 }
                 _ => {}

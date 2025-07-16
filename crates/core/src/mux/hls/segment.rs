@@ -22,6 +22,7 @@ pub struct SegmentInfo {
     pub index: u64,
     pub duration: f32,
     pub kind: SegmentType,
+    pub sha256: [u8; 32],
 }
 
 impl SegmentInfo {

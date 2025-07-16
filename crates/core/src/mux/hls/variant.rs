@@ -1,4 +1,5 @@
 use crate::egress::{EgressResult, EgressSegment, EncoderOrSourceStream};
+use crate::hash_file_sync;
 use crate::mux::hls::segment::{HlsSegment, PartialSegmentInfo, SegmentInfo};
 use crate::mux::{HlsVariantStream, SegmentType};
 use crate::variant::{StreamMapping, VariantStream};
@@ -423,15 +424,21 @@ impl HlsVariant {
                 idx: seg.index,
                 duration: seg.duration,
                 path: self.map_segment_path(seg.index, self.segment_type),
+                sha256: seg.sha256,
             })
             .collect();
 
+        let hash = {
+            let mut f = File::open(&completed_seg_path)?;
+            hash_file_sync(&mut f)
+        }?;
         // emit result of the previously completed segment,
         let created = EgressSegment {
             variant: video_var_id,
             idx: completed_segment_idx,
             duration: cur_duration as f32,
             path: completed_seg_path,
+            sha256: hash,
         };
 
         self.segments.push(HlsSegment::Full(SegmentInfo {
@@ -442,6 +449,7 @@ impl HlsVariant {
                 cur_duration as _
             },
             kind: self.segment_type,
+            sha256: hash,
         }));
 
         self.write_playlist()?;

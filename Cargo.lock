@@ -2131,6 +2131,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "n94"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "clap",
+ "log 0.4.27",
+ "nostr-sdk",
+ "pretty_env_logger",
+ "tokio",
+ "uuid",
+ "zap-stream-core",
+ "zap-stream-core-nostr",
+]
+
+[[package]]
 name = "negentropy"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5047,7 +5064,6 @@ dependencies = [
  "mustache",
  "nostr-sdk",
  "pretty_env_logger",
- "reqwest",
  "serde",
  "sha2 0.10.9",
  "sysinfo",
@@ -5057,6 +5073,7 @@ dependencies = [
  "url",
  "uuid",
  "zap-stream-core",
+ "zap-stream-core-nostr",
  "zap-stream-db",
 ]
 
@@ -5090,6 +5107,22 @@ dependencies = [
  "usvg",
  "uuid",
  "xflv",
+]
+
+[[package]]
+name = "zap-stream-core-nostr"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "hex",
+ "log 0.4.27",
+ "nostr-sdk",
+ "reqwest",
+ "serde",
+ "sha2 0.10.9",
+ "tokio",
+ "url",
 ]
 
 [[package]]

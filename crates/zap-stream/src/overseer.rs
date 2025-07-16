@@ -1,5 +1,3 @@
-use crate::blossom::{BlobDescriptor, Blossom};
-use crate::endpoint::{get_variants_from_endpoint, parse_capabilities, EndpointCapability};
 use crate::settings::{LndSettings, Settings};
 use crate::stream_manager::StreamManager;
 use anyhow::{bail, Context, Result};
@@ -9,7 +7,7 @@ use chrono::Utc;
 use fedimint_tonic_lnd::verrpc::VersionRequest;
 use log::{error, info, warn};
 use nostr_sdk::prelude::Coordinate;
-use nostr_sdk::{Client, Event, EventBuilder, JsonUtil, Keys, Kind, Tag, ToBech32};
+use nostr_sdk::{Client, Event, EventBuilder, JsonUtil, Keys, Kind, NostrSigner, Tag, ToBech32};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -18,13 +16,15 @@ use uuid::Uuid;
 use zap_stream_core::egress::hls::HlsEgress;
 use zap_stream_core::egress::recorder::RecorderEgress;
 use zap_stream_core::egress::EgressSegment;
+use zap_stream_core::endpoint::{
+    get_variants_from_endpoint, parse_capabilities, EndpointCapability,
+};
 use zap_stream_core::ingress::ConnectionInfo;
 use zap_stream_core::overseer::{IngressInfo, Overseer, StatsType};
 use zap_stream_core::pipeline::{EgressType, PipelineConfig};
 use zap_stream_core::variant::{StreamMapping, VariantStream};
+use zap_stream_core_nostr::n94::{N94Publisher, N94Segment, N94StreamInfo, N94Variant};
 use zap_stream_db::{IngestEndpoint, UserStream, UserStreamState, ZapStreamDb};
-
-const STREAM_EVENT_KIND: u16 = 30_311;
 
 /// zap.stream NIP-53 overseer
 #[derive(Clone)]
@@ -36,14 +36,12 @@ pub struct ZapStreamOverseer {
     lnd: fedimint_tonic_lnd::Client,
     /// Nostr client for publishing events
     client: Client,
-    /// Nostr keys used to sign events
-    keys: Keys,
-    /// List of blossom servers to upload segments to
-    blossom_servers: Vec<Blossom>,
     /// Public facing URL pointing to [out_dir]
     public_url: String,
-    /// Stream manager handles viewer tracking and Nostr publishing
+    /// Stream manager handles viewer tracking
     stream_manager: StreamManager,
+    /// NIP-5E publisher
+    n94: Option<N94Publisher>,
 }
 
 impl ZapStreamOverseer {
@@ -116,14 +114,12 @@ impl ZapStreamOverseer {
             db,
             #[cfg(feature = "zap-stream")]
             lnd,
+            n94: if let Some(s) = blossom_servers {
+                Some(N94Publisher::new(client.clone(), s))
+            } else {
+                None
+            },
             client,
-            keys,
-            blossom_servers: blossom_servers
-                .as_ref()
-                .unwrap_or(&Vec::new())
-                .iter()
-                .map(|b| Blossom::new(b))
-                .collect(),
             public_url: public_url.clone(),
             stream_manager: StreamManager::new(),
         };
@@ -199,8 +195,9 @@ impl ZapStreamOverseer {
             ])?);
         }
 
-        let kind = Kind::from(STREAM_EVENT_KIND);
-        let coord = Coordinate::new(kind, self.keys.public_key).identifier(&stream.id);
+        let signer = self.client.signer().await?;
+        let coord =
+            Coordinate::new(Kind::LiveEvent, signer.get_public_key().await?).identifier(&stream.id);
         tags.push(Tag::parse([
             "alt",
             &format!(
@@ -212,27 +209,7 @@ impl ZapStreamOverseer {
                 .to_bech32()?
             ),
         ])?);
-        Ok(EventBuilder::new(kind, "").tags(tags))
-    }
-
-    fn blob_to_event_builder(&self, stream: &BlobDescriptor) -> Result<EventBuilder> {
-        let tags = if let Some(tags) = stream.nip94.as_ref() {
-            tags.iter()
-                .map_while(|(k, v)| Tag::parse([k, v]).ok())
-                .collect()
-        } else {
-            let mut tags = vec![
-                Tag::parse(["x", &stream.sha256])?,
-                Tag::parse(["url", &stream.url])?,
-                Tag::parse(["size", &stream.size.to_string()])?,
-            ];
-            if let Some(m) = stream.mime_type.as_ref() {
-                tags.push(Tag::parse(["m", m])?)
-            }
-            tags
-        };
-
-        Ok(EventBuilder::new(Kind::FileMetadata, "").tags(tags))
+        Ok(EventBuilder::new(Kind::LiveEvent, "").tags(tags))
     }
 
     pub async fn publish_stream_event(
@@ -292,11 +269,8 @@ impl ZapStreamOverseer {
             }
             _ => {}
         }
-        let ev = self
-            .stream_to_event_builder(stream)
-            .await?
-            .tags(extra_tags)
-            .sign_with_keys(&self.keys)?;
+        let ev = self.stream_to_event_builder(stream).await?.tags(extra_tags);
+        let ev = self.client.sign_event_builder(ev).await?;
         self.client.send_event(&ev).await?;
         info!("Published stream event {}", ev.id.to_hex());
         Ok(ev)
@@ -442,6 +416,43 @@ impl Overseer for ZapStreamOverseer {
         self.db.insert_stream(&new_stream).await?;
         self.db.update_stream(&new_stream).await?;
 
+        // publish N94 stream
+        if let Some(n94) = &self.n94 {
+            n94.on_start(N94StreamInfo {
+                title: new_stream.title.clone(),
+                summary: new_stream.summary.clone(),
+                image: new_stream.image.clone(),
+                tags: vec![],
+                starts: new_stream.starts.timestamp() as _,
+                ends: None,
+                relays: vec![],
+                variants: cfg
+                    .variants
+                    .chunk_by(|a, b| a.group_id() == b.group_id())
+                    .map_while(|v| {
+                        let video = v.iter().find_map(|a| match a {
+                            VariantStream::Video(v) | VariantStream::CopyVideo(v) => Some(v),
+                            _ => None,
+                        });
+                        let video = if let Some(v) = video {
+                            v
+                        } else {
+                            return None;
+                        };
+                        Some(N94Variant {
+                            id: video.id().to_string(),
+                            width: video.width as _,
+                            height: video.height as _,
+                            bitrate: video.bitrate as _,
+                            mime_type: Some("video/mp2t".to_string()),
+                        })
+                    })
+                    .collect(),
+                goal: new_stream.goal.clone(),
+                pinned: new_stream.pinned.clone(),
+            })
+            .await?;
+        }
         Ok(PipelineConfig {
             variants: cfg.variants,
             egress,
@@ -485,49 +496,12 @@ impl Overseer for ZapStreamOverseer {
             .update_stream_segment_time(&stream.id)
             .await;
 
-        // Upload to blossom servers if configured (N94)
-        let mut blobs = vec![];
-        for seg in added {
-            for b in &self.blossom_servers {
-                blobs.push(b.upload(&seg.path, &self.keys, Some("video/mp2t")).await?);
-            }
-            if let Some(blob) = blobs.first() {
-                let a_tag = format!(
-                    "{}:{}:{}",
-                    STREAM_EVENT_KIND,
-                    self.keys.public_key.to_hex(),
-                    pipeline_id
-                );
-                let mut n94 = self.blob_to_event_builder(blob)?.tags([
-                    Tag::parse(["a", &a_tag])?,
-                    Tag::parse(["d", seg.variant.to_string().as_str()])?,
-                    Tag::parse(["index", seg.idx.to_string().as_str()])?,
-                ]);
-
-                // some servers add duration tag
-                if blob
-                    .nip94
-                    .as_ref()
-                    .map(|a| a.contains_key("duration"))
-                    .is_none()
-                {
-                    n94 = n94.tag(Tag::parse(["duration", seg.duration.to_string().as_str()])?);
-                }
-
-                for b in blobs.iter().skip(1) {
-                    n94 = n94.tag(Tag::parse(["url", &b.url])?);
-                }
-                let n94 = n94.sign_with_keys(&self.keys)?;
-                let cc = self.client.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = cc.send_event(&n94).await {
-                        warn!("Error sending event: {}", e);
-                    }
-                });
-                info!("Published N94 segment to {}", blob.url);
-            }
+        if let Some(n94) = &self.n94 {
+            n94.on_new_segment(added.iter().map(|s| into_n94_segment(s)).collect())
+                .await?;
+            n94.on_deleted_segment(deleted.iter().map(|s| into_n94_segment(s)).collect())
+                .await?;
         }
-
         Ok(())
     }
 
@@ -571,17 +545,14 @@ impl Overseer for ZapStreamOverseer {
     async fn on_stats(&self, pipeline_id: &Uuid, stats: StatsType) -> Result<()> {
         let id = pipeline_id.to_string();
         match stats {
-            StatsType::Ingress(i) => {
-                self.stream_manager
-                    .update_ingress_metrics(&id, i.bitrate)
-                    .await;
+            StatsType::Ingress(i) | StatsType::Egress(i) => {
+                self.stream_manager.update_endpoint_metrics(&id, i).await;
             }
             StatsType::Pipeline(p) => {
                 self.stream_manager
                     .update_pipeline_metrics(&id, p.average_fps, p.total_frames)
                     .await;
             }
-            StatsType::Egress(_) => {}
         }
 
         Ok(())
@@ -600,5 +571,15 @@ impl ZapStreamOverseer {
             .or(default)
             .unwrap()
             .clone())
+    }
+}
+
+fn into_n94_segment(seg: &EgressSegment) -> N94Segment {
+    N94Segment {
+        variant: seg.variant.to_string(),
+        idx: seg.idx,
+        duration: seg.duration,
+        path: seg.path.clone(),
+        sha256: seg.sha256.clone(),
     }
 }

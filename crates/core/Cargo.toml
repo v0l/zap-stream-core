@@ -4,9 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-default = ["srt", "rtmp"]
-srt = ["dep:srt-tokio"]
-rtmp = ["dep:rml_rtmp"]
+default = ["ingress-srt", "ingress-rtmp", "ingress-test"]
+ingress-srt = ["dep:srt-tokio"]
+ingress-rtmp = ["dep:rml_rtmp"]
+ingress-test = []
+ingress-tcp = []
 
 [dependencies]
 ffmpeg-rs-raw.workspace = true

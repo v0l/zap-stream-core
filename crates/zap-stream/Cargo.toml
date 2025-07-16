@@ -6,14 +6,16 @@ edition = "2021"
 [features]
 default = ["srt", "rtmp", "test-pattern", "zap-stream"]
 zap-stream = ["dep:fedimint-tonic-lnd"]
-srt = ["zap-stream-core/srt"]
-rtmp = ["zap-stream-core/rtmp"]
-test-pattern = ["zap-stream-db/test-pattern"]
+srt = ["zap-stream-core/ingress-srt"]
+rtmp = ["zap-stream-core/ingress-rtmp"]
+test-pattern = ["zap-stream-db/test-pattern", "zap-stream-core/ingress-test"]
 
 [dependencies]
 zap-stream-db = { path = "../zap-stream-db" }
 zap-stream-core = { path = "../core" }
+zap-stream-core-nostr = { path = "../core-nostr" }
 
+pretty_env_logger.workspace = true
 uuid.workspace = true
 ffmpeg-rs-raw.workspace = true
 anyhow.workspace = true
@@ -26,7 +28,8 @@ hex.workspace = true
 url.workspace = true
 m3u8-rs.workspace = true
 data-encoding.workspace = true
-pretty_env_logger.workspace = true
+sha2.workspace = true
+nostr-sdk.workspace = true
 
 # http stuff
 hyper = { version = "1.5.1", features = ["server", "http1", "http2"] }
@@ -41,11 +44,8 @@ hyper-tungstenite = "0.18.0"
 
 # direct deps
 config = { version = "0.15.6", features = ["yaml"] }
-nostr-sdk = { version = "0.42.0" }
 fedimint-tonic-lnd = { version = "0.2.0", default-features = false, features = ["invoicesrpc", "versionrpc"], optional = true }
-reqwest = { version = "0.12.20", features = ["stream", "json", "http2"], default-features = false }
 base64 = { version = "0.22.1" }
-sha2.workspace = true
 clap = { version = "4.5.16", features = ["derive"] }
 futures-util = "0.3.31"
 matchit = "0.8.4"

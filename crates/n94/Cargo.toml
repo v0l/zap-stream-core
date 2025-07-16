@@ -1,0 +1,20 @@
+[package]
+name = "n94"
+description = "Standalone NIP-53 broadcaster"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+zap-stream-core = { path = "../core" }
+zap-stream-core-nostr = { path = "../core-nostr" }
+
+uuid.workspace = true
+anyhow.workspace = true
+log.workspace = true
+tokio.workspace = true
+pretty_env_logger.workspace = true
+async-trait.workspace = true
+nostr-sdk.workspace = true
+chrono.workspace = true
+
+clap = { version = "4.5.16", features = ["derive"] }

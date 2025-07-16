@@ -18,9 +18,9 @@ pub enum VariantStream {
     Audio(AudioVariant),
     Subtitle(VariantMapping),
     /// Copy stream src<>dst stream
-    CopyVideo(VariantMapping),
+    CopyVideo(VideoVariant),
     /// Copy stream src<>dst stream
-    CopyAudio(VariantMapping),
+    CopyAudio(AudioVariant),
 }
 
 impl StreamMapping for VariantStream {

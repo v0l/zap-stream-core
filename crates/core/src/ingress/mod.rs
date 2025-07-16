@@ -11,11 +11,13 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use uuid::Uuid;
 
 pub mod file;
-#[cfg(feature = "rtmp")]
+#[cfg(feature = "ingress-rtmp")]
 pub mod rtmp;
-#[cfg(feature = "srt")]
+#[cfg(feature = "ingress-srt")]
 pub mod srt;
+#[cfg(feature = "ingress-tcp")]
 pub mod tcp;
+#[cfg(feature = "ingress-test")]
 pub mod test;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -72,13 +74,9 @@ pub fn run_pipeline(mut pl: PipelineRunner) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[derive(Clone, Debug)]
-pub struct IngressStats {
-    pub bitrate: usize,
-}
-
-#[derive(Clone, Debug)]
-pub struct EgressStats {
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EndpointStats {
+    pub name: String,
     pub bitrate: usize,
 }
 
