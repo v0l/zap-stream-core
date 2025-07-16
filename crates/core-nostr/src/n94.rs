@@ -1,9 +1,12 @@
 use crate::blossom::{BlobDescriptor, Blossom};
 use anyhow::{Result, bail};
 use log::{info, warn};
-use nostr_sdk::{Client, Event, EventBuilder, EventId, Kind, RelayUrl, Tag};
+use nostr_sdk::prelude::EventDeletionRequest;
+use nostr_sdk::{Client, Event, EventBuilder, EventId, Kind, RelayUrl, Tag, Timestamp};
+use std::ops::Add;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
 
 #[derive(Clone, Default)]
@@ -62,9 +65,7 @@ impl N94Publisher {
     /// Converts a blob from blossom into a NIP-94 event (1063)
     fn blob_to_event_builder(&self, blob: &BlobDescriptor) -> Result<EventBuilder> {
         let tags = if let Some(tags) = blob.nip94.as_ref() {
-            tags.iter()
-                .map_while(|v| Tag::parse(v).ok())
-                .collect()
+            tags.iter().map_while(|v| Tag::parse(v).ok()).collect()
         } else {
             let mut tags = vec![
                 Tag::parse(["x", &blob.sha256])?,
@@ -141,6 +142,14 @@ impl N94Publisher {
         Ok(())
     }
 
+    pub async fn on_end(&self) -> Result<()> {
+        if let Some(stream_id) = self.stream_id.lock().await.take() {
+            let ev = EventBuilder::delete(EventDeletionRequest::new().id(stream_id));
+            self.client.send_event_builder(ev).await?;
+        }
+        Ok(())
+    }
+
     /// Publish segments for the stream
     pub async fn on_new_segment(&self, segments: Vec<N94Segment>) -> Result<()> {
         let stream_event_id = if let Some(stream_id) = *self.stream_id.lock().await {
@@ -153,13 +162,23 @@ impl N94Publisher {
         let signer = self.client.signer().await?;
         for seg in segments {
             for b in &self.blossom_servers {
-                blobs.push(b.upload(&seg.path, &signer, Some("video/mp2t")).await?);
+                match b.upload(&seg.path, &signer, Some("video/mp2t")).await {
+                    Ok(z) => blobs.push(z),
+                    Err(e) => {
+                        warn!("Failed to upload segment: {}", e);
+                        if let Some(s) = e.source() {
+                            warn!("{}", s);
+                        }
+                    }
+                }
             }
             if let Some(blob) = blobs.first() {
                 let mut n94 = self.blob_to_event_builder(blob)?.tags([
                     Tag::event(stream_event_id),
                     Tag::parse(["d", seg.variant.to_string().as_str()])?,
                     Tag::parse(["index", seg.idx.to_string().as_str()])?,
+                    // TODO: use expiration for now to avoid creating events with dead links
+                    Tag::expiration(Timestamp::now().add(Duration::from_secs(60))),
                 ]);
 
                 // some servers add duration tag
@@ -191,6 +210,7 @@ impl N94Publisher {
     pub async fn on_deleted_segment(&self, segments: Vec<N94Segment>) -> Result<()> {
         let signer = self.client.signer().await?;
         for seg in segments {
+            // delete blossom files
             for b in &self.blossom_servers {
                 if let Err(e) = b.delete(&seg.sha256, &signer).await {
                     warn!(
@@ -201,6 +221,8 @@ impl N94Publisher {
                     );
                 }
             }
+            // request deletion from nostr
+            // TODO
         }
         Ok(())
     }

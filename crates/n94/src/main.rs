@@ -238,7 +238,7 @@ impl Overseer for N94Overseer {
     }
 
     async fn on_end(&self, _pipeline_id: &uuid::Uuid) -> anyhow::Result<()> {
-        // TODO: publish zero length segment?
+        self.publisher.on_end().await?;
         Ok(())
     }
 

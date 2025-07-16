@@ -13,6 +13,6 @@ url.workspace = true
 hex.workspace = true
 log.workspace = true
 
-reqwest = { version = "0.12.20", features = ["stream", "json", "http2"], default-features = false }
+reqwest = { version = "0.12.20", features = ["stream", "json", "http2", "default-tls"], default-features = false }
 base64 = { version = "0.22.1" }
 nostr-sdk = { version = "0.42.0" }
