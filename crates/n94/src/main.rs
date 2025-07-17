@@ -2,9 +2,10 @@ use anyhow::bail;
 use chrono::Utc;
 use clap::Parser;
 use log::{error, info};
-use nostr_sdk::{Client, Keys};
+use nostr_sdk::{Client, Filter, Keys, Kind, NostrSigner, TagKind, Url};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use zap_stream_core::egress::EgressSegment;
 use zap_stream_core::endpoint::{
     EndpointCapability, get_variants_from_endpoint, parse_capabilities,
@@ -22,7 +23,7 @@ struct Args {
     #[clap(short, long)]
     pub nsec: String,
 
-    /// Blossom server to publish to
+    /// Blossom server to publish to, defaults to users own blossom server list
     #[clap(short, long)]
     pub blossom: Vec<String>,
 
@@ -84,11 +85,15 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    if std::env::var("RUST_LOG").is_err() {
+        unsafe {
+            std::env::set_var("RUST_LOG", "info");
+        }
+    }
     pretty_env_logger::init();
 
     info!("Starting N94 Broadcaster!");
-
-    let args = Args::parse();
+    let mut args = Args::parse();
 
     // connect nostr relays
     let client = Client::builder().signer(Keys::parse(&args.nsec)?).build();
@@ -99,6 +104,48 @@ async fn main() -> anyhow::Result<()> {
 
     let data_dir = args.data_dir.unwrap_or("./out".to_string());
 
+    let caps = args
+        .capability
+        .iter()
+        .map(|c| parse_capabilities(&Some(c.clone())))
+        .flatten()
+        .collect();
+
+    // load blossom server list if none specified
+    if args.blossom.len() == 0 {
+        info!("Loading blossom server list...");
+        let pubkey = client.signer().await?.get_public_key().await?;
+        let server_list = client
+            .fetch_events(
+                Filter::new().kind(Kind::Custom(10063)).author(pubkey),
+                Duration::from_secs(5),
+            )
+            .await?;
+
+        if let Some(server_list) = server_list.into_iter().next() {
+            let blossom_list: Vec<String> = server_list
+                .tags
+                .filter(TagKind::Server)
+                .map_while(|t| Url::parse(&t.as_slice()[1]).ok())
+                .map(|t| t.to_string())
+                .collect();
+            args.blossom = blossom_list;
+        }
+    }
+
+    if args.blossom.len() == 0 {
+        error!("No blossom servers found, please specify blossom servers manually!");
+        return Ok(());
+    }
+    info!("Nostr relays:");
+    for s in &args.relay {
+        info!("  - {}", s);
+    }
+    info!("Blossom servers:");
+    for s in &args.blossom {
+        info!("  - {}", s);
+    }
+
     let stream_info = N94StreamInfo {
         title: Some(args.title),
         summary: args.summary,
@@ -108,13 +155,6 @@ async fn main() -> anyhow::Result<()> {
         goal: args.goal,
         ..Default::default()
     };
-
-    let caps = args
-        .capability
-        .iter()
-        .map(|c| parse_capabilities(&Some(c.clone())))
-        .flatten()
-        .collect();
 
     // setup overseer
     let overseer: Arc<dyn Overseer> = Arc::new(N94Overseer::new(

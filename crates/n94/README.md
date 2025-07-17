@@ -29,7 +29,7 @@ n94 \
 ## Required Arguments
 
 - `--nsec`: Your Nostr private key in nsec format for publishing events
-- `--blossom`: Blossom server URL(s) for uploading stream segments
+- `--blossom`: Blossom server URL(s) for uploading stream segments (optional - will load from your Nostr server list if not specified)
 - `--title`: Stream title
 
 ## Optional Arguments
@@ -62,6 +62,15 @@ n94 \
   --summary "Building a Rust application" \
   --hashtag rust \
   --hashtag coding
+```
+
+### Auto-loading Blossom Servers
+```bash
+# N94 will automatically load your Blossom server list from Nostr
+n94 \
+  --nsec nsec1... \
+  --title "My Stream" \
+  --summary "Streaming without manual server configuration"
 ```
 
 ### Multiple Quality Variants
@@ -143,6 +152,13 @@ Upload timeouts are automatically calculated based on segment length:
 - For 6-second segments: 4.8-second timeout
 - For 4-second segments: 3.2-second timeout
 - For 2-second segments: 3-second timeout (minimum)
+
+### Automatic Blossom Server Discovery
+N94 can automatically load your Blossom server list from Nostr:
+- If no `--blossom` servers are specified, N94 will fetch your server list from Nostr (NIP-10063)
+- Uses your configured Nostr relays to find your published server list
+- Falls back to manual configuration if no server list is found
+- Eliminates the need to manually specify servers if you have published your list
 
 ### Automatic Server Management
 - Slow or failing servers are automatically disabled after 3 failures
