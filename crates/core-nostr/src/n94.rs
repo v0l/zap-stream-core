@@ -1,5 +1,6 @@
 use crate::blossom::{BlobDescriptor, Blossom};
 use anyhow::{Result, bail};
+use futures::future::join_all;
 use log::{info, warn};
 use nostr_sdk::prelude::EventDeletionRequest;
 use nostr_sdk::{Client, Event, EventBuilder, EventId, Kind, RelayUrl, Tag, Timestamp};
@@ -8,8 +9,8 @@ use std::ops::Add;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use futures::future::join_all;
-use tokio::sync::Mutex;
+use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::{Mutex, mpsc};
 
 #[derive(Clone, Default)]
 pub struct N94StreamInfo {
@@ -57,28 +58,37 @@ pub struct N94Publisher {
     max_blossom_servers: usize,
     /// Segment length in seconds (used to calculate timeout)
     segment_length: f32,
+    /// Queue for segments to upload (maintains order)
+    upload_queue: mpsc::UnboundedSender<N94Segment>,
 }
 
 impl N94Publisher {
     const STREAM_KIND: Kind = Kind::Custom(1053);
     const MAX_FAILURE_COUNT: u32 = 3;
 
-    pub fn new(client: Client, blossom: &Vec<String>, max_blossom_servers: usize, segment_length: f32) -> Self {
-        Self {
-            client,
+    pub fn new(
+        client: Client,
+        blossom: &Vec<String>,
+        max_blossom_servers: usize,
+        segment_length: f32,
+    ) -> Self {
+        let (upload_queue_tx, upload_queue_rx) = mpsc::unbounded_channel();
+
+        let publisher = Self {
+            client: client.clone(),
             blossom_servers: blossom.iter().map(|s| Blossom::new(s)).collect(),
             stream_id: Arc::new(Mutex::new(None)),
             disabled_servers: Arc::new(Mutex::new(HashMap::new())),
             max_blossom_servers,
             segment_length,
-        }
-    }
+            upload_queue: upload_queue_tx,
+        };
 
-    /// Calculate timeout based on segment length to prevent buffering
-    /// Use 80% of segment length as timeout to ensure we don't block too long
-    fn calculate_timeout(&self) -> Duration {
-        let timeout_secs = ((self.segment_length as f64) * 0.8).max(3.0) as u64;
-        Duration::from_secs(timeout_secs)
+        // Spawn background worker to process uploads in order
+        let worker = publisher.clone();
+        tokio::spawn(async move { worker.upload_worker(upload_queue_rx).await });
+
+        publisher
     }
 
     /// Converts a blob from blossom into a NIP-94 event (1063)
@@ -179,9 +189,12 @@ impl N94Publisher {
         let mut disabled_servers = self.disabled_servers.lock().await;
         let failure_count = disabled_servers.entry(server_url.to_string()).or_insert(0);
         *failure_count += 1;
-        
+
         if *failure_count >= Self::MAX_FAILURE_COUNT {
-            warn!("Disabling blossom server {} after {} failures", server_url, failure_count);
+            warn!(
+                "Disabling blossom server {} after {} failures",
+                server_url, failure_count
+            );
         }
     }
 
@@ -192,60 +205,92 @@ impl N94Publisher {
 
     async fn select_servers_for_upload(&self) -> Vec<&Blossom> {
         use rand::seq::SliceRandom;
-        
+
         let mut available_servers = Vec::new();
-        
+
         for server in &self.blossom_servers {
             let server_url = server.url.to_string();
             if !self.is_server_disabled(&server_url).await {
                 available_servers.push(server);
             }
         }
-        
+
         // Shuffle the available servers for random selection
         let mut rng = rand::thread_rng();
         available_servers.shuffle(&mut rng);
-        
+
         // Return up to max_blossom_servers
-        available_servers.into_iter().take(self.max_blossom_servers).collect()
+        available_servers
+            .into_iter()
+            .take(self.max_blossom_servers)
+            .collect()
     }
 
     /// Publish segments for the stream
+    /// Now queues segments for background upload to avoid blocking pipeline
     pub async fn on_new_segment(&self, segments: Vec<N94Segment>) -> Result<()> {
-        let stream_event_id = if let Some(stream_id) = *self.stream_id.lock().await {
-            stream_id.clone()
-        } else {
-            bail!("Stream ID not set");
-        };
-
-        let mut blobs = vec![];
-        let signer = self.client.signer().await?;
-        
+        // Simply queue the segments - background worker will process them in order
         for seg in segments {
-            let selected_servers = self.select_servers_for_upload().await;
-            
-            info!("Selected {} out of {} blossom servers for upload", 
-                  selected_servers.len(), self.blossom_servers.len());
-            
-            let timeout = self.calculate_timeout();
-            
-            // Create upload tasks for parallel execution
-            let upload_tasks: Vec<_> = selected_servers.into_iter().map(|b| {
-                let server_url = b.url.to_string();
-                let seg_path = seg.path.clone();
-                let signer = signer.clone();
-                let timeout = timeout.clone();
-                
-                async move {
-                    let result = b.upload_with_timeout(&seg_path, &signer, Some("video/mp2t"), timeout).await;
-                    (server_url, result)
+            if let Err(e) = self.upload_queue.send(seg) {
+                warn!("Failed to queue segments for upload: {}", e);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Background worker that processes upload queue in order
+    async fn upload_worker(self, mut rx: UnboundedReceiver<N94Segment>) {
+        while let Some(seg) = rx.recv().await {
+            let stream_event_id = if let Some(stream_id) = *self.stream_id.lock().await {
+                stream_id.clone()
+            } else {
+                warn!("Stream ID not set, skipping segment upload");
+                continue;
+            };
+
+            let signer = match self.client.signer().await {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("Failed to get signer: {}", e);
+                    continue;
                 }
-            }).collect();
-            
+            };
+
+            let selected_servers = self.select_servers_for_upload().await;
+
+            info!(
+                "Selected {} out of {} blossom servers for upload",
+                selected_servers.len(),
+                self.blossom_servers.len()
+            );
+
+            let timeout_secs = ((self.segment_length as f64) * 0.8).max(3.0) as u64;
+            let timeout = Duration::from_secs(timeout_secs);
+
+            // Create upload tasks for parallel execution
+            let upload_tasks: Vec<_> = selected_servers
+                .into_iter()
+                .map(|b| {
+                    let server_url = b.url.to_string();
+                    let seg_path = seg.path.clone();
+                    let signer = signer.clone();
+                    let timeout = timeout.clone();
+
+                    async move {
+                        let result = b
+                            .upload_with_timeout(&seg_path, &signer, Some("video/mp2t"), timeout)
+                            .await;
+                        (server_url, result)
+                    }
+                })
+                .collect();
+
             // Run all uploads in parallel
             let upload_results = join_all(upload_tasks).await;
-            
-            // Process results
+
+            // Process results and track server status
+            let mut blobs = vec![];
             for (server_url, result) in upload_results {
                 match result {
                     Ok(z) => {
@@ -257,46 +302,59 @@ impl N94Publisher {
                         if let Some(s) = e.source() {
                             warn!("{}", s);
                         }
-                        
+
                         if e.to_string().contains("timeout") {
                             warn!("Upload timeout detected for server: {}", server_url);
                         }
-                        
+
                         self.mark_server_failure(&server_url).await;
                     }
                 }
             }
-            if let Some(blob) = blobs.first() {
-                let mut n94 = self.blob_to_event_builder(blob)?.tags([
-                    Tag::event(stream_event_id),
-                    Tag::parse(["d", seg.variant.to_string().as_str()])?,
-                    Tag::parse(["index", seg.idx.to_string().as_str()])?,
-                    // TODO: use expiration for now to avoid creating events with dead links
-                    Tag::expiration(Timestamp::now().add(Duration::from_secs(60))),
-                ]);
 
-                // some servers add duration tag
-                if !blob
-                    .nip94
-                    .as_ref()
-                    .map(|a| a.iter().any(|b| b[0] == "duration"))
-                    .unwrap_or(false)
-                {
-                    n94 = n94.tag(Tag::parse(["duration", seg.duration.to_string().as_str()])?);
-                }
-
-                for b in blobs.iter().skip(1) {
-                    n94 = n94.tag(Tag::parse(["url", &b.url])?);
-                }
-                let n94 = self.client.sign_event_builder(n94).await?;
-                let cc = self.client.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = cc.send_event(&n94).await {
-                        warn!("Error sending event: {}", e);
-                    }
-                });
+            // Create and publish NIP-94 event if we have at least one successful upload
+            match self.create_n94_event(&blobs, stream_event_id, &seg).await {
+                Ok(_) => {}
+                Err(e) => warn!("Failed to create N94 event: {}", e),
             }
         }
+    }
+
+    /// Helper to create and publish N94 event
+    async fn create_n94_event(
+        &self,
+        blobs: &[BlobDescriptor],
+        stream_event_id: EventId,
+        seg: &N94Segment,
+    ) -> Result<()> {
+        let blob = if let Some(blob) = blobs.first() {
+            blob
+        } else {
+            bail!("Cant create N94 event from no blobs");
+        };
+        let mut n94 = self.blob_to_event_builder(blob)?.tags([
+            Tag::event(stream_event_id),
+            Tag::parse(["d", seg.variant.to_string().as_str()])?,
+            Tag::parse(["index", seg.idx.to_string().as_str()])?,
+            // TODO: use expiration for now to avoid creating events with dead links
+            Tag::expiration(Timestamp::now().add(Duration::from_secs(60))),
+        ]);
+
+        // some servers add duration tag
+        if !blob
+            .nip94
+            .as_ref()
+            .map(|a| a.iter().any(|b| b[0] == "duration"))
+            .unwrap_or(false)
+        {
+            n94 = n94.tag(Tag::parse(["duration", seg.duration.to_string().as_str()])?);
+        }
+
+        for b in blobs.iter().skip(1) {
+            n94 = n94.tag(Tag::parse(["url", &b.url])?);
+        }
+        let n94 = self.client.sign_event_builder(n94).await?;
+        self.client.send_event(&n94).await?;
 
         Ok(())
     }
