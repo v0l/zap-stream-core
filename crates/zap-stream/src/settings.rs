@@ -44,6 +44,7 @@ impl Display for LocalOverseerVariant {
 pub struct OverseerConfig {
     /// MySQL connection string
     pub database: String,
+    #[cfg(feature = "zap-stream")]
     /// LND node connection details
     pub lnd: LndSettings,
     /// Relays to publish events to
