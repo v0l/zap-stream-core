@@ -146,6 +146,36 @@ impl HlsMuxer {
         );
         Ok(EgressResult::None)
     }
+
+    /// Collect all remaining segments that will be deleted during cleanup
+    pub fn collect_remaining_segments(&self) -> Vec<crate::egress::EgressSegment> {
+        let mut remaining_segments = Vec::new();
+        
+        for variant in &self.variants {
+            let video_var_id = variant
+                .video_stream()
+                .unwrap_or(variant.streams.first().unwrap())
+                .id()
+                .clone();
+                
+            for segment in &variant.segments {
+                if let Some(egress_segment) = segment.to_egress_segment(
+                    video_var_id,
+                    variant.map_segment_path(
+                        match segment {
+                            segment::HlsSegment::Full(seg) => seg.index,
+                            segment::HlsSegment::Partial(seg) => seg.parent_index,
+                        },
+                        variant.segment_type
+                    )
+                ) {
+                    remaining_segments.push(egress_segment);
+                }
+            }
+        }
+        
+        remaining_segments
+    }
 }
 
 impl Drop for HlsMuxer {

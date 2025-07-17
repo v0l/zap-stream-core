@@ -1,6 +1,9 @@
 use crate::mux::hls::variant::HlsVariant;
 use crate::mux::SegmentType;
+use crate::egress::EgressSegment;
 use m3u8_rs::{ByteRange, MediaSegment, MediaSegmentType, Part};
+use std::path::PathBuf;
+use uuid::Uuid;
 
 #[derive(PartialEq)]
 pub enum HlsSegment {
@@ -13,6 +16,20 @@ impl HlsSegment {
         match self {
             HlsSegment::Full(f) => f.to_media_segment(),
             HlsSegment::Partial(p) => p.to_media_segment(),
+        }
+    }
+
+    /// Convert to EgressSegment with variant ID and path
+    pub fn to_egress_segment(&self, variant_id: Uuid, path: PathBuf) -> Option<EgressSegment> {
+        match self {
+            HlsSegment::Full(seg) => Some(EgressSegment {
+                variant: variant_id,
+                idx: seg.index,
+                duration: seg.duration,
+                path,
+                sha256: seg.sha256,
+            }),
+            HlsSegment::Partial(_) => None, // Partial segments don't have full segment info
         }
     }
 }

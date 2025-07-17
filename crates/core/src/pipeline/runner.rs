@@ -582,13 +582,6 @@ impl PipelineRunner {
 
     /// EOF, cleanup
     unsafe fn flush(&mut self) -> Result<()> {
-        if self.config.is_some() {
-            self.handle.block_on(async {
-                if let Err(e) = self.overseer.on_end(&self.connection.id).await {
-                    error!("Failed to end stream: {e}");
-                }
-            });
-        }
         for (var, enc) in &mut self.encoders {
             for mut pkt in enc.encode_frame(ptr::null_mut())? {
                 for eg in self.egress.iter_mut() {
@@ -597,9 +590,36 @@ impl PipelineRunner {
                 av_packet_free(&mut pkt);
             }
         }
+
+        // Reset egress handlers and collect deleted segments
+        let mut reset_results = Vec::new();
         for eg in self.egress.iter_mut() {
-            eg.reset()?;
+            let result = eg.reset()?;
+            reset_results.push(result);
         }
+
+        // Process reset results and notify overseer of deleted segments
+        if self.config.is_some() {
+            self.handle.block_on(async {
+                for result in reset_results {
+                    if let EgressResult::Segments { created, deleted } = result {
+                        if !deleted.is_empty() {
+                            if let Err(e) = self
+                                .overseer
+                                .on_segments(&self.connection.id, &created, &deleted)
+                                .await
+                            {
+                                error!("Failed to notify overseer of deleted segments: {e}");
+                            }
+                        }
+                    }
+                }
+                if let Err(e) = self.overseer.on_end(&self.connection.id).await {
+                    error!("Failed to end stream: {e}");
+                }
+            });
+        }
+
         Ok(())
     }
 

@@ -74,7 +74,8 @@ impl Egress for RecorderEgress {
         Ok(EgressResult::None)
     }
 
-    unsafe fn reset(&mut self) -> Result<()> {
-        self.muxer.close()
+    unsafe fn reset(&mut self) -> Result<EgressResult> {
+        self.muxer.close()?;
+        Ok(EgressResult::None)
     }
 }

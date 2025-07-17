@@ -35,9 +35,9 @@ pub struct HlsVariant {
     /// Output directory (base)
     out_dir: PathBuf,
     /// List of segments to be included in the playlist
-    segments: Vec<HlsSegment>,
+    pub(crate) segments: Vec<HlsSegment>,
     /// Type of segments to create
-    segment_type: SegmentType,
+    pub(crate) segment_type: SegmentType,
     /// Timestamp of the start of the current segment
     current_segment_start: f64,
     /// Timestamp of the start of the current partial
@@ -464,7 +464,7 @@ impl HlsVariant {
         })
     }
 
-    fn video_stream(&self) -> Option<&HlsVariantStream> {
+    pub fn video_stream(&self) -> Option<&HlsVariantStream> {
         self.streams
             .iter()
             .find(|a| matches!(*a, HlsVariantStream::Video { .. }))

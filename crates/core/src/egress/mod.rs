@@ -12,7 +12,7 @@ pub mod rtmp;
 pub trait Egress {
     unsafe fn process_pkt(&mut self, packet: *mut AVPacket, variant: &Uuid)
         -> Result<EgressResult>;
-    unsafe fn reset(&mut self) -> Result<()>;
+    unsafe fn reset(&mut self) -> Result<EgressResult>;
 }
 
 #[derive(Debug, Clone)]

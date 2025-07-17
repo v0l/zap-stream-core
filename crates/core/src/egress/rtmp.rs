@@ -661,7 +661,7 @@ impl Egress for RtmpEgress {
         Ok(EgressResult::None)
     }
 
-    unsafe fn reset(&mut self) -> anyhow::Result<()> {
-        Ok(())
+    unsafe fn reset(&mut self) -> anyhow::Result<EgressResult> {
+        Ok(EgressResult::None)
     }
 }
