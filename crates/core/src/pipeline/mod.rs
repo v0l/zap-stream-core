@@ -11,7 +11,7 @@ pub mod runner;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum EgressType {
     /// HLS output egress
-    HLS(HashSet<Uuid>),
+    HLS(HashSet<Uuid>, f32),
 
     /// Record streams to local disk
     Recorder(HashSet<Uuid>),
@@ -23,7 +23,7 @@ pub enum EgressType {
 impl EgressType {
     pub fn variants(&self) -> &HashSet<Uuid> {
         match self {
-            EgressType::HLS(a) => a,
+            EgressType::HLS(a, _) => a,
             EgressType::Recorder(a) => a,
             EgressType::RTMPForwarder(a, _) => a,
         }
@@ -33,7 +33,7 @@ impl EgressType {
 impl Display for EgressType {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            EgressType::HLS(_) => write!(f, "HLS"),
+            EgressType::HLS(_, _) => write!(f, "HLS"),
             EgressType::Recorder(_) => write!(f, "Recorder"),
             EgressType::RTMPForwarder(_, d) => write!(f, "RTMPForwarder => {}", d),
         }

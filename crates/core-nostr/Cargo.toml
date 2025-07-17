@@ -16,3 +16,5 @@ log.workspace = true
 reqwest = { version = "0.12.20", features = ["stream", "json", "http2", "default-tls"], default-features = false }
 base64 = { version = "0.22.1" }
 nostr-sdk = { version = "0.42.0" }
+rand = { version = "0.8.5" }
+futures = { version = "0.3" }

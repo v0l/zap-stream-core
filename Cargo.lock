@@ -5263,9 +5263,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "futures",
  "hex",
  "log 0.4.27",
  "nostr-sdk",
+ "rand 0.8.5",
  "reqwest",
  "serde",
  "sha2 0.10.9",

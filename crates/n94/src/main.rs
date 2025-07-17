@@ -26,6 +26,14 @@ struct Args {
     #[clap(short, long)]
     pub blossom: Vec<String>,
 
+    /// Maximum number of blossom servers to use concurrently
+    #[clap(long, default_value = "3")]
+    pub max_blossom_servers: usize,
+
+    /// Segment length in seconds
+    #[clap(long, default_value = "6.0")]
+    pub segment_length: f32,
+
     /// Nostr relay to publish events to
     #[clap(
         short,
@@ -109,8 +117,14 @@ async fn main() -> anyhow::Result<()> {
         .collect();
 
     // setup overseer
-    let overseer: Arc<dyn Overseer> =
-        Arc::new(N94Overseer::new(client, args.blossom, stream_info, caps));
+    let overseer: Arc<dyn Overseer> = Arc::new(N94Overseer::new(
+        client,
+        args.blossom,
+        args.max_blossom_servers,
+        args.segment_length,
+        stream_info,
+        caps,
+    ));
 
     // Create ingress listeners
     let mut tasks = vec![];
@@ -136,19 +150,23 @@ struct N94Overseer {
     pub stream_info: N94StreamInfo,
     pub publisher: N94Publisher,
     pub capabilities: Vec<EndpointCapability>,
+    pub segment_length: f32,
 }
 
 impl N94Overseer {
     pub fn new(
         client: Client,
         blossom: Vec<String>,
+        max_blossom_servers: usize,
+        segment_length: f32,
         stream_info: N94StreamInfo,
         capabilities: Vec<EndpointCapability>,
     ) -> Self {
         Self {
-            publisher: N94Publisher::new(client, &blossom),
+            publisher: N94Publisher::new(client, &blossom, max_blossom_servers, segment_length),
             stream_info,
             capabilities,
+            segment_length,
         }
     }
 }
@@ -203,6 +221,7 @@ impl Overseer for N94Overseer {
         Ok(PipelineConfig {
             egress: vec![EgressType::HLS(
                 cfg.variants.iter().map(|v| v.id()).collect(),
+                self.segment_length,
             )],
             variants: cfg.variants,
             ingress_info: stream_info.clone(),

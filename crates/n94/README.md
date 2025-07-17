@@ -48,6 +48,8 @@ n94 \
 ### Technical Configuration
 - `--data-dir`: Directory for temporary files (default: `./out`)
 - `--capability`: Video quality variants (default: 1080p/6M, 720p/4M, 480p/2M, 240p/1M)
+- `--max-blossom-servers`: Maximum number of blossom servers to use concurrently (default: 3)
+- `--segment-length`: Segment length in seconds (default: 6.0)
 
 ## Example Usage
 
@@ -92,6 +94,30 @@ n94 \
   --title "Test Stream"
 ```
 
+### Optimized Blossom Configuration
+```bash
+n94 \
+  --nsec nsec1... \
+  --blossom https://blossom1.com \
+  --blossom https://blossom2.com \
+  --blossom https://blossom3.com \
+  --blossom https://blossom4.com \
+  --blossom https://blossom5.com \
+  --max-blossom-servers 3 \
+  --segment-length 4.0 \
+  --title "Fast Stream"
+```
+
+### Low Latency Configuration
+```bash
+n94 \
+  --nsec nsec1... \
+  --blossom https://blossom.example.com \
+  --segment-length 2.0 \
+  --max-blossom-servers 2 \
+  --title "Low Latency Stream"
+```
+
 ## Streaming to N94
 
 Once N94 is running, you can stream to it using:
@@ -106,12 +132,35 @@ ffmpeg -re -i input.mp4 -c copy -f flv rtmp://localhost:1935/live
 ffmpeg -re -i input.mp4 -c copy -f mpegts srt://localhost:8554
 ```
 
+## Performance Optimizations
+
+### Parallel Blossom Uploads
+N94 uploads segments to multiple Blossom servers in parallel, significantly reducing upload time and improving stream reliability.
+
+### Smart Timeout Management
+Upload timeouts are automatically calculated based on segment length:
+- Timeout = 80% of segment length (minimum 3 seconds)
+- For 6-second segments: 4.8-second timeout
+- For 4-second segments: 3.2-second timeout
+- For 2-second segments: 3-second timeout (minimum)
+
+### Automatic Server Management
+- Slow or failing servers are automatically disabled after 3 failures
+- Random server selection distributes load evenly
+- Failed servers can recover and be re-enabled on successful uploads
+
+### Configurable Concurrency
+Use `--max-blossom-servers` to limit concurrent uploads:
+- Higher values: Better redundancy, more bandwidth usage
+- Lower values: Less bandwidth usage, reduced server load
+- Default of 3 provides good balance of performance and reliability
+
 ## Output
 
 N94 will:
 1. Accept your video stream
 2. Transcode it to multiple quality variants
-3. Upload HLS segments to configured Blossom servers
+3. Upload HLS segments to configured Blossom servers (in parallel)
 4. Publish stream events to Nostr relays
 5. Generate stream manifests accessible via the configured data directory
 

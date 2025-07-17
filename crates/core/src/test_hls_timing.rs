@@ -200,7 +200,7 @@ impl HlsTimingTester {
             codec: "libx264".to_string(),
             profile: AV_PROFILE_H264_MAIN as usize,
             level: 51,
-            keyframe_interval: 60,
+            keyframe_interval: (VIDEO_FPS * 2.0) as _,
             pixel_format: AV_PIX_FMT_YUV420P as u32,
         };
 
@@ -233,7 +233,7 @@ impl HlsTimingTester {
 
         // Create HLS muxer
         let mut hls_muxer =
-            HlsMuxer::new(output_dir.to_path_buf(), variants.into_iter(), segment_type)?;
+            HlsMuxer::new(output_dir.to_path_buf(), variants.into_iter(), segment_type, 2.0)?;
 
         // Create frame generator
         let frame_size = unsafe { (*audio_encoder.codec_context()).frame_size as _ };

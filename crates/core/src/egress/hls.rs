@@ -19,9 +19,15 @@ impl HlsEgress {
         out_dir: PathBuf,
         encoders: impl Iterator<Item = (&'a VariantStream, EncoderOrSourceStream<'a>)>,
         segment_type: SegmentType,
+        segment_length: f32,
     ) -> Result<Self> {
         Ok(Self {
-            mux: HlsMuxer::new(out_dir.join(Self::PATH), encoders, segment_type)?,
+            mux: HlsMuxer::new(
+                out_dir.join(Self::PATH),
+                encoders,
+                segment_type,
+                segment_length,
+            )?,
         })
     }
 }

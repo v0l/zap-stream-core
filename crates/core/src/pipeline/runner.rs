@@ -806,9 +806,13 @@ impl PipelineRunner {
                 }
             });
             match e {
-                EgressType::HLS(_) => {
-                    let hls =
-                        HlsEgress::new(self.out_dir.clone(), variant_mapping, SegmentType::MPEGTS)?;
+                EgressType::HLS(_, len) => {
+                    let hls = HlsEgress::new(
+                        self.out_dir.clone(),
+                        variant_mapping,
+                        SegmentType::MPEGTS,
+                        *len,
+                    )?;
                     self.egress.push(Box::new(hls));
                 }
                 EgressType::Recorder(_) => {

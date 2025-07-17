@@ -64,6 +64,7 @@ impl HlsVariant {
         group: usize,
         encoded_vars: impl Iterator<Item = (&'a VariantStream, EncoderOrSourceStream<'a>)>,
         segment_type: SegmentType,
+        mut segment_length: f32
     ) -> Result<Self> {
         let name = format!("stream_{}", group);
 
@@ -86,7 +87,6 @@ impl HlsVariant {
         let mut streams = Vec::new();
         let mut ref_stream_index = -1;
         let mut has_video = false;
-        let mut segment_length = 1.0;
 
         for (var, enc) in encoded_vars {
             match enc {

@@ -42,6 +42,8 @@ pub struct ZapStreamOverseer {
     stream_manager: StreamManager,
     /// NIP-5E publisher
     n94: Option<N94Publisher>,
+    /// HLS segment length
+    segment_length: f32,
 }
 
 impl ZapStreamOverseer {
@@ -54,6 +56,7 @@ impl ZapStreamOverseer {
             &settings.overseer.lnd,
             &settings.overseer.relays,
             &settings.overseer.blossom,
+            settings.overseer.segment_length.unwrap_or(2.0),
         )
         .await?)
     }
@@ -65,6 +68,7 @@ impl ZapStreamOverseer {
         #[cfg(feature = "zap-stream")] lnd: &LndSettings,
         relays: &Vec<String>,
         blossom_servers: &Option<Vec<String>>,
+        segment_length: f32,
     ) -> Result<Self> {
         let db = ZapStreamDb::new(db).await?;
         db.migrate().await?;
@@ -115,11 +119,12 @@ impl ZapStreamOverseer {
             #[cfg(feature = "zap-stream")]
             lnd,
             n94: if let Some(s) = blossom_servers {
-                Some(N94Publisher::new(client.clone(), s))
+                Some(N94Publisher::new(client.clone(), s, 3, segment_length))
             } else {
                 None
             },
             client,
+            segment_length,
             public_url: public_url.clone(),
             stream_manager: StreamManager::new(),
         };
@@ -346,7 +351,7 @@ impl Overseer for ZapStreamOverseer {
 
         let mut egress = vec![];
         let all_var_ids: HashSet<Uuid> = cfg.variants.iter().map(|v| v.id()).collect();
-        egress.push(EgressType::HLS(all_var_ids.clone()));
+        egress.push(EgressType::HLS(all_var_ids.clone(), self.segment_length));
         if let Some(EndpointCapability::DVR { height }) = caps
             .iter()
             .find(|c| matches!(c, EndpointCapability::DVR { .. }))

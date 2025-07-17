@@ -52,6 +52,8 @@ pub struct OverseerConfig {
     pub nsec: String,
     /// Blossom servers
     pub blossom: Option<Vec<String>>,
+    /// Segment length for HLS egress
+    pub segment_length: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

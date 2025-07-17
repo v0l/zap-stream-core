@@ -83,6 +83,7 @@ impl HlsMuxer {
         out_dir: PathBuf,
         encoders: impl Iterator<Item = (&'a VariantStream, EncoderOrSourceStream<'a>)>,
         segment_type: SegmentType,
+        segment_length: f32,
     ) -> Result<Self> {
         if !out_dir.exists() {
             std::fs::create_dir_all(&out_dir)?;
@@ -92,7 +93,7 @@ impl HlsMuxer {
             .sorted_by(|a, b| a.0.group_id().cmp(&b.0.group_id()))
             .chunk_by(|a| a.0.group_id())
         {
-            let var = HlsVariant::new(out_dir.clone(), k, group, segment_type)?;
+            let var = HlsVariant::new(out_dir.clone(), k, group, segment_type, segment_length)?;
             vars.push(var);
         }
 

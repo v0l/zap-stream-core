@@ -3,10 +3,12 @@ use anyhow::{Result, bail};
 use log::{info, warn};
 use nostr_sdk::prelude::EventDeletionRequest;
 use nostr_sdk::{Client, Event, EventBuilder, EventId, Kind, RelayUrl, Tag, Timestamp};
+use std::collections::HashMap;
 use std::ops::Add;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use futures::future::join_all;
 use tokio::sync::Mutex;
 
 #[derive(Clone, Default)]
@@ -49,17 +51,34 @@ pub struct N94Publisher {
     blossom_servers: Vec<Blossom>,
     /// Published stream event id
     stream_id: Arc<Mutex<Option<EventId>>>,
+    /// Track slow/failed servers and disable them
+    disabled_servers: Arc<Mutex<HashMap<String, u32>>>,
+    /// Maximum number of blossom servers to use concurrently
+    max_blossom_servers: usize,
+    /// Segment length in seconds (used to calculate timeout)
+    segment_length: f32,
 }
 
 impl N94Publisher {
     const STREAM_KIND: Kind = Kind::Custom(1053);
+    const MAX_FAILURE_COUNT: u32 = 3;
 
-    pub fn new(client: Client, blossom: &Vec<String>) -> Self {
+    pub fn new(client: Client, blossom: &Vec<String>, max_blossom_servers: usize, segment_length: f32) -> Self {
         Self {
             client,
             blossom_servers: blossom.iter().map(|s| Blossom::new(s)).collect(),
             stream_id: Arc::new(Mutex::new(None)),
+            disabled_servers: Arc::new(Mutex::new(HashMap::new())),
+            max_blossom_servers,
+            segment_length,
         }
+    }
+
+    /// Calculate timeout based on segment length to prevent buffering
+    /// Use 80% of segment length as timeout to ensure we don't block too long
+    fn calculate_timeout(&self) -> Duration {
+        let timeout_secs = ((self.segment_length as f64) * 0.8).max(3.0) as u64;
+        Duration::from_secs(timeout_secs)
     }
 
     /// Converts a blob from blossom into a NIP-94 event (1063)
@@ -151,6 +170,46 @@ impl N94Publisher {
         Ok(())
     }
 
+    async fn is_server_disabled(&self, server_url: &str) -> bool {
+        let disabled_servers = self.disabled_servers.lock().await;
+        disabled_servers.get(server_url).copied().unwrap_or(0) >= Self::MAX_FAILURE_COUNT
+    }
+
+    async fn mark_server_failure(&self, server_url: &str) {
+        let mut disabled_servers = self.disabled_servers.lock().await;
+        let failure_count = disabled_servers.entry(server_url.to_string()).or_insert(0);
+        *failure_count += 1;
+        
+        if *failure_count >= Self::MAX_FAILURE_COUNT {
+            warn!("Disabling blossom server {} after {} failures", server_url, failure_count);
+        }
+    }
+
+    async fn mark_server_success(&self, server_url: &str) {
+        let mut disabled_servers = self.disabled_servers.lock().await;
+        disabled_servers.remove(server_url);
+    }
+
+    async fn select_servers_for_upload(&self) -> Vec<&Blossom> {
+        use rand::seq::SliceRandom;
+        
+        let mut available_servers = Vec::new();
+        
+        for server in &self.blossom_servers {
+            let server_url = server.url.to_string();
+            if !self.is_server_disabled(&server_url).await {
+                available_servers.push(server);
+            }
+        }
+        
+        // Shuffle the available servers for random selection
+        let mut rng = rand::thread_rng();
+        available_servers.shuffle(&mut rng);
+        
+        // Return up to max_blossom_servers
+        available_servers.into_iter().take(self.max_blossom_servers).collect()
+    }
+
     /// Publish segments for the stream
     pub async fn on_new_segment(&self, segments: Vec<N94Segment>) -> Result<()> {
         let stream_event_id = if let Some(stream_id) = *self.stream_id.lock().await {
@@ -161,15 +220,49 @@ impl N94Publisher {
 
         let mut blobs = vec![];
         let signer = self.client.signer().await?;
+        
         for seg in segments {
-            for b in &self.blossom_servers {
-                match b.upload(&seg.path, &signer, Some("video/mp2t")).await {
-                    Ok(z) => blobs.push(z),
+            let selected_servers = self.select_servers_for_upload().await;
+            
+            info!("Selected {} out of {} blossom servers for upload", 
+                  selected_servers.len(), self.blossom_servers.len());
+            
+            let timeout = self.calculate_timeout();
+            
+            // Create upload tasks for parallel execution
+            let upload_tasks: Vec<_> = selected_servers.into_iter().map(|b| {
+                let server_url = b.url.to_string();
+                let seg_path = seg.path.clone();
+                let signer = signer.clone();
+                let timeout = timeout.clone();
+                
+                async move {
+                    let result = b.upload_with_timeout(&seg_path, &signer, Some("video/mp2t"), timeout).await;
+                    (server_url, result)
+                }
+            }).collect();
+            
+            // Run all uploads in parallel
+            let upload_results = join_all(upload_tasks).await;
+            
+            // Process results
+            for (server_url, result) in upload_results {
+                match result {
+                    Ok(z) => {
+                        blobs.push(z);
+                        self.mark_server_success(&server_url).await;
+                    }
                     Err(e) => {
-                        warn!("Failed to upload segment: {}", e);
+                        warn!("Failed to upload segment to {}: {}", server_url, e);
                         if let Some(s) = e.source() {
                             warn!("{}", s);
                         }
+                        
+                        if e.to_string().contains("timeout") {
+                            warn!("Upload timeout detected for server: {}", server_url);
+                        }
+                        
+                        self.mark_server_failure(&server_url).await;
                     }
                 }
             }
