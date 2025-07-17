@@ -64,7 +64,7 @@ impl N94Publisher {
 
     /// Converts a blob from blossom into a NIP-94 event (1063)
     fn blob_to_event_builder(&self, blob: &BlobDescriptor) -> Result<EventBuilder> {
-        let tags = if let Some(tags) = blob.nip94.as_ref() {
+        let mut tags = if let Some(tags) = blob.nip94.as_ref() {
             tags.iter().map_while(|v| Tag::parse(v).ok()).collect()
         } else {
             let mut tags = vec![
@@ -77,6 +77,7 @@ impl N94Publisher {
             }
             tags
         };
+        tags.push(Tag::parse(["k", "1053"])?);
 
         Ok(EventBuilder::new(Kind::FileMetadata, "").tags(tags))
     }
