@@ -345,6 +345,11 @@ async fn process_event(event: Event, client: Client, streams: StreamList) -> Res
 
 #[rocket::main]
 async fn main() -> Result<()> {
+    if std::env::var("RUST_LOG").is_err() {
+        unsafe {
+            std::env::set_var("RUST_LOG", "info");
+        }
+    }
     pretty_env_logger::init();
 
     let args: Args = Args::parse();
