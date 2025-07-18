@@ -24,7 +24,8 @@ apt install \
     libswscale-dev \
     libx264-dev \
     libwebp-dev \
-    protobuf-compiler
+    protobuf-compiler \
+    libcudart12
 ```
 
 Create a dedicated user:
@@ -109,6 +110,13 @@ ExecStart=/usr/local/bin/zap-stream
 
 [Install]
 WantedBy=network.target
+```
+
+Start `zap-stream` and check logs
+```bash
+systemctl daemon-reload
+systemctl enable --now zap-stream
+journalctl -f -u zap-stream
 ```
 
 ## Admin UI
