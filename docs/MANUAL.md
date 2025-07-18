@@ -3,9 +3,11 @@
 How to deploy `zap-stream` on a clean linux server.
 
 ## Dependencies
+
 Install [rustup](https://rustup.rs) if you don't already have it.
 
 Install build dependencies:
+
 ```bash
 apt install \
     build-essential \
@@ -26,6 +28,7 @@ apt install \
 ```
 
 Create a dedicated user:
+
 ```bash
 useradd zap-stream
 mkdir -p /usr/share/zap-stream
@@ -33,11 +36,24 @@ chown zap-stream:zap-stream /usr/share/zap-stream
 ```
 
 ## Install `zap-stream`
+
 ```bash
-cargo install zap-stream --git https://github.com/v0l/zap-stream-core --root /usr/local
+cargo install zap-stream --git https://github.com/v0l/zap-stream-core --root /usr/local --bin zap-stream
+```
+
+### Standalone Install
+
+If you don't want to add lightning LND support, you can build the service without LND integration. (This may change in
+the future)
+
+Install without LND:
+
+```bash
+cargo install zap-stream --git https://github.com/v0l/zap-stream-core --root /usr/local --no-default-features --features rtmp --bin zap-stream
 ```
 
 Minimal config, copy it to `/usr/share/zap-stream/config.yaml`:
+
 ```yaml
 endpoints:
   - "rtmp://0.0.0.0:1935"
@@ -53,7 +69,7 @@ overseer:
     - "wss://relay.primal.net"
     - "wss://nos.lol"
   database: "mysql://zap-stream:zap-stream@localhost:3306/zap_stream?max_connections=2"
-  # LND config in (zap-stream build only)
+  # LND config (zap-stream build only)
   lnd:
     address: "https://127.0.0.1:10001"
     cert: "tls.cert"
@@ -61,11 +77,13 @@ overseer:
 ```
 
 ## Install `mariadb`
+
 ```bash
 apt install mariadb-server
 ```
 
 Setup database
+
 ```mysql
 create user 'zap-stream'@'localhost' identified by 'zap-stream';
 create database zap_stream;
@@ -74,7 +92,9 @@ flush privileges;
 ```
 
 ## SystemD service
+
 Setup systemd service `/etc/systemd/system/zap-stream.service`:
+
 ```
 [Unit]
 Description=zap-stream
@@ -92,9 +112,10 @@ WantedBy=network.target
 ```
 
 ## Admin UI
+
 The admin UI lets you manage the users and endpoint configurations
 
-Install Node.js if you dont already have it:
+Install Node.js if you don't already have it:
 
 ```bash
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
@@ -103,6 +124,7 @@ nvm install 22
 ```
 
 Clone the admin UI and build it
+
 ```bash
 git clone https://github.com/v0l/zap-stream-admin.git
 cd zap-stream-admin
@@ -110,25 +132,28 @@ npx yarn
 VITE_API_BASE_URL=http://my.stream.server npx yarn build
 ```
 
+`VITE_API_BASE_URL` should point the URL you will use for the API backend, NOT the admin URL!
+
 Copy the site to the zap-stream dir
+
 ```bash
 mv build /usr/share/zap-stream/admin
 ```
 
-# Nginx Proxy
+## Nginx Proxy
+
 To serve both the API and Admin UI, as well as SSL certs, you can use nginx as a reverse proxy to the service.
 
 Install nginx:
+
 ```bash
 apt install nginx
 ```
 
 Configure proxy:
+
 ```conf
-map $http_upgrade $connection_upgrade {
-    default upgrade;
-    ''      close;
-}
+# API proxy
 server {
     listen 80;
     listen [::]:80;
@@ -151,6 +176,7 @@ server {
     }
 }
 
+# Admin UI, using a different sub-domain
 server {
     listen 80;
     listen [::]:80;
@@ -159,32 +185,47 @@ server {
     root /usr/share/zap-stream/admin;
     
     location / {
-        try_files $uri $uri/ index.html =404;
+        try_files $uri $uri/ /index.html =404;
     }
 }
 ```
 
-Configure zap-stream to listen on localhost instead of the public interface:
+Configure `zap-stream` to listen on localhost instead of the public interface:
+
 ```yaml
 listen_http: "127.0.0.1:8080"
 ```
 
-Open your admin site: `http://admin.my.stream.server` and login to insert your pubkey in the database
+Restart services:
+
+```bash
+systemctl restart zap-stream nginx
+```
+
+Open your admin site: `http://admin.my.stream.server` and login to insert your pubkey in the database.
 
 ## Admin setup
-Once you login to the admin dashboard you might see that you dont have permissions, you can mark yourself as admin using SQL command:
+
+Once you login to the admin dashboard you might see that you don't have permissions, you can mark yourself as admin
+using SQL command:
 
 Start sql cli:
+
 ```bash
 mariadb -D zap-stream
 ```
 
 Update user `1` (assuming you are the first person to open admin page) to admin:
+
 ```sql
-update user set is_admin = 1 where id = 1;
+update user
+set is_admin = 1
+where id = 1;
 ```
 
 You can check the user id by just selecting all users from the table first:
+
 ```sql
-select id,hex(pubkey),is_admin from user;
+select id, hex(pubkey), is_admin
+from user;
 ```
