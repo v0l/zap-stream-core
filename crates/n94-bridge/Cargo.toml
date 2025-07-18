@@ -1,0 +1,16 @@
+[package]
+name = "n94-bridge"
+description = "Brdige http service serving HLS playlists for NIP-5E streams"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+log.workspace = true
+tokio.workspace = true
+pretty_env_logger.workspace = true
+nostr-sdk.workspace = true
+m3u8-rs.workspace = true
+anyhow.workspace = true
+itertools.workspace = true
+rocket = { version = "0.5.1", features = ["json"] }
+clap = { version = "4.5.41", features = ["derive"] }

@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/core", "crates/core-nostr", "crates/n94",
+    "crates/core", "crates/core-nostr", "crates/n94", "crates/n94-bridge",
     "crates/zap-stream",
     "crates/zap-stream-db"
 ]
