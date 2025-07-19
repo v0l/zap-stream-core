@@ -155,6 +155,16 @@ pub fn get_variants_from_endpoint<'a>(
                         continue;
                     }
 
+                    // Skip variant if source resolution matches and source variant is enabled
+                    if video_src.height == output_height as _ && 
+                       capabilities.iter().any(|cap| matches!(cap, EndpointCapability::SourceVariant)) {
+                        info!(
+                            "Skipping variant {}p, source resolution matches and source variant is enabled",
+                            height
+                        );
+                        continue;
+                    }
+
                     // Calculate dimensions maintaining aspect ratio
                     let input_width = video_src.width as f32;
                     let input_height = video_src.height as f32;
