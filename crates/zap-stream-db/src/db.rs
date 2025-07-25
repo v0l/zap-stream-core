@@ -612,7 +612,7 @@ impl ZapStreamDb {
                 target_user.pubkey as target_pubkey
             from audit_log al
             join user admin_user on al.admin_id = admin_user.id
-            left join user target_user on al.target_type = 'user' and al.target_id = cast(target_user.id as char)
+            left join user target_user on al.target_type = 'user' and al.target_id = cast(target_user.id as char) collate utf8mb4_unicode_ci
             order by al.created desc
             limit ? offset ?
             "#,
