@@ -84,8 +84,73 @@ struct StreamSegment {
 }
 
 #[rocket::get("/")]
-async fn index() -> Result<(), Status> {
-    Err(Status::NotFound)
+async fn index(streams: &State<StreamList>) -> Result<rocket::response::content::RawHtml<String>, Status> {
+    let streams_guard = streams.read().await;
+    let mut html = String::from(r#"<!DOCTYPE html>
+<html>
+<head>
+    <title>N94 Bridge - Stream List</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        h1 { color: #333; }
+        .stream { border: 1px solid #ddd; margin: 10px 0; padding: 15px; border-radius: 5px; }
+        .stream-id { font-family: monospace; color: #666; font-size: 0.9em; }
+        .variant { margin: 5px 0 5px 20px; padding: 8px; background: #f5f5f5; border-radius: 3px; }
+        .playlist-link { color: #0066cc; text-decoration: none; }
+        .playlist-link:hover { text-decoration: underline; }
+        .no-streams { color: #666; font-style: italic; }
+    </style>
+</head>
+<body>
+    <h1>N94 Bridge - Active Streams</h1>"#);
+
+    if streams_guard.is_empty() {
+        html.push_str(r#"    <p class="no-streams">No active streams found.</p>"#);
+    } else {
+        html.push_str(&format!("<p>Found {} active stream(s):</p>", streams_guard.len()));
+        
+        for (event_id, stream) in streams_guard.iter() {
+            html.push_str(&format!(
+                r#"    <div class="stream">
+        <div class="stream-id">Stream ID: {}</div>
+        <p><strong>Last Hit:</strong> {}</p>
+        <p><strong>Variants:</strong></p>"#,
+                event_id,
+                stream.last_hit
+            ));
+            
+            if stream.variants.is_empty() {
+                html.push_str(r#"        <div class="variant">No variants available</div>"#);
+            } else {
+                for variant in stream.variants.values() {
+                    html.push_str(&format!(
+                        r#"        <div class="variant">
+            <strong>{}</strong> - {}x{} @ {}kbps ({} segments)
+            <br><a class="playlist-link" href="/{}/{}.m3u8" target="_blank">Master Playlist</a>
+            | <a class="playlist-link" href="/{}/{}.m3u8" target="_blank">Variant Playlist</a>
+        </div>"#,
+                        variant.id,
+                        variant.width.unwrap_or(0),
+                        variant.height.unwrap_or(0),
+                        variant.bitrate.unwrap_or(0) / 1000,
+                        variant.segments.len(),
+                        event_id,
+                        event_id,
+                        event_id,
+                        variant.id
+                    ));
+                }
+            }
+            
+            html.push_str("    </div>");
+        }
+    }
+    
+    html.push_str(r#"
+</body>
+</html>"#);
+
+    Ok(rocket::response::content::RawHtml(html))
 }
 
 #[rocket::get("/<event>/<variant>")]
