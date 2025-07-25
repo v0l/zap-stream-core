@@ -91,18 +91,68 @@ async fn index(streams: &State<StreamList>) -> Result<rocket::response::content:
 <head>
     <title>N94 Bridge - Stream List</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 40px; }
-        h1 { color: #333; }
-        .stream { border: 1px solid #ddd; margin: 10px 0; padding: 15px; border-radius: 5px; }
-        .stream-id { font-family: monospace; color: #666; font-size: 0.9em; }
-        .variant { margin: 5px 0 5px 20px; padding: 8px; background: #f5f5f5; border-radius: 3px; }
-        .playlist-link { color: #0066cc; text-decoration: none; }
-        .playlist-link:hover { text-decoration: underline; }
-        .no-streams { color: #666; font-style: italic; }
+        body { 
+            font-family: Arial, sans-serif; 
+            margin: 40px; 
+            background-color: #1a1a1a; 
+            color: #e0e0e0; 
+        }
+        h1 { color: #ffffff; }
+        h2 { color: #ffffff; margin-top: 30px; }
+        .description { 
+            background: #2d2d2d; 
+            padding: 20px; 
+            border-radius: 8px; 
+            margin: 20px 0; 
+            border-left: 4px solid #4a9eff; 
+        }
+        .stream { 
+            border: 1px solid #444; 
+            margin: 10px 0; 
+            padding: 15px; 
+            border-radius: 5px; 
+            background: #2d2d2d; 
+        }
+        .stream-id { 
+            font-family: monospace; 
+            color: #888; 
+            font-size: 0.9em; 
+        }
+        .variant { 
+            margin: 5px 0 5px 20px; 
+            padding: 8px; 
+            background: #3a3a3a; 
+            border-radius: 3px; 
+        }
+        .playlist-link { 
+            color: #4a9eff; 
+            text-decoration: none; 
+        }
+        .playlist-link:hover { 
+            text-decoration: underline; 
+            color: #66b3ff; 
+        }
+        .no-streams { 
+            color: #888; 
+            font-style: italic; 
+        }
     </style>
 </head>
 <body>
-    <h1>N94 Bridge - Active Streams</h1>"#);
+    <h1>N94 Bridge - Active Streams</h1>
+    <div class="description">
+        <h2>About N94 Bridge</h2>
+        <p>N94 Bridge is a Nostr-based streaming bridge service that aggregates live stream events from multiple Nostr relays and provides HLS (HTTP Live Streaming) playlist access. The service:</p>
+        <ul>
+            <li>Monitors Nostr relays for stream events (kind 1053) and segment metadata (kind 1063)</li>
+            <li>Automatically tracks stream variants with different bitrates and resolutions</li>
+            <li>Generates master and variant HLS playlists for seamless video playback</li>
+            <li>Provides a real-time web interface to browse active streams</li>
+            <li>Handles stream cleanup and expiration automatically</li>
+        </ul>
+        <p>Connect your media player to the playlist URLs below to start watching live streams from the Nostr network.</p>
+    </div>
+    <h2>Active Streams</h2>"#);
 
     if streams_guard.is_empty() {
         html.push_str(r#"    <p class="no-streams">No active streams found.</p>"#);
@@ -122,24 +172,19 @@ async fn index(streams: &State<StreamList>) -> Result<rocket::response::content:
             if stream.variants.is_empty() {
                 html.push_str(r#"        <div class="variant">No variants available</div>"#);
             } else {
-                for variant in stream.variants.values() {
-                    html.push_str(&format!(
-                        r#"        <div class="variant">
-            <strong>{}</strong> - {}x{} @ {}kbps ({} segments)
-            <br><a class="playlist-link" href="/{}/{}.m3u8" target="_blank">Master Playlist</a>
-            | <a class="playlist-link" href="/{}/{}.m3u8" target="_blank">Variant Playlist</a>
-        </div>"#,
-                        variant.id,
-                        variant.width.unwrap_or(0),
-                        variant.height.unwrap_or(0),
-                        variant.bitrate.unwrap_or(0) / 1000,
-                        variant.segments.len(),
-                        event_id,
-                        event_id,
-                        event_id,
-                        variant.id
-                    ));
-                }
+                html.push_str(&format!(
+                    r#"        <div class="variant">
+            <a class="playlist-link" href="/{}.m3u8" target="_blank">📺 Master Playlist</a>
+            <br><strong>Available Resolutions:</strong> {}</div>"#,
+                    event_id,
+                    stream.variants.values()
+                        .map(|v| format!("{}x{} @ {}kbps", 
+                            v.width.unwrap_or(0), 
+                            v.height.unwrap_or(0), 
+                            v.bitrate.unwrap_or(0) / 1000))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
             }
             
             html.push_str("    </div>");
