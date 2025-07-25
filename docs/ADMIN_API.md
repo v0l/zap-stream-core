@@ -561,6 +561,22 @@ nak curl -X GET "https://api.zap.stream/api/v1/admin/audit-log?page=0&limit=10"
 
 The ingest endpoint management APIs allow administrators to manage streaming ingest endpoints, which control pipeline configuration and stream processing costs.
 
+#### URL Mapping
+
+All ingest endpoint responses include a `urls` field containing the complete streaming URLs that clients can use to connect. These URLs are automatically generated based on:
+
+- **Configured listener endpoints** from the server's `endpoints` configuration (e.g., `rtmp://127.0.0.1:1935`, `srt://127.0.0.1:3337`)
+- **Public hostname** from the server's `endpoints_public_hostname` configuration 
+- **Ingest endpoint name** appended as the stream path
+
+**URL Format**: `protocol://hostname:port/ingest-endpoint-name`
+
+**Examples**:
+- RTMP: `rtmp://localhost:1935/Premium Quality`
+- SRT: `srt://localhost:3337/Premium Quality`
+
+Only listener endpoints that support streaming protocols (RTMP, SRT, TCP) will have URL mappings generated. File and test pattern endpoints are excluded from URL generation.
+
 #### 8.1 List Ingest Endpoints
 
 **Endpoint**: `GET /api/v1/admin/ingest-endpoints`
@@ -585,13 +601,15 @@ GET /api/v1/admin/ingest-endpoints?page=1&limit=25
       "id": 1,
       "name": "Standard Quality",
       "cost": 10000,
-      "capabilities": ["variant:source", "variant:720:3000000", "variant:480:1500000"]
+      "capabilities": ["variant:source", "variant:720:3000000", "variant:480:1500000"],
+      "urls": ["rtmp://localhost:1935/Standard Quality", "srt://localhost:3337/Standard Quality"]
     },
     {
       "id": 2,
       "name": "High Quality",
       "cost": 25000,
-      "capabilities": ["variant:source", "variant:1080:5000000", "variant:720:3000000", "variant:480:1500000"]
+      "capabilities": ["variant:source", "variant:1080:5000000", "variant:720:3000000", "variant:480:1500000"],
+      "urls": ["rtmp://localhost:1935/High Quality", "srt://localhost:3337/High Quality"]
     }
   ],
   "page": 0,
@@ -609,6 +627,7 @@ GET /api/v1/admin/ingest-endpoints?page=1&limit=25
 - `name`: Human-readable name for the endpoint
 - `cost`: Cost per minute in millisatoshis for using this endpoint
 - `capabilities`: Array of capability strings defining supported variants
+- `urls`: Array of streaming URLs that clients can use to connect to this endpoint
 
 #### 8.2 Get Ingest Endpoint
 
@@ -630,7 +649,8 @@ GET /api/v1/admin/ingest-endpoints/1
   "id": 1,
   "name": "Standard Quality",
   "cost": 10000,
-  "capabilities": ["variant:source", "variant:720:3000000", "variant:480:1500000"]
+  "capabilities": ["variant:source", "variant:720:3000000", "variant:480:1500000"],
+  "urls": ["rtmp://localhost:1935/Standard Quality", "srt://localhost:3337/Standard Quality"]
 }
 ```
 
@@ -639,6 +659,7 @@ GET /api/v1/admin/ingest-endpoints/1
 - `name`: Human-readable name for the endpoint
 - `cost`: Cost per minute in millisatoshis for using this endpoint
 - `capabilities`: Array of capability strings defining supported variants
+- `urls`: Array of streaming URLs that clients can use to connect to this endpoint
 
 #### 8.3 Create Ingest Endpoint
 
@@ -666,7 +687,8 @@ GET /api/v1/admin/ingest-endpoints/1
   "id": 3,
   "name": "Ultra High Quality",
   "cost": 50000,
-  "capabilities": ["variant:source", "variant:1080:8000000", "variant:720:4000000", "variant:480:1500000"]
+  "capabilities": ["variant:source", "variant:1080:8000000", "variant:720:4000000", "variant:480:1500000"],
+  "urls": ["rtmp://localhost:1935/Ultra High Quality", "srt://localhost:3337/Ultra High Quality"]
 }
 ```
 
@@ -701,7 +723,8 @@ GET /api/v1/admin/ingest-endpoints/1
   "id": 1,
   "name": "Updated Standard Quality",
   "cost": 15000,
-  "capabilities": ["variant:source", "variant:720:3500000", "variant:480:1500000"]
+  "capabilities": ["variant:source", "variant:720:3500000", "variant:480:1500000"],
+  "urls": ["rtmp://localhost:1935/Updated Standard Quality", "srt://localhost:3337/Updated Standard Quality"]
 }
 ```
 

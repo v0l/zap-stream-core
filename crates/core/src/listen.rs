@@ -38,6 +38,36 @@ impl FromStr for ListenerEndpoint {
     }
 }
 
+impl ListenerEndpoint {
+    pub fn to_public_url(&self, public_hostname: &str, ingest_name: &str) -> Option<String> {
+        match self {
+            ListenerEndpoint::SRT { endpoint } => {
+                if let Ok(addr) = endpoint.parse::<std::net::SocketAddr>() {
+                    Some(format!("srt://{}:{}/{}", public_hostname, addr.port(), ingest_name))
+                } else {
+                    None
+                }
+            }
+            ListenerEndpoint::RTMP { endpoint } => {
+                if let Ok(addr) = endpoint.parse::<std::net::SocketAddr>() {
+                    Some(format!("rtmp://{}:{}/{}", public_hostname, addr.port(), ingest_name))
+                } else {
+                    None
+                }
+            }
+            ListenerEndpoint::TCP { endpoint } => {
+                if let Ok(addr) = endpoint.parse::<std::net::SocketAddr>() {
+                    Some(format!("tcp://{}:{}/{}", public_hostname, addr.port(), ingest_name))
+                } else {
+                    None
+                }
+            }
+            ListenerEndpoint::File { .. } => None,
+            ListenerEndpoint::TestPattern => None,
+        }
+    }
+}
+
 /// Try to span a listener
 pub fn try_create_listener(
     u: &str,

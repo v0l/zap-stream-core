@@ -63,6 +63,18 @@ pub struct Api {
 }
 
 impl Api {
+    fn generate_endpoint_urls(&self, ingest_name: &str) -> Vec<String> {
+        self.settings
+            .endpoints
+            .iter()
+            .filter_map(|endpoint_url| {
+                ListenerEndpoint::from_str(endpoint_url)
+                    .ok()
+                    .and_then(|endpoint| endpoint.to_public_url(&self.settings.endpoints_public_hostname, ingest_name))
+            })
+            .collect()
+    }
+
     pub fn new(overseer: Arc<ZapStreamOverseer>, settings: Settings) -> Self {
         let mut router = Router::new();
 
@@ -464,87 +476,33 @@ impl Api {
 
         for setting_endpoint in &self.settings.endpoints {
             if let Ok(listener_endpoint) = ListenerEndpoint::from_str(setting_endpoint) {
-                match listener_endpoint {
-                    ListenerEndpoint::SRT { endpoint } => {
-                        if let Ok(addr) = endpoint.parse::<SocketAddr>() {
-                            for ingest in &db_ingest_endpoints {
-                                endpoints.push(Endpoint {
-                                    name: format!("SRT-{}", ingest.name),
-                                    url: format!(
-                                        "srt://{}:{}",
-                                        self.settings.endpoints_public_hostname,
-                                        addr.port()
-                                    ),
-                                    key: user.stream_key.clone(),
-                                    capabilities: ingest
-                                        .capabilities
-                                        .as_ref()
-                                        .map(|c| {
-                                            c.split(',').map(|s| s.trim().to_string()).collect()
-                                        })
-                                        .unwrap_or_else(Vec::new),
-                                    cost: EndpointCost {
-                                        unit: "min".to_string(),
-                                        rate: ingest.cost as f32 / 1000.0,
-                                    },
-                                });
-                            }
-                        }
+                for ingest in &db_ingest_endpoints {
+                    if let Some(url) = listener_endpoint
+                        .to_public_url(&self.settings.endpoints_public_hostname, &ingest.name)
+                    {
+
+                        let protocol = match listener_endpoint {
+                            ListenerEndpoint::SRT { .. } => "SRT",
+                            ListenerEndpoint::RTMP { .. } => "RTMP",
+                            ListenerEndpoint::TCP { .. } => "TCP",
+                            _ => continue,
+                        };
+
+                        endpoints.push(Endpoint {
+                            name: format!("{}-{}", protocol, ingest.name),
+                            url,
+                            key: user.stream_key.clone(),
+                            capabilities: ingest
+                                .capabilities
+                                .as_ref()
+                                .map(|c| c.split(',').map(|s| s.trim().to_string()).collect())
+                                .unwrap_or_else(Vec::new),
+                            cost: EndpointCost {
+                                unit: "min".to_string(),
+                                rate: ingest.cost as f32 / 1000.0,
+                            },
+                        });
                     }
-                    ListenerEndpoint::RTMP { endpoint } => {
-                        if let Ok(addr) = endpoint.parse::<SocketAddr>() {
-                            for ingest in &db_ingest_endpoints {
-                                endpoints.push(Endpoint {
-                                    name: format!("RTMP-{}", ingest.name),
-                                    url: format!(
-                                        "rtmp://{}:{}",
-                                        self.settings.endpoints_public_hostname,
-                                        addr.port()
-                                    ),
-                                    key: user.stream_key.clone(),
-                                    capabilities: ingest
-                                        .capabilities
-                                        .as_ref()
-                                        .map(|c| {
-                                            c.split(',').map(|s| s.trim().to_string()).collect()
-                                        })
-                                        .unwrap_or_else(Vec::new),
-                                    cost: EndpointCost {
-                                        unit: "min".to_string(),
-                                        rate: ingest.cost as f32 / 1000.0,
-                                    },
-                                });
-                            }
-                        }
-                    }
-                    ListenerEndpoint::TCP { endpoint } => {
-                        if let Ok(addr) = endpoint.parse::<SocketAddr>() {
-                            for ingest in &db_ingest_endpoints {
-                                endpoints.push(Endpoint {
-                                    name: format!("TCP-{}", ingest.name),
-                                    url: format!(
-                                        "tcp://{}:{}",
-                                        self.settings.endpoints_public_hostname,
-                                        addr.port()
-                                    ),
-                                    key: user.stream_key.clone(),
-                                    capabilities: ingest
-                                        .capabilities
-                                        .as_ref()
-                                        .map(|c| {
-                                            c.split(',').map(|s| s.trim().to_string()).collect()
-                                        })
-                                        .unwrap_or_else(Vec::new),
-                                    cost: EndpointCost {
-                                        unit: "min".to_string(),
-                                        rate: ingest.cost as f32 / 1000.0,
-                                    },
-                                });
-                            }
-                        }
-                    }
-                    ListenerEndpoint::File { .. } => {}
-                    ListenerEndpoint::TestPattern => {}
                 }
             }
         }
@@ -1302,11 +1260,12 @@ impl Api {
             .take(limit as usize)
             .map(|endpoint| AdminIngestEndpointResponse {
                 id: endpoint.id,
-                name: endpoint.name,
+                name: endpoint.name.clone(),
                 cost: endpoint.cost,
                 capabilities: endpoint
                     .capabilities
                     .map(|c| c.split(',').map(|s| s.trim().to_string()).collect()),
+                urls: self.generate_endpoint_urls(&endpoint.name),
             })
             .collect();
 
@@ -1350,9 +1309,10 @@ impl Api {
 
         Ok(AdminIngestEndpointResponse {
             id: endpoint_id,
-            name: req.name,
+            name: req.name.clone(),
             cost: req.cost,
             capabilities: req.capabilities,
+            urls: self.generate_endpoint_urls(&req.name),
         })
     }
 
@@ -1365,11 +1325,12 @@ impl Api {
 
         Ok(AdminIngestEndpointResponse {
             id: endpoint.id,
-            name: endpoint.name,
+            name: endpoint.name.clone(),
             cost: endpoint.cost,
             capabilities: endpoint
                 .capabilities
                 .map(|c| c.split(',').map(|s| s.trim().to_string()).collect()),
+            urls: self.generate_endpoint_urls(&endpoint.name),
         })
     }
 
@@ -1413,9 +1374,10 @@ impl Api {
 
         Ok(AdminIngestEndpointResponse {
             id: endpoint_id,
-            name: req.name,
+            name: req.name.clone(),
             cost: req.cost,
             capabilities: req.capabilities,
+            urls: self.generate_endpoint_urls(&req.name),
         })
     }
 
@@ -1742,6 +1704,7 @@ struct AdminIngestEndpointResponse {
     pub name: String,
     pub cost: u64,
     pub capabilities: Option<Vec<String>>,
+    pub urls: Vec<String>,
 }
 
 #[derive(Deserialize, Serialize)]
