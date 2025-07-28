@@ -16,7 +16,6 @@ use nostr_sdk::prelude::EventDeletionRequest;
 use nostr_sdk::{serde_json, Client, PublicKey};
 use serde::{Deserialize, Serialize};
 use std::future::Future;
-use std::net::SocketAddr;
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -70,7 +69,10 @@ impl Api {
             .filter_map(|endpoint_url| {
                 ListenerEndpoint::from_str(endpoint_url)
                     .ok()
-                    .and_then(|endpoint| endpoint.to_public_url(&self.settings.endpoints_public_hostname, ingest_name))
+                    .and_then(|endpoint| {
+                        endpoint
+                            .to_public_url(&self.settings.endpoints_public_hostname, ingest_name)
+                    })
             })
             .collect()
     }
@@ -480,7 +482,6 @@ impl Api {
                     if let Some(url) = listener_endpoint
                         .to_public_url(&self.settings.endpoints_public_hostname, &ingest.name)
                     {
-
                         let protocol = match listener_endpoint {
                             ListenerEndpoint::SRT { .. } => "SRT",
                             ListenerEndpoint::RTMP { .. } => "RTMP",

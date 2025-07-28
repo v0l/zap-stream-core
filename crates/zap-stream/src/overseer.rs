@@ -20,6 +20,7 @@ use zap_stream_core::endpoint::{
     get_variants_from_endpoint, parse_capabilities, EndpointCapability,
 };
 use zap_stream_core::ingress::ConnectionInfo;
+use zap_stream_core::mux::SegmentType;
 use zap_stream_core::overseer::{IngressInfo, Overseer, StatsType};
 use zap_stream_core::pipeline::{EgressType, PipelineConfig};
 use zap_stream_core::variant::{StreamMapping, VariantStream};
@@ -351,7 +352,11 @@ impl Overseer for ZapStreamOverseer {
 
         let mut egress = vec![];
         let all_var_ids: HashSet<Uuid> = cfg.variants.iter().map(|v| v.id()).collect();
-        egress.push(EgressType::HLS(all_var_ids.clone(), self.segment_length));
+        egress.push(EgressType::HLS(
+            all_var_ids.clone(),
+            self.segment_length,
+            SegmentType::FMP4,
+        ));
         if let Some(EndpointCapability::DVR { height }) = caps
             .iter()
             .find(|c| matches!(c, EndpointCapability::DVR { .. }))
@@ -512,10 +517,10 @@ impl Overseer for ZapStreamOverseer {
 
     async fn on_thumbnail(
         &self,
-        pipeline_id: &Uuid,
-        width: usize,
-        height: usize,
-        pixels: &PathBuf,
+        _pipeline_id: &Uuid,
+        _width: usize,
+        _height: usize,
+        _pixels: &PathBuf,
     ) -> Result<()> {
         // nothing to do
         Ok(())
@@ -569,6 +574,9 @@ impl ZapStreamOverseer {
     async fn detect_endpoint(&self, connection: &ConnectionInfo) -> Result<IngestEndpoint> {
         let endpoints = self.db.get_ingest_endpoints().await?;
 
+        if endpoints.is_empty() {
+            bail!("No endpoints found, please configure endpoints first!");
+        }
         let default = endpoints.iter().max_by_key(|e| e.cost);
         Ok(endpoints
             .iter()

@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
 
+use crate::mux::SegmentType;
 use crate::overseer::IngressInfo;
 use crate::variant::VariantStream;
 use serde::{Deserialize, Serialize};
@@ -11,7 +12,7 @@ pub mod runner;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum EgressType {
     /// HLS output egress
-    HLS(HashSet<Uuid>, f32),
+    HLS(HashSet<Uuid>, f32, SegmentType),
 
     /// Record streams to local disk
     Recorder(HashSet<Uuid>),
@@ -23,7 +24,7 @@ pub enum EgressType {
 impl EgressType {
     pub fn variants(&self) -> &HashSet<Uuid> {
         match self {
-            EgressType::HLS(a, _) => a,
+            EgressType::HLS(a, _, _) => a,
             EgressType::Recorder(a) => a,
             EgressType::RTMPForwarder(a, _) => a,
         }
@@ -33,7 +34,7 @@ impl EgressType {
 impl Display for EgressType {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            EgressType::HLS(_, _) => write!(f, "HLS"),
+            EgressType::HLS(_, d, t) => write!(f, "HLS ({},{})", d, t),
             EgressType::Recorder(_) => write!(f, "Recorder"),
             EgressType::RTMPForwarder(_, d) => write!(f, "RTMPForwarder => {}", d),
         }

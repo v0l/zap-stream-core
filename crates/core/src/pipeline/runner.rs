@@ -13,7 +13,6 @@ use crate::egress::rtmp::RtmpEgress;
 use crate::egress::{Egress, EgressResult, EncoderOrSourceStream};
 use crate::generator::FrameGenerator;
 use crate::ingress::{ConnectionInfo, EndpointStats};
-use crate::mux::SegmentType;
 use crate::overseer::{IngressInfo, IngressStream, IngressStreamType, Overseer, StatsType};
 use crate::pipeline::{EgressType, PipelineConfig};
 use crate::variant::{StreamMapping, VariantStream};
@@ -788,15 +787,39 @@ impl PipelineRunner {
     }
 
     fn setup_encoders(&mut self, cfg: &PipelineConfig) -> Result<()> {
+        // Analyze egress types to determine which encoders need GLOBAL_HEADER
+        let mut encoders_need_global_header = HashSet::new();
+        
+        for egress in &cfg.egress {
+            let needs_global_header = match egress {
+                // HLS fMP4 mode needs GLOBAL_HEADER
+                EgressType::HLS(_, _, crate::mux::SegmentType::FMP4) => true,
+                // HLS MPEGTS mode doesn't need GLOBAL_HEADER
+                EgressType::HLS(_, _, crate::mux::SegmentType::MPEGTS) => false,
+                // Recorder (MP4) needs GLOBAL_HEADER
+                EgressType::Recorder(_) => true,
+                // RTMP forwarder typically doesn't need GLOBAL_HEADER
+                EgressType::RTMPForwarder(_, _) => false,
+            };
+            
+            if needs_global_header {
+                for variant_id in egress.variants() {
+                    encoders_need_global_header.insert(*variant_id);
+                }
+            }
+        }
+
         // setup scaler/encoders
         for out_stream in &cfg.variants {
+            let need_global_header = encoders_need_global_header.contains(&out_stream.id());
             match out_stream {
                 VariantStream::Video(v) => {
-                    self.encoders.insert(out_stream.id(), v.try_into()?);
+                    let encoder = v.create_encoder(need_global_header)?;
+                    self.encoders.insert(out_stream.id(), encoder);
                     self.scalers.insert(out_stream.id(), Scaler::new());
                 }
                 VariantStream::Audio(a) => {
-                    let enc = a.try_into()?;
+                    let enc = a.create_encoder(need_global_header)?;
                     let fmt = unsafe { av_get_sample_fmt(cstr!(a.sample_fmt.as_str())) };
                     let rs = Resample::new(fmt, a.sample_rate as _, a.channels as _);
                     let f = AudioFifo::new(fmt, a.channels as _)?;
@@ -826,13 +849,8 @@ impl PipelineRunner {
                 }
             });
             match e {
-                EgressType::HLS(_, len) => {
-                    let hls = HlsEgress::new(
-                        self.out_dir.clone(),
-                        variant_mapping,
-                        SegmentType::MPEGTS,
-                        *len,
-                    )?;
+                EgressType::HLS(_, len, seg) => {
+                    let hls = HlsEgress::new(self.out_dir.clone(), variant_mapping, *seg, *len)?;
                     self.egress.push(Box::new(hls));
                 }
                 EgressType::Recorder(_) => {
@@ -847,7 +865,6 @@ impl PipelineRunner {
                         self.egress.push(Box::new(fwd));
                     }
                 }
-                _ => warn!("{} is not implemented", e),
             }
         }
         Ok(())

@@ -12,6 +12,7 @@ use zap_stream_core::endpoint::{
 };
 use zap_stream_core::ingress::ConnectionInfo;
 use zap_stream_core::listen::try_create_listener;
+use zap_stream_core::mux::SegmentType;
 use zap_stream_core::overseer::{IngressInfo, Overseer, StatsType};
 use zap_stream_core::pipeline::{EgressType, PipelineConfig};
 use zap_stream_core::variant::{StreamMapping, VariantStream};
@@ -262,6 +263,7 @@ impl Overseer for N94Overseer {
             egress: vec![EgressType::HLS(
                 cfg.variants.iter().map(|v| v.id()).collect(),
                 self.segment_length,
+                SegmentType::MPEGTS,
             )],
             variants: cfg.variants,
             ingress_info: stream_info.clone(),

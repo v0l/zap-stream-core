@@ -7,8 +7,9 @@ use anyhow::{bail, ensure, Result};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_H264;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVMediaType::AVMEDIA_TYPE_VIDEO;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    av_free, av_get_bits_per_pixel, av_pix_fmt_desc_get, av_q2d, av_write_frame, avio_close,
-    avio_flush, avio_open, avio_size, AVPacket, AVIO_FLAG_WRITE, AV_NOPTS_VALUE, AV_PKT_FLAG_KEY,
+    av_dump_format, av_free, av_get_bits_per_pixel, av_pix_fmt_desc_get, av_q2d, av_write_frame,
+    avio_close, avio_flush, avio_open, avio_size, AVPacket, AVIO_FLAG_WRITE, AV_NOPTS_VALUE,
+    AV_PKT_FLAG_KEY,
 };
 use ffmpeg_rs_raw::{cstr, Muxer};
 use log::{debug, info, trace, warn};
@@ -64,7 +65,7 @@ impl HlsVariant {
         group: usize,
         encoded_vars: impl Iterator<Item = (&'a VariantStream, EncoderOrSourceStream<'a>)>,
         segment_type: SegmentType,
-        mut segment_length: f32
+        mut segment_length: f32,
     ) -> Result<Self> {
         let name = format!("stream_{}", group);
 
@@ -76,7 +77,13 @@ impl HlsVariant {
         let mut mux = unsafe {
             Muxer::builder()
                 .with_output_path(
-                    var_dir.join("1.ts").to_str().unwrap(),
+                    var_dir
+                        .join(match segment_type {
+                            SegmentType::MPEGTS => "1.ts",
+                            SegmentType::FMP4 => "1.m4s",
+                        })
+                        .to_str()
+                        .unwrap(),
                     match segment_type {
                         SegmentType::MPEGTS => Some("mpegts"),
                         SegmentType::FMP4 => Some("mp4"),
@@ -131,6 +138,7 @@ impl HlsVariant {
                 EncoderOrSourceStream::SourceStream(stream) => match var {
                     VariantStream::CopyVideo(v) => unsafe {
                         let stream = mux.add_copy_stream(stream)?;
+                        (*(*stream).codecpar).codec_tag = 0; // fix copy tag
                         let stream_idx = (*stream).index as usize;
                         streams.push(HlsVariantStream::Video {
                             group,
@@ -142,6 +150,7 @@ impl HlsVariant {
                     },
                     VariantStream::CopyAudio(a) => unsafe {
                         let stream = mux.add_copy_stream(stream)?;
+                        (*(*stream).codecpar).codec_tag = 0; // fix copy tag
                         let stream_idx = (*stream).index as usize;
                         streams.push(HlsVariantStream::Audio {
                             group,
@@ -160,18 +169,17 @@ impl HlsVariant {
             ref_stream_index != -1,
             "No reference stream found, cant create variant"
         );
-        trace!(
+        info!(
             "{} will use stream index {} as reference for segmentation",
-            name,
-            ref_stream_index
+            name, ref_stream_index
         );
 
         let mut opts = HashMap::new();
         if let SegmentType::FMP4 = segment_type {
-            //opts.insert("fflags".to_string(), "-autobsf".to_string());
+            // Proper fMP4 segmentation flags for HLS
             opts.insert(
                 "movflags".to_string(),
-                "+frag_custom+dash+delay_moov".to_string(),
+                "+frag_keyframe+empty_moov+default_base_moof".to_string(),
             );
         };
 
@@ -180,7 +188,7 @@ impl HlsVariant {
             //av_dump_format(mux.context(), 0, ptr::null_mut(), 0);
         }
 
-        let mut variant = Self {
+        let variant = Self {
             name: name.clone(),
             segment_window: 30.0,
             mux,
@@ -200,13 +208,6 @@ impl HlsVariant {
             segment_length_target: segment_length,
             init_segment_path: None,
         };
-
-        // Create initialization segment for fMP4
-        if segment_type == SegmentType::FMP4 {
-            unsafe {
-                variant.create_init_segment()?;
-            }
-        }
 
         Ok(variant)
     }
@@ -255,6 +256,16 @@ impl HlsVariant {
             is_ref_pkt = false;
         }
 
+        if is_ref_pkt {
+            let pkt_duration = (*pkt).duration as f64 * pkt_q;
+            trace!(
+                "REF PKT index={}, pts={:.3}s, dur={:.3}s, flags={}",
+                (*pkt).stream_index,
+                (*pkt).pts as f64 * pkt_q,
+                pkt_duration,
+                (*pkt).flags
+            );
+        }
         if is_ref_pkt && self.packets_written > 0 {
             let pkt_pts = (*pkt).pts as f64 * pkt_q;
             let cur_duration = pkt_pts - self.current_segment_start;
@@ -334,17 +345,14 @@ impl HlsVariant {
             return Ok(());
         }
 
-        let init_path = PathBuf::from(&self.out_dir)
-            .join(&self.name)
-            .join("init.mp4")
-            .to_string_lossy()
-            .to_string();
+        let init_path = self.out_dir.join("init.mp4").to_string_lossy().to_string();
 
         // Create a temporary muxer for initialization segment
         let mut init_opts = HashMap::new();
         init_opts.insert(
             "movflags".to_string(),
-            "+frag_custom+dash+delay_moov".to_string(),
+            "+frag_keyframe+empty_moov+omit_tfhd_offset+separate_moof+default_base_moof"
+                .to_string(),
         );
 
         let mut init_mux = Muxer::builder()
@@ -374,6 +382,12 @@ impl HlsVariant {
         let completed_segment_idx = self.idx;
         self.idx += 1;
         self.current_partial_index = 0;
+
+        // Create initialization segment after first segment completion
+        // This ensures the init segment has the correct timebase from the encoder
+        if self.segment_type == SegmentType::FMP4 && self.init_segment_path.is_none() && completed_segment_idx == 1 {
+            self.create_init_segment()?;
+        }
 
         // Manually reset muxer avio
         let ctx = self.mux.context();
@@ -443,11 +457,7 @@ impl HlsVariant {
 
         self.segments.push(HlsSegment::Full(SegmentInfo {
             index: completed_segment_idx,
-            duration: if self.playlist_version() >= 6 {
-                cur_duration.round() as _
-            } else {
-                cur_duration as _
-            },
+            duration: cur_duration as f32,
             kind: self.segment_type,
             sha256: hash,
         }));

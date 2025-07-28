@@ -496,7 +496,7 @@ impl ZapStreamDb {
     }
 
     /// Add credit to user balance (admin operation)
-    pub async fn add_admin_credit(&self, uid: u64, amount: u64, memo: Option<&str>) -> Result<()> {
+    pub async fn add_admin_credit(&self, uid: u64, amount: u64, _memo: Option<&str>) -> Result<()> {
         // Create payment record for admin credit
         let payment_hash: [u8; 32] = random();
         self.create_payment(&payment_hash, uid, None, amount, PaymentType::Credit, 0)

@@ -1,4 +1,5 @@
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVColorSpace::AVCOL_SPC_BT709;
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::AV_CODEC_FLAG_GLOBAL_HEADER;
 use ffmpeg_rs_raw::Encoder;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -80,10 +81,9 @@ impl StreamMapping for VideoVariant {
     }
 }
 
-impl TryInto<Encoder> for &VideoVariant {
-    type Error = anyhow::Error;
-
-    fn try_into(self) -> Result<Encoder, Self::Error> {
+impl VideoVariant {
+    /// Create encoder with conditional GLOBAL_HEADER flag
+    pub fn create_encoder(&self, need_global_header: bool) -> Result<Encoder, anyhow::Error> {
         unsafe {
             let mut opt = HashMap::new();
             if self.codec == "x264" || self.codec == "libx264" {
@@ -103,10 +103,23 @@ impl TryInto<Encoder> for &VideoVariant {
                     (*ctx).keyint_min = self.keyframe_interval as _;
                     (*ctx).max_b_frames = 3;
                     (*ctx).colorspace = AVCOL_SPC_BT709;
+                    
+                    // Set GLOBAL_HEADER flag for fMP4 HLS and recorder contexts
+                    if need_global_header {
+                        (*ctx).flags |= AV_CODEC_FLAG_GLOBAL_HEADER as i32;
+                    }
                 })
                 .open(Some(opt))?;
-
             Ok(enc)
         }
+    }
+}
+
+impl TryInto<Encoder> for &VideoVariant {
+    type Error = anyhow::Error;
+
+    fn try_into(self) -> Result<Encoder, Self::Error> {
+        // Default behavior - no GLOBAL_HEADER for backward compatibility
+        self.create_encoder(false)
     }
 }

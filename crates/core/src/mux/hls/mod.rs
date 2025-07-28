@@ -5,7 +5,8 @@ use anyhow::Result;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPacket;
 use itertools::Itertools;
 use log::{trace, warn};
-use std::fmt::Display;
+use serde::{Deserialize, Serialize};
+use std::fmt::{Display, Formatter};
 use std::fs::{remove_dir_all, File};
 use std::ops::Sub;
 use std::path::PathBuf;
@@ -61,10 +62,19 @@ impl Display for HlsVariantStream {
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
 pub enum SegmentType {
     MPEGTS,
     FMP4,
+}
+
+impl Display for SegmentType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SegmentType::MPEGTS => write!(f, "MPEGTS"),
+            SegmentType::FMP4 => write!(f, "fMP4"),
+        }
+    }
 }
 
 pub struct HlsMuxer {
@@ -150,14 +160,14 @@ impl HlsMuxer {
     /// Collect all remaining segments that will be deleted during cleanup
     pub fn collect_remaining_segments(&self) -> Vec<crate::egress::EgressSegment> {
         let mut remaining_segments = Vec::new();
-        
+
         for variant in &self.variants {
             let video_var_id = variant
                 .video_stream()
                 .unwrap_or(variant.streams.first().unwrap())
                 .id()
                 .clone();
-                
+
             for segment in &variant.segments {
                 if let Some(egress_segment) = segment.to_egress_segment(
                     video_var_id,
@@ -166,14 +176,14 @@ impl HlsMuxer {
                             segment::HlsSegment::Full(seg) => seg.index,
                             segment::HlsSegment::Partial(seg) => seg.parent_index,
                         },
-                        variant.segment_type
-                    )
+                        variant.segment_type,
+                    ),
                 ) {
                     remaining_segments.push(egress_segment);
                 }
             }
         }
-        
+
         remaining_segments
     }
 }

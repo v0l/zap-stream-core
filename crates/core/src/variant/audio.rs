@@ -1,4 +1,4 @@
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::av_get_sample_fmt;
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::{av_get_sample_fmt, AV_CODEC_FLAG_GLOBAL_HEADER};
 use ffmpeg_rs_raw::{cstr, Encoder};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
@@ -62,19 +62,33 @@ impl StreamMapping for AudioVariant {
     }
 }
 
-impl TryInto<Encoder> for &AudioVariant {
-    type Error = anyhow::Error;
-
-    fn try_into(self) -> Result<Encoder, Self::Error> {
+impl AudioVariant {
+    /// Create encoder with conditional GLOBAL_HEADER flag
+    pub fn create_encoder(&self, need_global_header: bool) -> Result<Encoder, anyhow::Error> {
         unsafe {
             let enc = Encoder::new_with_name(&self.codec)?
                 .with_sample_rate(self.sample_rate as _)?
                 .with_bitrate(self.bitrate as _)
                 .with_default_channel_layout(self.channels as _)
                 .with_sample_format(av_get_sample_fmt(cstr!(self.sample_fmt.as_bytes())))
+                .with_options(|ctx| {
+                    // Set GLOBAL_HEADER flag for fMP4 HLS and recorder contexts
+                    if need_global_header {
+                        (*ctx).flags |= AV_CODEC_FLAG_GLOBAL_HEADER as i32;
+                    }
+                })
                 .open(None)?;
 
             Ok(enc)
         }
+    }
+}
+
+impl TryInto<Encoder> for &AudioVariant {
+    type Error = anyhow::Error;
+
+    fn try_into(self) -> Result<Encoder, Self::Error> {
+        // Default behavior - no GLOBAL_HEADER for backward compatibility
+        self.create_encoder(false)
     }
 }
