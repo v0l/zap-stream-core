@@ -829,3 +829,165 @@ nak curl -X PATCH "https://api.zap.stream/api/v1/admin/ingest-endpoints/1" \
 ```bash
 nak curl -X DELETE "https://api.zap.stream/api/v1/admin/ingest-endpoints/1"
 ```
+
+### 9. Real-time Metrics WebSocket
+
+**Endpoint**: `WS /api/v1/ws`
+
+**Description**: Provides real-time streaming metrics via WebSocket connection for admin interfaces. Supports role-based access control with admin users receiving system-wide metrics and the ability to monitor any stream.
+
+#### Authentication
+
+WebSocket authentication uses NIP-98 (Nostr HTTP Auth) via JSON messages after connection establishment:
+
+```json
+{
+  "type": "Auth",
+  "data": {
+    "token": "base64_encoded_nip98_event_here"
+  }
+}
+```
+
+**NIP-98 Event Requirements**:
+- Event kind: 27235 (NIP-98 HTTP Auth)
+- Valid signature and timestamp (within 120 seconds)
+- URL tag: `ws://yourserver.com/api/v1/ws` (WebSocket URL)
+- Method tag: `GET`
+- The event's pubkey determines user permissions (admin status checked via database)
+
+#### Admin-Specific Message Types
+
+##### Subscribe to Overall Metrics (Admin Only)
+```json
+{
+  "type": "SubscribeOverall",
+  "data": null
+}
+```
+
+**Authorization**: Admin access required. Provides system-wide aggregate metrics.
+
+##### Overall Metrics Response
+```json
+{
+  "type": "OverallMetrics",
+  "data": {
+    "total_streams": 15,
+    "total_viewers": 1250,
+    "total_bandwidth_mbps": 450.5,
+    "system_load": 0.65,
+    "memory_usage_percent": 45.2,
+    "uptime_seconds": 86400,
+    "timestamp": 1703123456
+  }
+}
+```
+
+**Description**: System-wide metrics automatically computed from all active streams. Includes total streams, viewers, bandwidth, and system performance metrics (CPU load, memory usage, uptime).
+
+##### Subscribe to Any Stream (Admin Only)
+```json
+{
+  "type": "SubscribeStream",
+  "data": {
+    "stream_id": "any_stream_id"
+  }
+}
+```
+
+**Authorization**: Admin users can subscribe to metrics for any stream on the platform.
+
+##### Stream Metrics Response
+```json
+{
+  "type": "StreamMetrics",
+  "data": {
+    "stream_id": "stream_123",
+    "started_at": "2024-01-01T12:00:00Z",
+    "last_segment_time": "2024-01-01T13:00:00Z",
+    "average_fps": 30.0,
+    "target_fps": 30.0,
+    "frame_count": 108000,
+    "viewers": 45,
+    "endpoint_name": "High Quality",
+    "input_resolution": "1920x1080",
+    "ip_address": "192.168.1.100",
+    "ingress_name": "rtmp",
+    "endpoint_stats": {
+      "rtmp": {
+        "name": "rtmp",
+        "bitrate": 5000000
+      },
+      "HLS Egress": {
+        "name": "HLS Egress",
+        "bitrate": 3000000
+      },
+      "Recorder Egress": {
+        "name": "Recorder Egress",
+        "bitrate": 1500000
+      },
+      "RTMP Egress": {
+        "name": "RTMP Egress",
+        "bitrate": 2000000
+      }
+    },
+    "timestamp": 1703123456
+  }
+}
+```
+
+#### Admin Dashboard Integration
+
+**Recommended Implementation**:
+1. **System Overview Panel**: Display overall metrics with real-time updates
+2. **Active Streams Monitor**: List all active streams with key metrics
+3. **Stream Detail View**: Deep-dive metrics for specific streams
+4. **Performance Monitoring**: System load, memory usage, and uptime tracking
+5. **Alert System**: Trigger alerts for abnormal metrics or system issues
+
+#### Rate Limiting and Performance
+
+- Metrics broadcast at 1-second intervals
+- Admin connections can subscribe to multiple streams simultaneously
+- System metrics are computed efficiently from cached stream data
+- No additional rate limiting for WebSocket connections
+
+#### Example Admin Implementation
+
+```javascript
+const ws = new WebSocket('ws://localhost:8080/api/v1/ws');
+
+ws.onopen = function() {
+  // Authenticate with admin credentials
+  const nip98Event = createNIP98Event('GET', 'ws://localhost:8080/api/v1/ws');
+  ws.send(JSON.stringify({
+    type: 'Auth',
+    data: { token: btoa(JSON.stringify(nip98Event)) }
+  }));
+};
+
+ws.onmessage = function(event) {
+  const message = JSON.parse(event.data);
+  
+  switch(message.type) {
+    case 'AuthResponse':
+      if(message.data.success && message.data.is_admin) {
+        // Subscribe to system-wide metrics
+        ws.send(JSON.stringify({
+          type: 'SubscribeOverall',
+          data: null
+        }));
+      }
+      break;
+      
+    case 'OverallMetrics':
+      updateSystemDashboard(message.data);
+      break;
+      
+    case 'StreamMetrics':
+      updateStreamPanel(message.data);
+      break;
+  }
+};
+```
