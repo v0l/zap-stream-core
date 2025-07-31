@@ -429,6 +429,7 @@ impl Overseer for ZapStreamOverseer {
         // publish N94 stream
         if let Some(n94) = &self.n94 {
             n94.on_start(N94StreamInfo {
+                id: new_stream.id.clone(),
                 title: new_stream.title.clone(),
                 summary: new_stream.summary.clone(),
                 image: new_stream.image.clone(),
@@ -460,6 +461,7 @@ impl Overseer for ZapStreamOverseer {
                     .collect(),
                 goal: new_stream.goal.clone(),
                 pinned: new_stream.pinned.clone(),
+                status: "live".to_string(),
             })
             .await?;
         }

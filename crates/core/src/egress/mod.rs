@@ -1,7 +1,6 @@
 use anyhow::Result;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{AVPacket, AVStream};
 use ffmpeg_rs_raw::Encoder;
-use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 

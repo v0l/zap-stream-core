@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
     av_q2d, AVMediaType::AVMEDIA_TYPE_AUDIO, AVMediaType::AVMEDIA_TYPE_VIDEO,
     AVPixelFormat::AV_PIX_FMT_YUV420P, AVRational, AVSampleFormat::AV_SAMPLE_FMT_FLTP,
-    AV_NOPTS_VALUE, AV_PROFILE_H264_MAIN,
+    AV_CODEC_FLAG_GLOBAL_HEADER, AV_NOPTS_VALUE, AV_PROFILE_H264_MAIN,
 };
 use ffmpeg_rs_raw::{Demuxer, Encoder};
 use m3u8_rs::{parse_media_playlist, MediaSegmentType};
@@ -160,9 +160,13 @@ impl HlsTimingTester {
         const VIDEO_HEIGHT: u16 = 720;
         const SAMPLE_RATE: u32 = 44100;
 
+        // Determine if GLOBAL_HEADER is needed for fMP4
+        let need_global_header = segment_type == SegmentType::FMP4;
+
         // Create video encoder
+        let keyframe_interval = (VIDEO_FPS * 2.0) as u16; // 2 second keyframe interval
         let mut video_encoder = unsafe {
-            Encoder::new_with_name("libx264")?
+            let mut encoder = Encoder::new_with_name("libx264")?
                 .with_stream_index(0)
                 .with_framerate(VIDEO_FPS)?
                 .with_bitrate(1_000_000)
@@ -171,18 +175,35 @@ impl HlsTimingTester {
                 .with_height(VIDEO_HEIGHT as _)
                 .with_level(51)
                 .with_profile(AV_PROFILE_H264_MAIN)
-                .open(None)?
+                .with_options(|ctx| {
+                    (*ctx).gop_size = keyframe_interval as _;
+                    (*ctx).keyint_min = keyframe_interval as _;
+                    (*ctx).max_b_frames = 3;
+                    
+                    if need_global_header {
+                        (*ctx).flags |= AV_CODEC_FLAG_GLOBAL_HEADER as i32;
+                    }
+                });
+            
+            encoder.open(None)?
         };
 
         // Create audio encoder
         let mut audio_encoder = unsafe {
-            Encoder::new_with_name("aac")?
+            let mut encoder = Encoder::new_with_name("aac")?
                 .with_stream_index(1)
                 .with_default_channel_layout(1)
                 .with_bitrate(128_000)
                 .with_sample_format(AV_SAMPLE_FMT_FLTP)
-                .with_sample_rate(SAMPLE_RATE as _)?
-                .open(None)?
+                .with_sample_rate(SAMPLE_RATE as _)?;
+            
+            if need_global_header {
+                encoder = encoder.with_options(|ctx| {
+                    (*ctx).flags |= AV_CODEC_FLAG_GLOBAL_HEADER as i32;
+                });
+            }
+            
+            encoder.open(None)?
         };
 
         // Create variant streams
@@ -342,12 +363,27 @@ impl HlsTimingTester {
         }
 
         log::info!(
-            "Generated {} video frames ({:.1}s) of test HLS stream at",
+            "Generated {} video frames ({:.1}s) of test HLS stream at {:?}",
             video_frames_generated,
-            video_frames_generated as f32 / VIDEO_FPS
+            video_frames_generated as f32 / VIDEO_FPS,
+            output_dir
         );
 
-        Ok((hls_muxer, output_dir.join("stream_0")))
+        // Debug: List what files were actually created
+        if let Ok(entries) = std::fs::read_dir(&output_dir) {
+            for entry in entries.flatten() {
+                log::info!("Created file: {:?}", entry.path());
+                if entry.path().is_dir() {
+                    if let Ok(subentries) = std::fs::read_dir(entry.path()) {
+                        for subentry in subentries.flatten() {
+                            log::info!("  - {:?}", subentry.path());
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok((hls_muxer, output_dir.to_path_buf()))
     }
 
     /// Test HLS timing for a specific stream directory
@@ -832,7 +868,6 @@ mod tests {
         }
     }
 
-    #[ignore]
     #[test]
     fn test_generated_hls_stream_fmp4() {
         pretty_env_logger::try_init().ok();

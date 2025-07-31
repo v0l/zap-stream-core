@@ -1,12 +1,14 @@
-use anyhow::bail;
+use anyhow::{Result, bail};
 use chrono::Utc;
 use clap::Parser;
 use log::{error, info};
-use nostr_sdk::{Client, Filter, Keys, Kind, NostrSigner, TagKind, Url};
+use nostr_sdk::{Client, EventBuilder, Filter, Keys, Kind, NostrSigner, Tag, TagKind, Url};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::RwLock;
 use zap_stream_core::egress::EgressSegment;
+use zap_stream_core::endpoint::EndpointConfig;
 use zap_stream_core::endpoint::{
     EndpointCapability, get_variants_from_endpoint, parse_capabilities,
 };
@@ -54,7 +56,7 @@ struct Args {
 
     /// Bridge proxy to use when publishing backwards compatible NIP-53 stream event
     #[clap(long)]
-    pub nip53_bridge: Option<String>,
+    pub n94_bridge: Option<String>,
 
     /// Capability configuration
     #[clap(
@@ -148,13 +150,18 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let stream_info = N94StreamInfo {
+        id: "".to_string(), // This will be set later in start_stream
         title: Some(args.title),
         summary: args.summary,
         image: args.image,
         tags: args.hashtag,
+        starts: 0,
+        ends: None,
         relays: args.relay,
+        variants: vec![],
         goal: args.goal,
-        ..Default::default()
+        pinned: None,
+        status: "live".to_string(),
     };
 
     // setup overseer
@@ -165,6 +172,7 @@ async fn main() -> anyhow::Result<()> {
         args.segment_length,
         stream_info,
         caps,
+        args.n94_bridge,
     ));
 
     // Create ingress listeners
@@ -188,10 +196,12 @@ async fn main() -> anyhow::Result<()> {
 
 #[derive(Clone)]
 struct N94Overseer {
-    pub stream_info: N94StreamInfo,
-    pub publisher: N94Publisher,
-    pub capabilities: Vec<EndpointCapability>,
-    pub segment_length: f32,
+    stream_info: Arc<RwLock<N94StreamInfo>>,
+    publisher: N94Publisher,
+    capabilities: Vec<EndpointCapability>,
+    segment_length: f32,
+    bridge_url: Option<String>,
+    client: Client,
 }
 
 impl N94Overseer {
@@ -202,62 +212,123 @@ impl N94Overseer {
         segment_length: f32,
         stream_info: N94StreamInfo,
         capabilities: Vec<EndpointCapability>,
+        bridge_url: Option<String>,
     ) -> Self {
         Self {
-            publisher: N94Publisher::new(client, &blossom, max_blossom_servers, segment_length),
-            stream_info,
+            publisher: N94Publisher::new(
+                client.clone(),
+                &blossom,
+                max_blossom_servers,
+                segment_length,
+            ),
+            stream_info: Arc::new(RwLock::new(stream_info)),
             capabilities,
             segment_length,
+            bridge_url,
+            client,
         }
+    }
+
+    /// Publish NIP-53 bridge event for backwards compatibility
+    async fn publish_nip53_bridge_event(
+        &self,
+        stream: &N94StreamInfo,
+        bridge_url: &str,
+    ) -> Result<()> {
+        let mut tags = vec![];
+
+        // Add d tag with stream id
+        tags.push(Tag::parse(["d", &stream.id])?);
+        tags.push(Tag::parse(["status", &stream.status])?);
+
+        if let Some(t) = &stream.title {
+            tags.push(Tag::title(t));
+        }
+        if let Some(s) = &stream.summary {
+            tags.push(Tag::parse(["summary", s])?);
+        }
+        if let Some(i) = &stream.image {
+            tags.push(Tag::parse(["image", i])?);
+        }
+        for t in &stream.tags {
+            tags.push(Tag::hashtag(t));
+        }
+        tags.push(Tag::parse(["starts", stream.starts.to_string().as_str()])?);
+        if let Some(e) = &stream.ends {
+            tags.push(Tag::parse(["ends", e.to_string().as_str()])?);
+        }
+
+        // Only add streaming URL for live streams
+        if stream.status == "live" {
+            let bridge = Url::parse(bridge_url)?;
+            let bridge_stream_url = bridge.join(&format!("/{}.m3u8", stream.id))?;
+            tags.push(Tag::parse(["streaming", bridge_stream_url.as_str()])?);
+        }
+
+        let ev = EventBuilder::new(Kind::LiveEvent, "").tags(tags);
+        let ev = self.client.send_event_builder(ev).await?;
+
+        info!(
+            "Published NIP-53 bridge event {} with status '{}'",
+            ev.val, stream.status
+        );
+
+        Ok(())
     }
 }
 
 #[async_trait::async_trait]
 impl Overseer for N94Overseer {
-    async fn check_streams(&self) -> anyhow::Result<()> {
+    async fn check_streams(&self) -> Result<()> {
         Ok(())
     }
 
     async fn start_stream(
         &self,
-        _connection: &ConnectionInfo,
+        connection: &ConnectionInfo,
         stream_info: &IngressInfo,
-    ) -> anyhow::Result<PipelineConfig> {
+    ) -> Result<PipelineConfig> {
         let cfg = get_variants_from_endpoint(stream_info, &self.capabilities)?;
 
         if cfg.video_src.is_none() || cfg.variants.is_empty() {
             bail!("No video src found");
         }
 
-        self.publisher
-            .on_start(N94StreamInfo {
-                starts: Utc::now().timestamp() as _,
-                ends: None,
-                variants: cfg
-                    .variants
-                    .chunk_by(|a, b| a.group_id() == b.group_id())
-                    .map_while(|v| {
-                        let video = v.iter().find_map(|a| match a {
-                            VariantStream::Video(v) | VariantStream::CopyVideo(v) => Some(v),
-                            _ => None,
-                        });
-                        let video = if let Some(v) = video {
-                            v
-                        } else {
-                            return None;
-                        };
-                        Some(N94Variant {
-                            id: video.id().to_string(),
-                            width: video.width as _,
-                            height: video.height as _,
-                            bitrate: video.bitrate as _,
-                            mime_type: Some("video/mp2t".to_string()),
-                        })
+        // set stream start time to now and configure variants
+        let n94_stream_info = {
+            let mut info = self.stream_info.write().await;
+            info.starts = Utc::now().timestamp() as _;
+            info.status = "live".to_string();
+            info.variants = cfg
+                .variants
+                .chunk_by(|a, b| a.group_id() == b.group_id())
+                .map_while(|v| {
+                    let video = v.iter().find_map(|a| match a {
+                        VariantStream::Video(v) | VariantStream::CopyVideo(v) => Some(v),
+                        _ => None,
+                    });
+                    let video = if let Some(v) = video {
+                        v
+                    } else {
+                        return None;
+                    };
+                    Some(N94Variant {
+                        id: video.id().to_string(),
+                        width: video.width as _,
+                        height: video.height as _,
+                        bitrate: video.bitrate as _,
+                        mime_type: Some("video/mp2t".to_string()),
                     })
-                    .collect(),
-                ..self.stream_info.clone()
-            })
-            .await?;
+                })
+                .collect();
+            info.clone()
+        };
+
+        if let Some(bridge_url) = &self.bridge_url {
+            self.publish_nip53_bridge_event(&n94_stream_info, bridge_url)
+                .await?;
+        }
+        self.publisher.on_start(n94_stream_info).await?;
 
         Ok(PipelineConfig {
             egress: vec![EgressType::HLS(
@@ -277,7 +348,7 @@ impl Overseer for N94Overseer {
         _pipeline_id: &uuid::Uuid,
         added: &Vec<EgressSegment>,
         deleted: &Vec<EgressSegment>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<()> {
         self.publisher
             .on_new_segment(added.iter().map(|s| into_n94_segment(s)).collect())
             .await?;
@@ -293,22 +364,28 @@ impl Overseer for N94Overseer {
         _width: usize,
         _height: usize,
         _path: &PathBuf,
-    ) -> anyhow::Result<()> {
+    ) -> Result<()> {
         // TODO: upload to blossom?
         Ok(())
     }
 
-    async fn on_end(&self, _pipeline_id: &uuid::Uuid) -> anyhow::Result<()> {
+    async fn on_end(&self, _pipeline_id: &uuid::Uuid) -> Result<()> {
+        if let Some(bridge_url) = &self.bridge_url {
+            let mut info = self.stream_info.write().await;
+            info.ends = Some(Utc::now().timestamp() as _);
+            info.status = "ended".to_string();
+            self.publish_nip53_bridge_event(&*info, bridge_url).await?;
+        }
         self.publisher.on_end().await?;
         Ok(())
     }
 
-    async fn on_update(&self, _pipeline_id: &uuid::Uuid) -> anyhow::Result<()> {
+    async fn on_update(&self, _pipeline_id: &uuid::Uuid) -> Result<()> {
         // nothing to do
         Ok(())
     }
 
-    async fn on_stats(&self, _pipeline_id: &uuid::Uuid, stats: StatsType) -> anyhow::Result<()> {
+    async fn on_stats(&self, _pipeline_id: &uuid::Uuid, stats: StatsType) -> Result<()> {
         // nothing to do
         info!("Received stats: {:?}", stats);
         Ok(())

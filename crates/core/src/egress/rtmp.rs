@@ -1,7 +1,7 @@
 use crate::egress::{Egress, EgressResult, EncoderOrSourceStream};
 use crate::variant::{StreamMapping, VariantStream};
 use crate::metrics::PacketMetrics;
-use anyhow::{anyhow, bail, ensure, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use bytes::{BufMut, Bytes, BytesMut};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
     av_packet_clone, av_packet_copy_props, av_q2d, AVPacket,
@@ -23,8 +23,6 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use url::Url;
 use uuid::Uuid;
 use xflv::errors::FlvMuxerError;
-use xflv::mpeg4_aac::Mpeg4AacProcessor;
-use xflv::mpeg4_avc::Mpeg4AvcProcessor;
 use xflv::muxer::FlvMuxer;
 
 pub fn video_codec_id_to_name(codec_id: u8) -> Option<&'static str> {

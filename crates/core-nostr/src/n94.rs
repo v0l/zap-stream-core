@@ -14,6 +14,7 @@ use tokio::sync::{Mutex, mpsc};
 
 #[derive(Clone, Default)]
 pub struct N94StreamInfo {
+    pub id: String,
     pub title: Option<String>,
     pub summary: Option<String>,
     pub image: Option<String>,
@@ -24,6 +25,7 @@ pub struct N94StreamInfo {
     pub variants: Vec<N94Variant>,
     pub goal: Option<String>,
     pub pinned: Option<String>,
+    pub status: String,
 }
 
 #[derive(Clone)]
@@ -114,6 +116,10 @@ impl N94Publisher {
     /// Publish stream event
     pub async fn publish_stream(&self, stream: &N94StreamInfo) -> Result<Event> {
         let mut tags = vec![];
+        
+        // Add d tag with stream id
+        tags.push(Tag::parse(["d", &stream.id])?);
+        
         if let Some(t) = &stream.title {
             tags.push(Tag::title(t));
         }
