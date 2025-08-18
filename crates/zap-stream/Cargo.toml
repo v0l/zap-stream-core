@@ -1,7 +1,7 @@
 [package]
 name = "zap-stream"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 
 [features]
 default = ["srt", "rtmp", "test-pattern", "zap-stream"]
@@ -52,3 +52,7 @@ matchit = "0.8.4"
 mustache = "0.9.0"
 http-range-header = "0.4.2"
 sysinfo = "0.35.2"
+
+# Migration dependencies
+tiberius = "0.12.3"
+sqlx = { version = "0.8.0", features = ["runtime-tokio-rustls", "mysql", "chrono", "uuid"] }

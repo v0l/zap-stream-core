@@ -1,10 +1,11 @@
 [workspace]
-resolver = "2"
+resolver = "3"
 members = [
-    "crates/core", "crates/core-nostr", "crates/n94", "crates/n94-bridge",
-    "crates/zap-stream",
-    "crates/zap-stream-db"
+    "crates/*"
 ]
+
+[workspace.package]
+edition = "2024"
 
 [profile.release]
 opt-level = 3

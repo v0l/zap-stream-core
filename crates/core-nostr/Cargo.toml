@@ -2,7 +2,7 @@
 name = "zap-stream-core-nostr"
 description = "Nostr shared logic for zap-stream-core"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
 
 [dependencies]
 sha2.workspace = true

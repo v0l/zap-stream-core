@@ -2,7 +2,7 @@
 name = "n94"
 description = "Standalone NIP-53 broadcaster"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
 
 [dependencies]
 zap-stream-core = { path = "../core" }
