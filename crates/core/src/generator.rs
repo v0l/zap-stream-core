@@ -1,16 +1,16 @@
 use crate::overseer::IngressStream;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
+use ffmpeg_rs_raw::Scaler;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVColorSpace::AVCOL_SPC_RGB;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPictureType::AV_PICTURE_TYPE_NONE;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_RGBA;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVSampleFormat::AV_SAMPLE_FMT_FLTP;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    av_channel_layout_default, av_frame_alloc, av_frame_free, av_frame_get_buffer, av_q2d,
-    av_rescale_q, AVFrame, AVPixelFormat, AVRational, AVStream,
+    AVFrame, AVPixelFormat, AVRational, AVStream, av_channel_layout_default, av_frame_alloc,
+    av_frame_free, av_frame_get_buffer, av_q2d, av_rescale_q,
 };
-use ffmpeg_rs_raw::Scaler;
-use fontdue::layout::{CoordinateSystem, Layout, TextStyle};
 use fontdue::Font;
+use fontdue::layout::{CoordinateSystem, Layout, TextStyle};
 use std::mem::transmute;
 use std::ops::Sub;
 use std::time::{Duration, Instant};
@@ -413,7 +413,7 @@ mod tests {
             let frame_size = 1024;
             let channels = 2;
 
-            let mut gen = FrameGenerator::new(
+            let mut frame_gen = FrameGenerator::new(
                 fps,
                 1280,
                 720,
@@ -441,7 +441,7 @@ mod tests {
 
             // Generate frames for 2 seconds (60 video frames at 30fps)
             for i in 0..120 {
-                let mut frame = gen.next().unwrap();
+                let mut frame = frame_gen.next().unwrap();
 
                 if (*frame).sample_rate > 0 {
                     // Audio frame
@@ -464,8 +464,15 @@ mod tests {
                         expected_audio_samples - total_audio_samples
                     };
 
-                    println!("Frame {}: VIDEO - PTS: {}, frame_idx: {}, expected_audio: {}, actual_audio: {}, deficit: {}",
-                             i, (*frame).pts, video_frames, expected_audio_samples, total_audio_samples, audio_deficit);
+                    println!(
+                        "Frame {}: VIDEO - PTS: {}, frame_idx: {}, expected_audio: {}, actual_audio: {}, deficit: {}",
+                        i,
+                        (*frame).pts,
+                        video_frames,
+                        expected_audio_samples,
+                        total_audio_samples,
+                        audio_deficit
+                    );
 
                     // Verify we have enough audio for this video frame
                     assert!(
@@ -512,7 +519,7 @@ mod tests {
             let fps = 30.0;
             let sample_rate = 44100;
 
-            let mut gen = FrameGenerator::new(
+            let mut frame_gen = FrameGenerator::new(
                 fps,
                 1280,
                 720,
@@ -538,7 +545,7 @@ mod tests {
 
             // Generate 60 frames to test PTS progression
             for _ in 0..60 {
-                let mut frame = gen.next().unwrap();
+                let mut frame = frame_gen.next().unwrap();
 
                 if (*frame).sample_rate > 0 {
                     // Audio frame - check PTS progression

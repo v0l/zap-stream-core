@@ -48,7 +48,7 @@ pub async fn listen(out_dir: String, overseer: Arc<dyn Overseer>) -> Result<()> 
 }
 
 struct TestPatternSrc {
-    gen: FrameGenerator,
+    frame_gen: FrameGenerator,
     video_encoder: Encoder,
     audio_encoder: Encoder,
     background: Pixmap,
@@ -116,7 +116,7 @@ impl TestPatternSrc {
 
         let frame_size = unsafe { (*audio_encoder.codec_context()).frame_size as _ };
         Ok(Self {
-            gen: FrameGenerator::new(
+            frame_gen: FrameGenerator::new(
                 VIDEO_FPS,
                 VIDEO_WIDTH,
                 VIDEO_HEIGHT,
@@ -145,12 +145,12 @@ impl TestPatternSrc {
     }
 
     pub unsafe fn next_pkt(&mut self) -> Result<()> {
-        self.gen.begin()?;
-        self.gen.copy_frame_data(self.background.data())?;
-        self.gen
-            .write_text(&format!("frame={}", self.gen.frame_no()), 40.0, 5.0, 5.0)?;
+        self.frame_gen.begin()?;
+        self.frame_gen.copy_frame_data(self.background.data())?;
+        self.frame_gen
+            .write_text(&format!("frame={}", self.frame_gen.frame_no()), 40.0, 5.0, 5.0)?;
 
-        let mut frame = self.gen.next()?;
+        let mut frame = self.frame_gen.next()?;
         if frame.is_null() {
             return Ok(());
         }

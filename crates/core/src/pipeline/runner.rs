@@ -45,7 +45,7 @@ pub enum RunnerState {
     /// Idle mode - generating placeholder content after disconnection
     Idle {
         start_time: Instant,
-        gen: FrameGenerator,
+        frame_gen: FrameGenerator,
     },
     /// Pipeline should shut down and do any cleanup
     Shutdown,
@@ -265,16 +265,16 @@ impl PipelineRunner {
             None
         };
 
-        let mut gen = FrameGenerator::from_av_streams(
+        let mut frame_gen = FrameGenerator::from_av_streams(
             video_stream as *const _,
             audio_stream.map(|s| s as *const _),
         )?;
 
         // Set starting PTS to continue from last frame
-        gen.set_starting_pts(self.last_video_pts, self.last_audio_pts);
+        frame_gen.set_starting_pts(self.last_video_pts, self.last_audio_pts);
         self.state = RunnerState::Idle {
             start_time: Instant::now(),
-            gen,
+            frame_gen,
         };
 
         self.consecutive_decode_failures = 0; // Reset counter when entering idle mode
@@ -334,20 +334,20 @@ impl PipelineRunner {
 
         // Generate next frame from idle mode generator
         if let RunnerState::Idle {
-            gen, start_time, ..
+            frame_gen, start_time, ..
         } = &mut self.state
         {
-            gen.begin()?;
+            frame_gen.begin()?;
 
-            gen.fill_color([0, 0, 0, 255])?;
+            frame_gen.fill_color([0, 0, 0, 255])?;
             let message = format!(
                 "Stream Offline - {} seconds",
                 start_time.elapsed().as_secs()
             );
-            gen.write_text(&message, 48.0, 50.0, 50.0)?;
-            gen.write_text("Please reconnect to resume streaming", 24.0, 50.0, 120.0)?;
+            frame_gen.write_text(&message, 48.0, 50.0, 50.0)?;
+            frame_gen.write_text("Please reconnect to resume streaming", 24.0, 50.0, 120.0)?;
 
-            let frame = gen.next()?;
+            let frame = frame_gen.next()?;
             let stream = if (*frame).sample_rate > 0 {
                 // Audio frame
                 config

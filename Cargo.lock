@@ -374,16 +374,16 @@ checksum = "383d29d513d8764dcdc42ea295d979eb99c3c9f00607b3692cf68a431f7dca72"
 
 [[package]]
 name = "bindgen"
-version = "0.69.5"
+version = "0.72.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "271383c67ccabffb7381723dea0672a673f292304fcb45c01cc648c7a8d58088"
+checksum = "4f72209734318d0b619a5e0f5129918b848c416e122a3c4ce054e03cb87b726f"
 dependencies = [
  "bitflags 2.9.1",
  "cexpr",
  "clang-sys",
  "itertools 0.12.1",
- "lazy_static",
- "lazycell",
+ "log 0.4.27",
+ "prettyplease",
  "proc-macro2",
  "quote",
  "regex",
@@ -1151,7 +1151,7 @@ dependencies = [
 [[package]]
 name = "ffmpeg-rs-raw"
 version = "0.1.0"
-source = "git+https://git.v0l.io/Kieran/ffmpeg-rs-raw.git?rev=5329af9575250ca2e9e673a7b3bb8c52cbfb8f2d#5329af9575250ca2e9e673a7b3bb8c52cbfb8f2d"
+source = "git+https://git.v0l.io/Kieran/ffmpeg-rs-raw.git?rev=845118a07afa3e0309de526cb0b34613d82b3981#845118a07afa3e0309de526cb0b34613d82b3981"
 dependencies = [
  "anyhow",
  "ffmpeg-sys-the-third",
@@ -1162,14 +1162,16 @@ dependencies = [
 
 [[package]]
 name = "ffmpeg-sys-the-third"
-version = "2.1.0+ffmpeg-7.1"
-source = "git+https://git.v0l.io/Kieran/ffmpeg-the-third.git?rev=e5f8e077b04b10d5887bce4df1eb1a71738a6c66#e5f8e077b04b10d5887bce4df1eb1a71738a6c66"
+version = "3.0.1+ffmpeg-7.1"
+source = "git+https://git.v0l.io/Kieran/ffmpeg-the-third.git?rev=3059cf6666e0b2d6eaeea00224c25cc95fad5b4a#3059cf6666e0b2d6eaeea00224c25cc95fad5b4a"
 dependencies = [
  "bindgen",
  "cc",
  "clang",
+ "glob",
  "libc",
  "pkg-config",
+ "regex",
  "vcpkg",
 ]
 
@@ -2177,16 +2179,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "lazycell"
-version = "1.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "830d08ce1d1d941e6b30645f1a0eb5643013d835ce3779a5fc208261dbe10f55"
-
-[[package]]
 name = "libc"
-version = "0.2.174"
+version = "0.2.175"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1171693293099992e19cddea4e8b849964e9846f4acee11b3948bcc337be8776"
+checksum = "6a82ae493e598baaea5209805c49bbf2ea7de956d50d7da0da1164f9c6d28543"
 
 [[package]]
 name = "libloading"
@@ -3606,9 +3602,9 @@ checksum = "989e6739f80c4ad5b13e0fd7fe89531180375b18520cc8c82080e4dc4035b84f"
 
 [[package]]
 name = "rustc-hash"
-version = "1.1.0"
+version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
+checksum = "357703d41365b4b27c590e3ed91eabb1b663f07c4c084095e60cbed4362dff0d"
 
 [[package]]
 name = "rustc_version"
