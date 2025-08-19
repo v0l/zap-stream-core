@@ -11,7 +11,9 @@ use nostr_sdk::{Client, Event, EventBuilder, JsonUtil, Keys, Kind, NostrSigner, 
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::time::sleep;
 use url::Url;
 use uuid::Uuid;
 use zap_stream_core::egress::hls::HlsEgress;
@@ -51,6 +53,12 @@ pub struct ZapStreamOverseer {
 }
 
 impl ZapStreamOverseer {
+    /// Maximum number of retry attempts for event publishing
+    const MAX_EVENT_RETRY_ATTEMPTS: u32 = 3;
+    
+    /// Initial retry delay in milliseconds
+    const INITIAL_RETRY_DELAY_MS: u64 = 1000;
+
     pub async fn from_settings(settings: &Settings) -> Result<Self> {
         Ok(ZapStreamOverseer::new(
             &settings.public_url,
@@ -125,12 +133,39 @@ impl ZapStreamOverseer {
         let client_clone = client.clone();
         tokio::spawn(async move {
             while let Some(event) = event_queue_rx.recv().await {
-                match client_clone.send_event(&event).await {
-                    Ok(_) => {
-                        info!("Published stream event {}", event.id.to_hex());
-                    }
-                    Err(e) => {
-                        warn!("Failed to publish stream event {}: {}", event.id.to_hex(), e);
+                let mut last_error = None;
+                
+                for attempt in 0..=Self::MAX_EVENT_RETRY_ATTEMPTS {
+                    match client_clone.send_event(&event).await {
+                        Ok(_) => {
+                            if attempt > 0 {
+                                info!("Successfully published event {} after {} retries", event.id.to_hex(), attempt);
+                            } else {
+                                info!("Published stream event {}", event.id.to_hex());
+                            }
+                            break; // Success, move to next event
+                        }
+                        Err(e) => {
+                            last_error = Some(e);
+                            
+                            if attempt < Self::MAX_EVENT_RETRY_ATTEMPTS {
+                                let delay_ms = Self::INITIAL_RETRY_DELAY_MS * (2_u64.pow(attempt));
+                                warn!(
+                                    "Failed to publish event {} (attempt {}/{}), retrying in {}ms: {}",
+                                    event.id.to_hex(),
+                                    attempt + 1,
+                                    Self::MAX_EVENT_RETRY_ATTEMPTS + 1,
+                                    delay_ms,
+                                    last_error.as_ref().unwrap()
+                                );
+                                sleep(Duration::from_millis(delay_ms)).await;
+                            } else {
+                                warn!("Failed to publish event {} after all {} attempts: {}", 
+                                      event.id.to_hex(), 
+                                      Self::MAX_EVENT_RETRY_ATTEMPTS + 1, 
+                                      last_error.as_ref().unwrap());
+                            }
+                        }
                     }
                 }
             }
