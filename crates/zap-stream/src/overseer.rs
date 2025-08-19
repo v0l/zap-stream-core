@@ -49,8 +49,8 @@ pub struct ZapStreamOverseer {
     segment_length: f32,
     /// Low balance notification config
     low_balance_config: Option<LowBalanceNotificationConfig>,
-    /// Track which streams have been notified about low balance
-    notified_streams: Arc<Mutex<HashSet<Uuid>>>,
+    /// Track which users have been notified about low balance
+    notified_users: Arc<Mutex<HashSet<u64>>>,
 }
 
 impl ZapStreamOverseer {
@@ -137,7 +137,7 @@ impl ZapStreamOverseer {
             public_url: public_url.clone(),
             stream_manager: StreamManager::new(),
             low_balance_config,
-            notified_streams: Arc::new(Mutex::new(HashSet::new())),
+            notified_users: Arc::new(Mutex::new(HashSet::new())),
         };
 
         Ok(overseer)
@@ -297,43 +297,26 @@ impl ZapStreamOverseer {
         Ok(u.join(path)?.to_string())
     }
 
-    /// Send low balance notification to user and admin
+    /// Send low balance notification as live chat message
     async fn send_low_balance_notification(&self, user_id: u64, user_pubkey: &[u8], current_balance: i64, stream_id: &Uuid) -> Result<()> {
-        if let Some(config) = &self.low_balance_config {
+        if let Some(_config) = &self.low_balance_config {
             let balance_sats = current_balance / 1000; // Convert millisats to sats
             let message = format!(
-                "⚠️ Low Balance Warning ⚠️\n\nYour streaming balance is low: {} sats\n\nPlease top up your account to avoid stream interruption.\nStream ID: {}",
-                balance_sats, stream_id
+                "⚠️ Low Balance Warning ⚠️ Your streaming balance is low: {} sats. Please top up your account to avoid stream interruption.",
+                balance_sats
             );
 
-            // Send DM to user
-            if let Ok(user_pk) = PublicKey::from_slice(user_pubkey) {
-                match EventBuilder::encrypted_direct_msg(&self.client.signer().await?, &user_pk, &message, None) {
-                    Ok(dm_builder) => {
-                        match self.client.send_event_builder(dm_builder).await {
-                            Ok(_) => info!("Sent low balance notification to user {}", user_id),
-                            Err(e) => warn!("Failed to send low balance notification to user {}: {}", user_id, e),
-                        }
-                    },
-                    Err(e) => warn!("Failed to create low balance notification for user {}: {}", user_id, e),
-                }
-            }
+            // Send live chat message to the stream
+            let signer = self.client.signer().await?;
+            let stream_pubkey = signer.get_public_key().await?;
+            let coord = Coordinate::new(Kind::LiveEvent, stream_pubkey).identifier(&stream_id.to_string());
+            
+            let chat_event = EventBuilder::new(Kind::Custom(1311), message)
+                .tag(Tag::parse(&["a".to_string(), coord.to_string()])?);
 
-            // Send notification to admin if configured
-            if let Ok(admin_pk) = PublicKey::from_hex(&config.admin_pubkey) {
-                let admin_message = format!(
-                    "Low Balance Alert\n\nUser: {}\nBalance: {} sats\nStream: {}\n\nUser may need assistance with topping up their account.",
-                    hex::encode(user_pubkey), balance_sats, stream_id
-                );
-                match EventBuilder::encrypted_direct_msg(&self.client.signer().await?, &admin_pk, &admin_message, None) {
-                    Ok(admin_dm_builder) => {
-                        match self.client.send_event_builder(admin_dm_builder).await {
-                            Ok(_) => info!("Sent low balance alert to admin for user {}", user_id),
-                            Err(e) => warn!("Failed to send low balance alert to admin for user {}: {}", user_id, e),
-                        }
-                    },
-                    Err(e) => warn!("Failed to create low balance alert for admin for user {}: {}", user_id, e),
-                }
+            match self.client.send_event_builder(chat_event).await {
+                Ok(_) => info!("Sent low balance notification to stream {} for user {}", stream_id, user_id),
+                Err(e) => warn!("Failed to send low balance notification to stream {}: {}", stream_id, e),
             }
         }
         Ok(())
@@ -552,12 +535,13 @@ impl Overseer for ZapStreamOverseer {
             .tick_stream(pipeline_id, stream.user_id, duration, cost)
             .await?;
 
-        // Check for low balance and send notification if needed
+        // Check for low balance and send notification if needed  
         if let Some(config) = &self.low_balance_config {
-            if bal > 0 && bal <= config.threshold_msats {
-                // Check if we haven't already notified for this stream
-                let mut notified = self.notified_streams.lock().await;
-                if !notified.contains(pipeline_id) {
+            let balance_before = bal + cost; // Calculate balance before this deduction
+            if balance_before > config.threshold_msats && bal <= config.threshold_msats {
+                // Balance just crossed the threshold, send notification
+                let mut notified = self.notified_users.lock().await;
+                if !notified.contains(&stream.user_id) {
                     // Get user info for notification
                     if let Ok(user) = self.db.get_user(stream.user_id).await {
                         if let Err(e) = self.send_low_balance_notification(
@@ -569,7 +553,7 @@ impl Overseer for ZapStreamOverseer {
                             warn!("Failed to send low balance notification: {}", e);
                         }
                     }
-                    notified.insert(*pipeline_id);
+                    notified.insert(stream.user_id);
                 }
             }
         }
@@ -608,12 +592,6 @@ impl Overseer for ZapStreamOverseer {
         let user = self.db.get_user(stream.user_id).await?;
 
         self.stream_manager.remove_active_stream(&stream.id).await;
-
-        // Clean up notification tracking for this stream
-        {
-            let mut notified = self.notified_streams.lock().await;
-            notified.remove(pipeline_id);
-        }
 
         stream.state = UserStreamState::Ended;
         stream.ends = Some(Utc::now());

@@ -62,8 +62,6 @@ pub struct OverseerConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct LowBalanceNotificationConfig {
-    /// Admin pubkey (hex) to receive low balance notifications
-    pub admin_pubkey: String,
     /// Balance threshold in millisats for low balance warning
     pub threshold_msats: i64,
 }
