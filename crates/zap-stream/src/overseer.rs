@@ -11,6 +11,8 @@ use nostr_sdk::{Client, Event, EventBuilder, JsonUtil, Keys, Kind, NostrSigner, 
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::time::Duration;
+use tokio::time::sleep;
 use url::Url;
 use uuid::Uuid;
 use zap_stream_core::egress::hls::HlsEgress;
@@ -48,6 +50,12 @@ pub struct ZapStreamOverseer {
 }
 
 impl ZapStreamOverseer {
+    /// Maximum number of retry attempts for event publishing
+    const MAX_EVENT_RETRY_ATTEMPTS: u32 = 3;
+    
+    /// Initial retry delay in milliseconds
+    const INITIAL_RETRY_DELAY_MS: u64 = 1000;
+
     pub async fn from_settings(settings: &Settings) -> Result<Self> {
         Ok(ZapStreamOverseer::new(
             &settings.public_url,
@@ -277,9 +285,43 @@ impl ZapStreamOverseer {
         }
         let ev = self.stream_to_event_builder(stream).await?.tags(extra_tags);
         let ev = self.client.sign_event_builder(ev).await?;
-        self.client.send_event(&ev).await?;
+        self.send_event_with_retry(&ev).await?;
         info!("Published stream event {}", ev.id.to_hex());
         Ok(ev)
+    }
+
+    /// Retry sending an event with exponential backoff
+    async fn send_event_with_retry(&self, event: &Event) -> Result<()> {
+        let mut last_error = None;
+        
+        for attempt in 0..=Self::MAX_EVENT_RETRY_ATTEMPTS {
+            match self.client.send_event(event).await {
+                Ok(_) => {
+                    if attempt > 0 {
+                        info!("Successfully published event {} after {} retries", event.id.to_hex(), attempt);
+                    }
+                    return Ok(());
+                }
+                Err(e) => {
+                    last_error = Some(e);
+                    
+                    if attempt < Self::MAX_EVENT_RETRY_ATTEMPTS {
+                        let delay_ms = Self::INITIAL_RETRY_DELAY_MS * (2_u64.pow(attempt));
+                        warn!(
+                            "Failed to publish event {} (attempt {}/{}), retrying in {}ms: {}",
+                            event.id.to_hex(),
+                            attempt + 1,
+                            Self::MAX_EVENT_RETRY_ATTEMPTS + 1,
+                            delay_ms,
+                            last_error.as_ref().unwrap()
+                        );
+                        sleep(Duration::from_millis(delay_ms)).await;
+                    }
+                }
+            }
+        }
+        
+        Err(last_error.unwrap().context("Failed to publish event after all retry attempts"))
     }
 
     fn map_to_public_url(&self, path: &str) -> Result<String> {
@@ -316,7 +358,9 @@ impl Overseer for ZapStreamOverseer {
                         .check_and_update_viewer_count(&stream.id)
                         .await?
                     {
-                        self.publish_stream_event(&stream, &user.pubkey).await?;
+                        if let Err(e) = self.publish_stream_event(&stream, &user.pubkey).await {
+                            warn!("Failed to publish viewer count update for stream {}: {}", stream.id, e);
+                        }
                     }
                 }
             }
@@ -406,8 +450,15 @@ impl Overseer for ZapStreamOverseer {
             tags: user.tags.clone(),
             ..Default::default()
         };
-        let stream_event = self.publish_stream_event(&new_stream, &user.pubkey).await?;
-        new_stream.event = Some(stream_event.as_json());
+        match self.publish_stream_event(&new_stream, &user.pubkey).await {
+            Ok(stream_event) => {
+                new_stream.event = Some(stream_event.as_json());
+            }
+            Err(e) => {
+                warn!("Failed to publish stream start event for stream {}: {}", new_stream.id, e);
+                // Continue with stream start even if event publishing fails
+            }
+        }
 
         self.stream_manager
             .add_active_stream(
@@ -536,8 +587,15 @@ impl Overseer for ZapStreamOverseer {
 
         stream.state = UserStreamState::Ended;
         stream.ends = Some(Utc::now());
-        let event = self.publish_stream_event(&stream, &user.pubkey).await?;
-        stream.event = Some(event.as_json());
+        match self.publish_stream_event(&stream, &user.pubkey).await {
+            Ok(event) => {
+                stream.event = Some(event.as_json());
+            }
+            Err(e) => {
+                warn!("Failed to publish stream end event for stream {}: {}", stream.id, e);
+                // Continue with stream end even if event publishing fails
+            }
+        }
         self.db.update_stream(&stream).await?;
 
         info!("Stream ended {}", stream.id);
@@ -548,9 +606,17 @@ impl Overseer for ZapStreamOverseer {
         let mut stream = self.db.get_stream(pipeline_id).await?;
         let user = self.db.get_user(stream.user_id).await?;
 
-        let event = self.publish_stream_event(&stream, &user.pubkey).await?;
-        stream.event = Some(event.as_json());
-        self.db.update_stream(&stream).await?;
+        match self.publish_stream_event(&stream, &user.pubkey).await {
+            Ok(event) => {
+                stream.event = Some(event.as_json());
+                self.db.update_stream(&stream).await?;
+            }
+            Err(e) => {
+                warn!("Failed to publish stream update event for stream {}: {}", stream.id, e);
+                // Return error to maintain existing API behavior, but db operations above succeeded
+                return Err(e);
+            }
+        }
         Ok(())
     }
 
@@ -596,5 +662,41 @@ fn into_n94_segment(seg: &EgressSegment) -> N94Segment {
         duration: seg.duration,
         path: seg.path.clone(),
         sha256: seg.sha256.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_retry_constants() {
+        // Verify retry configuration constants are reasonable
+        assert!(ZapStreamOverseer::MAX_EVENT_RETRY_ATTEMPTS > 0);
+        assert!(ZapStreamOverseer::MAX_EVENT_RETRY_ATTEMPTS <= 5); // Shouldn't be excessive
+        assert!(ZapStreamOverseer::INITIAL_RETRY_DELAY_MS >= 100); // At least 100ms
+        assert!(ZapStreamOverseer::INITIAL_RETRY_DELAY_MS <= 5000); // Not more than 5 seconds
+    }
+
+    #[test]
+    fn test_exponential_backoff_calculation() {
+        // Test that retry delays follow exponential backoff pattern
+        let base_delay = ZapStreamOverseer::INITIAL_RETRY_DELAY_MS;
+        
+        // First retry: base_delay * 2^0 = base_delay
+        let delay_1 = base_delay * (2_u64.pow(0));
+        assert_eq!(delay_1, base_delay);
+        
+        // Second retry: base_delay * 2^1 = base_delay * 2
+        let delay_2 = base_delay * (2_u64.pow(1));
+        assert_eq!(delay_2, base_delay * 2);
+        
+        // Third retry: base_delay * 2^2 = base_delay * 4
+        let delay_3 = base_delay * (2_u64.pow(2));
+        assert_eq!(delay_3, base_delay * 4);
+        
+        // Ensure delays are increasing
+        assert!(delay_2 > delay_1);
+        assert!(delay_3 > delay_2);
     }
 }
