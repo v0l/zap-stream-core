@@ -55,15 +55,8 @@ pub struct OverseerConfig {
     pub blossom: Option<Vec<String>>,
     /// Segment length for HLS egress
     pub segment_length: Option<f32>,
-    /// Low balance notification settings
-    pub low_balance_notification: Option<LowBalanceNotificationConfig>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub struct LowBalanceNotificationConfig {
-    /// Balance threshold in millisats for low balance warning
-    pub threshold_msats: i64,
+    /// Low balance notification threshold in millisats
+    pub low_balance_threshold_msats: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

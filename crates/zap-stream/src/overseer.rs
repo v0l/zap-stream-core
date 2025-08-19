@@ -1,4 +1,4 @@
-use crate::settings::{LndSettings, Settings, LowBalanceNotificationConfig};
+use crate::settings::{LndSettings, Settings};
 use crate::stream_manager::StreamManager;
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
@@ -8,11 +8,7 @@ use fedimint_tonic_lnd::verrpc::VersionRequest;
 use log::{error, info, warn};
 use nostr_sdk::prelude::Coordinate;
 use nostr_sdk::{Client, Event, EventBuilder, JsonUtil, Keys, Kind, NostrSigner, Tag, ToBech32, PublicKey};
-use std::collections::HashSet;
 use std::path::PathBuf;
-use std::str::FromStr;
-use std::sync::Arc;
-use tokio::sync::Mutex;
 use url::Url;
 use uuid::Uuid;
 use zap_stream_core::egress::hls::HlsEgress;
@@ -47,10 +43,8 @@ pub struct ZapStreamOverseer {
     n94: Option<N94Publisher>,
     /// HLS segment length
     segment_length: f32,
-    /// Low balance notification config
-    low_balance_config: Option<LowBalanceNotificationConfig>,
-    /// Track which users have been notified about low balance
-    notified_users: Arc<Mutex<HashSet<u64>>>,
+    /// Low balance notification threshold in millisats
+    low_balance_threshold_msats: Option<u64>,
 }
 
 impl ZapStreamOverseer {
@@ -64,7 +58,7 @@ impl ZapStreamOverseer {
             &settings.overseer.relays,
             &settings.overseer.blossom,
             settings.overseer.segment_length.unwrap_or(2.0),
-            settings.overseer.low_balance_notification.clone(),
+            settings.overseer.low_balance_threshold_msats,
         )
         .await?)
     }
@@ -77,7 +71,7 @@ impl ZapStreamOverseer {
         relays: &Vec<String>,
         blossom_servers: &Option<Vec<String>>,
         segment_length: f32,
-        low_balance_config: Option<LowBalanceNotificationConfig>,
+        low_balance_threshold_msats: Option<u64>,
     ) -> Result<Self> {
         let db = ZapStreamDb::new(db).await?;
         db.migrate().await?;
@@ -136,8 +130,7 @@ impl ZapStreamOverseer {
             segment_length,
             public_url: public_url.clone(),
             stream_manager: StreamManager::new(),
-            low_balance_config,
-            notified_users: Arc::new(Mutex::new(HashSet::new())),
+            low_balance_threshold_msats,
         };
 
         Ok(overseer)
@@ -299,7 +292,7 @@ impl ZapStreamOverseer {
 
     /// Send low balance notification as live chat message
     async fn send_low_balance_notification(&self, user_id: u64, user_pubkey: &[u8], current_balance: i64, stream_id: &Uuid) -> Result<()> {
-        if let Some(_config) = &self.low_balance_config {
+        if let Some(threshold_msats) = self.low_balance_threshold_msats {
             let balance_sats = current_balance / 1000; // Convert millisats to sats
             let message = format!(
                 "⚠️ Low Balance Warning ⚠️ Your streaming balance is low: {} sats. Please top up your account to avoid stream interruption.",
@@ -536,24 +529,19 @@ impl Overseer for ZapStreamOverseer {
             .await?;
 
         // Check for low balance and send notification if needed  
-        if let Some(config) = &self.low_balance_config {
+        if let Some(threshold_msats) = self.low_balance_threshold_msats {
             let balance_before = bal + cost; // Calculate balance before this deduction
-            if balance_before > config.threshold_msats && bal <= config.threshold_msats {
+            if balance_before > threshold_msats as i64 && bal <= threshold_msats as i64 {
                 // Balance just crossed the threshold, send notification
-                let mut notified = self.notified_users.lock().await;
-                if !notified.contains(&stream.user_id) {
-                    // Get user info for notification
-                    if let Ok(user) = self.db.get_user(stream.user_id).await {
-                        if let Err(e) = self.send_low_balance_notification(
-                            stream.user_id, 
-                            &user.pubkey, 
-                            bal, 
-                            pipeline_id
-                        ).await {
-                            warn!("Failed to send low balance notification: {}", e);
-                        }
+                if let Ok(user) = self.db.get_user(stream.user_id).await {
+                    if let Err(e) = self.send_low_balance_notification(
+                        stream.user_id, 
+                        &user.pubkey, 
+                        bal, 
+                        pipeline_id
+                    ).await {
+                        warn!("Failed to send low balance notification: {}", e);
                     }
-                    notified.insert(stream.user_id);
                 }
             }
         }
