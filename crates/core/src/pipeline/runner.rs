@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use crate::egress::hls::HlsEgress;
 use crate::egress::recorder::RecorderEgress;
+#[cfg(feature = "egress-rtmp")]
 use crate::egress::rtmp::RtmpEgress;
 use crate::egress::{Egress, EgressResult, EncoderOrSourceStream};
 use crate::generator::FrameGenerator;
@@ -857,6 +858,7 @@ impl PipelineRunner {
                     let rec = RecorderEgress::new(self.out_dir.clone(), variant_mapping)?;
                     self.egress.push(Box::new(rec));
                 }
+                #[cfg(feature = "egress-rtmp")]
                 EgressType::RTMPForwarder(_, dst) => {
                     let mut fwd = RtmpEgress::new(dst, variant_mapping)?;
                     if let Err(e) = self.handle.block_on(async { fwd.connect().await }) {
@@ -865,6 +867,7 @@ impl PipelineRunner {
                         self.egress.push(Box::new(fwd));
                     }
                 }
+                _ => bail!("Unhandled egress type: {:?}", e),
             }
         }
         Ok(())

@@ -7,12 +7,12 @@ use crate::variant::video::VideoVariant;
 use crate::variant::{StreamMapping, VariantStream};
 use anyhow::{Context, Result};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    av_q2d, AVMediaType::AVMEDIA_TYPE_AUDIO, AVMediaType::AVMEDIA_TYPE_VIDEO,
-    AVPixelFormat::AV_PIX_FMT_YUV420P, AVRational, AVSampleFormat::AV_SAMPLE_FMT_FLTP,
     AV_CODEC_FLAG_GLOBAL_HEADER, AV_NOPTS_VALUE, AV_PROFILE_H264_MAIN,
+    AVMediaType::AVMEDIA_TYPE_AUDIO, AVMediaType::AVMEDIA_TYPE_VIDEO,
+    AVPixelFormat::AV_PIX_FMT_YUV420P, AVRational, AVSampleFormat::AV_SAMPLE_FMT_FLTP, av_q2d,
 };
 use ffmpeg_rs_raw::{Demuxer, Encoder};
-use m3u8_rs::{parse_media_playlist, MediaSegmentType};
+use m3u8_rs::{MediaSegmentType, parse_media_playlist};
 use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
@@ -179,12 +179,12 @@ impl HlsTimingTester {
                     (*ctx).gop_size = keyframe_interval as _;
                     (*ctx).keyint_min = keyframe_interval as _;
                     (*ctx).max_b_frames = 3;
-                    
+
                     if need_global_header {
                         (*ctx).flags |= AV_CODEC_FLAG_GLOBAL_HEADER as i32;
                     }
                 });
-            
+
             encoder.open(None)?
         };
 
@@ -196,13 +196,13 @@ impl HlsTimingTester {
                 .with_bitrate(128_000)
                 .with_sample_format(AV_SAMPLE_FMT_FLTP)
                 .with_sample_rate(SAMPLE_RATE as _)?;
-            
+
             if need_global_header {
                 encoder = encoder.with_options(|ctx| {
                     (*ctx).flags |= AV_CODEC_FLAG_GLOBAL_HEADER as i32;
                 });
             }
-            
+
             encoder.open(None)?
         };
 
@@ -253,8 +253,12 @@ impl HlsTimingTester {
         ];
 
         // Create HLS muxer
-        let mut hls_muxer =
-            HlsMuxer::new(output_dir.to_path_buf(), variants.into_iter(), segment_type, 2.0)?;
+        let mut hls_muxer = HlsMuxer::new(
+            output_dir.to_path_buf(),
+            variants.into_iter(),
+            segment_type,
+            2.0,
+        )?;
 
         // Create frame generator
         let frame_size = unsafe { (*audio_encoder.codec_context()).frame_size as _ };
@@ -602,9 +606,8 @@ impl HlsTimingTester {
             })
             .collect();
 
-        let resolved_futures = futures::future::join_all(futures).await;
-
-        for (dir, result) in resolved_futures {
+        for fut in futures {
+            let (dir, result) = fut.await;
             results.insert(dir, result);
         }
 

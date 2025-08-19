@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 pub mod hls;
 pub mod recorder;
+#[cfg(feature = "egress-rtmp")]
 pub mod rtmp;
 
 pub trait Egress {

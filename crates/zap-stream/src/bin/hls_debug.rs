@@ -440,7 +440,7 @@ fn main() -> Result<()> {
             );
             let avg_range_size = partials_with_ranges
                 .iter()
-                .map(|(_, &length, _)| length)
+                .map(|(_, length, _)| *length)
                 .sum::<u64>() as f64
                 / partials_with_ranges.len() as f64;
             println!("  Average byte range size: {:.0} bytes", avg_range_size);
