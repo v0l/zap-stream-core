@@ -1,3 +1,7 @@
 **/target
 .idea/
 **/out/
+
+# Configuration files that might contain secrets
+config.toml
+example_low_balance_config.toml

@@ -10,4 +10,6 @@ Rust zap.stream core streaming server
 
 - [API Documentation](./docs/API.md) - Complete REST API reference
 - [Deployment Guide](./docs/DEPLOYMENT.md) - Production deployment with Docker
+- [Low Balance Notifications](./docs/LOW_BALANCE_NOTIFICATIONS.md) - Proactive balance monitoring and notifications
+- [Admin API](./docs/ADMIN_API.md) - Administrative functions and user management
 
