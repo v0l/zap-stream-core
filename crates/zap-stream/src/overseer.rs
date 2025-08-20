@@ -1,21 +1,25 @@
 use crate::settings::{LndSettings, Settings};
 use crate::stream_manager::StreamManager;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use chrono::Utc;
 #[cfg(feature = "zap-stream")]
 use fedimint_tonic_lnd::verrpc::VersionRequest;
 use log::{error, info, warn};
 use nostr_sdk::prelude::Coordinate;
-use nostr_sdk::{Client, Event, EventBuilder, JsonUtil, Keys, Kind, NostrSigner, Tag, ToBech32, PublicKey};
+use nostr_sdk::{
+    Client, Event, EventBuilder, JsonUtil, Keys, Kind, NostrSigner, PublicKey, Tag, ToBech32,
+};
+use std::collections::HashSet;
 use std::path::PathBuf;
+use std::str::FromStr;
 use url::Url;
 use uuid::Uuid;
+use zap_stream_core::egress::EgressSegment;
 use zap_stream_core::egress::hls::HlsEgress;
 use zap_stream_core::egress::recorder::RecorderEgress;
-use zap_stream_core::egress::EgressSegment;
 use zap_stream_core::endpoint::{
-    get_variants_from_endpoint, parse_capabilities, EndpointCapability,
+    EndpointCapability, get_variants_from_endpoint, parse_capabilities,
 };
 use zap_stream_core::ingress::ConnectionInfo;
 use zap_stream_core::mux::SegmentType;
@@ -291,7 +295,13 @@ impl ZapStreamOverseer {
     }
 
     /// Send low balance notification as live chat message
-    async fn send_low_balance_notification(&self, user_id: u64, user_pubkey: &[u8], current_balance: i64, stream_id: &Uuid) -> Result<()> {
+    async fn send_low_balance_notification(
+        &self,
+        user_id: u64,
+        user_pubkey: &[u8],
+        current_balance: i64,
+        stream_id: &Uuid,
+    ) -> Result<()> {
         if let Some(threshold_msats) = self.low_balance_threshold_msats {
             let balance_sats = current_balance / 1000; // Convert millisats to sats
             let message = format!(
@@ -302,14 +312,21 @@ impl ZapStreamOverseer {
             // Send live chat message to the stream
             let signer = self.client.signer().await?;
             let stream_pubkey = signer.get_public_key().await?;
-            let coord = Coordinate::new(Kind::LiveEvent, stream_pubkey).identifier(&stream_id.to_string());
-            
+            let coord =
+                Coordinate::new(Kind::LiveEvent, stream_pubkey).identifier(&stream_id.to_string());
+
             let chat_event = EventBuilder::new(Kind::Custom(1311), message)
                 .tag(Tag::parse(&["a".to_string(), coord.to_string()])?);
 
             match self.client.send_event_builder(chat_event).await {
-                Ok(_) => info!("Sent low balance notification to stream {} for user {}", stream_id, user_id),
-                Err(e) => warn!("Failed to send low balance notification to stream {}: {}", stream_id, e),
+                Ok(_) => info!(
+                    "Sent low balance notification to stream {} for user {}",
+                    stream_id, user_id
+                ),
+                Err(e) => warn!(
+                    "Failed to send low balance notification to stream {}: {}",
+                    stream_id, e
+                ),
             }
         }
         Ok(())
@@ -528,18 +545,21 @@ impl Overseer for ZapStreamOverseer {
             .tick_stream(pipeline_id, stream.user_id, duration, cost)
             .await?;
 
-        // Check for low balance and send notification if needed  
+        // Check for low balance and send notification if needed
         if let Some(threshold_msats) = self.low_balance_threshold_msats {
             let balance_before = bal + cost; // Calculate balance before this deduction
             if balance_before > threshold_msats as i64 && bal <= threshold_msats as i64 {
                 // Balance just crossed the threshold, send notification
                 if let Ok(user) = self.db.get_user(stream.user_id).await {
-                    if let Err(e) = self.send_low_balance_notification(
-                        stream.user_id, 
-                        &user.pubkey, 
-                        bal, 
-                        pipeline_id
-                    ).await {
+                    if let Err(e) = self
+                        .send_low_balance_notification(
+                            stream.user_id,
+                            &user.pubkey,
+                            bal,
+                            pipeline_id,
+                        )
+                        .await
+                    {
                         warn!("Failed to send low balance notification: {}", e);
                     }
                 }
