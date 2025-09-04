@@ -1151,7 +1151,7 @@ dependencies = [
 [[package]]
 name = "ffmpeg-rs-raw"
 version = "0.1.0"
-source = "git+https://git.v0l.io/Kieran/ffmpeg-rs-raw.git?rev=2645abbbdacb3187d8274d8d47a8e6eb3d0645fb#2645abbbdacb3187d8274d8d47a8e6eb3d0645fb"
+source = "git+https://git.v0l.io/Kieran/ffmpeg-rs-raw.git?rev=3395f9fadd0a8e9498e7d6bfcf0c03bb7bc51e79#3395f9fadd0a8e9498e7d6bfcf0c03bb7bc51e79"
 dependencies = [
  "anyhow",
  "ffmpeg-sys-the-third",
@@ -4005,7 +4005,7 @@ checksum = "04dc19736151f35336d325007ac991178d504a119863a2fcb3758cdb5e52c50d"
 [[package]]
 name = "slimbox"
 version = "0.1.0"
-source = "git+https://github.com/v0l/slimbox?rev=807c88212532732ead03e925c4788533aeb8f196#807c88212532732ead03e925c4788533aeb8f196"
+source = "git+https://github.com/v0l/slimbox?rev=f40fb964fc515b40807d925104ee7a5f3122c1fc#f40fb964fc515b40807d925104ee7a5f3122c1fc"
 
 [[package]]
 name = "slotmap"
