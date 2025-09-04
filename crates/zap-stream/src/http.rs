@@ -1,12 +1,12 @@
-use crate::auth::{authenticate_nip98, AuthRequest, AuthResult, TokenSource};
+use crate::auth::{AuthRequest, AuthResult, TokenSource, authenticate_nip98};
 use crate::viewer::ViewerTracker;
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{Context, Result, bail, ensure};
 use bytes::Bytes;
 use futures_util::TryStreamExt;
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full, StreamBody};
 use http_range_header::{
-    parse_range_header, EndPosition, StartPosition, SyntacticallyCorrectRange,
+    EndPosition, StartPosition, SyntacticallyCorrectRange, parse_range_header,
 };
 use hyper::body::{Frame, Incoming};
 use hyper::http::response::Builder;
@@ -21,7 +21,7 @@ use std::future::Future;
 use std::io::SeekFrom;
 use std::ops::Range;
 use std::path::PathBuf;
-use std::pin::{pin, Pin};
+use std::pin::{Pin, pin};
 use std::task::Poll;
 use tokio::fs::File;
 use tokio::io::{AsyncRead, AsyncSeek, ReadBuf};
@@ -324,23 +324,27 @@ where
 
     fn call(&self, req: Request<Incoming>) -> Self::Future {
         let path = req.uri().path().to_owned();
-        let dst_path = self.files_dir.join(&req.uri().path()[1..]);
+        let dst_path = if path.starts_with("/") {
+            self.files_dir.join(&path[1..])
+        } else {
+            self.files_dir.clone()
+        };
 
         if let Ok(m) = self.router.at(&path) {
-            match m.value {
+            return match m.value {
                 HttpServerPath::Index => {
                     let plugin = self.plugin.clone();
                     let template = include_str!("../index.html");
                     let template = template.to_string();
-                    return Box::pin(async move { Self::handle_index(&plugin, template).await });
+                    Box::pin(async move { Self::handle_index(&plugin, template).await })
                 }
                 HttpServerPath::HlsMasterPlaylist => {
                     let stream_id = m.params.get("stream").map(|s| s.to_string());
                     let file_path = dst_path.clone();
-                    return Box::pin(async move {
+                    Box::pin(async move {
                         let _stream_id = stream_id.context("stream id missing")?;
                         Self::handle_hls_master_playlist(&req, file_path).await
-                    });
+                    })
                 }
                 HttpServerPath::HlsVariantPlaylist => {
                     // extract the viewer token and track every hit
@@ -355,25 +359,23 @@ where
                         })
                         .unwrap_or_default();
                     let plugin = self.plugin.clone();
-                    return Box::pin(async move {
+                    Box::pin(async move {
                         if let (Some(stream_id), Some(vt)) = (stream_id, query_params.get("vt")) {
                             plugin.track_viewer(&stream_id, vt).await?;
                         }
                         Self::path_to_response(dst_path).await
-                    });
+                    })
                 }
                 HttpServerPath::HlsSegmentFile => {
                     // handle segment file (range requests)
                     let file_path = dst_path.clone();
-                    return Box::pin(
-                        async move { Self::handle_hls_segment(&req, file_path).await },
-                    );
+                    Box::pin(async move { Self::handle_hls_segment(&req, file_path).await })
                 }
                 HttpServerPath::WebSocketMetrics => {
                     let plugin = self.plugin.clone();
-                    return plugin.handle_websocket_metrics(req);
+                    plugin.handle_websocket_metrics(req)
                 }
-            }
+            };
         }
 
         // check if mapped to file (not handled route)
