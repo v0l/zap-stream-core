@@ -3,6 +3,7 @@ use crate::stream_manager::StreamManager;
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use chrono::Utc;
+use hostname;
 #[cfg(feature = "zap-stream")]
 use fedimint_tonic_lnd::verrpc::VersionRequest;
 use log::{error, info, warn};
@@ -49,6 +50,8 @@ pub struct ZapStreamOverseer {
     segment_length: f32,
     /// Low balance notification threshold in millisats
     low_balance_threshold_msats: Option<u64>,
+    /// Node name for horizontal scaling
+    node_name: String,
 }
 
 impl ZapStreamOverseer {
@@ -121,6 +124,11 @@ impl ZapStreamOverseer {
         }
         client.connect().await;
 
+        let node_name = hostname::get()
+            .map_err(|e| anyhow::anyhow!("Failed to get hostname: {}", e))?
+            .to_string_lossy()
+            .to_string();
+
         let overseer = Self {
             db,
             #[cfg(feature = "zap-stream")]
@@ -135,6 +143,7 @@ impl ZapStreamOverseer {
             public_url: public_url.clone(),
             stream_manager: StreamManager::new(),
             low_balance_threshold_msats,
+            node_name,
         };
 
         Ok(overseer)
@@ -336,7 +345,7 @@ impl ZapStreamOverseer {
 #[async_trait]
 impl Overseer for ZapStreamOverseer {
     async fn check_streams(&self) -> Result<()> {
-        let active_streams = self.db.list_live_streams().await?;
+        let active_streams = self.db.list_live_streams_by_node(&self.node_name).await?;
 
         for stream in active_streams {
             // check if stream is alive
@@ -449,6 +458,7 @@ impl Overseer for ZapStreamOverseer {
             content_warning: user.content_warning.clone(),
             goal: user.goal.clone(),
             tags: user.tags.clone(),
+            node_name: Some(self.node_name.clone()),
             ..Default::default()
         };
         let stream_event = self.publish_stream_event(&new_stream, &user.pubkey).await?;

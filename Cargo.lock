@@ -1151,7 +1151,7 @@ dependencies = [
 [[package]]
 name = "ffmpeg-rs-raw"
 version = "0.1.0"
-source = "git+https://git.v0l.io/Kieran/ffmpeg-rs-raw.git?rev=845118a07afa3e0309de526cb0b34613d82b3981#845118a07afa3e0309de526cb0b34613d82b3981"
+source = "git+https://git.v0l.io/Kieran/ffmpeg-rs-raw.git?rev=2645abbbdacb3187d8274d8d47a8e6eb3d0645fb#2645abbbdacb3187d8274d8d47a8e6eb3d0645fb"
 dependencies = [
  "anyhow",
  "ffmpeg-sys-the-third",
@@ -1641,6 +1641,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "589533453244b0995c858700322199b2becb13b627df2851f64a2775d024abcf"
 dependencies = [
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "hostname"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a56f203cd1c76362b69e3863fd987520ac36cf70a8c92627449b2f64a8cf7d65"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "windows-link",
 ]
 
 [[package]]
@@ -3994,8 +4005,7 @@ checksum = "04dc19736151f35336d325007ac991178d504a119863a2fcb3758cdb5e52c50d"
 [[package]]
 name = "slimbox"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "26dfcf7e4fe830e4b9245b9e0def30d3df9ea194aca707e9a78b079d2b646b1a"
+source = "git+https://github.com/v0l/slimbox?rev=807c88212532732ead03e925c4788533aeb8f196#807c88212532732ead03e925c4788533aeb8f196"
 
 [[package]]
 name = "slotmap"
@@ -4423,9 +4433,9 @@ dependencies = [
 
 [[package]]
 name = "sysinfo"
-version = "0.35.2"
+version = "0.37.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c3ffa3e4ff2b324a57f7aeb3c349656c7b127c3c189520251a648102a92496e"
+checksum = "07cec4dc2d2e357ca1e610cfb07de2fa7a10fc3e9fe89f72545f3d244ea87753"
 dependencies = [
  "libc",
  "memchr",
@@ -5929,6 +5939,7 @@ dependencies = [
  "ffmpeg-rs-raw",
  "futures-util",
  "hex",
+ "hostname",
  "http-body-util",
  "http-range-header",
  "hyper 1.6.0",

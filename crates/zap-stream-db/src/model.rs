@@ -78,6 +78,7 @@ pub struct UserStream {
     pub event: Option<String>,
     pub endpoint_id: Option<u64>,
     pub last_segment: Option<DateTime<Utc>>,
+    pub node_name: Option<String>,
 }
 
 #[derive(Debug, Clone, FromRow)]

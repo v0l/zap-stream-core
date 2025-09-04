@@ -95,7 +95,7 @@ impl ZapStreamDb {
 
     pub async fn update_stream(&self, user_stream: &UserStream) -> Result<()> {
         sqlx::query(
-            "update user_stream set state = ?, starts = ?, ends = ?, title = ?, summary = ?, image = ?, thumb = ?, tags = ?, content_warning = ?, goal = ?, pinned = ?, fee = ?, event = ?, endpoint_id = ? where id = ?",
+            "update user_stream set state = ?, starts = ?, ends = ?, title = ?, summary = ?, image = ?, thumb = ?, tags = ?, content_warning = ?, goal = ?, pinned = ?, fee = ?, event = ?, endpoint_id = ?, node_name = ? where id = ?",
         )
             .bind(&user_stream.state)
             .bind(&user_stream.starts)
@@ -111,6 +111,7 @@ impl ZapStreamDb {
             .bind(&user_stream.fee)
             .bind(&user_stream.event)
             .bind(&user_stream.endpoint_id)
+            .bind(&user_stream.node_name)
             .bind(&user_stream.id)
             .execute(&self.db)
             .await
@@ -129,6 +130,14 @@ impl ZapStreamDb {
     /// Get the list of active streams
     pub async fn list_live_streams(&self) -> Result<Vec<UserStream>> {
         Ok(sqlx::query_as("select * from user_stream where state = 2")
+            .fetch_all(&self.db)
+            .await?)
+    }
+
+    /// Get the list of active streams for a specific node
+    pub async fn list_live_streams_by_node(&self, node_name: &str) -> Result<Vec<UserStream>> {
+        Ok(sqlx::query_as("select * from user_stream where state = 2 and node_name = ?")
+            .bind(node_name)
             .fetch_all(&self.db)
             .await?)
     }
