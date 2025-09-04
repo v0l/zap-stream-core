@@ -1,9 +1,9 @@
-use crate::http::{check_nip98_auth, HttpFuture, HttpServerPlugin, StreamData};
+use crate::http::{HttpFuture, HttpServerPlugin, StreamData, check_nip98_auth};
 use crate::overseer::ZapStreamOverseer;
 use crate::settings::Settings;
 use crate::stream_manager::StreamManager;
 use crate::websocket_metrics::WebSocketMetricsServer;
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use http_body_util::combinators::BoxBody;
@@ -37,6 +37,7 @@ enum Route {
     ForwardId,
     History,
     Keys,
+    Time,
     AdminUsers,
     AdminUsersId,
     AdminUserHistory,
@@ -93,6 +94,7 @@ impl Api {
             .unwrap();
         router.insert("/api/v1/history", Route::History).unwrap();
         router.insert("/api/v1/keys", Route::Keys).unwrap();
+        router.insert("/api/v1/time", Route::Time).unwrap();
         router
             .insert("/api/v1/admin/users", Route::AdminUsers)
             .unwrap();
@@ -258,6 +260,11 @@ impl Api {
                     let body = req.collect().await?.to_bytes();
                     let create_req: CreateStreamKeyRequest = serde_json::from_slice(&body)?;
                     let rsp = self.create_stream_key(&auth.pubkey, create_req).await?;
+                    Ok(base.body(Self::body_json(&rsp)?)?)
+                }
+                (&Method::GET, Route::Time) => {
+                    let time_ms = Utc::now().timestamp_millis() as u64;
+                    let rsp = TimeResponse { time: time_ms };
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::GET, Route::AdminUsers) => {
@@ -1714,4 +1721,9 @@ struct AdminIngestEndpointsResponse {
     pub page: u32,
     pub limit: u32,
     pub total: u32,
+}
+
+#[derive(Deserialize, Serialize)]
+struct TimeResponse {
+    pub time: u64,
 }
