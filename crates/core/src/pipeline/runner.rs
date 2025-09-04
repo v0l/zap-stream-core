@@ -788,9 +788,16 @@ impl PipelineRunner {
                 })
                 .collect(),
         };
-        let cfg = self
-            .handle
-            .block_on(async { self.overseer.start_stream(&self.connection, &i_info).await })?;
+        let cfg = self.handle.block_on(async {
+            self.overseer
+                .start_stream(&mut self.connection, &i_info)
+                .await
+        })?;
+
+        if let Some(id) = cfg.replace_connection_id {
+            self.connection.id = id;
+            self.out_dir = self.out_dir.parent().unwrap().join(id.to_string());
+        }
 
         let inputs: HashSet<usize> = cfg.variants.iter().map(|e| e.src_index()).collect();
         self.decoder.enable_hw_decoder_any();

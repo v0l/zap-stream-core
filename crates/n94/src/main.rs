@@ -340,6 +340,7 @@ impl Overseer for N94Overseer {
             ingress_info: stream_info.clone(),
             video_src: cfg.video_src.unwrap().index,
             audio_src: cfg.audio_src.map(|s| s.index),
+            replace_connection_id: None
         })
     }
 

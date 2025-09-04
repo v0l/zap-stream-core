@@ -657,6 +657,11 @@ impl Overseer for ZapStreamOverseer {
             ingress_info: stream_info.clone(),
             video_src: cfg.video_src.unwrap().index,
             audio_src: cfg.audio_src.map(|s| s.index),
+            replace_connection_id: if matches!(user_key, StreamKeyType::FixedEventKey { .. }) {
+                Some(new_stream.id.parse()?)
+            } else {
+                None
+            },
         })
     }
 
