@@ -200,12 +200,23 @@ impl ZapStreamOverseer {
                             data.settle_index
                         );
                         if data.settle_index != 0 {
-                            if let Err(e) = db.complete_payment(&data.r_hash, 0).await {
-                                error!(
-                                    "Failed to complete payment {}: {}",
-                                    hex::encode(data.r_hash),
-                                    e
-                                );
+                            match db.complete_payment(&data.r_hash, 0).await {
+                                Ok(b) => {
+                                    if b {
+                                        info!("Completed payment!");
+                                    } else {
+                                        warn!(
+                                            "No payments updated! Maybe it doesnt exist or it's already processed."
+                                        )
+                                    }
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "Failed to complete payment {}: {}",
+                                        hex::encode(data.r_hash),
+                                        e
+                                    );
+                                }
                             }
                         }
                     }

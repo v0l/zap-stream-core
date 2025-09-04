@@ -1,5 +1,6 @@
 use crate::{
-    AuditLog, AuditLogWithPubkeys, IngestEndpoint, Payment, PaymentType, User, UserStream, UserStreamForward, UserStreamKey,
+    AuditLog, AuditLogWithPubkeys, IngestEndpoint, Payment, PaymentType, User, UserStream,
+    UserStreamForward, UserStreamKey,
 };
 use anyhow::Result;
 use rand::random;
@@ -136,10 +137,12 @@ impl ZapStreamDb {
 
     /// Get the list of active streams for a specific node
     pub async fn list_live_streams_by_node(&self, node_name: &str) -> Result<Vec<UserStream>> {
-        Ok(sqlx::query_as("select * from user_stream where state = 2 and node_name = ?")
-            .bind(node_name)
-            .fetch_all(&self.db)
-            .await?)
+        Ok(
+            sqlx::query_as("select * from user_stream where state = 2 and node_name = ?")
+                .bind(node_name)
+                .fetch_all(&self.db)
+                .await?,
+        )
     }
 
     /// Add [duration] & [cost] to a stream and return the new user balance
@@ -291,26 +294,26 @@ impl ZapStreamDb {
     }
 
     /// Update payment fee and mark as paid, also update users balance (for deposits/credits)
-    pub async fn complete_payment(&self, payment_hash: &[u8], fee: u64) -> Result<()> {
-        sqlx::query("update payment p join user u on p.user_id = u.id set p.fee = ?, p.is_paid = true, u.balance = u.balance + p.amount where p.payment_hash = ? and p.is_paid = false")
+    pub async fn complete_payment(&self, payment_hash: &[u8], fee: u64) -> Result<bool> {
+        let res = sqlx::query("update payment p join user u on p.user_id = u.id set p.fee = ?, p.is_paid = true, u.balance = u.balance + p.amount where p.payment_hash = ? and p.is_paid = false")
             .bind(fee)
             .bind(payment_hash)
             .execute(&self.db)
             .await?;
 
-        Ok(())
+        Ok(res.rows_affected() == 1)
     }
 
     /// Update payment fee and mark as paid for withdrawals (subtracts fee from balance)
-    pub async fn complete_withdrawal(&self, payment_hash: &[u8], fee: u64) -> Result<()> {
-        sqlx::query("update payment p join user u on p.user_id = u.id set p.fee = ?, p.is_paid = true, u.balance = u.balance - ? where p.payment_hash = ? and p.is_paid = false")
+    pub async fn complete_withdrawal(&self, payment_hash: &[u8], fee: u64) -> Result<bool> {
+        let res = sqlx::query("update payment p join user u on p.user_id = u.id set p.fee = ?, p.is_paid = true, u.balance = u.balance - ? where p.payment_hash = ? and p.is_paid = false")
             .bind(fee)
             .bind(fee)
             .bind(payment_hash)
             .execute(&self.db)
             .await?;
 
-        Ok(())
+        Ok(res.rows_affected() == 1)
     }
 
     /// Get payment by hash
@@ -497,7 +500,7 @@ impl ZapStreamDb {
     /// Search users by pubkey prefix (hex encoded)
     pub async fn search_users_by_pubkey(&self, pubkey_prefix: &str) -> Result<(Vec<User>, u64)> {
         let search_pattern = format!("%{}%", pubkey_prefix);
-        
+
         let total: i64 = sqlx::query_scalar("select count(*) from user where hex(pubkey) like ?")
             .bind(&search_pattern)
             .fetch_one(&self.db)
@@ -585,22 +588,16 @@ impl ZapStreamDb {
     }
 
     /// Get audit logs with pagination
-    pub async fn get_audit_logs(
-        &self,
-        offset: u64,
-        limit: u64,
-    ) -> Result<(Vec<AuditLog>, u64)> {
+    pub async fn get_audit_logs(&self, offset: u64, limit: u64) -> Result<(Vec<AuditLog>, u64)> {
         let total: i64 = sqlx::query_scalar("select count(*) from audit_log")
             .fetch_one(&self.db)
             .await?;
 
-        let logs = sqlx::query_as(
-            "select * from audit_log order by created desc limit ? offset ?",
-        )
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&self.db)
-        .await?;
+        let logs = sqlx::query_as("select * from audit_log order by created desc limit ? offset ?")
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&self.db)
+            .await?;
 
         Ok((logs, total as u64))
     }
@@ -699,11 +696,13 @@ impl ZapStreamDb {
         offset: u64,
         limit: u64,
     ) -> Result<(Vec<AuditLog>, u64)> {
-        let total: i64 = sqlx::query_scalar("select count(*) from audit_log where target_type = ? and target_id = ?")
-            .bind(target_type)
-            .bind(target_id)
-            .fetch_one(&self.db)
-            .await?;
+        let total: i64 = sqlx::query_scalar(
+            "select count(*) from audit_log where target_type = ? and target_id = ?",
+        )
+        .bind(target_type)
+        .bind(target_id)
+        .fetch_one(&self.db)
+        .await?;
 
         let logs = sqlx::query_as(
             "select * from audit_log where target_type = ? and target_id = ? order by created desc limit ? offset ?",
