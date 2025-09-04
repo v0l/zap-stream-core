@@ -590,6 +590,7 @@ impl Overseer for ZapStreamOverseer {
                 stream.state = UserStreamState::Live;
                 stream.node_name = Some(self.node_name.clone());
                 stream.endpoint_id = Some(endpoint.id);
+                stream.ends = None;
                 stream
             }
         };
