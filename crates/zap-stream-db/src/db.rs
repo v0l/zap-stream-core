@@ -292,7 +292,7 @@ impl ZapStreamDb {
 
     /// Update payment fee and mark as paid, also update users balance (for deposits/credits)
     pub async fn complete_payment(&self, payment_hash: &[u8], fee: u64) -> Result<()> {
-        sqlx::query("update payment p join user u on p.user_id = u.id set p.fee = ?, p.is_paid = true, u.balance = u.balance + p.amount where p.payment_hash = ?")
+        sqlx::query("update payment p join user u on p.user_id = u.id set p.fee = ?, p.is_paid = true, u.balance = u.balance + p.amount where p.payment_hash = ? and p.is_paid = false")
             .bind(fee)
             .bind(payment_hash)
             .execute(&self.db)
@@ -303,7 +303,7 @@ impl ZapStreamDb {
 
     /// Update payment fee and mark as paid for withdrawals (subtracts fee from balance)
     pub async fn complete_withdrawal(&self, payment_hash: &[u8], fee: u64) -> Result<()> {
-        sqlx::query("update payment p join user u on p.user_id = u.id set p.fee = ?, p.is_paid = true, u.balance = u.balance - ? where p.payment_hash = ?")
+        sqlx::query("update payment p join user u on p.user_id = u.id set p.fee = ?, p.is_paid = true, u.balance = u.balance - ? where p.payment_hash = ? and p.is_paid = false")
             .bind(fee)
             .bind(fee)
             .bind(payment_hash)
@@ -337,6 +337,15 @@ impl ZapStreamDb {
         .bind(limit)
         .bind(offset)
         .fetch_all(&self.db)
+        .await?)
+    }
+
+    /// Get the latest completed payment
+    pub async fn get_latest_completed_payment(&self) -> Result<Option<Payment>> {
+        Ok(sqlx::query_as(
+            "select * from payment where is_paid = true order by created desc limit 1",
+        )
+        .fetch_optional(&self.db)
         .await?)
     }
 

@@ -52,12 +52,20 @@ async fn main() -> Result<()> {
     let settings: Settings = builder.try_deserialize()?;
     let (overseer, api) = {
         let overseer = ZapStreamOverseer::from_settings(&settings).await?;
-        let arc = Arc::new(overseer.clone());
+        let arc = Arc::new(overseer);
         let api = Api::new(arc.clone(), settings.clone());
-        (arc as Arc<dyn Overseer>, api)
+        (arc, api)
     };
     // Create ingress listeners
     let mut tasks = vec![];
+
+    //listen for invoice
+    #[cfg(feature = "zap-stream")]
+    tasks.push(overseer.start_payment_handler());
+
+    // cast to dyn
+    let overseer = overseer as Arc<dyn Overseer>;
+
     for e in &settings.endpoints {
         match try_create_listener(e, &settings.output_dir, &overseer) {
             Ok(l) => tasks.push(l),

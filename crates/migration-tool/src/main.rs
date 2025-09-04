@@ -113,6 +113,22 @@ struct LegacyUserStream {
     duration: Option<f32>, // decimal in C# -> f64 in Rust, then convert to f32 seconds
 }
 
+#[derive(Debug, FromRow)]
+struct LegacyStreamKey {
+    #[sqlx(rename = "Id")]
+    id: uuid::Uuid,
+    #[sqlx(rename = "UserPubkey")]
+    user_pubkey: String,
+    #[sqlx(rename = "Key")]
+    key: String,
+    #[sqlx(rename = "Created")]
+    created: DateTime<Utc>,
+    #[sqlx(rename = "Expires")]
+    expires: Option<DateTime<Utc>>,
+    #[sqlx(rename = "StreamId")]
+    stream_id: uuid::Uuid,
+}
+
 struct MigrationTool {
     legacy_db: PgPool,
     current_db: MySqlPool,
@@ -378,6 +394,28 @@ impl MigrationTool {
         Ok(())
     }
 
+    async fn migrate_stream_keys(&mut self, pubkey_to_user_id: &HashMap<String, u64>) -> Result<()> {
+        println!("🔑 Fetching stream keys from legacy system...");
+
+        let legacy_stream_keys = self.fetch_legacy_stream_keys().await?;
+        println!("📊 Found {} stream keys in legacy system", legacy_stream_keys.len());
+
+        for (i, legacy_stream_key) in legacy_stream_keys.iter().enumerate() {
+            println!("🔐 Migrating stream key {}/{}", i + 1, legacy_stream_keys.len());
+
+            if let Err(e) = self
+                .migrate_single_stream_key(legacy_stream_key, pubkey_to_user_id)
+                .await
+            {
+                println!("❌ Failed to migrate stream key {}: {}", legacy_stream_key.id, e);
+                continue;
+            }
+        }
+
+        println!("✅ Stream keys migration completed");
+        Ok(())
+    }
+
     async fn migrate_single_stream(
         &self,
         legacy_stream: &LegacyUserStream,
@@ -438,6 +476,55 @@ impl MigrationTool {
         Ok(())
     }
 
+    async fn migrate_single_stream_key(
+        &self,
+        legacy_stream_key: &LegacyStreamKey,
+        pubkey_to_user_id: &HashMap<String, u64>,
+    ) -> Result<()> {
+        let user_id = pubkey_to_user_id
+            .get(&legacy_stream_key.user_pubkey)
+            .context("User not found in migration map")?;
+
+        if !self.dry_run {
+            // Check if stream key already exists
+            let existing = sqlx::query("SELECT id FROM user_stream_key WHERE `key` = ?")
+                .bind(&legacy_stream_key.key)
+                .fetch_optional(&self.current_db)
+                .await?;
+
+            if existing.is_none() {
+                // Create stream key in current system
+                sqlx::query(
+                    "INSERT INTO user_stream_key (user_id, `key`, created, expires, stream_id)
+                     VALUES (?, ?, ?, ?, ?)"
+                )
+                .bind(*user_id)
+                .bind(&legacy_stream_key.key)
+                .bind(legacy_stream_key.created)
+                .bind(legacy_stream_key.expires)
+                .bind(legacy_stream_key.stream_id.to_string())
+                .execute(&self.current_db)
+                .await?;
+
+                println!("  ✅ Stream key migrated for user: {}", legacy_stream_key.user_pubkey);
+            } else {
+                println!("  ⚠️ Stream key already exists, skipping");
+            }
+        } else {
+            println!("  🔐 [DRY RUN] Would migrate stream key:");
+            println!("    User: {}", legacy_stream_key.user_pubkey);
+            println!("    Key: {}", legacy_stream_key.key);
+            println!("    Stream ID: {}", legacy_stream_key.stream_id);
+            if let Some(expires) = &legacy_stream_key.expires {
+                println!("    Expires: {}", expires);
+            } else {
+                println!("    Expires: Never");
+            }
+        }
+
+        Ok(())
+    }
+
     async fn fetch_legacy_streams(&mut self) -> Result<Vec<LegacyUserStream>> {
         let query = r#"
             SELECT s."Id", s."PubKey", s."Starts", s."Ends", s."State", s."Title", 
@@ -453,6 +540,20 @@ impl MigrationTool {
             .await?;
 
         Ok(streams)
+    }
+
+    async fn fetch_legacy_stream_keys(&mut self) -> Result<Vec<LegacyStreamKey>> {
+        let query = r#"
+            SELECT sk."Id", sk."UserPubkey", sk."Key", sk."Created", sk."Expires", sk."StreamId"
+            FROM "StreamKeys" sk
+            ORDER BY sk."Created"
+        "#;
+
+        let stream_keys = sqlx::query_as::<_, LegacyStreamKey>(query)
+            .fetch_all(&self.legacy_db)
+            .await?;
+
+        Ok(stream_keys)
     }
 
     async fn validate_migration(&mut self, pubkey_to_user_id: &HashMap<String, u64>) -> Result<()> {
@@ -483,6 +584,15 @@ impl MigrationTool {
         println!(
             "📊 Stream counts - Legacy: {}, Current: {}",
             legacy_stream_count, current_stream_count
+        );
+
+        // Validate stream key count
+        let legacy_stream_key_count = self.get_legacy_stream_key_count().await?;
+        let current_stream_key_count = self.get_current_stream_key_count().await?;
+
+        println!(
+            "📊 Stream key counts - Legacy: {}, Current: {}",
+            legacy_stream_key_count, current_stream_key_count
         );
 
         // Validate balance consistency for a sample of users
@@ -531,6 +641,19 @@ impl MigrationTool {
 
     async fn get_current_stream_count(&self) -> Result<i64> {
         let result = sqlx::query("SELECT COUNT(*) as count FROM user_stream")
+            .fetch_one(&self.current_db)
+            .await?;
+        Ok(result.try_get("count")?)
+    }
+
+    async fn get_legacy_stream_key_count(&mut self) -> Result<i64> {
+        let query = r#"SELECT COUNT(*) as count FROM "StreamKeys""#;
+        let row = sqlx::query(query).fetch_one(&self.legacy_db).await?;
+        Ok(row.try_get::<i64, _>("count").unwrap_or(0))
+    }
+
+    async fn get_current_stream_key_count(&self) -> Result<i64> {
+        let result = sqlx::query("SELECT COUNT(*) as count FROM user_stream_key")
             .fetch_one(&self.current_db)
             .await?;
         Ok(result.try_get("count")?)
@@ -598,7 +721,10 @@ async fn main() -> Result<()> {
         // Step 3: Migrate streams using the user mapping
         migration_tool.migrate_streams(&pubkey_to_user_id).await?;
 
-        // Step 4: Validate migration
+        // Step 4: Migrate stream keys using the user mapping
+        migration_tool.migrate_stream_keys(&pubkey_to_user_id).await?;
+
+        // Step 5: Validate migration
         migration_tool
             .validate_migration(&pubkey_to_user_id)
             .await?;

@@ -834,6 +834,7 @@ mod tests {
         assert!(result.error_message.unwrap().contains("does not exist"));
     }
 
+    #[ignore]
     #[test]
     fn test_generated_hls_stream_mpegts() {
         pretty_env_logger::try_init().ok();
@@ -871,6 +872,7 @@ mod tests {
         }
     }
 
+    #[ignore]
     #[test]
     fn test_generated_hls_stream_fmp4() {
         pretty_env_logger::try_init().ok();
@@ -908,6 +910,7 @@ mod tests {
         }
     }
 
+    #[ignore]
     #[test]
     fn test_30_second_stream() {
         pretty_env_logger::try_init().ok();

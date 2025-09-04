@@ -3,9 +3,13 @@ use crate::stream_manager::StreamManager;
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use chrono::Utc;
-use hostname;
+use fedimint_tonic_lnd::invoicesrpc::LookupInvoiceMsg;
+use fedimint_tonic_lnd::invoicesrpc::lookup_invoice_msg::InvoiceRef;
+use fedimint_tonic_lnd::lnrpc::InvoiceSubscription;
 #[cfg(feature = "zap-stream")]
 use fedimint_tonic_lnd::verrpc::VersionRequest;
+use futures_util::StreamExt;
+use hostname;
 use log::{error, info, warn};
 use nostr_sdk::prelude::Coordinate;
 use nostr_sdk::{
@@ -14,6 +18,7 @@ use nostr_sdk::{
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::str::FromStr;
+use tokio::task::JoinHandle;
 use url::Url;
 use uuid::Uuid;
 use zap_stream_core::egress::EgressSegment;
@@ -156,6 +161,59 @@ impl ZapStreamOverseer {
     #[cfg(feature = "zap-stream")]
     pub fn lnd_client(&self) -> fedimint_tonic_lnd::Client {
         self.lnd.clone()
+    }
+
+    #[cfg(feature = "zap-stream")]
+    pub fn start_payment_handler(&self) -> JoinHandle<Result<()>> {
+        let mut ln = self.lnd.clone();
+        let db = self.db.clone();
+        tokio::spawn(async move {
+            let last_payment_index = if let Some(pl) = db.get_latest_completed_payment().await? {
+                let mut req = LookupInvoiceMsg::default();
+                req.invoice_ref = Some(InvoiceRef::PaymentHash(pl.payment_hash));
+                if let Ok(inv) = ln.invoices().lookup_invoice_v2(req).await {
+                    inv.into_inner().settle_index
+                } else {
+                    0
+                }
+            } else {
+                0
+            };
+            info!(
+                "Listening to invoices from settle_index {}",
+                last_payment_index
+            );
+            let mut stream = ln
+                .lightning()
+                .subscribe_invoices(InvoiceSubscription {
+                    add_index: 0,
+                    settle_index: last_payment_index,
+                })
+                .await?
+                .into_inner();
+            while let Some(msg) = stream.next().await {
+                match msg {
+                    Ok(data) => {
+                        info!(
+                            "Got payment update: preimage={}, settle_index={}",
+                            hex::encode(&data.r_hash),
+                            data.settle_index
+                        );
+                        if data.settle_index != 0 {
+                            if let Err(e) = db.complete_payment(&data.r_hash, 0).await {
+                                error!(
+                                    "Failed to complete payment {}: {}",
+                                    hex::encode(data.r_hash),
+                                    e
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => error!("Invoice subscription error: {}", e),
+                }
+            }
+            Ok(())
+        })
     }
 
     pub fn stream_manager(&self) -> StreamManager {
@@ -390,7 +448,7 @@ impl Overseer for ZapStreamOverseer {
             .ok_or_else(|| anyhow::anyhow!("User not found"))?;
 
         let user = self.db.get_user(uid).await?;
-        if user.balance <= 0 {
+        if user.balance < 0 {
             bail!("Not enough balance");
         }
 
@@ -439,10 +497,10 @@ impl Overseer for ZapStreamOverseer {
             }
         }
 
-        let forward_dest = self.db.get_user_forwards(user.id).await?;
-        for fwd in forward_dest {
-            egress.push(EgressType::RTMPForwarder(all_var_ids.clone(), fwd.target));
-        }
+        // let forward_dest = self.db.get_user_forwards(user.id).await?;
+        // for fwd in forward_dest {
+        //     egress.push(EgressType::RTMPForwarder(all_var_ids.clone(), fwd.target));
+        // }
 
         let stream_id = connection.id;
         // insert new stream record
@@ -659,7 +717,7 @@ impl ZapStreamOverseer {
         let default = endpoints.iter().max_by_key(|e| e.cost);
         Ok(endpoints
             .iter()
-            .find(|e| e.name.eq_ignore_ascii_case(connection.endpoint))
+            .find(|e| e.name.eq_ignore_ascii_case(&connection.app_name))
             .or(default)
             .unwrap()
             .clone())
