@@ -37,13 +37,13 @@ impl ZapStreamDb {
             .bind(key)
             .fetch_optional(&self.db)
             .await?
-            .map(|r| r.try_get::<u64, _>(0).unwrap())
+            .and_then(|r| r.try_get::<u64, _>(0).ok())
         {
             return Ok(Some(StreamKeyType::Primary(user_id)));
         }
 
         // Then check temporary stream keys
-        if let Some(row) = sqlx::query("select user_id, stream_id from user_stream_key where key = ? and (expires is null or expires > now())")
+        if let Some(row) = sqlx::query("select user_id, stream_id from user_stream_key where user_stream_key.key = ? and (expires is null or expires > now())")
             .bind(key)
             .fetch_optional(&self.db)
             .await?

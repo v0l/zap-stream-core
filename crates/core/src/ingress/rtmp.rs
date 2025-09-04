@@ -1,7 +1,7 @@
 use crate::ingress::{BufferedReader, ConnectionInfo};
 use crate::overseer::Overseer;
 use crate::pipeline::runner::{PipelineCommand, PipelineRunner};
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use bytes::{Bytes, BytesMut};
 use log::{error, info, warn};
 use rml_rtmp::handshake::{Handshake, HandshakeProcessResult, PeerType};
@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::runtime::Handle;
-use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
+use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio::time::Instant;
 use uuid::Uuid;
 use xflv::errors::FlvMuxerError;
@@ -302,8 +302,8 @@ pub async fn listen(out_dir: String, addr: String, overseer: Arc<dyn Overseer>) 
                     id: new_id,
                     ip_addr: ip.to_string(),
                     endpoint: "rtmp",
-                    app_name: pr.0.clone(),
-                    key: pr.1.clone(),
+                    app_name: pr.0.trim().to_string(),
+                    key: pr.1.trim().to_string(),
                 };
                 let mut pl = match PipelineRunner::new(
                     handle,
