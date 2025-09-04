@@ -51,7 +51,7 @@ futures-util = "0.3.31"
 matchit = "0.8.4"
 mustache = "0.9.0"
 http-range-header = "0.4.2"
-sysinfo = "0.37.0"
+sysinfo = "0.36.1"
 hostname = "0.4.0"
 
 # Migration dependencies
