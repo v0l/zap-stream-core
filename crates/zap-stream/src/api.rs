@@ -6,14 +6,18 @@ use crate::websocket_metrics::WebSocketMetricsServer;
 use anyhow::{Result, anyhow, bail};
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
+#[cfg(feature = "zap-stream")]
+use fedimint_tonic_lnd::lnrpc::Invoice;
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::{Method, Request, Response};
+#[cfg(feature = "zap-stream")]
+use lnurl::pay::{LnURLPayInvoice, PayResponse};
 use log::{error, info, warn};
 use matchit::Router;
 use nostr_sdk::prelude::EventDeletionRequest;
-use nostr_sdk::{serde_json, Client, PublicKey};
+use nostr_sdk::{Client, NostrSigner, PublicKey, serde_json};
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::pin::Pin;
@@ -28,11 +32,11 @@ use zap_stream_db::ZapStreamDb;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Route {
     Account,
-    #[cfg(feature = "zap-stream")]
     Topup,
-    Event,
-    #[cfg(feature = "zap-stream")]
     Withdraw,
+    Zap,
+    ZapCallback,
+    Event,
     Forward,
     ForwardId,
     History,
@@ -83,11 +87,7 @@ impl Api {
 
         // Define routes (path only, method will be matched separately)
         router.insert("/api/v1/account", Route::Account).unwrap();
-        #[cfg(feature = "zap-stream")]
-        router.insert("/api/v1/topup", Route::Topup).unwrap();
         router.insert("/api/v1/event", Route::Event).unwrap();
-        #[cfg(feature = "zap-stream")]
-        router.insert("/api/v1/withdraw", Route::Withdraw).unwrap();
         router.insert("/api/v1/forward", Route::Forward).unwrap();
         router
             .insert("/api/v1/forward/{id}", Route::ForwardId)
@@ -138,6 +138,18 @@ impl Api {
             .insert("/api/v1/stream/{id}", Route::DeleteStream)
             .unwrap();
 
+        #[cfg(feature = "zap-stream")]
+        {
+            router.insert("/api/v1/topup", Route::Topup).unwrap();
+            router.insert("/api/v1/withdraw", Route::Withdraw).unwrap();
+            router
+                .insert("/.well-known/lnurlp/{name}", Route::Zap)
+                .unwrap();
+            router
+                .insert("/api/v1/zap/{pubkey}", Route::ZapCallback)
+                .unwrap();
+        }
+
         Self {
             db: overseer.database(),
             settings,
@@ -169,9 +181,6 @@ impl Api {
             return Ok(base.body(Default::default())?);
         }
 
-        // Authenticate all API requests
-        let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
-
         // Route matching
         let path = req.uri().path().to_string();
         let method = req.method().clone();
@@ -183,17 +192,27 @@ impl Api {
 
             match (&method, route) {
                 (&Method::GET, Route::Account) => {
+                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
                     let rsp = self.get_account(&auth.pubkey).await?;
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::PATCH, Route::Account) => {
+                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
                     let body = req.collect().await?.to_bytes();
                     let r_body: PatchAccount = serde_json::from_slice(&body)?;
                     self.update_account(&auth.pubkey, r_body).await?;
                     Ok(base.body(Self::body_json(&())?)?)
                 }
+                (&Method::PATCH, Route::Event) => {
+                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
+                    let body = req.collect().await?.to_bytes();
+                    let patch_event: PatchEvent = serde_json::from_slice(&body)?;
+                    self.update_event(&auth.pubkey, patch_event).await?;
+                    Ok(base.body(Self::body_json(&())?)?)
+                }
                 #[cfg(feature = "zap-stream")]
                 (&Method::GET, Route::Topup) => {
+                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
                     let full_url = format!(
                         "{}{}",
                         self.settings.public_url.trim_end_matches('/'),
@@ -205,17 +224,12 @@ impl Api {
                         .find_map(|(k, v)| if k == "amount" { Some(v) } else { None })
                         .and_then(|v| v.parse().ok())
                         .ok_or(anyhow!("Missing amount"))?;
-                    let rsp = self.topup(&auth.pubkey, amount).await?;
+                    let rsp = self.topup(&auth.pubkey, amount * 1000, None).await?;
                     Ok(base.body(Self::body_json(&rsp)?)?)
-                }
-                (&Method::PATCH, Route::Event) => {
-                    let body = req.collect().await?.to_bytes();
-                    let patch_event: PatchEvent = serde_json::from_slice(&body)?;
-                    self.update_event(&auth.pubkey, patch_event).await?;
-                    Ok(base.body(Self::body_json(&())?)?)
                 }
                 #[cfg(feature = "zap-stream")]
                 (&Method::POST, Route::Withdraw) => {
+                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
                     let full_url = format!(
                         "{}{}",
                         self.settings.public_url.trim_end_matches('/'),
@@ -235,13 +249,92 @@ impl Api {
                     let rsp = self.withdraw(&auth.pubkey, invoice).await?;
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
+                #[cfg(feature = "zap-stream")]
+                (&Method::GET, Route::Zap) => {
+                    let target = params.get("name").ok_or(anyhow!("Missing name/pubkey"))?;
+                    let target_user = if let Ok(pk) = hex::decode(target) {
+                        self.db
+                            .get_user_by_pubkey(&pk.as_slice().try_into()?)
+                            .await?
+                    } else {
+                        None
+                    };
+
+                    if target_user.is_none() {
+                        return Ok(base.status(404).body(Default::default())?);
+                    }
+
+                    let meta = vec![vec![
+                        "text/plain".to_string(),
+                        format!("Zap for {}", target),
+                    ]];
+                    let pubkey = self.nostr_client.signer().await?.get_public_key().await?;
+                    let full_url = format!(
+                        "{}/api/v1/zap/{}",
+                        self.settings.public_url.trim_end_matches('/'),
+                        target
+                    );
+                    let rsp = PayResponse {
+                        callback: full_url,
+                        max_sendable: 1_000_000_000,
+                        min_sendable: 1_000,
+                        tag: lnurl::Tag::PayRequest,
+                        metadata: serde_json::to_string(&meta)?,
+                        comment_allowed: None,
+                        allows_nostr: Some(true),
+                        nostr_pubkey: Some(pubkey.xonly()?),
+                    };
+                    Ok(base.body(Self::body_json(&rsp)?)?)
+                }
+                #[cfg(feature = "zap-stream")]
+                (&Method::GET, Route::ZapCallback) => {
+                    let target = params.get("pubkey").ok_or(anyhow!("Missing name/pubkey"))?;
+                    let target_user = if let Ok(pk) = hex::decode(target) {
+                        self.db
+                            .get_user_by_pubkey(&pk.as_slice().try_into()?)
+                            .await?
+                    } else {
+                        None
+                    };
+                    let target_user = if let Some(tu) = target_user {
+                        tu
+                    } else {
+                        return Ok(base.status(404).body(Default::default())?);
+                    };
+
+                    let full_url = format!(
+                        "{}{}",
+                        self.settings.public_url.trim_end_matches('/'),
+                        req.uri()
+                    );
+                    let url: url::Url = full_url.parse()?;
+                    let amount: usize = url
+                        .query_pairs()
+                        .find_map(|(k, v)| if k == "amount" { Some(v) } else { None })
+                        .and_then(|v| v.parse().ok())
+                        .ok_or(anyhow!("Missing amount"))?;
+                    let zap_request: Option<String> = url.query_pairs().find_map(|(k, v)| {
+                        if k == "zap" {
+                            Some(v.to_string())
+                        } else {
+                            None
+                        }
+                    });
+
+                    let user_pubkey = PublicKey::from_slice(&target_user.pubkey)?;
+                    let topup = self.topup(&user_pubkey, amount, zap_request).await?;
+                    let rsp = LnURLPayInvoice::new(topup.pr);
+                    Ok(base.body(Self::body_json(&rsp)?)?)
+                }
                 (&Method::POST, Route::Forward) => {
+                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
                     let body = req.collect().await?.to_bytes();
                     let forward_req: ForwardRequest = serde_json::from_slice(&body)?;
                     let rsp = self.create_forward(&auth.pubkey, forward_req).await?;
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::DELETE, Route::ForwardId) => {
+                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
                     let forward_id = params
                         .get("id")
                         .ok_or_else(|| anyhow!("Missing forward ID"))?;
@@ -249,14 +342,17 @@ impl Api {
                     Ok(base.body(Self::body_json(&())?)?)
                 }
                 (&Method::GET, Route::History) => {
+                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
                     let rsp = self.get_account_history(&auth.pubkey).await?;
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::GET, Route::Keys) => {
+                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
                     let rsp = self.get_account_keys(&auth.pubkey).await?;
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::POST, Route::Keys) => {
+                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
                     let body = req.collect().await?.to_bytes();
                     let create_req: CreateStreamKeyRequest = serde_json::from_slice(&body)?;
                     let rsp = self.create_stream_key(&auth.pubkey, create_req).await?;
@@ -268,6 +364,7 @@ impl Api {
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::GET, Route::AdminUsers) => {
+                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
                     let _admin_uid = self.check_admin_access(&auth.pubkey).await?;
                     let full_url = format!(
                         "{}{}",
@@ -296,6 +393,7 @@ impl Api {
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::POST, Route::AdminUsersId) => {
+                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
                     let admin_uid = self.check_admin_access(&auth.pubkey).await?;
                     let user_id = params.get("id").ok_or_else(|| anyhow!("Missing user ID"))?;
                     let body = req.collect().await?.to_bytes();
@@ -305,6 +403,7 @@ impl Api {
                     Ok(base.body(Self::body_json(&())?)?)
                 }
                 (&Method::GET, Route::AdminUserHistory) => {
+                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
                     let _admin_uid = self.check_admin_access(&auth.pubkey).await?;
                     let user_id = params.get("id").ok_or_else(|| anyhow!("Missing user ID"))?;
                     let full_url = format!(
@@ -328,6 +427,7 @@ impl Api {
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::GET, Route::AdminUserStreams) => {
+                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
                     let _admin_uid = self.check_admin_access(&auth.pubkey).await?;
                     let user_id = params.get("id").ok_or_else(|| anyhow!("Missing user ID"))?;
                     let full_url = format!(
@@ -351,6 +451,7 @@ impl Api {
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::GET, Route::AdminUserStreamKey) => {
+                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
                     let admin_uid = self.check_admin_access(&auth.pubkey).await?;
                     let user_id = params.get("id").ok_or_else(|| anyhow!("Missing user ID"))?;
                     let uid: u64 = user_id.parse()?;
@@ -358,6 +459,7 @@ impl Api {
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::POST, Route::AdminUserStreamKeyRegen) => {
+                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
                     let admin_uid = self.check_admin_access(&auth.pubkey).await?;
                     let user_id = params.get("id").ok_or_else(|| anyhow!("Missing user ID"))?;
                     let uid: u64 = user_id.parse()?;
@@ -367,6 +469,7 @@ impl Api {
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::GET, Route::AdminAuditLog) => {
+                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
                     let _admin_uid = self.check_admin_access(&auth.pubkey).await?;
                     let full_url = format!(
                         "{}{}",
@@ -388,6 +491,7 @@ impl Api {
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::GET, Route::AdminIngestEndpoints) => {
+                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
                     let admin_uid = self.check_admin_access(&auth.pubkey).await?;
                     let full_url = format!(
                         "{}{}",
@@ -411,6 +515,7 @@ impl Api {
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::POST, Route::AdminIngestEndpoints) => {
+                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
                     let admin_uid = self.check_admin_access(&auth.pubkey).await?;
                     let body = req.collect().await?.to_bytes();
                     let endpoint_req: AdminIngestEndpointRequest = serde_json::from_slice(&body)?;
@@ -420,6 +525,7 @@ impl Api {
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::GET, Route::AdminIngestEndpointsId) => {
+                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
                     let admin_uid = self.check_admin_access(&auth.pubkey).await?;
                     let endpoint_id = params
                         .get("id")
@@ -429,6 +535,7 @@ impl Api {
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::PATCH, Route::AdminIngestEndpointsId) => {
+                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
                     let admin_uid = self.check_admin_access(&auth.pubkey).await?;
                     let endpoint_id = params
                         .get("id")
@@ -442,6 +549,7 @@ impl Api {
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::DELETE, Route::AdminIngestEndpointsId) => {
+                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
                     let admin_uid = self.check_admin_access(&auth.pubkey).await?;
                     let endpoint_id = params
                         .get("id")
@@ -451,6 +559,7 @@ impl Api {
                     Ok(base.body(Self::body_json(&())?)?)
                 }
                 (&Method::DELETE, Route::DeleteStream) => {
+                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
                     let stream_id = params
                         .get("id")
                         .ok_or_else(|| anyhow!("Missing stream ID"))?;
@@ -558,16 +667,18 @@ impl Api {
     }
 
     #[cfg(feature = "zap-stream")]
-    async fn topup(&self, pubkey: &PublicKey, amount: usize) -> Result<TopupResponse> {
+    async fn topup(
+        &self,
+        pubkey: &PublicKey,
+        amount: usize,
+        nostr: Option<String>,
+    ) -> Result<TopupResponse> {
         let uid = self.db.upsert_user(&pubkey.to_bytes()).await?;
 
         // Create Lightning invoice
-        let invoice_req = fedimint_tonic_lnd::lnrpc::Invoice {
+        let invoice_req = Invoice {
             value: amount as i64,
-            memo: format!(
-                "zap.stream topup for user {}",
-                hex::encode(pubkey.to_bytes())
-            ),
+            memo: format!("zap.stream topup for user {}", pubkey.to_hex()),
             ..Default::default()
         };
 
@@ -585,9 +696,10 @@ impl Api {
                 &invoice_response.r_hash,
                 uid,
                 Some(&invoice_response.payment_request),
-                amount as u64 * 1000, // Convert to milli-sats
+                amount as _,
                 zap_stream_db::PaymentType::TopUp,
                 0,
+                nostr,
             )
             .await?;
 
@@ -701,6 +813,7 @@ impl Api {
                 invoice_amount,
                 zap_stream_db::PaymentType::Withdrawal,
                 0,
+                None,
             )
             .await?;
 

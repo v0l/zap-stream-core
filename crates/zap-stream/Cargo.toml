@@ -5,7 +5,7 @@ edition.workspace = true
 
 [features]
 default = ["srt", "rtmp", "test-pattern", "zap-stream"]
-zap-stream = ["dep:fedimint-tonic-lnd"]
+zap-stream = ["dep:fedimint-tonic-lnd", "dep:lnurl-rs"]
 srt = ["zap-stream-core/ingress-srt"]
 rtmp = ["zap-stream-core/ingress-rtmp"]
 test-pattern = ["zap-stream-db/test-pattern", "zap-stream-core/ingress-test"]
@@ -53,7 +53,9 @@ mustache = "0.9.0"
 http-range-header = "0.4.2"
 sysinfo = "0.36.1"
 hostname = "0.4.0"
+lnurl-rs = { version = "0.9.0", optional = true, default-features = false }
 
 # Migration dependencies
 tiberius = "0.12.3"
 sqlx = { version = "0.8.0", features = ["runtime-tokio-rustls", "mysql", "chrono", "uuid"] }
+

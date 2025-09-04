@@ -278,14 +278,16 @@ impl ZapStreamDb {
         amount: u64,
         payment_type: PaymentType,
         fee: u64,
+        nostr: Option<String>,
     ) -> Result<()> {
-        sqlx::query("insert into payment (payment_hash, user_id, invoice, amount, payment_type, fee) values (?, ?, ?, ?, ?, ?)")
+        sqlx::query("insert into payment (payment_hash, user_id, invoice, amount, payment_type, fee, nostr) values (?, ?, ?, ?, ?, ?, ?)")
             .bind(payment_hash)
             .bind(user_id)
             .bind(invoice)
             .bind(amount)
             .bind(payment_type)
             .bind(fee)
+            .bind(nostr)
             .execute(&self.db)
             .await?;
         Ok(())
@@ -299,7 +301,8 @@ impl ZapStreamDb {
             .execute(&self.db)
             .await?;
 
-        Ok(res.rows_affected() == 1)
+        // user and payment row updates
+        Ok(res.rows_affected() == 2)
     }
 
     /// Update payment fee and mark as paid for withdrawals (subtracts fee from balance)
@@ -311,7 +314,8 @@ impl ZapStreamDb {
             .execute(&self.db)
             .await?;
 
-        Ok(res.rows_affected() == 1)
+        // user and payment row updates
+        Ok(res.rows_affected() == 2)
     }
 
     /// Get payment by hash
@@ -518,8 +522,16 @@ impl ZapStreamDb {
     pub async fn add_admin_credit(&self, uid: u64, amount: u64, _memo: Option<&str>) -> Result<()> {
         // Create payment record for admin credit
         let payment_hash: [u8; 32] = random();
-        self.create_payment(&payment_hash, uid, None, amount, PaymentType::Credit, 0)
-            .await?;
+        self.create_payment(
+            &payment_hash,
+            uid,
+            None,
+            amount,
+            PaymentType::Credit,
+            0,
+            None,
+        )
+        .await?;
 
         // complete the payment
         self.complete_payment(&payment_hash, 0).await?;

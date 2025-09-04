@@ -1,10 +1,13 @@
 use crate::settings::{LndSettings, Settings};
 use crate::stream_manager::StreamManager;
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use async_trait::async_trait;
 use chrono::Utc;
+#[cfg(feature = "zap-stream")]
 use fedimint_tonic_lnd::invoicesrpc::LookupInvoiceMsg;
+#[cfg(feature = "zap-stream")]
 use fedimint_tonic_lnd::invoicesrpc::lookup_invoice_msg::InvoiceRef;
+#[cfg(feature = "zap-stream")]
 use fedimint_tonic_lnd::lnrpc::InvoiceSubscription;
 #[cfg(feature = "zap-stream")]
 use fedimint_tonic_lnd::verrpc::VersionRequest;
@@ -12,9 +15,7 @@ use futures_util::StreamExt;
 use hostname;
 use log::{error, info, warn};
 use nostr_sdk::prelude::Coordinate;
-use nostr_sdk::{
-    Client, Event, EventBuilder, JsonUtil, Keys, Kind, NostrSigner, PublicKey, Tag, ToBech32,
-};
+use nostr_sdk::{Client, Event, EventBuilder, JsonUtil, Keys, Kind, NostrSigner, Tag, ToBech32};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -61,18 +62,29 @@ pub struct ZapStreamOverseer {
 
 impl ZapStreamOverseer {
     pub async fn from_settings(settings: &Settings) -> Result<Self> {
-        Ok(ZapStreamOverseer::new(
+        #[cfg(not(feature = "zap-stream"))]
+        return Ok(ZapStreamOverseer::new(
             &settings.public_url,
             &settings.overseer.nsec,
             &settings.overseer.database,
-            #[cfg(feature = "zap-stream")]
+            &settings.overseer.relays,
+            &settings.overseer.blossom,
+            settings.overseer.segment_length.unwrap_or(2.0),
+            settings.overseer.low_balance_threshold_msats,
+        )
+        .await?);
+        #[cfg(feature = "zap-stream")]
+        return Ok(ZapStreamOverseer::new(
+            &settings.public_url,
+            &settings.overseer.nsec,
+            &settings.overseer.database,
             &settings.overseer.lnd,
             &settings.overseer.relays,
             &settings.overseer.blossom,
             settings.overseer.segment_length.unwrap_or(2.0),
             settings.overseer.low_balance_threshold_msats,
         )
-        .await?)
+        .await?);
     }
 
     pub async fn new(
@@ -167,6 +179,7 @@ impl ZapStreamOverseer {
     pub fn start_payment_handler(&self) -> JoinHandle<Result<()>> {
         let mut ln = self.lnd.clone();
         let db = self.db.clone();
+        let client = self.client.clone();
         tokio::spawn(async move {
             let last_payment_index = if let Some(pl) = db.get_latest_completed_payment().await? {
                 let mut req = LookupInvoiceMsg::default();
@@ -204,6 +217,19 @@ impl ZapStreamOverseer {
                                 Ok(b) => {
                                     if b {
                                         info!("Completed payment!");
+                                        let payment = db.get_payment(&data.r_hash).await?.unwrap();
+                                        if let Some(nostr) = payment.nostr {
+                                            if let Err(e) = Self::try_send_zap_receipt(
+                                                &client,
+                                                &nostr,
+                                                &data.payment_request,
+                                                &data.r_preimage,
+                                            )
+                                            .await
+                                            {
+                                                warn!("Failed to send zap receipt {}", e);
+                                            }
+                                        }
                                     } else {
                                         warn!(
                                             "No payments updated! Maybe it doesnt exist or it's already processed."
@@ -225,6 +251,32 @@ impl ZapStreamOverseer {
             }
             Ok(())
         })
+    }
+
+    async fn try_send_zap_receipt(
+        client: &Client,
+        zap_request: &str,
+        invoice: &str,
+        pre_image: &Vec<u8>,
+    ) -> Result<()> {
+        let ev = Event::from_json(zap_request)?;
+        ensure!(ev.kind == Kind::ZapRequest, "Wrong zap request kind");
+        ensure!(ev.verify().is_ok(), "Invalid zap request sig");
+
+        let copy_tags = ev
+            .tags
+            .iter()
+            .filter(|t| t.single_letter_tag().is_some())
+            .cloned();
+        let receipt = EventBuilder::new(Kind::ZapReceipt, "")
+            .tags(copy_tags)
+            .tag(Tag::description(zap_request))
+            .tag(Tag::parse(["bolt11", invoice])?)
+            .tag(Tag::parse(["preimage", &hex::encode(pre_image)])?);
+
+        let id = client.send_event_builder(receipt).await?;
+        info!("Sent zap receipt {}", id.val);
+        Ok(())
     }
 
     pub fn stream_manager(&self) -> StreamManager {
