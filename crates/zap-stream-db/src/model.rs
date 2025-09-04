@@ -110,6 +110,12 @@ pub enum PaymentType {
     AdmissionFee = 4,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum StreamKeyType {
+    Primary(u64),
+    FixedEventKey { id: u64, stream_id: String },
+}
+
 #[derive(Debug, Clone, FromRow)]
 pub struct Payment {
     pub payment_hash: Vec<u8>,

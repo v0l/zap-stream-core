@@ -1,6 +1,6 @@
 use crate::{
-    AuditLog, AuditLogWithPubkeys, IngestEndpoint, Payment, PaymentType, User, UserStream,
-    UserStreamForward, UserStreamKey,
+    AuditLog, AuditLogWithPubkeys, IngestEndpoint, Payment, PaymentType, StreamKeyType, User,
+    UserStream, UserStreamForward, UserStreamKey,
 };
 use anyhow::Result;
 use rand::random;
@@ -24,18 +24,36 @@ impl ZapStreamDb {
     }
 
     /// Find user by stream key, typical first lookup from ingress
-    pub async fn find_user_stream_key(&self, key: &str) -> Result<Option<u64>> {
+    pub async fn find_user_stream_key(&self, key: &str) -> Result<Option<StreamKeyType>> {
         #[cfg(feature = "test-pattern")]
         if key == "test" {
             // use the 00 pubkey for test sources
-            return Ok(Some(self.upsert_user(&[0; 32]).await?));
+            let user_id = self.upsert_user(&[0; 32]).await?;
+            return Ok(Some(StreamKeyType::Primary(user_id)));
         }
 
-        Ok(sqlx::query("select id from user where stream_key = ?")
+        // First check primary stream key
+        if let Some(user_id) = sqlx::query("select id from user where stream_key = ?")
             .bind(key)
             .fetch_optional(&self.db)
             .await?
-            .map(|r| r.try_get(0).unwrap()))
+            .map(|r| r.try_get::<u64, _>(0).unwrap())
+        {
+            return Ok(Some(StreamKeyType::Primary(user_id)));
+        }
+
+        // Then check temporary stream keys
+        if let Some(row) = sqlx::query("select user_id, stream_id from user_stream_key where key = ? and (expires is null or expires > now())")
+            .bind(key)
+            .fetch_optional(&self.db)
+            .await?
+        {
+            let user_id: u64 = row.try_get(0)?;
+            let stream_id: String = row.try_get(1)?;
+            return Ok(Some(StreamKeyType::FixedEventKey { id: user_id, stream_id }));
+        }
+
+        Ok(None)
     }
 
     /// Get user by id
@@ -249,26 +267,6 @@ impl ZapStreamDb {
             .execute(&self.db)
             .await?;
         Ok(())
-    }
-
-    /// Find user by stream key (including temporary keys)
-    pub async fn find_user_by_any_stream_key(&self, key: &str) -> Result<Option<u64>> {
-        #[cfg(feature = "test-pattern")]
-        if key == "test" {
-            return Ok(Some(self.upsert_user(&[0; 32]).await?));
-        }
-
-        // First check primary stream key
-        if let Some(uid) = self.find_user_stream_key(key).await? {
-            return Ok(Some(uid));
-        }
-
-        // Then check temporary stream keys
-        Ok(sqlx::query("select user_id from user_stream_key where key = ? and (expires is null or expires > now())")
-            .bind(key)
-            .fetch_optional(&self.db)
-            .await?
-            .map(|r| r.try_get(0).unwrap()))
     }
 
     /// Create a payment record

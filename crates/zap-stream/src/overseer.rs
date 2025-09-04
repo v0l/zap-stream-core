@@ -1,6 +1,6 @@
 use crate::settings::{LndSettings, Settings};
 use crate::stream_manager::StreamManager;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use chrono::Utc;
 use fedimint_tonic_lnd::invoicesrpc::LookupInvoiceMsg;
@@ -33,7 +33,7 @@ use zap_stream_core::overseer::{IngressInfo, Overseer, StatsType};
 use zap_stream_core::pipeline::{EgressType, PipelineConfig};
 use zap_stream_core::variant::{StreamMapping, VariantStream};
 use zap_stream_core_nostr::n94::{N94Publisher, N94Segment, N94StreamInfo, N94Variant};
-use zap_stream_db::{IngestEndpoint, UserStream, UserStreamState, ZapStreamDb};
+use zap_stream_db::{IngestEndpoint, StreamKeyType, UserStream, UserStreamState, ZapStreamDb};
 
 /// zap.stream NIP-53 overseer
 #[derive(Clone)]
@@ -452,12 +452,16 @@ impl Overseer for ZapStreamOverseer {
         connection: &ConnectionInfo,
         stream_info: &IngressInfo,
     ) -> Result<PipelineConfig> {
-        let uid = self
+        let user_key = self
             .db
             .find_user_stream_key(&connection.key)
             .await?
             .ok_or_else(|| anyhow::anyhow!("User not found"))?;
 
+        let uid = match user_key {
+            StreamKeyType::Primary(i) => i,
+            StreamKeyType::FixedEventKey { id, .. } => id,
+        };
         let user = self.db.get_user(uid).await?;
         if user.balance < 0 {
             bail!("Not enough balance");
@@ -514,24 +518,39 @@ impl Overseer for ZapStreamOverseer {
         // }
 
         let stream_id = connection.id;
-        // insert new stream record
-        let mut new_stream = UserStream {
-            id: stream_id.to_string(),
-            user_id: uid,
-            starts: Utc::now(),
-            state: UserStreamState::Live,
-            endpoint_id: Some(endpoint.id),
-            title: user.title.clone(),
-            summary: user.summary.clone(),
-            thumb: user.image.clone(),
-            content_warning: user.content_warning.clone(),
-            goal: user.goal.clone(),
-            tags: user.tags.clone(),
-            node_name: Some(self.node_name.clone()),
-            ..Default::default()
+
+        let mut new_stream = match &user_key {
+            StreamKeyType::Primary(_) => {
+                let new_stream = UserStream {
+                    id: stream_id.to_string(),
+                    user_id: uid,
+                    starts: Utc::now(),
+                    state: UserStreamState::Live,
+                    endpoint_id: Some(endpoint.id),
+                    title: user.title.clone(),
+                    summary: user.summary.clone(),
+                    thumb: user.image.clone(),
+                    content_warning: user.content_warning.clone(),
+                    goal: user.goal.clone(),
+                    tags: user.tags.clone(),
+                    node_name: Some(self.node_name.clone()),
+                    ..Default::default()
+                };
+
+                self.db.insert_stream(&new_stream).await?;
+                new_stream
+            }
+            StreamKeyType::FixedEventKey { stream_id, .. } => {
+                let stream_uuid = Uuid::parse_str(stream_id)
+                    .map_err(|e| anyhow!("Invalid stream key {} {}", stream_id, e))?;
+                let mut stream = self.db.get_stream(&stream_uuid).await?;
+
+                stream.state = UserStreamState::Live;
+                stream.node_name = Some(self.node_name.clone());
+                stream.endpoint_id = Some(endpoint.id);
+                stream
+            }
         };
-        let stream_event = self.publish_stream_event(&new_stream, &user.pubkey).await?;
-        new_stream.event = Some(stream_event.as_json());
 
         self.stream_manager
             .add_active_stream(
@@ -547,7 +566,8 @@ impl Overseer for ZapStreamOverseer {
             )
             .await;
 
-        self.db.insert_stream(&new_stream).await?;
+        let stream_event = self.publish_stream_event(&new_stream, &user.pubkey).await?;
+        new_stream.event = Some(stream_event.as_json());
         self.db.update_stream(&new_stream).await?;
 
         // publish N94 stream
