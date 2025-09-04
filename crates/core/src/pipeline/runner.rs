@@ -17,16 +17,16 @@ use crate::ingress::{ConnectionInfo, EndpointStats};
 use crate::overseer::{IngressInfo, IngressStream, IngressStreamType, Overseer, StatsType};
 use crate::pipeline::{EgressType, PipelineConfig};
 use crate::variant::{StreamMapping, VariantStream};
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_WEBP;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPictureType::AV_PICTURE_TYPE_NONE;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    av_frame_clone, av_frame_free, av_get_sample_fmt, av_packet_clone, av_packet_copy_props,
-    av_packet_free, av_rescale_q, AVFrame, AVPacket, AV_NOPTS_VALUE,
+    AV_NOPTS_VALUE, AVFrame, AVPacket, av_frame_clone, av_frame_free, av_get_sample_fmt,
+    av_packet_clone, av_packet_copy_props, av_packet_free, av_rescale_q,
 };
 use ffmpeg_rs_raw::{
-    cstr, get_frame_from_hw, AudioFifo, Decoder, Demuxer, Encoder, Resample, Scaler, StreamType,
+    AudioFifo, Decoder, Demuxer, Encoder, Resample, Scaler, StreamType, cstr, get_frame_from_hw,
 };
 use log::{debug, error, info, trace, warn};
 use tokio::runtime::Handle;
@@ -228,25 +228,37 @@ impl PipelineRunner {
     }
 
     /// Save a decoded frame as a thumbnail
-    unsafe fn generate_thumb_from_frame(&mut self, frame: *mut AVFrame) -> Result<()> {
+    fn generate_thumb_from_frame(&mut self, frame: *mut AVFrame) -> Result<()> {
         if self.thumb_interval > 0 && (self.frame_ctr % self.thumb_interval) == 0 {
-            let frame = av_frame_clone(frame).addr();
+            let frame = unsafe { av_frame_clone(frame).addr() };
             let dst_pic = self.out_dir.join("thumb.webp");
+            let overseer = self.overseer.clone();
+            let handle = self.handle.clone();
+            let id = self.connection.id.clone();
             std::thread::spawn(move || unsafe {
                 let mut frame = frame as *mut AVFrame; //TODO: danger??
                 let thumb_start = Instant::now();
 
                 if let Err(e) = Self::save_thumb(frame, &dst_pic) {
+                    av_frame_free(&mut frame);
                     warn!("Failed to save thumb: {}", e);
                 }
 
                 let thumb_duration = thumb_start.elapsed();
-                av_frame_free(&mut frame);
                 info!(
                     "Saved thumb ({}ms) to: {}",
                     thumb_duration.as_millis(),
                     dst_pic.display(),
                 );
+                if let Err(e) = handle.block_on(overseer.on_thumbnail(
+                    &id,
+                    (*frame).width as _,
+                    (*frame).height as _,
+                    &dst_pic,
+                )) {
+                    warn!("Failed to handle on_thumbnail: {}", e);
+                }
+                av_frame_free(&mut frame);
             });
         }
         Ok(())
@@ -335,7 +347,9 @@ impl PipelineRunner {
 
         // Generate next frame from idle mode generator
         if let RunnerState::Idle {
-            frame_gen, start_time, ..
+            frame_gen,
+            start_time,
+            ..
         } = &mut self.state
         {
             frame_gen.begin()?;
@@ -399,7 +413,10 @@ impl PipelineRunner {
 
                     warn!(
                         "Error decoding packet ({}): {}. Consecutive failures: {}/{}. Skipping packet.",
-                        packet_info, e, self.consecutive_decode_failures, self.max_consecutive_failures
+                        packet_info,
+                        e,
+                        self.consecutive_decode_failures,
+                        self.max_consecutive_failures
                     );
 
                     return self.handle_decode_failure(&config);
@@ -790,7 +807,7 @@ impl PipelineRunner {
     fn setup_encoders(&mut self, cfg: &PipelineConfig) -> Result<()> {
         // Analyze egress types to determine which encoders need GLOBAL_HEADER
         let mut encoders_need_global_header = HashSet::new();
-        
+
         for egress in &cfg.egress {
             let needs_global_header = match egress {
                 // HLS fMP4 mode needs GLOBAL_HEADER
@@ -802,7 +819,7 @@ impl PipelineRunner {
                 // RTMP forwarder typically doesn't need GLOBAL_HEADER
                 EgressType::RTMPForwarder(_, _) => false,
             };
-            
+
             if needs_global_header {
                 for variant_id in egress.variants() {
                     encoders_need_global_header.insert(*variant_id);

@@ -311,16 +311,6 @@ impl ZapStreamOverseer {
         let pipeline_dir = PathBuf::from(stream.id.to_string());
         let mut extra_tags = vec![
             Tag::parse(["p", hex::encode(pubkey).as_str(), "", "host"])?,
-            Tag::parse([
-                "image",
-                self.map_to_public_url(
-                    pipeline_dir
-                        .join(format!("thumb.webp?n={}", Utc::now().timestamp()))
-                        .to_str()
-                        .unwrap(),
-                )?
-                .as_str(),
-            ])?,
             Tag::parse(["service", self.map_to_public_url("api/v1")?.as_str()])?,
         ];
         match stream.state {
@@ -367,9 +357,9 @@ impl ZapStreamOverseer {
         Ok(ev)
     }
 
-    fn map_to_public_url(&self, path: &str) -> Result<String> {
+    fn map_to_public_url(&self, path: &str) -> Result<Url> {
         let u: Url = self.public_url.parse()?;
-        Ok(u.join(path)?.to_string())
+        Ok(u.join(path)?)
     }
 
     /// Send low balance notification as live chat message
@@ -380,7 +370,7 @@ impl ZapStreamOverseer {
         current_balance: i64,
         stream_id: &Uuid,
     ) -> Result<()> {
-        if let Some(threshold_msats) = self.low_balance_threshold_msats {
+        if let Some(_) = self.low_balance_threshold_msats {
             let balance_sats = current_balance / 1000; // Convert millisats to sats
             let message = format!(
                 "⚠️ Low Balance Warning ⚠️ Your streaming balance is low: {} sats. Please top up your account to avoid stream interruption.",
@@ -685,12 +675,24 @@ impl Overseer for ZapStreamOverseer {
 
     async fn on_thumbnail(
         &self,
-        _pipeline_id: &Uuid,
+        pipeline_id: &Uuid,
         _width: usize,
         _height: usize,
         _pixels: &PathBuf,
     ) -> Result<()> {
-        // nothing to do
+        let pipeline_dir = PathBuf::from(pipeline_id.to_string());
+
+        let mut stream = self.db.get_stream(pipeline_id).await?;
+
+        let thumb_url = self.map_to_public_url(
+            pipeline_dir
+                .join(format!("thumb.webp?n={}", Utc::now().timestamp()))
+                .to_str()
+                .unwrap(),
+        )?;
+        stream.thumb = Some(thumb_url.to_string());
+        self.db.update_stream(&stream).await?;
+
         Ok(())
     }
 
