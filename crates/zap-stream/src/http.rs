@@ -299,6 +299,9 @@ where
 
     /// Get a response object for a file body
     async fn path_to_response(path: PathBuf) -> Result<Response<BoxBody<Bytes, anyhow::Error>>> {
+        if !path.exists() {
+            return Ok(Self::base_response().status(404).body(BoxBody::default())?);
+        }
         let f = File::open(&path).await?;
         let f_stream = ReaderStream::new(f);
         let body = StreamBody::new(
