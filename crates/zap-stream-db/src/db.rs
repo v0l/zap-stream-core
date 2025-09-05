@@ -238,7 +238,7 @@ impl ZapStreamDb {
         stream_id: &str,
     ) -> Result<u64> {
         let result = sqlx::query(
-            "insert into user_stream_key (user_id, key, expires, stream_id) values (?, ?, ?, ?)",
+            "insert into user_stream_key (user_id, `key`, expires, stream_id) values (?, ?, ?, ?)",
         )
         .bind(user_id)
         .bind(key)
