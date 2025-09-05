@@ -300,11 +300,11 @@ pub async fn listen(
                 let handle = Handle::current();
                 let new_id = Uuid::new_v4();
                 let shutdown = shutdown.clone();
+                let (tx, rx) = unbounded_channel();
+                setup_term_handler(shutdown, tx.clone());
                 std::thread::Builder::new()
                     .name(format!("client:rtmp:{}", new_id))
                     .spawn(move || {
-                        let (tx, rx) = unbounded_channel();
-                        setup_term_handler(shutdown, tx.clone());
                         let mut cc = RtmpClient::new(socket.into_std()?, tx)?;
                         if let Err(e) = cc.read_until_publish_request(Duration::from_secs(10)) {
                             bail!("Error waiting for publish request: {}", e)
