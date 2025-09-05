@@ -3,6 +3,7 @@ name = "n94-bridge"
 description = "Brdige http service serving HLS playlists for NIP-5E streams"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 log.workspace = true

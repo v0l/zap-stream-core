@@ -2,6 +2,7 @@
 name = "zap-stream"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
 
 [features]
 default = ["srt", "rtmp", "test-pattern", "zap-stream"]
@@ -60,4 +61,3 @@ rslock = "0.7.3"
 # Migration dependencies
 tiberius = "0.12.3"
 sqlx = { version = "0.8.0", features = ["runtime-tokio-rustls", "mysql", "chrono", "uuid"] }
-
