@@ -670,14 +670,14 @@ impl Api {
     async fn topup(
         &self,
         pubkey: &PublicKey,
-        amount: usize,
+        amount_msats: usize,
         nostr: Option<String>,
     ) -> Result<TopupResponse> {
         let uid = self.db.upsert_user(&pubkey.to_bytes()).await?;
 
         // Create Lightning invoice
         let invoice_req = Invoice {
-            value: amount as i64,
+            value_msat: amount_msats as _,
             memo: format!("zap.stream topup for user {}", pubkey.to_hex()),
             ..Default::default()
         };
@@ -696,7 +696,7 @@ impl Api {
                 &invoice_response.r_hash,
                 uid,
                 Some(&invoice_response.payment_request),
-                amount as _,
+                amount_msats as _,
                 zap_stream_db::PaymentType::TopUp,
                 0,
                 nostr,
