@@ -1,7 +1,9 @@
 use anyhow::{Context, Result};
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::{av_dump_format, av_q2d, AVMediaType::AVMEDIA_TYPE_AUDIO, AVMediaType::AVMEDIA_TYPE_VIDEO, AV_NOPTS_VALUE};
 use ffmpeg_rs_raw::Demuxer;
-use m3u8_rs::{parse_media_playlist, MediaSegmentType};
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
+    AV_NOPTS_VALUE, AVMediaType::AVMEDIA_TYPE_AUDIO, AVMediaType::AVMEDIA_TYPE_VIDEO, av_q2d,
+};
+use m3u8_rs::{MediaSegmentType, parse_media_playlist};
 use std::env;
 use std::fmt;
 use std::fs;
@@ -211,7 +213,7 @@ fn main() -> Result<()> {
                 }
 
                 // Analyze file using demuxer
-                let durations = if segment_path.extension().map_or(false, |ext| ext == "m4s") {
+                let durations = if segment_path.extension().is_some_and(|ext| ext == "m4s") {
                     // This is an fMP4 segment, combine with init segment
                     analyze_fmp4_segment(&hls_dir.join("init.mp4"), &segment_path)?
                 } else {
@@ -474,90 +476,122 @@ fn main() -> Result<()> {
     println!();
     println!("Validation Results:");
     let mut validation_errors = Vec::new();
-    
+
     // Check for significant video/audio duration mismatches
     for segment in &segments {
         let playlist_dur = segment.playlist_duration as f64;
         let video_dur = segment.video_duration;
         let audio_dur = segment.audio_duration;
-        
+
         // Check if video duration is significantly different from playlist duration
         let video_diff_ratio = if playlist_dur > 0.0 {
             (video_dur - playlist_dur).abs() / playlist_dur
         } else {
             0.0
         };
-        
-        // Check if audio duration is significantly different from playlist duration  
+
+        // Check if audio duration is significantly different from playlist duration
         let audio_diff_ratio = if playlist_dur > 0.0 {
             (audio_dur - playlist_dur).abs() / playlist_dur
         } else {
             0.0
         };
-        
+
         // Flag segments where video is much shorter than expected (common resampling issue)
         if video_diff_ratio > 0.3 && video_dur < playlist_dur * 0.7 {
             validation_errors.push(format!(
                 "❌ {}: Video duration {:.3}s is {:.1}% shorter than playlist duration {:.3}s",
-                segment.filename, video_dur, (1.0 - video_dur / playlist_dur) * 100.0, playlist_dur
+                segment.filename,
+                video_dur,
+                (1.0 - video_dur / playlist_dur) * 100.0,
+                playlist_dur
             ));
         }
-        
+
         // Flag segments where audio is significantly different (potential sample rate issue)
         if audio_diff_ratio > 0.1 {
-            let direction = if audio_dur > playlist_dur { "longer" } else { "shorter" };
+            let direction = if audio_dur > playlist_dur {
+                "longer"
+            } else {
+                "shorter"
+            };
             validation_errors.push(format!(
                 "⚠️  {}: Audio duration {:.3}s is {:.1}% {} than playlist duration {:.3}s",
-                segment.filename, audio_dur, audio_diff_ratio * 100.0, direction, playlist_dur
+                segment.filename,
+                audio_dur,
+                audio_diff_ratio * 100.0,
+                direction,
+                playlist_dur
             ));
         }
-        
+
         // Flag segments where video and audio durations are very different
         let av_diff_ratio = if audio_dur > 0.0 {
             (video_dur - audio_dur).abs() / audio_dur
         } else {
             0.0
         };
-        
+
         if av_diff_ratio > 0.5 {
             validation_errors.push(format!(
                 "🔄 {}: Video ({:.3}s) and audio ({:.3}s) durations differ by {:.1}%",
-                segment.filename, video_dur, audio_dur, av_diff_ratio * 100.0
+                segment.filename,
+                video_dur,
+                audio_dur,
+                av_diff_ratio * 100.0
             ));
         }
     }
-    
+
     // Check overall stream consistency
     if !segments.is_empty() {
-        let avg_video_dur: f64 = segments.iter().map(|s| s.video_duration).sum::<f64>() / segments.len() as f64;
-        let avg_audio_dur: f64 = segments.iter().map(|s| s.audio_duration).sum::<f64>() / segments.len() as f64;
-        let avg_playlist_dur: f64 = segments.iter().map(|s| s.playlist_duration as f64).sum::<f64>() / segments.len() as f64;
-        
+        let avg_video_dur: f64 =
+            segments.iter().map(|s| s.video_duration).sum::<f64>() / segments.len() as f64;
+        let avg_audio_dur: f64 =
+            segments.iter().map(|s| s.audio_duration).sum::<f64>() / segments.len() as f64;
+        let avg_playlist_dur: f64 = segments
+            .iter()
+            .map(|s| s.playlist_duration as f64)
+            .sum::<f64>()
+            / segments.len() as f64;
+
         println!("  Average durations:");
         println!("    Video: {:.3}s", avg_video_dur);
         println!("    Audio: {:.3}s", avg_audio_dur);
         println!("    Playlist: {:.3}s", avg_playlist_dur);
-        
+
         // Overall timing validation
-        let video_playlist_ratio = if avg_playlist_dur > 0.0 { avg_video_dur / avg_playlist_dur } else { 0.0 };
-        let audio_playlist_ratio = if avg_playlist_dur > 0.0 { avg_audio_dur / avg_playlist_dur } else { 0.0 };
-        
+        let video_playlist_ratio = if avg_playlist_dur > 0.0 {
+            avg_video_dur / avg_playlist_dur
+        } else {
+            0.0
+        };
+        let audio_playlist_ratio = if avg_playlist_dur > 0.0 {
+            avg_audio_dur / avg_playlist_dur
+        } else {
+            0.0
+        };
+
         if video_playlist_ratio < 0.8 {
             validation_errors.push(format!(
                 "❌ CRITICAL: Average video duration ({:.3}s) is only {:.1}% of expected playlist duration ({:.3}s)",
                 avg_video_dur, video_playlist_ratio * 100.0, avg_playlist_dur
             ));
         }
-        
+
         if (audio_playlist_ratio - 1.0).abs() > 0.1 {
-            let direction = if audio_playlist_ratio > 1.0 { "longer" } else { "shorter" };
+            let direction = if audio_playlist_ratio > 1.0 {
+                "longer"
+            } else {
+                "shorter"
+            };
             validation_errors.push(format!(
                 "⚠️  TIMING: Average audio duration ({:.3}s) is {:.1}% {} than expected ({:.3}s) - possible sample rate mismatch",
                 avg_audio_dur, ((audio_playlist_ratio - 1.0).abs() * 100.0), direction, avg_playlist_dur
             ));
         }
     }
-    
+
     if validation_errors.is_empty() {
         println!("  ✅ All timing validations passed");
     } else {
@@ -565,7 +599,7 @@ fn main() -> Result<()> {
         for error in &validation_errors {
             println!("    {}", error);
         }
-        
+
         // Return error exit code if critical issues found
         let has_critical_errors = validation_errors.iter().any(|e| e.contains("❌ CRITICAL"));
         if has_critical_errors {
@@ -707,12 +741,12 @@ fn analyze_fmp4_segment(init_path: &Path, segment_path: &Path) -> Result<Segment
         .with_context(|| format!("Failed to read init segment: {}", init_path.display()))?;
     let segment_data = fs::read(segment_path)
         .with_context(|| format!("Failed to read segment: {}", segment_path.display()))?;
-    
+
     // Combine init and segment data
     let mut combined_data = Vec::with_capacity(init_data.len() + segment_data.len());
     combined_data.extend_from_slice(&init_data);
     combined_data.extend_from_slice(&segment_data);
-    
+
     // Create a cursor over the combined data
     let cursor = std::io::Cursor::new(combined_data);
     analyze_segment_with_reader(Box::new(cursor))
@@ -731,9 +765,7 @@ fn analyze_partial_segment(
 }
 
 fn analyze_init_segment(path: &Path) -> Result<InitSegmentInfo> {
-    use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-        avcodec_get_name, AVPixelFormat::AV_PIX_FMT_NONE,
-    };
+    use ffmpeg_rs_raw::ffmpeg_sys_the_third::{AVPixelFormat::AV_PIX_FMT_NONE, avcodec_get_name};
     use std::ffi::CStr;
 
     let mut demuxer = Demuxer::new(path.to_str().unwrap())?;

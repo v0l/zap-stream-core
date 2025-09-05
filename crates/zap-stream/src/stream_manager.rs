@@ -1,10 +1,16 @@
 use crate::viewer::ViewerTracker;
+use anyhow::Result;
 use chrono::{DateTime, Utc};
-use log::warn;
+use futures_util::StreamExt;
+use log::{info, warn};
+use nostr_sdk::serde_json;
+use redis::{AsyncCommands, PubSub};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{RwLock, broadcast};
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use zap_stream_core::ingress::EndpointStats;
 
 #[derive(Clone)]
@@ -33,6 +39,8 @@ pub struct ActiveStreamInfo {
 /// Manages active streams, viewer tracking
 #[derive(Clone)]
 pub struct StreamManager {
+    /// This instances node name
+    node_name: String,
     /// Currently active streams with timing info
     /// Any streams which are not contained in this map are dead
     active_streams: Arc<RwLock<HashMap<String, ActiveStreamInfo>>>,
@@ -42,31 +50,82 @@ pub struct StreamManager {
     stream_viewer_states: Arc<RwLock<HashMap<String, StreamViewerState>>>,
     /// Broadcast channel to listen to metrics updates
     broadcaster: broadcast::Sender<ActiveStreamInfo>,
+    /// Redis connection to send/receive active stream info
+    redis_conn: Option<Arc<PubSub<'static>>>,
 }
 
 impl StreamManager {
-    pub fn new() -> Self {
+    pub fn new(node_name: String) -> Self {
         let (tx, rx) = broadcast::channel(16);
-        std::mem::forget(rx); //TODO: clean this
+        std::mem::forget(rx); // TODO: fix this
 
-        let r = Self {
+        Self {
+            node_name,
             active_streams: Arc::new(RwLock::new(HashMap::new())),
             viewer_tracker: Arc::new(RwLock::new(ViewerTracker::new())),
             stream_viewer_states: Arc::new(RwLock::new(HashMap::new())),
             broadcaster: tx,
-        };
+            redis_conn: None,
+        }
+    }
 
-        let mgr = r.clone();
+    pub fn start_cleanup_task(&self, token: CancellationToken) -> JoinHandle<()> {
+        let mgr = self.clone();
         tokio::task::spawn(async move {
+            let mut timer = tokio::time::interval(std::time::Duration::from_secs(60));
             loop {
-                tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
-                {
-                    let mut viewers = mgr.viewer_tracker.write().await;
-                    viewers.cleanup_expired_viewers();
+                tokio::select! {
+                    _ = token.cancelled() => break,
+                    _ = timer.tick() => {
+                        let mut viewers = mgr.viewer_tracker.write().await;
+                        viewers.cleanup_expired_viewers();
+                    }
                 }
             }
+            info!("Stopping stream manager cleanup");
+        })
+    }
+
+    pub async fn enable_redis(
+        &mut self,
+        client: redis::Client,
+        token: CancellationToken,
+    ) -> Result<JoinHandle<Result<()>>> {
+        let mut pub_sub = client.get_async_pubsub().await?;
+        let mut pub_conn = client.get_multiplexed_async_connection().await?;
+        let acc = self.active_streams.clone();
+        let mut sub_to_send = self.listen_metrics();
+
+        const STATS_CHANNEL: &str = "stream-manager-stats";
+
+        // subscribe to stats from other instances
+        let h: JoinHandle<Result<()>> = tokio::spawn(async move {
+            pub_sub.subscribe(STATS_CHANNEL).await?;
+            let mut pub_sub = pub_sub.into_on_message();
+            loop {
+                tokio::select! {
+                    _ = token.cancelled() => break,
+                    Some(msg) = pub_sub.next() => {
+                        let msg: ActiveStreamInfo = serde_json::from_slice(msg.get_payload_bytes())?;
+                        // if stream is not one of ours, track internally to have global view
+                        let mut acc_lock = acc.write().await;
+                        if !acc_lock.contains_key(msg.stream_id.as_str()) {
+                            acc_lock.insert(msg.stream_id.clone(), msg);
+                        }
+                    }
+                    Ok(msg) = sub_to_send.recv() => {
+                        let payload = serde_json::to_string(&msg)?;
+                        let _: usize = AsyncCommands::publish(&mut pub_conn, STATS_CHANNEL, payload.as_bytes()).await?;
+                    }
+                }
+            }
+
+            info!("Stopped redis stats publisher.");
+            Ok(())
         });
-        r
+
+        info!("Redis enabled for stats manager!");
+        Ok(h)
     }
 
     pub fn listen_metrics(&self) -> broadcast::Receiver<ActiveStreamInfo> {

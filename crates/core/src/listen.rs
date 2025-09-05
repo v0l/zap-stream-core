@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use url::Url;
 
 pub enum ListenerEndpoint {
@@ -43,21 +44,36 @@ impl ListenerEndpoint {
         match self {
             ListenerEndpoint::SRT { endpoint } => {
                 if let Ok(addr) = endpoint.parse::<std::net::SocketAddr>() {
-                    Some(format!("srt://{}:{}/{}", public_hostname, addr.port(), ingest_name))
+                    Some(format!(
+                        "srt://{}:{}/{}",
+                        public_hostname,
+                        addr.port(),
+                        ingest_name
+                    ))
                 } else {
                     None
                 }
             }
             ListenerEndpoint::RTMP { endpoint } => {
                 if let Ok(addr) = endpoint.parse::<std::net::SocketAddr>() {
-                    Some(format!("rtmp://{}:{}/{}", public_hostname, addr.port(), ingest_name))
+                    Some(format!(
+                        "rtmp://{}:{}/{}",
+                        public_hostname,
+                        addr.port(),
+                        ingest_name
+                    ))
                 } else {
                     None
                 }
             }
             ListenerEndpoint::TCP { endpoint } => {
                 if let Ok(addr) = endpoint.parse::<std::net::SocketAddr>() {
-                    Some(format!("tcp://{}:{}/{}", public_hostname, addr.port(), ingest_name))
+                    Some(format!(
+                        "tcp://{}:{}/{}",
+                        public_hostname,
+                        addr.port(),
+                        ingest_name
+                    ))
                 } else {
                     None
                 }
@@ -73,6 +89,7 @@ pub fn try_create_listener(
     u: &str,
     out_dir: &str,
     overseer: &Arc<dyn Overseer>,
+    shutdown: CancellationToken,
 ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
     let ep = ListenerEndpoint::from_str(u)?;
     match ep {
@@ -81,18 +98,21 @@ pub fn try_create_listener(
             out_dir.to_string(),
             endpoint,
             overseer.clone(),
+            shutdown,
         ))),
         #[cfg(feature = "ingress-rtmp")]
         ListenerEndpoint::RTMP { endpoint } => Ok(tokio::spawn(crate::ingress::rtmp::listen(
             out_dir.to_string(),
             endpoint,
             overseer.clone(),
+            shutdown,
         ))),
         #[cfg(feature = "ingress-tcp")]
         ListenerEndpoint::TCP { endpoint } => Ok(tokio::spawn(crate::ingress::tcp::listen(
             out_dir.to_string(),
             endpoint,
             overseer.clone(),
+            shutdown,
         ))),
         ListenerEndpoint::File { path } => Ok(tokio::spawn(crate::ingress::file::listen(
             out_dir.to_string(),
@@ -103,6 +123,7 @@ pub fn try_create_listener(
         ListenerEndpoint::TestPattern => Ok(tokio::spawn(crate::ingress::test::listen(
             out_dir.to_string(),
             overseer.clone(),
+            shutdown,
         ))),
         _ => {
             bail!("Unknown endpoint config: {u}");

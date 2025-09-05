@@ -96,7 +96,7 @@ impl FrameGenerator {
         video_stream: &IngressStream,
         audio_stream: Option<&IngressStream>,
     ) -> Result<Self> {
-        Ok(Self::from_stream_with_timebase(
+        Self::from_stream_with_timebase(
             video_stream,
             audio_stream,
             AVRational {
@@ -107,7 +107,7 @@ impl FrameGenerator {
                 num: 1,
                 den: s.sample_rate as i32,
             }),
-        )?)
+        )
     }
 
     pub fn from_stream_with_timebase(
@@ -116,7 +116,7 @@ impl FrameGenerator {
         video_timebase: AVRational,
         audio_timebase: Option<AVRational>,
     ) -> Result<Self> {
-        Ok(Self::new(
+        Self::new(
             video_stream.fps,
             video_stream.width as _,
             video_stream.height as _,
@@ -126,13 +126,13 @@ impl FrameGenerator {
             audio_stream.map(|i| i.channels as _).unwrap_or(0),
             video_timebase,
             audio_timebase.unwrap_or(AVRational { num: 1, den: 1 }),
-        )?)
+        )
     }
 
     pub unsafe fn from_av_streams(
         video_stream: *const AVStream,
         audio_stream: Option<*const AVStream>,
-    ) -> Result<Self> {
+    ) -> Result<Self> { unsafe {
         if video_stream.is_null() {
             bail!("Video stream cannot be null");
         }
@@ -166,7 +166,7 @@ impl FrameGenerator {
         };
 
         let frame_size = if sample_rate > 0 { 1024 } else { 0 };
-        Ok(Self::new(
+        Self::new(
             fps,
             width,
             height,
@@ -176,8 +176,8 @@ impl FrameGenerator {
             channels,
             video_timebase,
             audio_timebase,
-        )?)
-    }
+        )
+    }}
 
     pub fn frame_no(&self) -> u64 {
         (self.video_pts / self.pts_per_frame()) as u64
@@ -256,13 +256,13 @@ impl FrameGenerator {
         Ok(())
     }
 
-    pub unsafe fn fill_color(&mut self, color32: [u8; 4]) -> Result<()> {
+    pub unsafe fn fill_color(&mut self, color32: [u8; 4]) -> Result<()> { unsafe {
         if self.next_frame.is_null() {
             bail!("Must call begin() before writing frame data")
         }
         let buf = slice::from_raw_parts_mut(
             (*self.next_frame).data[0],
-            (self.width as usize * self.height as usize * 4) as usize,
+            (self.width as usize * self.height as usize * 4),
         );
         for chunk in buf.chunks_exact_mut(4) {
             chunk[0] = color32[0];
@@ -271,35 +271,35 @@ impl FrameGenerator {
             chunk[3] = color32[3];
         }
         Ok(())
-    }
+    }}
 
     /// Copy data directly into the frame buffer (must be RGBA data)
-    pub unsafe fn copy_frame_data(&mut self, data: &[u8]) -> Result<()> {
+    pub unsafe fn copy_frame_data(&mut self, data: &[u8]) -> Result<()> { unsafe {
         if self.next_frame.is_null() {
             bail!("Must call begin() before writing frame data")
         }
         let buf = slice::from_raw_parts_mut(
             (*self.next_frame).data[0],
-            (self.width as usize * self.height as usize * 4) as usize,
+            (self.width as usize * self.height as usize * 4),
         );
         if buf.len() < data.len() {
             bail!("Frame buffer is too small");
         }
         buf.copy_from_slice(data);
         Ok(())
-    }
+    }}
 
     fn pts_per_frame(&self) -> i64 {
         self.video_timebase.den as i64 / (self.video_timebase.num as i64 * self.fps as i64)
     }
 
     fn pts_of_nb_samples(&self, n: i64) -> i64 {
-        let seconds = (n as f64 / self.audio_sample_rate as f64) as f64;
+        let seconds = n as f64 / self.audio_sample_rate as f64;
         (seconds / unsafe { av_q2d(self.audio_timebase) }) as _
     }
 
     /// Generate audio to stay synchronized with video frames
-    unsafe fn generate_audio_frame(&mut self) -> Result<*mut AVFrame> {
+    unsafe fn generate_audio_frame(&mut self) -> Result<*mut AVFrame> { unsafe {
         const FREQUENCY: f32 = 440.0; // A4 note
 
         // audio is disabled if sample rate is 0
@@ -343,10 +343,10 @@ impl FrameGenerator {
         }
 
         Ok(ptr::null_mut())
-    }
+    }}
 
     /// Return the next frame for encoding (blocking)
-    pub unsafe fn next(&mut self) -> Result<*mut AVFrame> {
+    pub unsafe fn next(&mut self) -> Result<*mut AVFrame> { unsafe {
         // set start time to now if this is the first call to next()
         if self.video_pts == 0 {
             self.start = Instant::now();
@@ -397,7 +397,7 @@ impl FrameGenerator {
             self.next_frame = ptr::null_mut();
             Ok(ret)
         }
-    }
+    }}
 }
 
 #[cfg(test)]

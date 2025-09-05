@@ -16,7 +16,6 @@ pub struct ViewerTracker {
 
 impl ViewerTracker {
     pub fn new() -> Self {
-        
         Self {
             viewers: HashMap::new(),
             timeout_duration: Duration::from_secs(600), // 10 minutes

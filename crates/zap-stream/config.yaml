@@ -30,3 +30,7 @@ overseer:
     address: "https://127.0.0.1:10001"
     cert: "/home/kieran/.polar/networks/1/volumes/lnd/alice/tls.cert"
     macaroon: "/home/kieran/.polar/networks/1/volumes/lnd/alice/data/chain/bitcoin/regtest/admin.macaroon"
+
+# Redis server for coordination
+redis:
+  url: "redis://localhost:6399"

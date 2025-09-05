@@ -84,9 +84,12 @@ struct StreamSegment {
 }
 
 #[rocket::get("/")]
-async fn index(streams: &State<StreamList>) -> Result<rocket::response::content::RawHtml<String>, Status> {
+async fn index(
+    streams: &State<StreamList>,
+) -> Result<rocket::response::content::RawHtml<String>, Status> {
     let streams_guard = streams.read().await;
-    let mut html = String::from(r#"<!DOCTYPE html>
+    let mut html = String::from(
+        r#"<!DOCTYPE html>
 <html>
 <head>
     <title>N94 Bridge - Stream List</title>
@@ -152,23 +155,26 @@ async fn index(streams: &State<StreamList>) -> Result<rocket::response::content:
         </ul>
         <p>Connect your media player to the playlist URLs below to start watching live streams from the Nostr network.</p>
     </div>
-    <h2>Active Streams</h2>"#);
+    <h2>Active Streams</h2>"#,
+    );
 
     if streams_guard.is_empty() {
         html.push_str(r#"    <p class="no-streams">No active streams found.</p>"#);
     } else {
-        html.push_str(&format!("<p>Found {} active stream(s):</p>", streams_guard.len()));
-        
+        html.push_str(&format!(
+            "<p>Found {} active stream(s):</p>",
+            streams_guard.len()
+        ));
+
         for (event_id, stream) in streams_guard.iter() {
             html.push_str(&format!(
                 r#"    <div class="stream">
         <div class="stream-id">Stream ID: {}</div>
         <p><strong>Last Hit:</strong> {}</p>
         <p><strong>Variants:</strong></p>"#,
-                event_id,
-                stream.last_hit
+                event_id, stream.last_hit
             ));
-            
+
             if stream.variants.is_empty() {
                 html.push_str(r#"        <div class="variant">No variants available</div>"#);
             } else {
@@ -177,23 +183,29 @@ async fn index(streams: &State<StreamList>) -> Result<rocket::response::content:
             <a class="playlist-link" href="/{}.m3u8" target="_blank">📺 Master Playlist</a>
             <br><strong>Available Resolutions:</strong> {}</div>"#,
                     event_id,
-                    stream.variants.values()
-                        .map(|v| format!("{}x{} @ {}kbps", 
-                            v.width.unwrap_or(0), 
-                            v.height.unwrap_or(0), 
-                            v.bitrate.unwrap_or(0) / 1000))
+                    stream
+                        .variants
+                        .values()
+                        .map(|v| format!(
+                            "{}x{} @ {}kbps",
+                            v.width.unwrap_or(0),
+                            v.height.unwrap_or(0),
+                            v.bitrate.unwrap_or(0) / 1000
+                        ))
                         .collect::<Vec<_>>()
                         .join(", ")
                 ));
             }
-            
+
             html.push_str("    </div>");
         }
     }
-    
-    html.push_str(r#"
+
+    html.push_str(
+        r#"
 </body>
-</html>"#);
+</html>"#,
+    );
 
     Ok(rocket::response::content::RawHtml(html))
 }
@@ -375,7 +387,7 @@ async fn process_event(event: Event, client: Client, streams: StreamList) -> Res
         }
         // segment
         Kind::FileMetadata => {
-            let stream_id = if let Some(i) = event.tags.event_ids().into_iter().next() {
+            let stream_id = if let Some(i) = event.tags.event_ids().next() {
                 i
             } else {
                 warn!("Segment event {} had no e tag!", event.id);
@@ -427,7 +439,7 @@ async fn process_event(event: Event, client: Client, streams: StreamList) -> Res
                 .and_then(|t| t.content())
                 .and_then(|t| t.parse::<u64>().ok());
 
-            if let Some(stream) = streams.write().await.get_mut(&stream_id) {
+            if let Some(stream) = streams.write().await.get_mut(stream_id) {
                 stream.last_hit = Timestamp::now().as_u64();
                 match stream.variants.entry(var_id.clone()) {
                     Entry::Occupied(e) => {

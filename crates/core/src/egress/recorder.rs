@@ -1,13 +1,13 @@
 use anyhow::Result;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPacket;
 use ffmpeg_rs_raw::Muxer;
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPacket;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use uuid::Uuid;
 
 use crate::egress::{Egress, EgressResult, EncoderOrSourceStream};
-use crate::variant::{StreamMapping, VariantStream};
 use crate::metrics::PacketMetrics;
+use crate::variant::{StreamMapping, VariantStream};
 
 pub struct RecorderEgress {
     /// Internal muxer writing the output packets
@@ -49,8 +49,8 @@ impl RecorderEgress {
             m.open(Some(options))?;
             m
         };
-        Ok(Self { 
-            muxer, 
+        Ok(Self {
+            muxer,
             var_map,
             metrics: PacketMetrics::new("Recorder Egress", None),
         })
@@ -62,20 +62,20 @@ impl Egress for RecorderEgress {
         &mut self,
         packet: *mut AVPacket,
         variant: &Uuid,
-    ) -> Result<EgressResult> {
+    ) -> Result<EgressResult> { unsafe {
         if let Some(stream) = self.var_map.get(variant) {
             // Update metrics with packet data (auto-reports when interval elapsed)
             self.metrics.update((*packet).size as usize);
-            
+
             // very important for muxer to know which stream this pkt belongs to
             (*packet).stream_index = *stream;
             self.muxer.write_packet(packet)?;
         }
         Ok(EgressResult::None)
-    }
+    }}
 
-    unsafe fn reset(&mut self) -> Result<EgressResult> {
+    unsafe fn reset(&mut self) -> Result<EgressResult> { unsafe {
         self.muxer.close()?;
         Ok(EgressResult::None)
-    }
+    }}
 }

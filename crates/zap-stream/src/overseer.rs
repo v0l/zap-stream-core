@@ -1,4 +1,4 @@
-use crate::settings::{LndSettings, Settings};
+use crate::settings::{LndSettings, RedisConfig, Settings};
 use crate::stream_manager::StreamManager;
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use async_trait::async_trait;
@@ -11,15 +11,16 @@ use fedimint_tonic_lnd::invoicesrpc::lookup_invoice_msg::InvoiceRef;
 use fedimint_tonic_lnd::lnrpc::InvoiceSubscription;
 #[cfg(feature = "zap-stream")]
 use fedimint_tonic_lnd::verrpc::VersionRequest;
-use futures_util::StreamExt;
-use hostname;
 use log::{error, info, warn};
 use nostr_sdk::prelude::Coordinate;
 use nostr_sdk::{Client, Event, EventBuilder, JsonUtil, Keys, Kind, NostrSigner, Tag, ToBech32};
+use rslock::LockManager;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::time::Duration;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use url::Url;
 use uuid::Uuid;
 use zap_stream_core::egress::EgressSegment;
@@ -58,10 +59,12 @@ pub struct ZapStreamOverseer {
     low_balance_threshold_msats: Option<u64>,
     /// Node name for horizontal scaling
     node_name: String,
+    /// Leader election locks
+    lock_manager: Option<LockManager>,
 }
 
 impl ZapStreamOverseer {
-    pub async fn from_settings(settings: &Settings) -> Result<Self> {
+    pub async fn from_settings(settings: &Settings, shutdown: CancellationToken) -> Result<Self> {
         #[cfg(not(feature = "zap-stream"))]
         return Ok(ZapStreamOverseer::new(
             &settings.public_url,
@@ -71,10 +74,12 @@ impl ZapStreamOverseer {
             &settings.overseer.blossom,
             settings.overseer.segment_length.unwrap_or(2.0),
             settings.overseer.low_balance_threshold_msats,
+            &settings.redis,
+            shutdown,
         )
         .await?);
         #[cfg(feature = "zap-stream")]
-        return Ok(ZapStreamOverseer::new(
+        return ZapStreamOverseer::new(
             &settings.public_url,
             &settings.overseer.nsec,
             &settings.overseer.database,
@@ -83,8 +88,10 @@ impl ZapStreamOverseer {
             &settings.overseer.blossom,
             settings.overseer.segment_length.unwrap_or(2.0),
             settings.overseer.low_balance_threshold_msats,
+            &settings.redis,
+            shutdown,
         )
-        .await?);
+        .await;
     }
 
     pub async fn new(
@@ -96,6 +103,8 @@ impl ZapStreamOverseer {
         blossom_servers: &Option<Vec<String>>,
         segment_length: f32,
         low_balance_threshold_msats: Option<u64>,
+        redis: &Option<RedisConfig>,
+        shutdown: CancellationToken,
     ) -> Result<Self> {
         let db = ZapStreamDb::new(db).await?;
         db.migrate().await?;
@@ -141,27 +150,31 @@ impl ZapStreamOverseer {
         }
         client.connect().await;
 
-        let node_name = hostname::get()
-            .map_err(|e| anyhow::anyhow!("Failed to get hostname: {}", e))?
-            .to_string_lossy()
-            .to_string();
+        let node_name = sysinfo::System::host_name()
+            .ok_or_else(|| anyhow::anyhow!("Failed to get hostname!"))?;
 
-        let overseer = Self {
+        let mut overseer = Self {
             db,
             #[cfg(feature = "zap-stream")]
             lnd,
-            n94: if let Some(s) = blossom_servers {
-                Some(N94Publisher::new(client.clone(), s, 3, segment_length))
-            } else {
-                None
-            },
+            n94: blossom_servers.as_ref().map(|s| N94Publisher::new(client.clone(), s, 3, segment_length)),
             client,
             segment_length,
             public_url: public_url.clone(),
-            stream_manager: StreamManager::new(),
+            stream_manager: StreamManager::new(node_name.clone()),
             low_balance_threshold_msats,
             node_name,
+            lock_manager: None,
         };
+        if let Some(r) = redis {
+            let r_client = redis::Client::open(r.url.clone())?;
+            overseer.lock_manager = Some(LockManager::from_clients(vec![r_client.clone()]));
+            let _ = overseer
+                .stream_manager
+                .enable_redis(r_client, shutdown.clone())
+                .await;
+        }
+        let _ = overseer.stream_manager.start_cleanup_task(shutdown);
 
         Ok(overseer)
     }
@@ -176,11 +189,34 @@ impl ZapStreamOverseer {
     }
 
     #[cfg(feature = "zap-stream")]
-    pub fn start_payment_handler(&self) -> JoinHandle<Result<()>> {
+    pub fn start_payment_handler(&self, token: CancellationToken) -> JoinHandle<Result<()>> {
         let mut ln = self.lnd.clone();
         let db = self.db.clone();
         let client = self.client.clone();
+        let lm = self.lock_manager.clone();
+        let node_name = self.node_name.clone();
         tokio::spawn(async move {
+            // setup redis-lock if enabled,
+            // this blocks the thread from running on more than 1 instance
+            let lock_ttl = Duration::from_secs(5);
+            let locked = loop {
+                if let Some(lm) = &lm {
+                    tokio::select! {
+                        _ = token.cancelled() => {
+                            info!("Payment handler exiting (non-locked)!");
+                            return Ok(());
+                        }
+                        Ok(lock) = lm.lock("payment-handler", lock_ttl) => {
+                            info!("Locked payment handler on node: {}", node_name);
+                            break Some(lock);
+                        }
+                    }
+                } else {
+                    break None;
+                }
+            };
+
+            // get last completed payment
             let last_payment_index = if let Some(pl) = db.get_latest_completed_payment().await? {
                 let mut req = LookupInvoiceMsg::default();
                 req.invoice_ref = Some(InvoiceRef::PaymentHash(pl.payment_hash));
@@ -202,52 +238,71 @@ impl ZapStreamOverseer {
                     add_index: 0,
                     settle_index: last_payment_index,
                 })
-                .await?
+                .await? // TODO: unlock rl
                 .into_inner();
-            while let Some(msg) = stream.next().await {
-                match msg {
-                    Ok(data) => {
-                        info!(
-                            "Got payment update: preimage={}, settle_index={}",
-                            hex::encode(&data.r_hash),
-                            data.settle_index
-                        );
-                        if data.settle_index != 0 {
-                            match db.complete_payment(&data.r_hash, 0).await {
-                                Ok(b) => {
-                                    if b {
-                                        info!("Completed payment!");
-                                        let payment = db.get_payment(&data.r_hash).await?.unwrap();
-                                        if let Some(nostr) = payment.nostr {
-                                            if let Err(e) = Self::try_send_zap_receipt(
-                                                &client,
-                                                &nostr,
-                                                &data.payment_request,
-                                                &data.r_preimage,
-                                            )
-                                            .await
-                                            {
-                                                warn!("Failed to send zap receipt {}", e);
+
+            let mut timer = tokio::time::interval(Duration::from_secs(1));
+            loop {
+                tokio::select! {
+                    _ = token.cancelled() => {
+                        info!("Payment handler exiting...");
+                        break;
+                    }
+                    _ = timer.tick() => if let (Some(lm), Some(lock)) = (&lm, &locked) {
+                        info!("Extending redlock..");
+                        lm.extend(lock, lock_ttl).await?;
+                    },
+                    Ok(msg) = stream.message() => {
+                        info!("Received message: {:?}", msg);
+                        match msg {
+                           Some(data) => {
+                                info!(
+                                    "Got payment update: preimage={}, settle_index={}",
+                                    hex::encode(&data.r_hash),
+                                    data.settle_index
+                                );
+                                if data.settle_index != 0 {
+                                    match db.complete_payment(&data.r_hash, 0).await {
+                                        Ok(b) => {
+                                            if b {
+                                                info!("Completed payment!");
+                                                let payment = db.get_payment(&data.r_hash).await?.unwrap();
+                                                if let Some(nostr) = payment.nostr
+                                                    && let Err(e) = Self::try_send_zap_receipt(
+                                                        &client,
+                                                        &nostr,
+                                                        &data.payment_request,
+                                                        &data.r_preimage,
+                                                    )
+                                                    .await
+                                                    {
+                                                        warn!("Failed to send zap receipt {}", e);
+                                                    }
+                                            } else {
+                                                warn!(
+                                                    "No payments updated! Maybe it doesnt exist or it's already processed."
+                                                )
                                             }
                                         }
-                                    } else {
-                                        warn!(
-                                            "No payments updated! Maybe it doesnt exist or it's already processed."
-                                        )
+                                        Err(e) => {
+                                            error!(
+                                                "Failed to complete payment {}: {}",
+                                                hex::encode(data.r_hash),
+                                                e
+                                            );
+                                        }
                                     }
                                 }
-                                Err(e) => {
-                                    error!(
-                                        "Failed to complete payment {}: {}",
-                                        hex::encode(data.r_hash),
-                                        e
-                                    );
-                                }
                             }
+                            None => break,
                         }
                     }
-                    Err(e) => error!("Invoice subscription error: {}", e),
                 }
+            }
+
+            info!("Payment handler exiting!");
+            if let (Some(lm), Some(lock)) = (lm, locked) {
+                lm.unlock(&lock).await;
             }
             Ok(())
         })
@@ -422,7 +477,7 @@ impl ZapStreamOverseer {
         current_balance: i64,
         stream_id: &Uuid,
     ) -> Result<()> {
-        if let Some(_) = self.low_balance_threshold_msats {
+        if self.low_balance_threshold_msats.is_some() {
             let balance_sats = current_balance / 1000; // Convert millisats to sats
             let message = format!(
                 "⚠️ Low Balance Warning ⚠️ Your streaming balance is low: {} sats. Please top up your account to avoid stream interruption.",
@@ -433,7 +488,7 @@ impl ZapStreamOverseer {
             let signer = self.client.signer().await?;
             let stream_pubkey = signer.get_public_key().await?;
             let coord =
-                Coordinate::new(Kind::LiveEvent, stream_pubkey).identifier(&stream_id.to_string());
+                Coordinate::new(Kind::LiveEvent, stream_pubkey).identifier(stream_id.to_string());
 
             let chat_event = EventBuilder::new(Kind::Custom(1311), message)
                 .tag(Tag::parse(&["a".to_string(), coord.to_string()])?);
@@ -475,15 +530,14 @@ impl Overseer for ZapStreamOverseer {
                 }
             } else {
                 // Stream is active, check if we should update viewer count in nostr event
-                if let Ok(user) = self.db.get_user(stream.user_id).await {
-                    if self
+                if let Ok(user) = self.db.get_user(stream.user_id).await
+                    && self
                         .stream_manager
                         .check_and_update_viewer_count(&stream.id)
                         .await?
                     {
                         self.publish_stream_event(&stream, &user.pubkey).await?;
                     }
-                }
             }
         }
         Ok(())
@@ -632,11 +686,7 @@ impl Overseer for ZapStreamOverseer {
                             VariantStream::Video(v) | VariantStream::CopyVideo(v) => Some(v),
                             _ => None,
                         });
-                        let video = if let Some(v) = video {
-                            v
-                        } else {
-                            return None;
-                        };
+                        let video = video?;
                         Some(N94Variant {
                             id: video.id().to_string(),
                             width: video.width as _,
@@ -697,8 +747,8 @@ impl Overseer for ZapStreamOverseer {
             let balance_before = bal + cost; // Calculate balance before this deduction
             if balance_before > threshold_msats as i64 && bal <= threshold_msats as i64 {
                 // Balance just crossed the threshold, send notification
-                if let Ok(user) = self.db.get_user(stream.user_id).await {
-                    if let Err(e) = self
+                if let Ok(user) = self.db.get_user(stream.user_id).await
+                    && let Err(e) = self
                         .send_low_balance_notification(
                             stream.user_id,
                             &user.pubkey,
@@ -709,7 +759,6 @@ impl Overseer for ZapStreamOverseer {
                     {
                         warn!("Failed to send low balance notification: {}", e);
                     }
-                }
             }
         }
 
@@ -723,9 +772,9 @@ impl Overseer for ZapStreamOverseer {
             .await;
 
         if let Some(n94) = &self.n94 {
-            n94.on_new_segment(added.iter().map(|s| into_n94_segment(s)).collect())
+            n94.on_new_segment(added.iter().map(into_n94_segment).collect())
                 .await?;
-            n94.on_deleted_segment(deleted.iter().map(|s| into_n94_segment(s)).collect())
+            n94.on_deleted_segment(deleted.iter().map(into_n94_segment).collect())
                 .await?;
         }
         Ok(())
@@ -821,6 +870,6 @@ fn into_n94_segment(seg: &EgressSegment) -> N94Segment {
         idx: seg.idx,
         duration: seg.duration,
         path: seg.path.clone(),
-        sha256: seg.sha256.clone(),
+        sha256: seg.sha256,
     }
 }

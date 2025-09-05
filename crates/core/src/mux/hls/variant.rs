@@ -3,19 +3,19 @@ use crate::hash_file_sync;
 use crate::mux::hls::segment::{HlsSegment, PartialSegmentInfo, SegmentInfo};
 use crate::mux::{HlsVariantStream, SegmentType};
 use crate::variant::{StreamMapping, VariantStream};
-use anyhow::{bail, ensure, Result};
+use anyhow::{Result, bail, ensure};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_H264;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVMediaType::AVMEDIA_TYPE_VIDEO;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    av_dump_format, av_free, av_get_bits_per_pixel, av_pix_fmt_desc_get, av_q2d, av_write_frame,
-    avio_close, avio_flush, avio_open, avio_size, AVPacket, AVIO_FLAG_WRITE, AV_NOPTS_VALUE,
-    AV_PKT_FLAG_KEY,
+    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVIO_FLAG_WRITE, AVPacket, av_free,
+    av_get_bits_per_pixel, av_pix_fmt_desc_get, av_q2d, av_write_frame, avio_close, avio_flush,
+    avio_open, avio_size,
 };
-use ffmpeg_rs_raw::{cstr, Muxer};
+use ffmpeg_rs_raw::{Muxer, cstr};
 use log::{debug, info, trace, warn};
 use m3u8_rs::{ExtTag, MediaSegmentType, PartInf, PreloadHint};
 use std::collections::HashMap;
-use std::fs::{create_dir_all, File};
+use std::fs::{File, create_dir_all};
 use std::mem::transmute;
 use std::path::PathBuf;
 use std::ptr;
@@ -239,7 +239,7 @@ impl HlsVariant {
     }
 
     /// Process a single packet through the muxer
-    pub(crate) unsafe fn process_packet(&mut self, pkt: *mut AVPacket) -> Result<EgressResult> {
+    pub(crate) unsafe fn process_packet(&mut self, pkt: *mut AVPacket) -> Result<EgressResult> { unsafe {
         let pkt_stream = *(*self.mux.context())
             .streams
             .add((*pkt).stream_index as usize);
@@ -285,11 +285,11 @@ impl HlsVariant {
         self.packets_written += 1;
 
         Ok(result)
-    }
+    }}
 
-    pub unsafe fn reset(&mut self) -> Result<()> {
+    pub unsafe fn reset(&mut self) -> Result<()> { unsafe {
         self.mux.close()
-    }
+    }}
 
     /// Create a partial segment for LL-HLS
     fn create_partial_segment(&mut self, next_pkt_start: f64) -> Result<EgressResult> {
@@ -340,7 +340,7 @@ impl HlsVariant {
     }
 
     /// Create initialization segment for fMP4
-    unsafe fn create_init_segment(&mut self) -> Result<()> {
+    unsafe fn create_init_segment(&mut self) -> Result<()> { unsafe {
         if self.segment_type != SegmentType::FMP4 || self.init_segment_path.is_some() {
             return Ok(());
         }
@@ -375,17 +375,20 @@ impl HlsVariant {
         info!("Created fMP4 initialization segment: {}", init_path);
 
         Ok(())
-    }
+    }}
 
     /// Reset the muxer state and start the next segment
-    unsafe fn split_next_seg(&mut self, next_pkt_start: f64) -> Result<EgressResult> {
+    unsafe fn split_next_seg(&mut self, next_pkt_start: f64) -> Result<EgressResult> { unsafe {
         let completed_segment_idx = self.idx;
         self.idx += 1;
         self.current_partial_index = 0;
 
         // Create initialization segment after first segment completion
         // This ensures the init segment has the correct timebase from the encoder
-        if self.segment_type == SegmentType::FMP4 && self.init_segment_path.is_none() && completed_segment_idx == 1 {
+        if self.segment_type == SegmentType::FMP4
+            && self.init_segment_path.is_none()
+            && completed_segment_idx == 1
+        {
             self.create_init_segment()?;
         }
 
@@ -423,11 +426,10 @@ impl HlsVariant {
             self.packets_written
         );
 
-        let video_var_id = self
+        let video_var_id = *self
             .video_stream()
             .unwrap_or(self.streams.first().unwrap())
-            .id()
-            .clone();
+            .id();
 
         // cleanup old segments
         let deleted = self
@@ -472,7 +474,7 @@ impl HlsVariant {
             created: vec![created],
             deleted,
         })
-    }
+    }}
 
     pub fn video_stream(&self) -> Option<&HlsVariantStream> {
         self.streams
@@ -503,28 +505,24 @@ impl HlsVariant {
             seg_match
         };
         let mut ret = vec![];
-        if let Some(seg_match) = drain_from_hls_segment {
-            if let Some(drain_pos) = self.segments.iter().position(|e| e == seg_match) {
+        if let Some(seg_match) = drain_from_hls_segment
+            && let Some(drain_pos) = self.segments.iter().position(|e| e == seg_match) {
                 for seg in self.segments.drain(..drain_pos) {
-                    match seg {
-                        HlsSegment::Full(seg) => {
-                            let seg_path = self.out_dir.join(seg.filename());
-                            if let Err(e) = std::fs::remove_file(&seg_path) {
-                                warn!(
-                                    "Failed to remove segment file: {} {}",
-                                    seg_path.display(),
-                                    e
-                                );
-                            }
-                            trace!("Removed segment file: {}", seg_path.display());
-
-                            ret.push(seg);
+                    if let HlsSegment::Full(seg) = seg {
+                        let seg_path = self.out_dir.join(seg.filename());
+                        if let Err(e) = std::fs::remove_file(&seg_path) {
+                            warn!(
+                                "Failed to remove segment file: {} {}",
+                                seg_path.display(),
+                                e
+                            );
                         }
-                        _ => {}
+                        trace!("Removed segment file: {}", seg_path.display());
+
+                        ret.push(seg);
                     }
                 }
             }
-        }
 
         Ok(ret)
     }
@@ -548,14 +546,13 @@ impl HlsVariant {
         pl.segments = self.segments.iter().map(|s| s.to_media_segment()).collect();
 
         // Add EXT-X-MAP initialization segment for fMP4
-        if self.segment_type == SegmentType::FMP4 {
-            if let Some(ref init_path) = self.init_segment_path {
+        if self.segment_type == SegmentType::FMP4
+            && let Some(ref init_path) = self.init_segment_path {
                 pl.unknown_tags.push(ExtTag {
                     tag: "X-MAP".to_string(),
                     rest: Some(format!("URI=\"{}\"", init_path)),
                 });
             }
-        }
 
         // append segment preload for next part segment
         if let Some(HlsSegment::Partial(partial)) = self.segments.last() {
@@ -594,7 +591,7 @@ impl HlsVariant {
         Ok(())
     }
 
-    unsafe fn to_codec_attr(&self) -> Option<String> {
+    unsafe fn to_codec_attr(&self) -> Option<String> { unsafe {
         let mut codecs = Vec::new();
 
         // Find video and audio streams and build codec string
@@ -636,7 +633,7 @@ impl HlsVariant {
         } else {
             Some(codecs.join(","))
         }
-    }
+    }}
 
     pub fn to_playlist_variant(&self) -> m3u8_rs::VariantStream {
         unsafe {

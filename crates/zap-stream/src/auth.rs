@@ -1,7 +1,7 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use base64::Engine;
 use chrono::{DateTime, Utc};
-use nostr_sdk::{serde_json, Alphabet, Event, Kind, PublicKey, SingleLetterTag, TagKind};
+use nostr_sdk::{Alphabet, Event, Kind, PublicKey, SingleLetterTag, TagKind, serde_json};
 use zap_stream_db::ZapStreamDb;
 
 #[derive(Debug, Clone)]
@@ -26,10 +26,7 @@ pub struct AuthRequest {
 }
 
 /// Generic NIP-98 authentication that works for both HTTP and WebSocket
-pub async fn authenticate_nip98(
-    auth_request: AuthRequest,
-    db: &ZapStreamDb,
-) -> Result<AuthResult> {
+pub async fn authenticate_nip98(auth_request: AuthRequest, db: &ZapStreamDb) -> Result<AuthResult> {
     // Extract the base64 token based on source
     let token = match &auth_request.token_source {
         TokenSource::HttpHeader(auth_header) => {

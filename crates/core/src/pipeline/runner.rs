@@ -197,7 +197,7 @@ impl PipelineRunner {
     }
 
     /// Save image to disk
-    unsafe fn save_thumb(frame: *mut AVFrame, dst_pic: &Path) -> Result<()> {
+    unsafe fn save_thumb(frame: *mut AVFrame, dst_pic: &Path) -> Result<()> { unsafe {
         let mut free_frame = false;
         // use scaler to convert pixel format if not YUV420P
         let mut frame = if (*frame).format != transmute(AV_PIX_FMT_YUV420P) {
@@ -225,7 +225,7 @@ impl PipelineRunner {
             av_frame_free(&mut frame);
         }
         Ok(())
-    }
+    }}
 
     /// Save a decoded frame as a thumbnail
     fn generate_thumb_from_frame(&mut self, frame: *mut AVFrame) -> Result<()> {
@@ -234,7 +234,7 @@ impl PipelineRunner {
             let dst_pic = self.out_dir.join("thumb.webp");
             let overseer = self.overseer.clone();
             let handle = self.handle.clone();
-            let id = self.connection.id.clone();
+            let id = self.connection.id;
             std::thread::spawn(move || unsafe {
                 let mut frame = frame as *mut AVFrame; //TODO: danger??
                 let thumb_start = Instant::now();
@@ -265,7 +265,7 @@ impl PipelineRunner {
     }
 
     /// Switch to idle mode with placeholder content generation
-    unsafe fn switch_to_idle_mode(&mut self, config: &PipelineConfig) -> Result<()> {
+    unsafe fn switch_to_idle_mode(&mut self, config: &PipelineConfig) -> Result<()> { unsafe {
         if self.state.is_idle() {
             return Ok(()); // Already in idle mode
         }
@@ -293,7 +293,7 @@ impl PipelineRunner {
         self.consecutive_decode_failures = 0; // Reset counter when entering idle mode
         info!("Switched to idle mode - generating placeholder content");
         Ok(())
-    }
+    }}
 
     /// Check if circuit breaker should trigger due to consecutive failures
     fn should_trigger_circuit_breaker(&self) -> bool {
@@ -304,7 +304,7 @@ impl PipelineRunner {
     unsafe fn handle_decode_failure(
         &mut self,
         config: &PipelineConfig,
-    ) -> Result<Vec<EgressResult>> {
+    ) -> Result<Vec<EgressResult>> { unsafe {
         if self.should_trigger_circuit_breaker() {
             error!(
                 "Circuit breaker triggered: {} consecutive decode failures exceeded threshold of {}. Switching to idle mode.",
@@ -317,10 +317,10 @@ impl PipelineRunner {
 
         // Return empty result to skip this packet
         Ok(vec![])
-    }
+    }}
 
     /// Process frame in normal mode (live stream)
-    unsafe fn process_normal_mode(&mut self, config: &PipelineConfig) -> Result<Vec<EgressResult>> {
+    unsafe fn process_normal_mode(&mut self, config: &PipelineConfig) -> Result<Vec<EgressResult>> { unsafe {
         let (pkt, _stream) = self.demuxer.get_packet()?;
         if pkt.is_null() {
             warn!("Demuxer get_packet failed, entering idle mode");
@@ -330,20 +330,19 @@ impl PipelineRunner {
         } else {
             self.process_packet(pkt)
         }
-    }
+    }}
 
     /// Process frame in idle mode (placeholder content)
-    unsafe fn process_idle_mode(&mut self, config: &PipelineConfig) -> Result<Vec<EgressResult>> {
+    unsafe fn process_idle_mode(&mut self, config: &PipelineConfig) -> Result<Vec<EgressResult>> { unsafe {
         // Check if idle timeout has been reached
-        if let Some(duration) = self.state.idle_duration() {
-            if duration > Duration::from_secs(IDLE_TIMEOUT_SECS) {
+        if let Some(duration) = self.state.idle_duration()
+            && duration > Duration::from_secs(IDLE_TIMEOUT_SECS) {
                 info!(
                     "Idle timeout reached ({} seconds), ending stream",
                     IDLE_TIMEOUT_SECS
                 );
                 return Err(anyhow!("Idle timeout reached"));
             }
-        }
 
         // Generate next frame from idle mode generator
         if let RunnerState::Idle {
@@ -376,9 +375,9 @@ impl PipelineRunner {
         } else {
             bail!("process_idle_mode called but not in idle state")
         }
-    }
+    }}
 
-    unsafe fn process_packet(&mut self, mut packet: *mut AVPacket) -> Result<Vec<EgressResult>> {
+    unsafe fn process_packet(&mut self, mut packet: *mut AVPacket) -> Result<Vec<EgressResult>> { unsafe {
         let config = if let Some(config) = &self.config {
             config.clone()
         } else {
@@ -454,7 +453,7 @@ impl PipelineRunner {
 
         av_packet_free(&mut packet);
         Ok(egress_results)
-    }
+    }}
 
     /// process the frame in the pipeline
     unsafe fn process_frame(
@@ -462,7 +461,7 @@ impl PipelineRunner {
         config: &PipelineConfig,
         stream_index: usize,
         frame: *mut AVFrame,
-    ) -> Result<Vec<EgressResult>> {
+    ) -> Result<Vec<EgressResult>> { unsafe {
         // Copy frame from GPU if using hwaccel decoding
         let mut frame = get_frame_from_hw(frame)?;
 
@@ -543,14 +542,14 @@ impl PipelineRunner {
 
         av_frame_free(&mut frame);
         Ok(egress_results)
-    }
+    }}
 
     unsafe fn encode_mux_frame(
         egress: &mut Vec<Box<dyn Egress>>,
         var: &VariantStream,
         encoder: &mut Encoder,
         frame: *mut AVFrame,
-    ) -> Result<Vec<EgressResult>> {
+    ) -> Result<Vec<EgressResult>> { unsafe {
         // before encoding frame, rescale timestamps
         if !frame.is_null() {
             let enc_ctx = encoder.codec_context();
@@ -570,13 +569,13 @@ impl PipelineRunner {
             av_packet_free(&mut pkt);
         }
         Ok(ret)
-    }
+    }}
 
     unsafe fn egress_packet(
         egress: &mut Vec<Box<dyn Egress>>,
         pkt: *mut AVPacket,
         variant: &Uuid,
-    ) -> Result<Vec<EgressResult>> {
+    ) -> Result<Vec<EgressResult>> { unsafe {
         let mut ret = vec![];
         for eg in egress.iter_mut() {
             // packet needs to be cloned because AVFormat output context always consumes the packet
@@ -595,10 +594,10 @@ impl PipelineRunner {
             av_packet_free(&mut pkt_clone);
         }
         Ok(ret)
-    }
+    }}
 
     /// EOF, cleanup
-    unsafe fn flush(&mut self) -> Result<()> {
+    unsafe fn flush(&mut self) -> Result<()> { unsafe {
         for (var, enc) in &mut self.encoders {
             for mut pkt in enc.encode_frame(ptr::null_mut())? {
                 for eg in self.egress.iter_mut() {
@@ -619,17 +618,15 @@ impl PipelineRunner {
         if self.config.is_some() {
             self.handle.block_on(async {
                 for result in reset_results {
-                    if let EgressResult::Segments { created, deleted } = result {
-                        if !deleted.is_empty() {
-                            if let Err(e) = self
+                    if let EgressResult::Segments { created, deleted } = result
+                        && !deleted.is_empty()
+                            && let Err(e) = self
                                 .overseer
                                 .on_segments(&self.connection.id, &created, &deleted)
                                 .await
                             {
                                 error!("Failed to notify overseer of deleted segments: {e}");
                             }
-                        }
-                    }
                 }
                 if let Err(e) = self.overseer.on_end(&self.connection.id).await {
                     error!("Failed to end stream: {e}");
@@ -638,7 +635,7 @@ impl PipelineRunner {
         }
 
         Ok(())
-    }
+    }}
 
     pub fn run(&mut self) {
         loop {
@@ -669,7 +666,7 @@ impl PipelineRunner {
                         return Ok(Some(true));
                     }
                     PipelineCommand::IngressMetrics(s) => {
-                        let id = self.connection.id.clone();
+                        let id = self.connection.id;
                         let overseer = self.overseer.clone();
                         self.handle.spawn(async move {
                             if let Err(e) = overseer.on_stats(&id, StatsType::Ingress(s)).await {
@@ -678,7 +675,7 @@ impl PipelineRunner {
                         });
                     }
                     PipelineCommand::EgressMetrics(s) => {
-                        let id = self.connection.id.clone();
+                        let id = self.connection.id;
                         let overseer = self.overseer.clone();
                         self.handle.spawn(async move {
                             if let Err(e) = overseer.on_stats(&id, StatsType::Egress(s)).await {
@@ -692,7 +689,7 @@ impl PipelineRunner {
         Ok(None)
     }
 
-    unsafe fn once(&mut self) -> Result<bool> {
+    unsafe fn once(&mut self) -> Result<bool> { unsafe {
         if let Some(r) = self.handle_command()? {
             return Ok(r);
         }
@@ -715,15 +712,14 @@ impl PipelineRunner {
         if !results.is_empty() {
             self.handle.block_on(async {
                 for er in results {
-                    if let EgressResult::Segments { created, deleted } = er {
-                        if let Err(e) = self
+                    if let EgressResult::Segments { created, deleted } = er
+                        && let Err(e) = self
                             .overseer
                             .on_segments(&self.connection.id, &created, &deleted)
                             .await
                         {
                             bail!("Failed to process segment {}", e.to_string());
                         }
-                    }
                 }
                 Ok(())
             })?;
@@ -743,7 +739,7 @@ impl PipelineRunner {
                 total_frames: self.frame_ctr,
                 is_running: matches!(self.state, RunnerState::Normal),
             };
-            let id = self.connection.id.clone();
+            let id = self.connection.id;
             self.handle.spawn(async move {
                 if let Err(e) = overseer.on_stats(&id, StatsType::Pipeline(metrics)).await {
                     warn!("Pipeline stats error: {e}");
@@ -751,7 +747,7 @@ impl PipelineRunner {
             });
         }
         Ok(true)
-    }
+    }}
 
     fn setup(&mut self) -> Result<()> {
         if self.config.is_some() {

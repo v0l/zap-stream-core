@@ -14,6 +14,7 @@ egress-rtmp = ["dep:rml_rtmp", "dep:xflv", "dep:bytes"]
 [dependencies]
 ffmpeg-rs-raw.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 log.workspace = true

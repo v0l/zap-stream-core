@@ -37,20 +37,20 @@ impl Egress for HlsEgress {
         &mut self,
         packet: *mut AVPacket,
         variant: &Uuid,
-    ) -> Result<EgressResult> {
+    ) -> Result<EgressResult> { unsafe {
         self.mux.mux_packet(packet, variant)
-    }
+    }}
 
-    unsafe fn reset(&mut self) -> Result<EgressResult> {
+    unsafe fn reset(&mut self) -> Result<EgressResult> { unsafe {
         let remaining_segments = self.mux.collect_remaining_segments();
-        
+
         for var in &mut self.mux.variants {
             var.reset()?
         }
-        
+
         Ok(EgressResult::Segments {
             created: vec![],
             deleted: remaining_segments,
         })
-    }
+    }}
 }

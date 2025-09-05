@@ -654,14 +654,13 @@ impl Api {
     async fn update_account(&self, pubkey: &PublicKey, account: PatchAccount) -> Result<()> {
         let uid = self.db.upsert_user(&pubkey.to_bytes()).await?;
 
-        if let Some(accept_tos) = account.accept_tos {
-            if accept_tos {
+        if let Some(accept_tos) = account.accept_tos
+            && accept_tos {
                 let user = self.db.get_user(uid).await?;
                 if user.tos_accepted.is_none() {
                     self.db.accept_tos(uid).await?;
                 }
             }
-        }
 
         Ok(())
     }
@@ -1012,8 +1011,8 @@ impl Api {
         }
 
         // Publish Nostr deletion request event if the stream has an associated event
-        if let Some(event_json) = &stream.event {
-            if let Ok(stream_event) = serde_json::from_str::<nostr_sdk::Event>(event_json) {
+        if let Some(event_json) = &stream.event
+            && let Ok(stream_event) = serde_json::from_str::<nostr_sdk::Event>(event_json) {
                 let deletion_event = nostr_sdk::EventBuilder::delete(
                     EventDeletionRequest::new()
                         .id(stream_event.id)
@@ -1029,7 +1028,6 @@ impl Api {
                     info!("Published deletion request event for stream {}", stream_id);
                 }
             }
-        }
 
         // Log admin action if this is an admin deleting someone else's stream
         if is_admin && stream.user_id != uid {
@@ -1166,8 +1164,8 @@ impl Api {
                 .await?;
         }
 
-        if let Some(credit_amount) = req.add_credit {
-            if credit_amount > 0 {
+        if let Some(credit_amount) = req.add_credit
+            && credit_amount > 0 {
                 self.db
                     .add_admin_credit(uid, credit_amount, req.memo.as_deref())
                     .await?;
@@ -1190,7 +1188,6 @@ impl Api {
                     )
                     .await?;
             }
-        }
 
         // Update user default stream details if any are provided
         if req.title.is_some()
@@ -1348,7 +1345,7 @@ impl Api {
                 action: log.action,
                 target_type: log.target_type,
                 target_id: log.target_id,
-                target_pubkey: log.target_pubkey.map(|pubkey| hex::encode(pubkey)),
+                target_pubkey: log.target_pubkey.map(hex::encode),
                 message: log.message,
                 metadata: log
                     .metadata

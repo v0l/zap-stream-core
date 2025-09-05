@@ -58,11 +58,11 @@ impl ZapStreamDb {
 
     /// Get user by id
     pub async fn get_user(&self, uid: u64) -> Result<User> {
-        Ok(sqlx::query_as("select * from user where id = ?")
+        sqlx::query_as("select * from user where id = ?")
             .bind(uid)
             .fetch_one(&self.db)
             .await
-            .map_err(anyhow::Error::new)?)
+            .map_err(anyhow::Error::new)
     }
 
     /// Update a users balance
@@ -103,9 +103,9 @@ impl ZapStreamDb {
     pub async fn insert_stream(&self, user_stream: &UserStream) -> Result<()> {
         sqlx::query("insert into user_stream (id, user_id, state, starts) values (?, ?, ?, ?)")
             .bind(&user_stream.id)
-            .bind(&user_stream.user_id)
+            .bind(user_stream.user_id)
             .bind(&user_stream.state)
-            .bind(&user_stream.starts)
+            .bind(user_stream.starts)
             .execute(&self.db)
             .await?;
 
@@ -117,8 +117,8 @@ impl ZapStreamDb {
             "update user_stream set state = ?, starts = ?, ends = ?, title = ?, summary = ?, image = ?, thumb = ?, tags = ?, content_warning = ?, goal = ?, pinned = ?, fee = ?, event = ?, endpoint_id = ?, node_name = ? where id = ?",
         )
             .bind(&user_stream.state)
-            .bind(&user_stream.starts)
-            .bind(&user_stream.ends)
+            .bind(user_stream.starts)
+            .bind(user_stream.ends)
             .bind(&user_stream.title)
             .bind(&user_stream.summary)
             .bind(&user_stream.image)
@@ -127,9 +127,9 @@ impl ZapStreamDb {
             .bind(&user_stream.content_warning)
             .bind(&user_stream.goal)
             .bind(&user_stream.pinned)
-            .bind(&user_stream.fee)
+            .bind(user_stream.fee)
             .bind(&user_stream.event)
-            .bind(&user_stream.endpoint_id)
+            .bind(user_stream.endpoint_id)
             .bind(&user_stream.node_name)
             .bind(&user_stream.id)
             .execute(&self.db)
@@ -139,11 +139,11 @@ impl ZapStreamDb {
     }
 
     pub async fn get_stream(&self, id: &Uuid) -> Result<UserStream> {
-        Ok(sqlx::query_as("select * from user_stream where id = ?")
+        sqlx::query_as("select * from user_stream where id = ?")
             .bind(id.to_string())
             .fetch_one(&self.db)
             .await
-            .map_err(anyhow::Error::new)?)
+            .map_err(anyhow::Error::new)
     }
 
     /// Get the list of active streams
@@ -174,20 +174,20 @@ impl ZapStreamDb {
         let mut tx = self.db.begin().await?;
 
         sqlx::query("update user_stream set duration = duration + ?, cost = cost + ? where id = ?")
-            .bind(&duration)
-            .bind(&cost)
+            .bind(duration)
+            .bind(cost)
             .bind(stream_id.to_string())
             .execute(&mut *tx)
             .await?;
 
         sqlx::query("update user set balance = balance - ? where id = ?")
-            .bind(&cost)
-            .bind(&user_id)
+            .bind(cost)
+            .bind(user_id)
             .execute(&mut *tx)
             .await?;
 
         let balance: i64 = sqlx::query("select balance from user where id = ?")
-            .bind(&user_id)
+            .bind(user_id)
             .fetch_one(&mut *tx)
             .await?
             .try_get(0)?;

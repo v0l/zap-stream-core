@@ -1,6 +1,6 @@
-use crate::mux::hls::variant::HlsVariant;
-use crate::mux::SegmentType;
 use crate::egress::EgressSegment;
+use crate::mux::SegmentType;
+use crate::mux::hls::variant::HlsVariant;
 use m3u8_rs::{ByteRange, MediaSegment, MediaSegmentType, Part};
 use std::path::PathBuf;
 use uuid::Uuid;

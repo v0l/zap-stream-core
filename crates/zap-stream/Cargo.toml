@@ -21,6 +21,7 @@ ffmpeg-rs-raw.workspace = true
 anyhow.workspace = true
 log.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 chrono.workspace = true
@@ -30,12 +31,12 @@ m3u8-rs.workspace = true
 data-encoding.workspace = true
 sha2.workspace = true
 nostr-sdk.workspace = true
+ctrlc.workspace = true
 
 # http stuff
 hyper = { version = "1.5.1", features = ["server", "http1", "http2"] }
 bytes = "1.8.0"
 http-body-util = "0.1.2"
-tokio-util = "0.7.13"
 hyper-util = "0.1.10"
 
 # websocket stuff
@@ -52,8 +53,9 @@ matchit = "0.8.4"
 mustache = "0.9.0"
 http-range-header = "0.4.2"
 sysinfo = "0.36.1"
-hostname = "0.4.0"
 lnurl-rs = { version = "0.9.0", optional = true, default-features = false }
+redis = { version = "0.32.5", features = ["cluster", "tokio-comp", "tokio-native-tls-comp"] }
+rslock = "0.7.3"
 
 # Migration dependencies
 tiberius = "0.12.3"

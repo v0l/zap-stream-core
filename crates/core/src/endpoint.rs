@@ -1,8 +1,8 @@
 use crate::overseer::{IngressInfo, IngressStream, IngressStreamType};
+use crate::variant::VariantStream;
 use crate::variant::audio::AudioVariant;
 use crate::variant::mapping::VariantMapping;
 use crate::variant::video::VideoVariant;
-use crate::variant::VariantStream;
 use anyhow::Result;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{av_get_sample_fmt_name, avcodec_get_name};
@@ -156,8 +156,11 @@ pub fn get_variants_from_endpoint<'a>(
                     }
 
                     // Skip variant if source resolution matches and source variant is enabled
-                    if video_src.height == output_height as _ && 
-                       capabilities.iter().any(|cap| matches!(cap, EndpointCapability::SourceVariant)) {
+                    if video_src.height == output_height as _
+                        && capabilities
+                            .iter()
+                            .any(|cap| matches!(cap, EndpointCapability::SourceVariant))
+                    {
                         info!(
                             "Skipping variant {}p, source resolution matches and source variant is enabled",
                             height

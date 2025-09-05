@@ -1,13 +1,16 @@
+use crate::metrics::PacketMetrics;
 use crate::overseer::Overseer;
 use crate::pipeline::runner::{PipelineCommand, PipelineRunner};
-use crate::metrics::PacketMetrics;
-use log::{debug, error, info, warn};
+use anyhow::Result;
+use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::sync::Arc;
+use std::thread::JoinHandle;
 use std::time::Instant;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 pub mod file;
@@ -46,32 +49,36 @@ pub fn spawn_pipeline(
     reader: Box<dyn Read + Send>,
     url: Option<String>,
     rx: Option<UnboundedReceiver<PipelineCommand>>,
-) {
-    match PipelineRunner::new(handle, out_dir, seer, info, reader, url, rx) {
-        Ok(pl) => match run_pipeline(pl) {
-            Ok(_) => {}
-            Err(e) => {
-                error!("Failed to run PipelineRunner: {}", e);
-            }
-        },
-        Err(e) => {
-            error!("Failed to create PipelineRunner: {}", e);
-        }
-    }
+) -> Result<JoinHandle<()>> {
+    let pl = PipelineRunner::new(handle, out_dir, seer, info, reader, url, rx)?;
+    run_pipeline(pl)
 }
 
-pub fn run_pipeline(mut pl: PipelineRunner) -> anyhow::Result<()> {
+pub fn run_pipeline(mut pl: PipelineRunner) -> Result<JoinHandle<()>> {
     info!("New client connected: {}", &pl.connection.ip_addr);
 
-    std::thread::Builder::new()
+    Ok(std::thread::Builder::new()
         .name(format!(
             "client:{}:{}",
             pl.connection.endpoint, pl.connection.id
         ))
         .spawn(move || {
             pl.run();
-        })?;
-    Ok(())
+            info!("Pipeline {} completed.", pl.connection.id);
+        })?)
+}
+
+pub(crate) fn setup_term_handler(
+    shutdown: CancellationToken,
+    tx: UnboundedSender<PipelineCommand>,
+) {
+    // handle termination
+    tokio::spawn(async move {
+        shutdown.cancelled().await;
+        if let Err(e) = tx.send(PipelineCommand::Shutdown) {
+            warn!("Failed to send shutdown signal: {}", e);
+        }
+    });
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

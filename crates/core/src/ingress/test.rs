@@ -1,12 +1,12 @@
 use crate::generator::FrameGenerator;
-use crate::ingress::{spawn_pipeline, ConnectionInfo, EndpointStats};
+use crate::ingress::{ConnectionInfo, EndpointStats, setup_term_handler, spawn_pipeline};
 use crate::overseer::Overseer;
 use crate::pipeline::runner::PipelineCommand;
 use anyhow::Result;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVSampleFormat::AV_SAMPLE_FMT_FLTP;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    av_frame_free, av_packet_free, AVRational, AV_PROFILE_H264_MAIN,
+    AV_PROFILE_H264_MAIN, AVRational, av_frame_free, av_packet_free,
 };
 use ffmpeg_rs_raw::{Encoder, Muxer};
 use log::{info, warn};
@@ -17,11 +17,16 @@ use std::sync::Arc;
 use std::time::Duration;
 use tiny_skia::Pixmap;
 use tokio::runtime::Handle;
-use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
+use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-pub async fn listen(out_dir: String, overseer: Arc<dyn Overseer>) -> Result<()> {
+pub async fn listen(
+    out_dir: String,
+    overseer: Arc<dyn Overseer>,
+    shutdown: CancellationToken,
+) -> Result<()> {
     info!("Test pattern enabled");
 
     let info = ConnectionInfo {
@@ -32,8 +37,9 @@ pub async fn listen(out_dir: String, overseer: Arc<dyn Overseer>) -> Result<()> 
         key: "test".to_string(),
     };
     let (tx, rx) = unbounded_channel();
+    setup_term_handler(shutdown.clone(), tx.clone());
     let src = TestPatternSrc::new(tx)?;
-    spawn_pipeline(
+    let h = spawn_pipeline(
         Handle::current(),
         info,
         out_dir,
@@ -41,9 +47,19 @@ pub async fn listen(out_dir: String, overseer: Arc<dyn Overseer>) -> Result<()> 
         Box::new(src),
         None,
         Some(rx),
-    );
+    )?;
 
-    tokio::time::sleep(Duration::MAX).await;
+    let mut timer = tokio::time::interval(Duration::from_secs(1));
+    loop {
+        tokio::select! {
+            _ = shutdown.cancelled() => break,
+            _ = timer.tick() => {
+                if h.is_finished() {
+                    break;
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -144,11 +160,15 @@ impl TestPatternSrc {
         })
     }
 
-    pub unsafe fn next_pkt(&mut self) -> Result<()> {
+    pub unsafe fn next_pkt(&mut self) -> Result<()> { unsafe {
         self.frame_gen.begin()?;
         self.frame_gen.copy_frame_data(self.background.data())?;
-        self.frame_gen
-            .write_text(&format!("frame={}", self.frame_gen.frame_no()), 40.0, 5.0, 5.0)?;
+        self.frame_gen.write_text(
+            &format!("frame={}", self.frame_gen.frame_no()),
+            40.0,
+            5.0,
+            5.0,
+        )?;
 
         let mut frame = self.frame_gen.next()?;
         if frame.is_null() {
@@ -184,7 +204,7 @@ impl TestPatternSrc {
             self.last_metrics = Instant::now();
         }
         Ok(())
-    }
+    }}
 }
 
 impl Read for TestPatternSrc {

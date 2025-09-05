@@ -235,19 +235,16 @@ where
 
     fn get_client_ip(req: &Request<Incoming>) -> String {
         // Check common headers for real client IP
-        if let Some(forwarded) = req.headers().get("x-forwarded-for") {
-            if let Ok(forwarded_str) = forwarded.to_str() {
-                if let Some(first_ip) = forwarded_str.split(',').next() {
+        if let Some(forwarded) = req.headers().get("x-forwarded-for")
+            && let Ok(forwarded_str) = forwarded.to_str()
+                && let Some(first_ip) = forwarded_str.split(',').next() {
                     return first_ip.trim().to_string();
                 }
-            }
-        }
 
-        if let Some(real_ip) = req.headers().get("x-real-ip") {
-            if let Ok(ip_str) = real_ip.to_str() {
+        if let Some(real_ip) = req.headers().get("x-real-ip")
+            && let Ok(ip_str) = real_ip.to_str() {
                 return ip_str.to_string();
             }
-        }
 
         // use random string as IP to avoid broken view tracker due to proxying
         Uuid::new_v4().to_string()

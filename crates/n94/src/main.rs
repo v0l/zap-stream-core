@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 use zap_stream_core::egress::EgressSegment;
-use zap_stream_core::endpoint::EndpointConfig;
 use zap_stream_core::endpoint::{
     EndpointCapability, get_variants_from_endpoint, parse_capabilities,
 };
@@ -110,12 +110,11 @@ async fn main() -> anyhow::Result<()> {
     let caps = args
         .capability
         .iter()
-        .map(|c| parse_capabilities(&Some(c.clone())))
-        .flatten()
+        .flat_map(|c| parse_capabilities(&Some(c.clone())))
         .collect();
 
     // load blossom server list if none specified
-    if args.blossom.len() == 0 {
+    if args.blossom.is_empty() {
         info!("Loading blossom server list...");
         let pubkey = client.signer().await?.get_public_key().await?;
         let server_list = client
@@ -136,7 +135,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    if args.blossom.len() == 0 {
+    if args.blossom.is_empty() {
         error!("No blossom servers found, please specify blossom servers manually!");
         return Ok(());
     }
@@ -175,10 +174,20 @@ async fn main() -> anyhow::Result<()> {
         args.n94_bridge,
     ));
 
+    // setup termination handler
+    let shutdown = CancellationToken::new();
+
+    let shutdown_sig = shutdown.clone();
+    ctrlc::set_handler(move || {
+        info!("Shutdown requested!");
+        shutdown_sig.cancel();
+    })
+    .expect("Error setting Ctrl-C handler");
+
     // Create ingress listeners
     let mut tasks = vec![];
     for e in args.listen {
-        match try_create_listener(&e, &data_dir, &overseer) {
+        match try_create_listener(&e, &data_dir, &overseer, shutdown.clone()) {
             Ok(l) => tasks.push(l),
             Err(e) => error!("{}", e),
         }
@@ -307,11 +316,7 @@ impl Overseer for N94Overseer {
                         VariantStream::Video(v) | VariantStream::CopyVideo(v) => Some(v),
                         _ => None,
                     });
-                    let video = if let Some(v) = video {
-                        v
-                    } else {
-                        return None;
-                    };
+                    let video = video?;
                     Some(N94Variant {
                         id: video.id().to_string(),
                         width: video.width as _,
@@ -340,7 +345,7 @@ impl Overseer for N94Overseer {
             ingress_info: stream_info.clone(),
             video_src: cfg.video_src.unwrap().index,
             audio_src: cfg.audio_src.map(|s| s.index),
-            replace_connection_id: None
+            replace_connection_id: None,
         })
     }
 
@@ -351,10 +356,10 @@ impl Overseer for N94Overseer {
         deleted: &Vec<EgressSegment>,
     ) -> Result<()> {
         self.publisher
-            .on_new_segment(added.iter().map(|s| into_n94_segment(s)).collect())
+            .on_new_segment(added.iter().map(into_n94_segment).collect())
             .await?;
         self.publisher
-            .on_deleted_segment(deleted.iter().map(|s| into_n94_segment(s)).collect())
+            .on_deleted_segment(deleted.iter().map(into_n94_segment).collect())
             .await?;
         Ok(())
     }
@@ -375,7 +380,7 @@ impl Overseer for N94Overseer {
             let mut info = self.stream_info.write().await;
             info.ends = Some(Utc::now().timestamp() as _);
             info.status = "ended".to_string();
-            self.publish_nip53_bridge_event(&*info, bridge_url).await?;
+            self.publish_nip53_bridge_event(&info, bridge_url).await?;
         }
         self.publisher.on_end().await?;
         Ok(())
@@ -399,6 +404,6 @@ fn into_n94_segment(seg: &EgressSegment) -> N94Segment {
         idx: seg.idx,
         duration: seg.duration,
         path: seg.path.clone(),
-        sha256: seg.sha256.clone(),
+        sha256: seg.sha256,
     }
 }

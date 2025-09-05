@@ -21,7 +21,11 @@ pub struct VariantMapping {
 
 impl Display for VariantMapping {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Copy #{}->{} ({})", self.src_index, self.dst_index, self.id)
+        write!(
+            f,
+            "Copy #{}->{} ({})",
+            self.src_index, self.dst_index, self.id
+        )
     }
 }
 

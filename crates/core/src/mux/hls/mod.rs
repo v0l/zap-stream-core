@@ -7,7 +7,7 @@ use itertools::Itertools;
 use log::{trace, warn};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
-use std::fs::{remove_dir_all, File};
+use std::fs::{File, remove_dir_all};
 use std::ops::Sub;
 use std::path::PathBuf;
 use tokio::time::Instant;
@@ -136,7 +136,7 @@ impl HlsMuxer {
         &mut self,
         pkt: *mut AVPacket,
         variant: &Uuid,
-    ) -> Result<EgressResult> {
+    ) -> Result<EgressResult> { unsafe {
         if Instant::now().sub(self.last_master_write).as_secs_f32() > Self::MASTER_WRITE_INTERVAL {
             self.write_master_playlist()?;
         }
@@ -155,18 +155,17 @@ impl HlsMuxer {
             variant
         );
         Ok(EgressResult::None)
-    }
+    }}
 
     /// Collect all remaining segments that will be deleted during cleanup
     pub fn collect_remaining_segments(&self) -> Vec<crate::egress::EgressSegment> {
         let mut remaining_segments = Vec::new();
 
         for variant in &self.variants {
-            let video_var_id = variant
+            let video_var_id = *variant
                 .video_stream()
                 .unwrap_or(variant.streams.first().unwrap())
-                .id()
-                .clone();
+                .id();
 
             for segment in &variant.segments {
                 if let Some(egress_segment) = segment.to_egress_segment(

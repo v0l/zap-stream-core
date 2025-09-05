@@ -1,4 +1,4 @@
-use crate::ingress::{BufferedReader, ConnectionInfo};
+use crate::ingress::{BufferedReader, ConnectionInfo, setup_term_handler};
 use crate::overseer::Overseer;
 use crate::pipeline::runner::{PipelineCommand, PipelineRunner};
 use anyhow::{Result, anyhow, bail};
@@ -17,6 +17,7 @@ use tokio::net::TcpListener;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use xflv::errors::FlvMuxerError;
 use xflv::muxer::FlvMuxer;
@@ -71,7 +72,7 @@ impl RtmpClient {
                 if !handshake_complete {
                     match hs.process_bytes(&data)? {
                         HandshakeProcessResult::InProgress { response_bytes } => {
-                            if response_bytes.len() > 0 {
+                            if !response_bytes.is_empty() {
                                 self.socket.write_all(&response_bytes)?;
                             }
                         }
@@ -79,10 +80,10 @@ impl RtmpClient {
                             response_bytes,
                             remaining_bytes,
                         } => {
-                            if response_bytes.len() > 0 {
+                            if !response_bytes.is_empty() {
                                 self.socket.write_all(&response_bytes)?;
                             }
-                            if remaining_bytes.len() > 0 {
+                            if !remaining_bytes.is_empty() {
                                 self.process_bytes(&remaining_bytes)?;
                             }
                             handshake_complete = true;
@@ -254,7 +255,7 @@ impl Read for RtmpClient {
         // Block until we have enough data to fill the buffer
         while self.buffer.buf.len() < buf.len() {
             match self.read_data() {
-                Ok(Some(data)) if data.len() == 0 => {
+                Ok(Some(data)) if data.is_empty() => {
                     let r = self.buffer.read_buffered(buf);
                     if r == 0 {
                         return Err(std::io::Error::other(anyhow!("EOF")));
@@ -279,49 +280,65 @@ impl Read for RtmpClient {
     }
 }
 
-pub async fn listen(out_dir: String, addr: String, overseer: Arc<dyn Overseer>) -> Result<()> {
+pub async fn listen(
+    out_dir: String,
+    addr: String,
+    overseer: Arc<dyn Overseer>,
+    shutdown: CancellationToken,
+) -> Result<()> {
     let listener = TcpListener::bind(&addr).await?;
 
     info!("RTMP listening on: {}", &addr);
-    while let Ok((socket, ip)) = listener.accept().await {
-        let overseer = overseer.clone();
-        let out_dir = out_dir.clone();
-        let handle = Handle::current();
-        let new_id = Uuid::new_v4();
-        std::thread::Builder::new()
-            .name(format!("client:rtmp:{}", new_id))
-            .spawn(move || {
-                let (tx, rx) = unbounded_channel();
-                let mut cc = RtmpClient::new(socket.into_std()?, tx)?;
-                if let Err(e) = cc.read_until_publish_request(Duration::from_secs(10)) {
-                    bail!("Error waiting for publish request: {}", e)
-                }
+    loop {
+        tokio::select! {
+            _ = shutdown.cancelled() => {
+                break;
+            }
+            Ok((socket, ip)) = listener.accept() => {
+                let overseer = overseer.clone();
+                let out_dir = out_dir.clone();
+                let handle = Handle::current();
+                let new_id = Uuid::new_v4();
+                let shutdown = shutdown.clone();
+                std::thread::Builder::new()
+                    .name(format!("client:rtmp:{}", new_id))
+                    .spawn(move || {
+                        let (tx, rx) = unbounded_channel();
+                        setup_term_handler(shutdown, tx.clone());
+                        let mut cc = RtmpClient::new(socket.into_std()?, tx)?;
+                        if let Err(e) = cc.read_until_publish_request(Duration::from_secs(10)) {
+                            bail!("Error waiting for publish request: {}", e)
+                        }
 
-                let pr = cc.published_stream.as_ref().unwrap();
-                let info = ConnectionInfo {
-                    id: new_id,
-                    ip_addr: ip.to_string(),
-                    endpoint: "rtmp",
-                    app_name: pr.0.trim().to_string(),
-                    key: pr.1.trim().to_string(),
-                };
-                let mut pl = match PipelineRunner::new(
-                    handle,
-                    out_dir,
-                    overseer,
-                    info,
-                    Box::new(cc),
-                    None,
-                    Some(rx),
-                ) {
-                    Ok(pl) => pl,
-                    Err(e) => {
-                        bail!("Failed to create PipelineRunner {}", e)
-                    }
-                };
-                pl.run();
-                Ok(())
-            })?;
+                        let pr = cc.published_stream.as_ref().unwrap();
+                        let info = ConnectionInfo {
+                            id: new_id,
+                            ip_addr: ip.to_string(),
+                            endpoint: "rtmp",
+                            app_name: pr.0.trim().to_string(),
+                            key: pr.1.trim().to_string(),
+                        };
+                        let mut pl = match PipelineRunner::new(
+                            handle,
+                            out_dir,
+                            overseer,
+                            info,
+                            Box::new(cc),
+                            None,
+                            Some(rx),
+                        ) {
+                            Ok(pl) => pl,
+                            Err(e) => {
+                                bail!("Failed to create PipelineRunner {}", e)
+                            }
+                        };
+                        pl.run();
+                        Ok(())
+                    })?;
+            }
+        }
     }
+
+    info!("RTMP listener stopped.");
     Ok(())
 }

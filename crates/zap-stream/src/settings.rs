@@ -24,6 +24,9 @@ pub struct Settings {
 
     /// Overseer service see [Overseer] for more info
     pub overseer: OverseerConfig,
+
+    /// Redis config for horizonal-scaling
+    pub redis: Option<RedisConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,4 +67,9 @@ pub struct LndSettings {
     pub address: String,
     pub cert: String,
     pub macaroon: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RedisConfig {
+    pub url: String,
 }

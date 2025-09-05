@@ -26,6 +26,10 @@ services:
     volumes:
       - "blossom:/app/data"
       - "./dev-setup/route96.yaml:/app/config.yaml"
+  redis:
+    image: redis
+    ports:
+      - "6399:6379"
 volumes:
   db:
   blossom:

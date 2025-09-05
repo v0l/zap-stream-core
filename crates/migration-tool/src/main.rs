@@ -394,20 +394,33 @@ impl MigrationTool {
         Ok(())
     }
 
-    async fn migrate_stream_keys(&mut self, pubkey_to_user_id: &HashMap<String, u64>) -> Result<()> {
+    async fn migrate_stream_keys(
+        &mut self,
+        pubkey_to_user_id: &HashMap<String, u64>,
+    ) -> Result<()> {
         println!("🔑 Fetching stream keys from legacy system...");
 
         let legacy_stream_keys = self.fetch_legacy_stream_keys().await?;
-        println!("📊 Found {} stream keys in legacy system", legacy_stream_keys.len());
+        println!(
+            "📊 Found {} stream keys in legacy system",
+            legacy_stream_keys.len()
+        );
 
         for (i, legacy_stream_key) in legacy_stream_keys.iter().enumerate() {
-            println!("🔐 Migrating stream key {}/{}", i + 1, legacy_stream_keys.len());
+            println!(
+                "🔐 Migrating stream key {}/{}",
+                i + 1,
+                legacy_stream_keys.len()
+            );
 
             if let Err(e) = self
                 .migrate_single_stream_key(legacy_stream_key, pubkey_to_user_id)
                 .await
             {
-                println!("❌ Failed to migrate stream key {}: {}", legacy_stream_key.id, e);
+                println!(
+                    "❌ Failed to migrate stream key {}: {}",
+                    legacy_stream_key.id, e
+                );
                 continue;
             }
         }
@@ -496,7 +509,7 @@ impl MigrationTool {
                 // Create stream key in current system
                 sqlx::query(
                     "INSERT INTO user_stream_key (user_id, `key`, created, expires, stream_id)
-                     VALUES (?, ?, ?, ?, ?)"
+                     VALUES (?, ?, ?, ?, ?)",
                 )
                 .bind(*user_id)
                 .bind(&legacy_stream_key.key)
@@ -506,7 +519,10 @@ impl MigrationTool {
                 .execute(&self.current_db)
                 .await?;
 
-                println!("  ✅ Stream key migrated for user: {}", legacy_stream_key.user_pubkey);
+                println!(
+                    "  ✅ Stream key migrated for user: {}",
+                    legacy_stream_key.user_pubkey
+                );
             } else {
                 println!("  ⚠️ Stream key already exists, skipping");
             }
@@ -722,7 +738,9 @@ async fn main() -> Result<()> {
         migration_tool.migrate_streams(&pubkey_to_user_id).await?;
 
         // Step 4: Migrate stream keys using the user mapping
-        migration_tool.migrate_stream_keys(&pubkey_to_user_id).await?;
+        migration_tool
+            .migrate_stream_keys(&pubkey_to_user_id)
+            .await?;
 
         // Step 5: Validate migration
         migration_tool

@@ -1,5 +1,5 @@
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::{av_get_sample_fmt, AV_CODEC_FLAG_GLOBAL_HEADER};
-use ffmpeg_rs_raw::{cstr, Encoder};
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::{AV_CODEC_FLAG_GLOBAL_HEADER, av_get_sample_fmt};
+use ffmpeg_rs_raw::{Encoder, cstr};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 use uuid::Uuid;

@@ -1,10 +1,10 @@
 use crate::egress::{Egress, EgressResult, EncoderOrSourceStream};
-use crate::variant::{StreamMapping, VariantStream};
 use crate::metrics::PacketMetrics;
-use anyhow::{anyhow, bail, Context, Result};
+use crate::variant::{StreamMapping, VariantStream};
+use anyhow::{Context, Result, anyhow, bail};
 use bytes::{BufMut, Bytes, BytesMut};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    av_packet_clone, av_packet_copy_props, av_q2d, AVPacket,
+    AVPacket, av_packet_clone, av_packet_copy_props, av_q2d,
 };
 use log::{error, info, trace, warn};
 use rml_rtmp::chunk_io::Packet;
@@ -19,7 +19,7 @@ use std::fmt::Display;
 use std::io::Write;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use url::Url;
 use uuid::Uuid;
 use xflv::errors::FlvMuxerError;
@@ -420,14 +420,14 @@ impl RtmpEgress {
             return Ok(());
         }
         let data = std::slice::from_raw_parts((*packet).data, (*packet).size as _);
-        
+
         // Update metrics with packet data (auto-reports when interval elapsed)
         self.metrics.update((*packet).size as usize);
 
         if *variant == self.video_variant.id() {
             // TODO: figure out why encoded video frames have no duration
             let duration_ms = (av_q2d((*packet).time_base) * 1000.0).round() as i64; // 1 frame
-                                                                                     // Create proper FLV video data format
+            // Create proper FLV video data format
             let mut video_data = BytesMut::new();
 
             // VideoTagHeader: FrameType (4 bits) + CodecID (4 bits)

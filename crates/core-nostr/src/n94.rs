@@ -116,10 +116,10 @@ impl N94Publisher {
     /// Publish stream event
     pub async fn publish_stream(&self, stream: &N94StreamInfo) -> Result<Event> {
         let mut tags = vec![];
-        
+
         // Add d tag with stream id
         tags.push(Tag::parse(["d", &stream.id])?);
-        
+
         if let Some(t) = &stream.title {
             tags.push(Tag::title(t));
         }
@@ -144,7 +144,7 @@ impl N94Publisher {
         }
         if !stream.relays.is_empty() {
             tags.push(Tag::relays(
-                stream.relays.iter().map(|s| RelayUrl::parse(&s).unwrap()),
+                stream.relays.iter().map(|s| RelayUrl::parse(s).unwrap()),
             ));
         }
         for var in &stream.variants {
@@ -173,7 +173,7 @@ impl N94Publisher {
         info!("Published N94 stream {}", ev.id.to_hex());
         {
             let mut stream_id = self.stream_id.lock().await;
-            stream_id.replace(ev.id.clone());
+            stream_id.replace(ev.id);
         }
         Ok(())
     }
@@ -249,7 +249,7 @@ impl N94Publisher {
     async fn upload_worker(self, mut rx: UnboundedReceiver<N94Segment>) {
         while let Some(seg) = rx.recv().await {
             let stream_event_id = if let Some(stream_id) = *self.stream_id.lock().await {
-                stream_id.clone()
+                stream_id
             } else {
                 warn!("Stream ID not set, skipping segment upload");
                 continue;
@@ -281,7 +281,7 @@ impl N94Publisher {
                     let server_url = b.url.to_string();
                     let seg_path = seg.path.clone();
                     let signer = signer.clone();
-                    let timeout = timeout.clone();
+                    let timeout = timeout;
 
                     async move {
                         let result = b

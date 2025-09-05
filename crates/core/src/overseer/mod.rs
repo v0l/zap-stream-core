@@ -1,8 +1,8 @@
 use crate::ingress::{ConnectionInfo, EndpointStats};
 
 use crate::egress::EgressSegment;
-use crate::pipeline::runner::PipelineStats;
 use crate::pipeline::PipelineConfig;
+use crate::pipeline::runner::PipelineStats;
 use anyhow::Result;
 use async_trait::async_trait;
 use std::cmp::PartialEq;

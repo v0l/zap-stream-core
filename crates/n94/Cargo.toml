@@ -12,9 +12,11 @@ uuid.workspace = true
 anyhow.workspace = true
 log.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 pretty_env_logger.workspace = true
 async-trait.workspace = true
 nostr-sdk.workspace = true
 chrono.workspace = true
+ctrlc.workspace = true
 
 clap = { version = "4.5.16", features = ["derive"] }

@@ -1,4 +1,4 @@
-use crate::ingress::{spawn_pipeline, ConnectionInfo};
+use crate::ingress::{ConnectionInfo, spawn_pipeline};
 use crate::overseer::Overseer;
 use anyhow::Result;
 use log::info;

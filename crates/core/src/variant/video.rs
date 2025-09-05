@@ -1,6 +1,6 @@
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVColorSpace::AVCOL_SPC_BT709;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::AV_CODEC_FLAG_GLOBAL_HEADER;
 use ffmpeg_rs_raw::Encoder;
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::AV_CODEC_FLAG_GLOBAL_HEADER;
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVColorSpace::AVCOL_SPC_BT709;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
@@ -103,7 +103,7 @@ impl VideoVariant {
                     (*ctx).keyint_min = self.keyframe_interval as _;
                     (*ctx).max_b_frames = 3;
                     (*ctx).colorspace = AVCOL_SPC_BT709;
-                    
+
                     // Set GLOBAL_HEADER flag for fMP4 HLS and recorder contexts
                     if need_global_header {
                         (*ctx).flags |= AV_CODEC_FLAG_GLOBAL_HEADER as i32;
