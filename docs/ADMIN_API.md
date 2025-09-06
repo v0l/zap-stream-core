@@ -903,6 +903,7 @@ WebSocket authentication uses NIP-98 (Nostr HTTP Auth) via JSON messages after c
 {
   "type": "StreamMetrics",
   "data": {
+    "node_name": "zsc-123",
     "stream_id": "stream_123",
     "started_at": "2024-01-01T12:00:00Z",
     "last_segment_time": "2024-01-01T13:00:00Z",

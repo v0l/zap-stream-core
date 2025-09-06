@@ -79,8 +79,8 @@ pub async fn authenticate_nip98(auth_request: AuthRequest, db: &ZapStreamDb) -> 
         .ok_or_else(|| anyhow::anyhow!("Missing URL tag"))?
         .parse()?;
 
-    if (!auth_request.ignore_host && url_tag != auth_request.expected_url)
-        || (auth_request.ignore_host && url_tag.path() == auth_request.expected_url.path())
+    if (!auth_request.ignore_host && url_tag.host_str() != auth_request.expected_url.host_str())
+        || (auth_request.ignore_host && url_tag.path() != auth_request.expected_url.path())
     {
         bail!(
             "Invalid nostr event, URL tag invalid. Expected: {}, Got: {}",
