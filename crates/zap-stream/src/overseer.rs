@@ -528,10 +528,11 @@ impl Overseer for ZapStreamOverseer {
             StreamKeyType::FixedEventKey { id, .. } => id,
         };
         let user = self.db.get_user(uid).await?;
+        let hex_pubkey = hex::encode(&user.pubkey);
         if user.balance < 0 {
             bail!(
                 "Not enough balance pubkey={}, balance={}",
-                hex::encode(user.pubkey),
+                hex_pubkey,
                 user.balance
             );
         }
@@ -624,6 +625,7 @@ impl Overseer for ZapStreamOverseer {
 
         self.stream_manager
             .add_active_stream(
+                &hex_pubkey,
                 &new_stream.id,
                 cfg.video_src.map(|s| s.fps).unwrap(),
                 &endpoint.name,
