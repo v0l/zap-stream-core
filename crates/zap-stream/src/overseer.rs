@@ -252,7 +252,10 @@ impl ZapStreamOverseer {
                     }
                     _ = timer.tick() => if let (Some(lm), Some(lock)) = (&lm, &locked) {
                         info!("Extending redlock..");
-                        lm.extend(lock, lock_ttl).await?;
+                        if let Err(e) = lm.extend(lock, lock_ttl).await {
+                            error!("Error while extending redlock: {}", e);
+                            break;
+                        }
                     },
                     Ok(msg) = stream.message() => {
                         info!("Received message: {:?}", msg);
