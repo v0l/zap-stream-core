@@ -120,8 +120,10 @@ impl StreamManager {
                         }
                     }
                     Ok(msg) = sub_to_send.recv() => {
-                        let payload = serde_json::to_string(&msg)?;
-                        let _: usize = AsyncCommands::publish(&mut pub_conn, STATS_CHANNEL, payload.as_bytes()).await?;
+                        if msg.node_name == node_name {
+                            let payload = serde_json::to_string(&msg)?;
+                            let _: usize = AsyncCommands::publish(&mut pub_conn, STATS_CHANNEL, payload.as_bytes()).await?;
+                        }
                     }
                 }
             }
