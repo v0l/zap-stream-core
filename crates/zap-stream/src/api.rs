@@ -192,19 +192,19 @@ impl Api {
 
             match (&method, route) {
                 (&Method::GET, Route::Account) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
+                    let auth = check_nip98_auth(&req, &self.settings, &self.db).await?;
                     let rsp = self.get_account(&auth.pubkey).await?;
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::PATCH, Route::Account) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
+                    let auth = check_nip98_auth(&req, &self.settings, &self.db).await?;
                     let body = req.collect().await?.to_bytes();
                     let r_body: PatchAccount = serde_json::from_slice(&body)?;
                     self.update_account(&auth.pubkey, r_body).await?;
                     Ok(base.body(Self::body_json(&())?)?)
                 }
                 (&Method::PATCH, Route::Event) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
+                    let auth = check_nip98_auth(&req, &self.settings, &self.db).await?;
                     let body = req.collect().await?.to_bytes();
                     let patch_event: PatchEvent = serde_json::from_slice(&body)?;
                     self.update_event(&auth.pubkey, patch_event).await?;
@@ -212,7 +212,7 @@ impl Api {
                 }
                 #[cfg(feature = "zap-stream")]
                 (&Method::GET, Route::Topup) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
+                    let auth = check_nip98_auth(&req, &self.settings, &self.db).await?;
                     let full_url = format!(
                         "{}{}",
                         self.settings.public_url.trim_end_matches('/'),
@@ -229,7 +229,7 @@ impl Api {
                 }
                 #[cfg(feature = "zap-stream")]
                 (&Method::POST, Route::Withdraw) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
+                    let auth = check_nip98_auth(&req, &self.settings, &self.db).await?;
                     let full_url = format!(
                         "{}{}",
                         self.settings.public_url.trim_end_matches('/'),
@@ -327,14 +327,14 @@ impl Api {
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::POST, Route::Forward) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
+                    let auth = check_nip98_auth(&req, &self.settings, &self.db).await?;
                     let body = req.collect().await?.to_bytes();
                     let forward_req: ForwardRequest = serde_json::from_slice(&body)?;
                     let rsp = self.create_forward(&auth.pubkey, forward_req).await?;
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::DELETE, Route::ForwardId) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
+                    let auth = check_nip98_auth(&req, &self.settings, &self.db).await?;
                     let forward_id = params
                         .get("id")
                         .ok_or_else(|| anyhow!("Missing forward ID"))?;
@@ -342,17 +342,17 @@ impl Api {
                     Ok(base.body(Self::body_json(&())?)?)
                 }
                 (&Method::GET, Route::History) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
+                    let auth = check_nip98_auth(&req, &self.settings, &self.db).await?;
                     let rsp = self.get_account_history(&auth.pubkey).await?;
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::GET, Route::Keys) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
+                    let auth = check_nip98_auth(&req, &self.settings, &self.db).await?;
                     let rsp = self.get_account_keys(&auth.pubkey).await?;
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::POST, Route::Keys) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
+                    let auth = check_nip98_auth(&req, &self.settings, &self.db).await?;
                     let body = req.collect().await?.to_bytes();
                     let create_req: CreateStreamKeyRequest = serde_json::from_slice(&body)?;
                     let rsp = self.create_stream_key(&auth.pubkey, create_req).await?;
@@ -364,7 +364,7 @@ impl Api {
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::GET, Route::AdminUsers) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
+                    let auth = check_nip98_auth(&req, &self.settings, &self.db).await?;
                     let _admin_uid = self.check_admin_access(&auth.pubkey).await?;
                     let full_url = format!(
                         "{}{}",
@@ -393,7 +393,7 @@ impl Api {
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::POST, Route::AdminUsersId) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
+                    let auth = check_nip98_auth(&req, &self.settings, &self.db).await?;
                     let admin_uid = self.check_admin_access(&auth.pubkey).await?;
                     let user_id = params.get("id").ok_or_else(|| anyhow!("Missing user ID"))?;
                     let body = req.collect().await?.to_bytes();
@@ -403,7 +403,7 @@ impl Api {
                     Ok(base.body(Self::body_json(&())?)?)
                 }
                 (&Method::GET, Route::AdminUserHistory) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
+                    let auth = check_nip98_auth(&req, &self.settings, &self.db).await?;
                     let _admin_uid = self.check_admin_access(&auth.pubkey).await?;
                     let user_id = params.get("id").ok_or_else(|| anyhow!("Missing user ID"))?;
                     let full_url = format!(
@@ -427,7 +427,7 @@ impl Api {
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::GET, Route::AdminUserStreams) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
+                    let auth = check_nip98_auth(&req, &self.settings, &self.db).await?;
                     let _admin_uid = self.check_admin_access(&auth.pubkey).await?;
                     let user_id = params.get("id").ok_or_else(|| anyhow!("Missing user ID"))?;
                     let full_url = format!(
@@ -451,7 +451,7 @@ impl Api {
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::GET, Route::AdminUserStreamKey) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
+                    let auth = check_nip98_auth(&req, &self.settings, &self.db).await?;
                     let admin_uid = self.check_admin_access(&auth.pubkey).await?;
                     let user_id = params.get("id").ok_or_else(|| anyhow!("Missing user ID"))?;
                     let uid: u64 = user_id.parse()?;
@@ -459,7 +459,7 @@ impl Api {
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::POST, Route::AdminUserStreamKeyRegen) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
+                    let auth = check_nip98_auth(&req, &self.settings, &self.db).await?;
                     let admin_uid = self.check_admin_access(&auth.pubkey).await?;
                     let user_id = params.get("id").ok_or_else(|| anyhow!("Missing user ID"))?;
                     let uid: u64 = user_id.parse()?;
@@ -469,7 +469,7 @@ impl Api {
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::GET, Route::AdminAuditLog) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
+                    let auth = check_nip98_auth(&req, &self.settings, &self.db).await?;
                     let _admin_uid = self.check_admin_access(&auth.pubkey).await?;
                     let full_url = format!(
                         "{}{}",
@@ -491,7 +491,7 @@ impl Api {
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::GET, Route::AdminIngestEndpoints) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
+                    let auth = check_nip98_auth(&req, &self.settings, &self.db).await?;
                     let admin_uid = self.check_admin_access(&auth.pubkey).await?;
                     let full_url = format!(
                         "{}{}",
@@ -515,7 +515,7 @@ impl Api {
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::POST, Route::AdminIngestEndpoints) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
+                    let auth = check_nip98_auth(&req, &self.settings, &self.db).await?;
                     let admin_uid = self.check_admin_access(&auth.pubkey).await?;
                     let body = req.collect().await?.to_bytes();
                     let endpoint_req: AdminIngestEndpointRequest = serde_json::from_slice(&body)?;
@@ -525,7 +525,7 @@ impl Api {
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::GET, Route::AdminIngestEndpointsId) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
+                    let auth = check_nip98_auth(&req, &self.settings, &self.db).await?;
                     let admin_uid = self.check_admin_access(&auth.pubkey).await?;
                     let endpoint_id = params
                         .get("id")
@@ -535,7 +535,7 @@ impl Api {
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::PATCH, Route::AdminIngestEndpointsId) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
+                    let auth = check_nip98_auth(&req, &self.settings, &self.db).await?;
                     let admin_uid = self.check_admin_access(&auth.pubkey).await?;
                     let endpoint_id = params
                         .get("id")
@@ -549,7 +549,7 @@ impl Api {
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
                 (&Method::DELETE, Route::AdminIngestEndpointsId) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
+                    let auth = check_nip98_auth(&req, &self.settings, &self.db).await?;
                     let admin_uid = self.check_admin_access(&auth.pubkey).await?;
                     let endpoint_id = params
                         .get("id")
@@ -559,7 +559,7 @@ impl Api {
                     Ok(base.body(Self::body_json(&())?)?)
                 }
                 (&Method::DELETE, Route::DeleteStream) => {
-                    let auth = check_nip98_auth(&req, &self.settings.public_url, &self.db).await?;
+                    let auth = check_nip98_auth(&req, &self.settings, &self.db).await?;
                     let stream_id = params
                         .get("id")
                         .ok_or_else(|| anyhow!("Missing stream ID"))?;

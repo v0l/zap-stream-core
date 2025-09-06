@@ -2,6 +2,7 @@ use anyhow::{Result, bail};
 use base64::Engine;
 use chrono::{DateTime, Utc};
 use nostr_sdk::{Alphabet, Event, Kind, PublicKey, SingleLetterTag, TagKind, serde_json};
+use url::Url;
 use zap_stream_db::ZapStreamDb;
 
 #[derive(Debug, Clone)]
@@ -21,8 +22,9 @@ pub enum TokenSource {
 
 pub struct AuthRequest {
     pub token_source: TokenSource,
-    pub expected_url: String,
+    pub expected_url: Url,
     pub expected_method: String,
+    pub ignore_host: bool,
 }
 
 /// Generic NIP-98 authentication that works for both HTTP and WebSocket
@@ -69,14 +71,17 @@ pub async fn authenticate_nip98(auth_request: AuthRequest, db: &ZapStreamDb) -> 
     }
 
     // Check URL tag
-    let url_tag = event
+    let url_tag: Url = event
         .tags
         .iter()
         .find(|tag| tag.kind() == TagKind::SingleLetter(SingleLetterTag::lowercase(Alphabet::U)))
         .and_then(|tag| tag.content())
-        .ok_or_else(|| anyhow::anyhow!("Missing URL tag"))?;
+        .ok_or_else(|| anyhow::anyhow!("Missing URL tag"))?
+        .parse()?;
 
-    if !url_tag.eq_ignore_ascii_case(&auth_request.expected_url) {
+    if (!auth_request.ignore_host && url_tag != auth_request.expected_url)
+        || (auth_request.ignore_host && url_tag.path() == auth_request.expected_url.path())
+    {
         bail!(
             "Invalid nostr event, URL tag invalid. Expected: {}, Got: {}",
             auth_request.expected_url,

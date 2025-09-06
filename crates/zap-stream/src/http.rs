@@ -1,4 +1,5 @@
 use crate::auth::{AuthRequest, AuthResult, TokenSource, authenticate_nip98};
+use crate::settings::Settings;
 use crate::viewer::ViewerTracker;
 use anyhow::{Context, Result, bail, ensure};
 use bytes::Bytes;
@@ -237,14 +238,16 @@ where
         // Check common headers for real client IP
         if let Some(forwarded) = req.headers().get("x-forwarded-for")
             && let Ok(forwarded_str) = forwarded.to_str()
-                && let Some(first_ip) = forwarded_str.split(',').next() {
-                    return first_ip.trim().to_string();
-                }
+            && let Some(first_ip) = forwarded_str.split(',').next()
+        {
+            return first_ip.trim().to_string();
+        }
 
         if let Some(real_ip) = req.headers().get("x-real-ip")
-            && let Ok(ip_str) = real_ip.to_str() {
-                return ip_str.to_string();
-            }
+            && let Ok(ip_str) = real_ip.to_str()
+        {
+            return ip_str.to_string();
+        }
 
         // use random string as IP to avoid broken view tracker due to proxying
         Uuid::new_v4().to_string()
@@ -399,7 +402,7 @@ where
 
 pub async fn check_nip98_auth(
     req: &Request<Incoming>,
-    public_url: &str,
+    settings: &Settings,
     db: &zap_stream_db::ZapStreamDb,
 ) -> Result<AuthResult> {
     let auth = if let Some(a) = req.headers().get("authorization") {
@@ -412,17 +415,22 @@ pub async fn check_nip98_auth(
     let request_uri = match req.uri().query() {
         Some(query) => format!(
             "{}{}?{}",
-            public_url.trim_end_matches('/'),
+            settings.public_url.trim_end_matches('/'),
             req.uri().path(),
             query
         ),
-        None => format!("{}{}", public_url.trim_end_matches('/'), req.uri().path()),
+        None => format!(
+            "{}{}",
+            settings.public_url.trim_end_matches('/'),
+            req.uri().path()
+        ),
     };
 
     let auth_request = AuthRequest {
         token_source: TokenSource::HttpHeader(auth.to_string()),
-        expected_url: request_uri,
+        expected_url: request_uri.parse()?,
         expected_method: req.method().as_str().to_string(),
+        ignore_host: settings.ignore_auth_host.unwrap_or(false),
     };
 
     authenticate_nip98(auth_request, db).await
