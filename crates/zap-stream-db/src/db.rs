@@ -348,7 +348,7 @@ impl ZapStreamDb {
     /// Get the latest completed payment
     pub async fn get_latest_completed_payment(&self) -> Result<Option<Payment>> {
         Ok(sqlx::query_as(
-            "select * from payment where is_paid = true order by created desc limit 1",
+            "select * from payment where is_paid = true and payment_type in (0,1) order by created desc limit 1",
         )
         .fetch_optional(&self.db)
         .await?)
