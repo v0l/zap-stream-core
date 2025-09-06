@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
 use log::{info, warn};
 use nostr_sdk::serde_json;
-use redis::{AsyncCommands, PubSub};
+use redis::{AsyncCommands, RedisResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -106,7 +106,20 @@ impl StreamManager {
                 tokio::select! {
                     _ = token.cancelled() => break,
                     Some(msg) = pub_sub.next() => {
-                        let msg: ActiveStreamInfo = serde_json::from_slice(msg.get_payload_bytes())?;
+                        let json: String = match msg.get_payload(){
+                            Ok(json) => json,
+                            Err(e) => {
+                                warn!("Failed to get json data from channel message {}", e);
+                                continue;
+                            }
+                        };
+                        let msg: ActiveStreamInfo = match serde_json::from_str(&json) {
+                            Ok(msg) => msg,
+                            Err(e) => {
+                                warn!("Failed to parse active stream info: {} {}", e, json);
+                                continue;
+                            }
+                        };
                         // if stream is not one of ours, track internally to have global view
                         if msg.node_name != node_name {
                             {
@@ -122,7 +135,9 @@ impl StreamManager {
                     Ok(msg) = sub_to_send.recv() => {
                         if msg.node_name == node_name {
                             let payload = serde_json::to_string(&msg)?;
-                            let _: usize = AsyncCommands::publish(&mut pub_conn, STATS_CHANNEL, payload.as_bytes()).await?;
+                            if let Err(e) = AsyncCommands::publish::<_,_,usize>(&mut pub_conn, STATS_CHANNEL, payload).await {
+                                warn!("Failed to publish active stream: {}", e);
+                            }
                         }
                     }
                 }

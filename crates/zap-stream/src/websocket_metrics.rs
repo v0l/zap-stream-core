@@ -245,8 +245,9 @@ impl WebSocketMetricsServer {
 
                 let auth_request = AuthRequest {
                     token_source: TokenSource::WebSocketToken(token),
-                    expected_url,
+                    expected_url: expected_url.parse()?,
                     expected_method: "GET".to_string(),
+                    ignore_host: false,
                 };
 
                 match authenticate_nip98(auth_request, db).await {
