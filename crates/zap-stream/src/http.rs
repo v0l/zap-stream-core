@@ -430,7 +430,7 @@ pub async fn check_nip98_auth(
         token_source: TokenSource::HttpHeader(auth.to_string()),
         expected_url: request_uri.parse()?,
         expected_method: req.method().as_str().to_string(),
-        ignore_host: settings.ignore_auth_host.unwrap_or(false),
+        skip_url_check: settings.ignore_auth_url.unwrap_or(false),
     };
 
     authenticate_nip98(auth_request, db).await

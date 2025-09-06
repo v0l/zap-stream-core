@@ -19,8 +19,8 @@ pub struct Settings {
     /// Public facing URL that maps to [output_dir]
     pub public_url: String,
 
-    /// Ignore the hostname part of the NIP-98 auth request
-    pub ignore_auth_host: Option<bool>,
+    /// Ignore the url check inNIP-98
+    pub ignore_auth_url: Option<bool>,
 
     /// Binding address for http server serving files from [output_dir]
     pub listen_http: String,

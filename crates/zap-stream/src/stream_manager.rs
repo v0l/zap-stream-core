@@ -23,6 +23,7 @@ pub struct StreamViewerState {
 pub struct ActiveStreamInfo {
     pub stream_id: String,
     pub pubkey: String,
+    pub user_id: u64,
     pub started_at: DateTime<Utc>,
     pub last_segment_time: Option<DateTime<Utc>>,
     pub node_name: String,
@@ -160,6 +161,7 @@ impl StreamManager {
     pub async fn add_active_stream(
         &self,
         pubkey: &str,
+        user_id: u64,
         stream_id: &str,
         target_fps: f32,
         endpoint_name: &str,
@@ -173,6 +175,7 @@ impl StreamManager {
             stream_id.to_string(),
             ActiveStreamInfo {
                 pubkey: pubkey.to_string(),
+                user_id,
                 node_name: self.node_name.clone(),
                 stream_id: stream_id.to_string(),
                 started_at: now,

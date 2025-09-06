@@ -626,6 +626,7 @@ impl Overseer for ZapStreamOverseer {
         self.stream_manager
             .add_active_stream(
                 &hex_pubkey,
+                user.id,
                 &new_stream.id,
                 cfg.video_src.map(|s| s.fps).unwrap(),
                 &endpoint.name,
