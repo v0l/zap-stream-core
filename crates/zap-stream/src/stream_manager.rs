@@ -24,6 +24,7 @@ pub struct ActiveStreamInfo {
     pub stream_id: String,
     pub started_at: DateTime<Utc>,
     pub last_segment_time: Option<DateTime<Utc>>,
+    pub node_name: String,
 
     pub viewers: u32,
     pub average_fps: f32,
@@ -50,8 +51,6 @@ pub struct StreamManager {
     stream_viewer_states: Arc<RwLock<HashMap<String, StreamViewerState>>>,
     /// Broadcast channel to listen to metrics updates
     broadcaster: broadcast::Sender<ActiveStreamInfo>,
-    /// Redis connection to send/receive active stream info
-    redis_conn: Option<Arc<PubSub<'static>>>,
 }
 
 impl StreamManager {
@@ -65,7 +64,6 @@ impl StreamManager {
             viewer_tracker: Arc::new(RwLock::new(ViewerTracker::new())),
             stream_viewer_states: Arc::new(RwLock::new(HashMap::new())),
             broadcaster: tx,
-            redis_conn: None,
         }
     }
 
@@ -95,6 +93,8 @@ impl StreamManager {
         let mut pub_conn = client.get_multiplexed_async_connection().await?;
         let acc = self.active_streams.clone();
         let mut sub_to_send = self.listen_metrics();
+        let stats_listener = self.broadcaster.clone();
+        let node_name = self.node_name.clone();
 
         const STATS_CHANNEL: &str = "stream-manager-stats";
 
@@ -108,9 +108,15 @@ impl StreamManager {
                     Some(msg) = pub_sub.next() => {
                         let msg: ActiveStreamInfo = serde_json::from_slice(msg.get_payload_bytes())?;
                         // if stream is not one of ours, track internally to have global view
-                        let mut acc_lock = acc.write().await;
-                        if !acc_lock.contains_key(msg.stream_id.as_str()) {
-                            acc_lock.insert(msg.stream_id.clone(), msg);
+                        if msg.node_name != node_name {
+                            {
+                                let mut acc_lock = acc.write().await;
+                                acc_lock.insert(msg.stream_id.clone(), msg.clone());
+                            }
+                            // send to our WS clients
+                            if let Err(e) = stats_listener.send(msg) {
+                                warn!("Failed to send message: {}", e);
+                            }
                         }
                     }
                     Ok(msg) = sub_to_send.recv() => {
@@ -147,6 +153,7 @@ impl StreamManager {
         streams.insert(
             stream_id.to_string(),
             ActiveStreamInfo {
+                node_name: self.node_name.clone(),
                 stream_id: stream_id.to_string(),
                 started_at: now,
                 last_segment_time: None,
