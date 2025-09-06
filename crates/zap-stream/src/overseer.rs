@@ -14,11 +14,9 @@ use fedimint_tonic_lnd::verrpc::VersionRequest;
 use log::{error, info, warn};
 use nostr_sdk::prelude::Coordinate;
 use nostr_sdk::{Client, Event, EventBuilder, JsonUtil, Keys, Kind, NostrSigner, Tag, ToBech32};
-use rslock::LockManager;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::time::Duration;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use url::Url;
@@ -59,8 +57,6 @@ pub struct ZapStreamOverseer {
     low_balance_threshold_msats: Option<u64>,
     /// Node name for horizontal scaling
     node_name: String,
-    /// Leader election locks
-    lock_manager: Option<LockManager>,
 }
 
 impl ZapStreamOverseer {
@@ -166,11 +162,9 @@ impl ZapStreamOverseer {
             stream_manager: StreamManager::new(node_name.clone()),
             low_balance_threshold_msats,
             node_name,
-            lock_manager: None,
         };
         if let Some(r) = redis {
             let r_client = redis::Client::open(r.url.clone())?;
-            overseer.lock_manager = Some(LockManager::from_clients(vec![r_client.clone()]));
             let _ = overseer
                 .stream_manager
                 .enable_redis(r_client, shutdown.clone())
@@ -195,119 +189,89 @@ impl ZapStreamOverseer {
         let mut ln = self.lnd.clone();
         let db = self.db.clone();
         let client = self.client.clone();
-        let lm = self.lock_manager.clone();
-        let node_name = self.node_name.clone();
         tokio::spawn(async move {
-            // setup redis-lock if enabled,
-            // this blocks the thread from running on more than 1 instance
-            let lock_ttl = Duration::from_secs(5);
-            let locked = loop {
-                if let Some(lm) = &lm {
-                    tokio::select! {
-                        _ = token.cancelled() => {
-                            info!("Payment handler exiting (non-locked)!");
-                            return Ok(());
-                        }
-                        Ok(lock) = lm.lock("payment-handler", lock_ttl) => {
-                            info!("Locked payment handler on node: {}", node_name);
-                            break Some(lock);
-                        }
+            loop {
+                // get last completed payment
+                let last_payment_index = if let Some(pl) = db.get_latest_completed_payment().await?
+                {
+                    let mut req = LookupInvoiceMsg::default();
+                    req.invoice_ref = Some(InvoiceRef::PaymentHash(pl.payment_hash));
+                    if let Ok(inv) = ln.invoices().lookup_invoice_v2(req).await {
+                        inv.into_inner().settle_index
+                    } else {
+                        0
                     }
-                } else {
-                    break None;
-                }
-            };
-
-            // get last completed payment
-            let last_payment_index = if let Some(pl) = db.get_latest_completed_payment().await? {
-                let mut req = LookupInvoiceMsg::default();
-                req.invoice_ref = Some(InvoiceRef::PaymentHash(pl.payment_hash));
-                if let Ok(inv) = ln.invoices().lookup_invoice_v2(req).await {
-                    inv.into_inner().settle_index
                 } else {
                     0
-                }
-            } else {
-                0
-            };
-            info!(
-                "Listening to invoices from settle_index {}",
-                last_payment_index
-            );
-            let mut stream = ln
-                .lightning()
-                .subscribe_invoices(InvoiceSubscription {
-                    add_index: 0,
-                    settle_index: last_payment_index,
-                })
-                .await? // TODO: unlock rl
-                .into_inner();
+                };
+                info!(
+                    "Listening to invoices from settle_index {}",
+                    last_payment_index
+                );
+                let mut stream = ln
+                    .lightning()
+                    .subscribe_invoices(InvoiceSubscription {
+                        add_index: 0,
+                        settle_index: last_payment_index,
+                    })
+                    .await? // TODO: unlock rl
+                    .into_inner();
 
-            let mut timer = tokio::time::interval(Duration::from_secs(1));
-            loop {
-                tokio::select! {
-                    _ = token.cancelled() => {
-                        info!("Payment handler exiting...");
-                        break;
-                    }
-                    _ = timer.tick() => if let (Some(lm), Some(lock)) = (&lm, &locked) {
-                        info!("Extending redlock..");
-                        if let Err(e) = lm.extend(lock, lock_ttl).await {
-                            error!("Error while extending redlock: {}", e);
-                            break;
+                loop {
+                    tokio::select! {
+                        _ = token.cancelled() => {
+                            info!("Payment handler exiting...");
+                            return Ok(());
                         }
-                    },
-                    Ok(msg) = stream.message() => {
-                        info!("Received message: {:?}", msg);
-                        match msg {
-                           Some(data) => {
-                                info!(
-                                    "Got payment update: preimage={}, settle_index={}",
-                                    hex::encode(&data.r_hash),
-                                    data.settle_index
-                                );
-                                if data.settle_index != 0 {
-                                    match db.complete_payment(&data.r_hash, 0).await {
-                                        Ok(b) => {
-                                            if b {
-                                                info!("Completed payment!");
-                                                let payment = db.get_payment(&data.r_hash).await?.unwrap();
-                                                if let Some(nostr) = payment.nostr
-                                                    && let Err(e) = Self::try_send_zap_receipt(
-                                                        &client,
-                                                        &nostr,
-                                                        &data.payment_request,
-                                                        &data.r_preimage,
+                        Ok(msg) = stream.message() => {
+                            info!("Received message: {:?}", msg);
+                            match msg {
+                               Some(data) => {
+                                    info!(
+                                        "Got payment update: preimage={}, settle_index={}",
+                                        hex::encode(&data.r_hash),
+                                        data.settle_index
+                                    );
+                                    if data.settle_index != 0 {
+                                        match db.complete_payment(&data.r_hash, 0).await {
+                                            Ok(b) => {
+                                                if b {
+                                                    info!("Completed payment!");
+                                                    let payment = db.get_payment(&data.r_hash).await?.unwrap();
+                                                    if let Some(nostr) = payment.nostr
+                                                        && let Err(e) = Self::try_send_zap_receipt(
+                                                            &client,
+                                                            &nostr,
+                                                            &data.payment_request,
+                                                            &data.r_preimage,
+                                                        )
+                                                        .await
+                                                        {
+                                                            warn!("Failed to send zap receipt {}", e);
+                                                        }
+                                                } else {
+                                                    warn!(
+                                                        "No payments updated! Maybe it doesnt exist or it's already processed."
                                                     )
-                                                    .await
-                                                    {
-                                                        warn!("Failed to send zap receipt {}", e);
-                                                    }
-                                            } else {
-                                                warn!(
-                                                    "No payments updated! Maybe it doesnt exist or it's already processed."
-                                                )
+                                                }
                                             }
-                                        }
-                                        Err(e) => {
-                                            error!(
-                                                "Failed to complete payment {}: {}",
-                                                hex::encode(data.r_hash),
-                                                e
-                                            );
+                                            Err(e) => {
+                                                error!(
+                                                    "Failed to complete payment {}: {}",
+                                                    hex::encode(data.r_hash),
+                                                    e
+                                                );
+                                            }
                                         }
                                     }
                                 }
+                                None => break,
                             }
-                            None => break,
                         }
                     }
                 }
-            }
 
-            info!("Payment handler exiting!");
-            if let (Some(lm), Some(lock)) = (lm, locked) {
-                lm.unlock(&lock).await;
+                info!("Payment handler exiting, resetting...");
             }
             Ok(())
         })
