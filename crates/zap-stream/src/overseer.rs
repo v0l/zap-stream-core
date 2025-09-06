@@ -157,7 +157,9 @@ impl ZapStreamOverseer {
             db,
             #[cfg(feature = "zap-stream")]
             lnd,
-            n94: blossom_servers.as_ref().map(|s| N94Publisher::new(client.clone(), s, 3, segment_length)),
+            n94: blossom_servers
+                .as_ref()
+                .map(|s| N94Publisher::new(client.clone(), s, 3, segment_length)),
             client,
             segment_length,
             public_url: public_url.clone(),
@@ -535,9 +537,9 @@ impl Overseer for ZapStreamOverseer {
                         .stream_manager
                         .check_and_update_viewer_count(&stream.id)
                         .await?
-                    {
-                        self.publish_stream_event(&stream, &user.pubkey).await?;
-                    }
+                {
+                    self.publish_stream_event(&stream, &user.pubkey).await?;
+                }
             }
         }
         Ok(())
@@ -560,7 +562,11 @@ impl Overseer for ZapStreamOverseer {
         };
         let user = self.db.get_user(uid).await?;
         if user.balance < 0 {
-            bail!("Not enough balance");
+            bail!(
+                "Not enough balance pubkey={}, balance={}",
+                hex::encode(user.pubkey),
+                user.balance
+            );
         }
 
         // Get ingest endpoint configuration based on connection type
@@ -756,9 +762,9 @@ impl Overseer for ZapStreamOverseer {
                             pipeline_id,
                         )
                         .await
-                    {
-                        warn!("Failed to send low balance notification: {}", e);
-                    }
+                {
+                    warn!("Failed to send low balance notification: {}", e);
+                }
             }
         }
 
