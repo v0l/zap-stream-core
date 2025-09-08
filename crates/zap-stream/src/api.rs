@@ -314,7 +314,7 @@ impl Api {
                         .and_then(|v| v.parse().ok())
                         .ok_or(anyhow!("Missing amount"))?;
                     let zap_request: Option<String> = url.query_pairs().find_map(|(k, v)| {
-                        if k == "zap" {
+                        if k == "nostr" {
                             Some(v.to_string())
                         } else {
                             None
