@@ -1,0 +1,1 @@
+- dont put any js/ts example code in api docs, just put the TS type info and the req/response patterns

@@ -1,8 +1,7 @@
 use crate::auth::{AuthRequest, TokenSource, authenticate_nip98};
-use crate::stream_manager::{ActiveStreamInfo, StreamManager};
+use crate::stream_manager::{ActiveStreamInfo, NodeInfo, StreamManager, StreamManagerMetric};
 use anyhow::Result;
 use bytes::Bytes;
-use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::{BodyExt, Empty, combinators::BoxBody};
 use hyper::body::Incoming;
@@ -12,7 +11,6 @@ use log::{debug, error, info, warn};
 use nostr_sdk::{PublicKey, serde_json};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::time::Duration;
 use tokio::sync::broadcast;
 use tungstenite::Utf8Bytes;
 use uuid::Uuid;
@@ -27,8 +25,8 @@ pub enum MetricMessage {
     SubscribeOverall,
     /// Stream-specific metrics
     StreamMetrics(ActiveStreamInfo),
-    /// Overall system metrics
-    OverallMetrics(OverallMetrics),
+    /// Metrics for each worker node
+    NodeMetrics(NodeInfo),
     /// Authentication request (NIP-98 token)
     Auth { token: String },
     /// Authentication response
@@ -39,17 +37,6 @@ pub enum MetricMessage {
     },
     /// Error message
     Error { message: String },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OverallMetrics {
-    pub total_streams: u64,
-    pub total_viewers: u32,
-    pub total_bandwidth: u64,
-    pub cpu_load: f32,
-    pub memory_load: f32,
-    pub uptime_seconds: u64,
-    pub timestamp: u64,
 }
 
 pub struct WebSocketMetricsServer {
@@ -124,10 +111,7 @@ impl WebSocketMetricsServer {
 
         info!("WebSocket connection established: {}", session.id);
 
-        let mut timer = tokio::time::interval(Duration::from_secs(5));
-
         let mut metrics = stream_manager.listen_metrics();
-        let mut sys = sysinfo::System::new();
         loop {
             tokio::select! {
                 // Handle incoming WebSocket messages
@@ -163,7 +147,11 @@ impl WebSocketMetricsServer {
                     match metric {
                         Ok(metric_msg) => {
                             if Self::should_send_metric(&session, &metric_msg) {
-                                let json = serde_json::to_string(&MetricMessage::StreamMetrics(metric_msg))?;
+                                let ws_msg = match metric_msg {
+                                    StreamManagerMetric::ActiveStream(s) => MetricMessage::StreamMetrics(s),
+                                    StreamManagerMetric::Node(n) => MetricMessage::NodeMetrics(n)
+                                };
+                                let json = serde_json::to_string(&ws_msg)?;
                                 if let Err(e) = ws_sender.send(Message::Text(Utf8Bytes::from(&json))).await {
                                     error!("Failed to send metric: {}", e);
                                     break;
@@ -175,43 +163,6 @@ impl WebSocketMetricsServer {
                         }
                         Err(broadcast::error::RecvError::Closed) => {
                             info!("Metrics channel closed");
-                            break;
-                        }
-                    }
-                }
-
-                // periodic overall stats
-                _ = timer.tick() => {
-                    if session.subscriptions.contains("all") {
-                        sys.refresh_all();
-
-                        let cpu_count = sys.cpus().len();
-                        let all_streams = stream_manager.get_active_streams().await;
-
-                        let mem = if let Some(cg) = sys.cgroup_limits() {
-                            (cg.total_memory - cg.free_memory) as f64 / cg.total_memory as f64
-                        } else {
-                            sys.used_memory() as f64 / sys.total_memory() as f64
-                        } as _;
-
-                        let cpu = if let Some(p) = sys.process(sysinfo::get_current_pid().unwrap()) {
-                            p.cpu_usage()
-                        } else {
-                            sys.global_cpu_usage()
-                        } / cpu_count as f32 / 100.0;
-
-                        let overall = OverallMetrics {
-                            total_streams: all_streams.len() as _,
-                            total_viewers: all_streams.iter().fold(0u32, |acc,v| acc + v.1.viewers),
-                            total_bandwidth: all_streams.iter().fold(0u64, |acc,v| acc + v.1.endpoint_stats.values().fold(0u64, |acc2, v2| acc2 + v2.bitrate as u64)),
-                            cpu_load: cpu,
-                            memory_load: mem,
-                            uptime_seconds: 0,
-                            timestamp: Utc::now().timestamp() as _,
-                        };
-                        let json = serde_json::to_string(&MetricMessage::OverallMetrics(overall))?;
-                        if let Err(e) = ws_sender.send(Message::Text(Utf8Bytes::from(&json))).await {
-                            error!("Failed to send metric: {}", e);
                             break;
                         }
                     }
@@ -373,7 +324,13 @@ impl WebSocketMetricsServer {
         }
     }
 
-    fn should_send_metric(session: &ClientSession, metric: &ActiveStreamInfo) -> bool {
-        session.subscriptions.contains(&metric.stream_id) || session.subscriptions.contains("all")
+    fn should_send_metric(session: &ClientSession, metric: &StreamManagerMetric) -> bool {
+        match metric {
+            StreamManagerMetric::ActiveStream(metric) => {
+                session.subscriptions.contains(&metric.stream_id)
+                    || session.subscriptions.contains("all")
+            }
+            StreamManagerMetric::Node(_) => session.subscriptions.contains("all"),
+        }
     }
 }

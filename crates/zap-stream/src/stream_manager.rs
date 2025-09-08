@@ -4,10 +4,11 @@ use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
 use log::{info, warn};
 use nostr_sdk::serde_json;
-use redis::{AsyncCommands, RedisResult};
+use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{RwLock, broadcast};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -39,6 +40,31 @@ pub struct ActiveStreamInfo {
     pub endpoint_stats: HashMap<String, EndpointStats>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeInfo {
+    pub node_name: String,
+    pub cpu: f32,
+    pub memory_used: u64,
+    pub memory_total: u64,
+    pub uptime: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data")]
+pub enum StreamManagerMetric {
+    ActiveStream(ActiveStreamInfo),
+    Node(NodeInfo),
+}
+
+impl StreamManagerMetric {
+    pub fn node_name(&self) -> &String {
+        match self {
+            StreamManagerMetric::ActiveStream(v) => &v.node_name,
+            StreamManagerMetric::Node(v) => &v.node_name,
+        }
+    }
+}
+
 /// Manages active streams, viewer tracking
 #[derive(Clone)]
 pub struct StreamManager {
@@ -52,7 +78,7 @@ pub struct StreamManager {
     /// Track last published viewer count and update time for each stream
     stream_viewer_states: Arc<RwLock<HashMap<String, StreamViewerState>>>,
     /// Broadcast channel to listen to metrics updates
-    broadcaster: broadcast::Sender<ActiveStreamInfo>,
+    broadcaster: broadcast::Sender<StreamManagerMetric>,
 }
 
 impl StreamManager {
@@ -72,7 +98,7 @@ impl StreamManager {
     pub fn start_cleanup_task(&self, token: CancellationToken) -> JoinHandle<()> {
         let mgr = self.clone();
         tokio::task::spawn(async move {
-            let mut timer = tokio::time::interval(std::time::Duration::from_secs(60));
+            let mut timer = tokio::time::interval(Duration::from_secs(60));
             loop {
                 tokio::select! {
                     _ = token.cancelled() => break,
@@ -83,6 +109,47 @@ impl StreamManager {
                 }
             }
             info!("Stopping stream manager cleanup");
+        })
+    }
+
+    pub fn start_node_metrics_task(&self, token: CancellationToken) -> JoinHandle<()> {
+        let node_name = self.node_name.clone();
+        let tx = self.broadcaster.clone();
+        tokio::spawn(async move {
+            let mut timer = tokio::time::interval(Duration::from_secs(5));
+            let mut sys = sysinfo::System::new();
+            loop {
+                tokio::select! {
+                    _ = token.cancelled() => break,
+                    _ = timer.tick() => {
+                        sys.refresh_all();
+
+                        let cpu_count = sys.cpus().len();
+                        let (memory_total, memory_used) = if let Some(cg) = sys.cgroup_limits() {
+                            (cg.total_memory, cg.total_memory - cg.free_memory)
+                        } else {
+                            (sys.total_memory(), sys.used_memory())
+                        };
+
+                        let cpu = if let Some(p) = sys.process(sysinfo::get_current_pid().unwrap()) {
+                            p.cpu_usage()
+                        } else {
+                            sys.global_cpu_usage()
+                        } / cpu_count as f32 / 100.0;
+
+                        let info = NodeInfo {
+                            node_name: node_name.to_string(),
+                            cpu ,
+                            memory_used,
+                            memory_total,
+                            uptime: sysinfo::System::uptime(),
+                        };
+                        if let Err(e) = tx.send(StreamManagerMetric::Node(info)) {
+                            warn!("Failed to send node metrics: {}", e);
+                        }
+                    }
+                }
+            }
         })
     }
 
@@ -115,7 +182,7 @@ impl StreamManager {
                                 continue;
                             }
                         };
-                        let msg: ActiveStreamInfo = match serde_json::from_str(&json) {
+                        let msg: StreamManagerMetric = match serde_json::from_str(&json) {
                             Ok(msg) => msg,
                             Err(e) => {
                                 warn!("Failed to parse active stream info: {} {}", e, json);
@@ -123,10 +190,10 @@ impl StreamManager {
                             }
                         };
                         // if stream is not one of ours, track internally to have global view
-                        if msg.node_name != node_name {
-                            {
+                        if *msg.node_name() != node_name {
+                            if let StreamManagerMetric::ActiveStream(active_stream) = &msg {
                                 let mut acc_lock = acc.write().await;
-                                acc_lock.insert(msg.stream_id.clone(), msg.clone());
+                                acc_lock.insert(active_stream.stream_id.clone(), active_stream.clone());
                             }
                             // send to our WS clients
                             if let Err(e) = stats_listener.send(msg) {
@@ -135,7 +202,7 @@ impl StreamManager {
                         }
                     }
                     Ok(msg) = sub_to_send.recv() => {
-                        if msg.node_name == node_name {
+                        if *msg.node_name() == node_name {
                             let payload = serde_json::to_string(&msg)?;
                             if let Err(e) = AsyncCommands::publish::<_,_,usize>(&mut pub_conn, STATS_CHANNEL, payload).await {
                                 warn!("Failed to publish active stream: {}", e);
@@ -153,7 +220,7 @@ impl StreamManager {
         Ok(h)
     }
 
-    pub fn listen_metrics(&self) -> broadcast::Receiver<ActiveStreamInfo> {
+    pub fn listen_metrics(&self) -> broadcast::Receiver<StreamManagerMetric> {
         self.broadcaster.subscribe()
     }
 
@@ -291,7 +358,10 @@ impl StreamManager {
             info.average_fps = average_fps;
             info.frame_count = frame_count;
             info.viewers = self.get_viewer_count(stream_id).await as _;
-            if let Err(e) = self.broadcaster.send(info.clone()) {
+            if let Err(e) = self
+                .broadcaster
+                .send(StreamManagerMetric::ActiveStream(info.clone()))
+            {
                 warn!(
                     "Failed to send pipeline metrics to the active stream: {}",
                     e
@@ -308,7 +378,10 @@ impl StreamManager {
             } else {
                 info.endpoint_stats.insert(metrics.name.clone(), metrics);
             }
-            if let Err(e) = self.broadcaster.send(info.clone()) {
+            if let Err(e) = self
+                .broadcaster
+                .send(StreamManagerMetric::ActiveStream(info.clone()))
+            {
                 warn!(
                     "Failed to send pipeline metrics to the active stream: {}",
                     e

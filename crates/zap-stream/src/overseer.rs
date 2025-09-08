@@ -170,7 +170,8 @@ impl ZapStreamOverseer {
                 .enable_redis(r_client, shutdown.clone())
                 .await;
         }
-        let _ = overseer.stream_manager.start_cleanup_task(shutdown);
+        let _ = overseer.stream_manager.start_cleanup_task(shutdown.clone());
+        let _ = overseer.stream_manager.start_node_metrics_task(shutdown);
 
         Ok(overseer)
     }

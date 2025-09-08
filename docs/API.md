@@ -396,23 +396,21 @@ or for regular users:
 
 **Description:** Real-time metrics for individual streams containing pipeline performance data and viewer counts. Broadcast automatically when metrics are updated for subscribed streams. The `endpoint_stats` field contains per-endpoint bitrate information for all active ingress and egress endpoints.
 
-##### Overall Metrics (Broadcast)
+##### Node Metrics (Broadcast)
 ```json
 {
-  "type": "OverallMetrics",
+  "type": "NodeMetrics",
   "data": {
-    "total_streams": 5,
-    "total_viewers": 127,
-    "total_bandwidth": 12500000,
-    "cpu_load": 1.23,
-    "memory_load": 0.65,
-    "uptime_seconds": 86400,
-    "timestamp": 1703123456
+    "node_name": "zsc-node-01",
+    "cpu": 0.65,
+    "memory_used": 2147483648,
+    "memory_total": 8589934592,
+    "uptime": 86400
   }
 }
 ```
 
-**Description:** System-wide metrics where subscribers receive real-time aggregate data computed from all active streams. The system tracks all active streams and automatically computes totals (total_streams, total_viewers, total_bandwidth) along with system performance metrics (CPU load, memory usage, uptime). Available only to admin users.
+**Description:** Individual node performance metrics broadcast every 5 seconds for subscribed admin clients. Each streaming node reports its own system metrics including CPU usage (as a ratio from 0.0 to 1.0), memory usage in bytes, and uptime. Available only to admin users. Clients can aggregate data from multiple nodes to compute system-wide statistics.
 
 ##### Error Messages
 ```json
@@ -424,124 +422,85 @@ or for regular users:
 }
 ```
 
-#### Usage Examples
+#### TypeScript Types
 
-##### JavaScript Client Example
-```javascript
-const ws = new WebSocket('ws://localhost:8080/api/v1/ws');
-
-ws.onopen = function() {
-  // Create NIP-98 event and base64 encode it
-  const nip98Event = createNIP98Event('GET', 'ws://localhost:8080/api/v1/ws');
-  const token = btoa(JSON.stringify(nip98Event));
-  
-  // Authenticate with NIP-98 token
-  ws.send(JSON.stringify({
-    type: 'Auth',
-    data: { token: token }
-  }));
-};
-
-ws.onmessage = function(event) {
-  const message = JSON.parse(event.data);
-  
-  switch(message.type) {
-    case 'AuthResponse':
-      if(message.data.success && message.data.is_admin) {
-        // Subscribe to overall metrics (admin only)
-        ws.send(JSON.stringify({
-          type: 'SubscribeOverall',
-          data: null
-        }));
-      }
-      break;
-      
-    case 'OverallMetrics':
-      console.log('System metrics:', message.data);
-      break;
-      
-    case 'StreamMetrics':
-      console.log('Stream metrics:', message.data);
-      break;
-      
-    case 'Error':
-      console.error('WebSocket error:', message.data.message);
-      break;
-  }
-};
-
-function createNIP98Event(method, url) {
-  // This is a simplified example - you'd use a proper Nostr library
-  // to create and sign the event with your private key
-  return {
-    kind: 27235,
-    created_at: Math.floor(Date.now() / 1000),
-    tags: [
-      ['u', url],
-      ['method', method]
-    ],
-    content: '',
-    pubkey: 'your_public_key_hex',
-    sig: 'your_signature_hex'
-  };
+```typescript
+interface EndpointStats {
+  name: string;
+  bitrate: number;
 }
+
+interface ActiveStreamInfo {
+  node_name: string;
+  stream_id: string;
+  started_at: string;
+  last_segment_time: string;
+  viewers: number;
+  average_fps: number;
+  target_fps: number;
+  frame_count: number;
+  endpoint_name: string;
+  input_resolution: string;
+  ip_address: string;
+  ingress_name: string;
+  endpoint_stats: Record<string, EndpointStats>;
+}
+
+interface NodeInfo {
+  node_name: string;
+  cpu: number;
+  memory_used: number;
+  memory_total: number;
+  uptime: number;
+}
+
+type MetricMessage = 
+  | { type: "Auth"; data: { token: string } }
+  | { type: "SubscribeStream"; data: { stream_id: string } }
+  | { type: "SubscribeOverall"; data: null }
+  | { type: "StreamMetrics"; data: ActiveStreamInfo }
+  | { type: "NodeMetrics"; data: NodeInfo }
+  | { type: "AuthResponse"; data: { success: boolean; is_admin: boolean; pubkey: string } }
+  | { type: "Error"; data: { message: string } };
 ```
 
-##### Streamer Dashboard Example
-```javascript
-const ws = new WebSocket('ws://localhost:8080/api/v1/ws');
+#### Request/Response Patterns
 
-ws.onopen = function() {
-  // Create NIP-98 event and authenticate
-  const nip98Event = createNIP98Event('GET', 'ws://localhost:8080/api/v1/ws');
-  const token = btoa(JSON.stringify(nip98Event));
-  
-  ws.send(JSON.stringify({
-    type: 'Auth',
-    data: { token: token }
-  }));
-};
+**Authentication Flow:**
+```
+Client → { type: "Auth", data: { token: "base64_nip98_event" } }
+Server → { type: "AuthResponse", data: { success: true, is_admin: false, pubkey: "npub1..." } }
+```
 
-ws.onmessage = function(event) {
-  const message = JSON.parse(event.data);
-  
-  if(message.type === 'AuthResponse' && message.data.success) {
-    // Subscribe to specific stream metrics
-    ws.send(JSON.stringify({
-      type: 'SubscribeStream', 
-      data: { stream_id: 'your_stream_id' }
-    }));
-  } else if(message.type === 'StreamMetrics') {
-    // Update dashboard with real-time metrics
-    updateDashboard(message.data);
-  }
-};
+**Stream Subscription (Users):**
+```
+Client → { type: "SubscribeStream", data: { stream_id: "stream_123" } }
+Server → { type: "StreamMetrics", data: { ... ActiveStreamInfo } } (on updates)
+```
 
-function updateDashboard(metrics) {
-  document.getElementById('viewer-count').textContent = metrics.viewers;
-  document.getElementById('fps').textContent = metrics.average_fps;
-  document.getElementById('frame-count').textContent = metrics.frame_count;
-  document.getElementById('resolution').textContent = metrics.input_resolution;
-  document.getElementById('ingress').textContent = metrics.ingress_name;
-  
-  // Display endpoint bitrates
-  const endpointStats = metrics.endpoint_stats;
-  for (const [name, stats] of Object.entries(endpointStats)) {
-    const bitrateMbps = (stats.bitrate / 1000000).toFixed(1);
-    document.getElementById(`bitrate-${name.toLowerCase()}`).textContent = `${bitrateMbps} Mbps`;
-  }
-}
+**Overall Metrics Subscription (Admins Only):**
+```
+Client → { type: "SubscribeOverall", data: null }
+Server → { type: "NodeMetrics", data: { ... NodeInfo } } (every 5 seconds)
+Server → { type: "StreamMetrics", data: { ... ActiveStreamInfo } } (on updates)
+```
+
+**Error Responses:**
+```
+Server → { type: "Error", data: { message: "Authentication required" } }
+Server → { type: "Error", data: { message: "Access denied: You can only access your own streams" } }
+Server → { type: "Error", data: { message: "Admin access required for overall metrics" } }
 ```
 
 #### Connection Management
 
 - **Automatic Reconnection:** Clients should implement automatic reconnection with exponential backoff
-- **Heartbeat:** The server sends overall metrics every 5 seconds; clients can detect disconnection if no messages received for 10+ seconds
+- **Heartbeat:** The server sends node metrics every 5 seconds; clients can detect disconnection if no messages received for 10+ seconds
 - **Error Handling:** Always handle `Error` message types and display appropriate user feedback
 
 #### Rate Limiting
 
-- **Overall Metrics:** Broadcast every 5 seconds for subscribed admin clients
+- **Node Metrics:** Broadcast every 5 seconds for subscribed admin clients
 - **Stream Metrics:** Broadcast in real-time when stream metrics are updated
 - **Stream Ownership:** Regular users can only access their own streams; admins can access any stream
 - Each client connection can subscribe to multiple streams (admin) or specific streams they own (regular users)

@@ -868,23 +868,21 @@ WebSocket authentication uses NIP-98 (Nostr HTTP Auth) via JSON messages after c
 
 **Authorization**: Admin access required. Provides system-wide aggregate metrics.
 
-##### Overall Metrics Response
+##### Node Metrics Response
 ```json
 {
-  "type": "OverallMetrics",
+  "type": "NodeMetrics",
   "data": {
-    "total_streams": 15,
-    "total_viewers": 1250,
-    "total_bandwidth_mbps": 450.5,
-    "system_load": 0.65,
-    "memory_usage_percent": 45.2,
-    "uptime_seconds": 86400,
-    "timestamp": 1703123456
+    "node_name": "zsc-node-01",
+    "cpu": 0.65,
+    "memory_used": 2147483648,
+    "memory_total": 8589934592,
+    "uptime": 86400
   }
 }
 ```
 
-**Description**: System-wide metrics automatically computed from all active streams. Includes total streams, viewers, bandwidth, and system performance metrics (CPU load, memory usage, uptime).
+**Description**: Individual node performance metrics broadcast every 5 seconds. Each streaming node reports its own system metrics including CPU usage (as a ratio from 0.0 to 1.0), memory usage in bytes, and uptime. Admin clients can aggregate data from multiple nodes to compute system-wide statistics.
 
 ##### Subscribe to Any Stream (Admin Only)
 ```json
@@ -903,7 +901,7 @@ WebSocket authentication uses NIP-98 (Nostr HTTP Auth) via JSON messages after c
 {
   "type": "StreamMetrics",
   "data": {
-    "node_name": "zsc-123",
+    "node_name": "zsc-node-01",
     "stream_id": "stream_123",
     "started_at": "2024-01-01T12:00:00Z",
     "last_segment_time": "2024-01-01T13:00:00Z",
@@ -914,26 +912,21 @@ WebSocket authentication uses NIP-98 (Nostr HTTP Auth) via JSON messages after c
     "endpoint_name": "High Quality",
     "input_resolution": "1920x1080",
     "ip_address": "192.168.1.100",
-    "ingress_name": "rtmp",
+    "ingress_name": "RTMP",
     "endpoint_stats": {
-      "rtmp": {
-        "name": "rtmp",
+      "RTMP": {
+        "name": "RTMP",
         "bitrate": 5000000
       },
-      "HLS Egress": {
-        "name": "HLS Egress",
+      "HLS": {
+        "name": "HLS",
         "bitrate": 3000000
       },
-      "Recorder Egress": {
-        "name": "Recorder Egress",
+      "Recorder": {
+        "name": "Recorder",
         "bitrate": 1500000
-      },
-      "RTMP Egress": {
-        "name": "RTMP Egress",
-        "bitrate": 2000000
       }
-    },
-    "timestamp": 1703123456
+    }
   }
 }
 ```
@@ -982,8 +975,8 @@ ws.onmessage = function(event) {
       }
       break;
       
-    case 'OverallMetrics':
-      updateSystemDashboard(message.data);
+    case 'NodeMetrics':
+      updateNodeDashboard(message.data);
       break;
       
     case 'StreamMetrics':
