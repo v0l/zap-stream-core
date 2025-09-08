@@ -11,9 +11,22 @@ RUN cargo install --path ./crates/zap-stream --root /app/build ${CARGO_FEATURES}
 
 FROM rust:trixie
 WORKDIR /app
+## Install runtime libs
 RUN apt update && \
-    apt install -y libx264-164 libx265-215 && \
-    rm -rf /var/lib/apt/lists/*
+    apt install -y \
+    libx264-164 \
+    libx265-215 \
+    libvpx9 \
+    libopus0 \
+    libwebp7 \
+    libdav1d7 \
+    va-driver-all \
+    libva-drm2 \
+    libva-x11-2 \
+    libva-wayland2 \
+    libva-glx2 \
+    libvpl2 \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=build /app/build .
 COPY --from=build /app/src/ffmpeg/lib/ /lib
 ENTRYPOINT ["/app/bin/zap-stream"]
