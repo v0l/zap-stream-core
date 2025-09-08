@@ -553,6 +553,10 @@ impl Overseer for ZapStreamOverseer {
             );
         }
 
+        if user.is_blocked {
+            bail!("User is blocked! pubkey={}", hex_pubkey);
+        }
+
         // Get ingest endpoint configuration based on connection type
         let endpoint = self.detect_endpoint(connection).await?;
 
