@@ -343,36 +343,53 @@ where
                 }
                 HttpServerPath::HlsMasterPlaylist => {
                     let stream_id = m.params.get("stream").map(|s| s.to_string());
-                    let file_path = dst_path.clone();
-                    Box::pin(async move {
-                        let _stream_id = stream_id.context("stream id missing")?;
-                        Self::handle_hls_master_playlist(&req, file_path).await
-                    })
+                    if dst_path.exists() {
+                        Box::pin(async move {
+                            let _stream_id = stream_id.context("stream id missing")?;
+                            Self::handle_hls_master_playlist(&req, dst_path).await
+                        })
+                    } else {
+                        Box::pin(async move {
+                            Ok(Self::base_response().status(404).body(BoxBody::default())?)
+                        })
+                    }
                 }
                 HttpServerPath::HlsVariantPlaylist => {
-                    // extract the viewer token and track every hit
-                    let stream_id = m.params.get("stream").map(|s| s.to_string());
-                    let query_params: HashMap<String, String> = req
-                        .uri()
-                        .query()
-                        .map(|q| {
-                            url::form_urlencoded::parse(q.as_bytes())
-                                .into_owned()
-                                .collect()
+                    if dst_path.exists() {
+                        // extract the viewer token and track every hit
+                        let stream_id = m.params.get("stream").map(|s| s.to_string());
+                        let query_params: HashMap<String, String> = req
+                            .uri()
+                            .query()
+                            .map(|q| {
+                                url::form_urlencoded::parse(q.as_bytes())
+                                    .into_owned()
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        let plugin = self.plugin.clone();
+                        Box::pin(async move {
+                            if let (Some(stream_id), Some(vt)) = (stream_id, query_params.get("vt"))
+                            {
+                                plugin.track_viewer(&stream_id, vt).await?;
+                            }
+                            Self::path_to_response(dst_path).await
                         })
-                        .unwrap_or_default();
-                    let plugin = self.plugin.clone();
-                    Box::pin(async move {
-                        if let (Some(stream_id), Some(vt)) = (stream_id, query_params.get("vt")) {
-                            plugin.track_viewer(&stream_id, vt).await?;
-                        }
-                        Self::path_to_response(dst_path).await
-                    })
+                    } else {
+                        Box::pin(async move {
+                            Ok(Self::base_response().status(404).body(BoxBody::default())?)
+                        })
+                    }
                 }
                 HttpServerPath::HlsSegmentFile => {
                     // handle segment file (range requests)
-                    let file_path = dst_path.clone();
-                    Box::pin(async move { Self::handle_hls_segment(&req, file_path).await })
+                    if dst_path.exists() {
+                        Box::pin(async move { Self::handle_hls_segment(&req, dst_path).await })
+                    } else {
+                        Box::pin(async move {
+                            Ok(Self::base_response().status(404).body(BoxBody::default())?)
+                        })
+                    }
                 }
                 HttpServerPath::WebSocketMetrics => {
                     let plugin = self.plugin.clone();
