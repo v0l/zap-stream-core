@@ -5,11 +5,14 @@ use crate::settings::Settings;
 use anyhow::Result;
 use clap::Parser;
 use config::Config;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::{av_log_set_callback, av_version_info};
-use ffmpeg_rs_raw::{av_log_redirect, rstr};
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::{AV_CODEC_ID_H264, AV_CODEC_ID_HEVC};
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
+    av_hwdevice_get_type_name, av_log_set_callback, av_version_info, avcodec_find_decoder,
+};
+use ffmpeg_rs_raw::{Decoder, av_log_redirect, rstr};
 use hyper::server::conn::http1;
 use hyper_util::rt::TokioIo;
-use log::{error, info};
+use log::{error, info, warn};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -43,6 +46,27 @@ async fn main() -> Result<()> {
     unsafe {
         av_log_set_callback(Some(av_log_redirect));
         info!("FFMPEG version={}", rstr!(av_version_info()));
+
+        let mut has_hw_accel = false;
+        let decoder = Decoder::new();
+        let h264_codec = avcodec_find_decoder(AV_CODEC_ID_H264);
+        for hw in decoder.list_supported_hw_accel(h264_codec) {
+            let device = av_hwdevice_get_type_name(hw);
+            info!("Supported HW accel=h264_{}", rstr!(device));
+            has_hw_accel = true;
+        }
+        let h265_codec = avcodec_find_decoder(AV_CODEC_ID_HEVC);
+        for hw in decoder.list_supported_hw_accel(h265_codec) {
+            let device = av_hwdevice_get_type_name(hw);
+            info!("Supported HW accel=h265_{}", rstr!(device));
+            has_hw_accel = true;
+        }
+
+        if !has_hw_accel {
+            warn!(
+                "No hardware acceleration detected, transcoding will be done entirely by the CPU!"
+            );
+        }
     }
 
     let builder = Config::builder()
