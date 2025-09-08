@@ -13,8 +13,11 @@ use fedimint_tonic_lnd::lnrpc::InvoiceSubscription;
 use fedimint_tonic_lnd::verrpc::VersionRequest;
 use log::{error, info, warn};
 use nostr_sdk::prelude::Coordinate;
-use nostr_sdk::{Client, Event, EventBuilder, JsonUtil, Keys, Kind, NostrSigner, Tag, ToBech32};
+use nostr_sdk::{
+    Client, Event, EventBuilder, JsonUtil, Keys, Kind, NostrSigner, Tag, Timestamp, ToBech32,
+};
 use std::collections::HashSet;
+use std::ops::Add;
 use std::path::PathBuf;
 use std::str::FromStr;
 use tokio::task::JoinHandle;
@@ -377,7 +380,19 @@ impl ZapStreamOverseer {
                 .to_bech32()?
             ),
         ])?);
-        Ok(EventBuilder::new(Kind::LiveEvent, "").tags(tags))
+
+        let mut eb = EventBuilder::new(Kind::LiveEvent, "").tags(tags);
+
+        // make sure this event is always newer
+        if let Some(previous_event) = &stream.event {
+            if let Ok(prev_event) = Event::from_json(previous_event) {
+                if prev_event.created_at >= Timestamp::now() {
+                    eb = eb.custom_created_at(prev_event.created_at.add(Timestamp::from_secs(1)));
+                }
+            }
+        }
+
+        Ok(eb)
     }
 
     pub async fn publish_stream_event(
