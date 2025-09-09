@@ -2,7 +2,6 @@ use crate::metrics::PacketMetrics;
 use crate::overseer::Overseer;
 use crate::pipeline::runner::{PipelineCommand, PipelineRunner};
 use anyhow::Result;
-use tracing::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::sync::Arc;
@@ -11,6 +10,7 @@ use std::time::Instant;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio_util::sync::CancellationToken;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 pub mod file;

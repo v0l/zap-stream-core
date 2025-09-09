@@ -9,7 +9,6 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
     AV_PROFILE_H264_MAIN, AVRational, av_frame_free, av_packet_free,
 };
 use ffmpeg_rs_raw::{Encoder, Muxer};
-use tracing::{info, warn};
 use ringbuf::traits::{Observer, Split};
 use ringbuf::{HeapCons, HeapRb};
 use std::io::Read;
@@ -20,6 +19,7 @@ use tokio::runtime::Handle;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 pub async fn listen(
@@ -160,51 +160,54 @@ impl TestPatternSrc {
         })
     }
 
-    pub unsafe fn next_pkt(&mut self) -> Result<()> { unsafe {
-        self.frame_gen.begin()?;
-        self.frame_gen.copy_frame_data(self.background.data())?;
-        self.frame_gen.write_text(
-            &format!("frame={}", self.frame_gen.frame_no()),
-            40.0,
-            5.0,
-            5.0,
-        )?;
+    pub unsafe fn next_pkt(&mut self) -> Result<()> {
+        unsafe {
+            self.frame_gen.begin()?;
+            self.frame_gen.copy_frame_data(self.background.data())?;
+            self.frame_gen.write_text(
+                &format!("frame={}", self.frame_gen.frame_no()),
+                40.0,
+                5.0,
+                5.0,
+            )?;
 
-        let mut frame = self.frame_gen.next()?;
-        if frame.is_null() {
-            return Ok(());
-        }
-
-        // if sample_rate is set this frame is audio
-        if (*frame).sample_rate > 0 {
-            for mut pkt in self.audio_encoder.encode_frame(frame)? {
-                self.data_sent += (*pkt).size as u64;
-                self.muxer.write_packet(pkt)?;
-                av_packet_free(&mut pkt);
+            let mut frame = self.frame_gen.next()?;
+            if frame.is_null() {
+                return Ok(());
             }
-        } else {
-            for mut pkt in self.video_encoder.encode_frame(frame)? {
-                self.data_sent += (*pkt).size as u64;
-                self.muxer.write_packet(pkt)?;
-                av_packet_free(&mut pkt);
-            }
-        }
 
-        av_frame_free(&mut frame);
-
-        let metric_duration = Instant::now().duration_since(self.last_metrics);
-        if metric_duration > Duration::from_secs(5) {
-            if let Err(e) = self.tx.send(PipelineCommand::IngressMetrics(EndpointStats {
-                name: "test".to_string(),
-                bitrate: ((self.data_sent as f64 / metric_duration.as_secs_f64()) * 8.0) as usize,
-            })) {
-                warn!("Failed to send pipeline metrics: {}", e);
+            // if sample_rate is set this frame is audio
+            if (*frame).sample_rate > 0 {
+                for mut pkt in self.audio_encoder.encode_frame(frame)? {
+                    self.data_sent += (*pkt).size as u64;
+                    self.muxer.write_packet(pkt)?;
+                    av_packet_free(&mut pkt);
+                }
+            } else {
+                for mut pkt in self.video_encoder.encode_frame(frame)? {
+                    self.data_sent += (*pkt).size as u64;
+                    self.muxer.write_packet(pkt)?;
+                    av_packet_free(&mut pkt);
+                }
             }
-            self.data_sent = 0;
-            self.last_metrics = Instant::now();
+
+            av_frame_free(&mut frame);
+
+            let metric_duration = Instant::now().duration_since(self.last_metrics);
+            if metric_duration > Duration::from_secs(5) {
+                if let Err(e) = self.tx.send(PipelineCommand::IngressMetrics(EndpointStats {
+                    name: "test".to_string(),
+                    bitrate: ((self.data_sent as f64 / metric_duration.as_secs_f64()) * 8.0)
+                        as usize,
+                })) {
+                    warn!("Failed to send pipeline metrics: {}", e);
+                }
+                self.data_sent = 0;
+                self.last_metrics = Instant::now();
+            }
+            Ok(())
         }
-        Ok(())
-    }}
+    }
 }
 
 impl Read for TestPatternSrc {

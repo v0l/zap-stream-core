@@ -7,18 +7,17 @@ use anyhow::{Result, bail, ensure};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_H264;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVMediaType::AVMEDIA_TYPE_VIDEO;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVIO_FLAG_WRITE, AVPacket, av_free,
-    av_get_bits_per_pixel, av_pix_fmt_desc_get, av_q2d, av_write_frame, avio_close, avio_flush,
-    avio_open, avio_size,
+    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVIO_FLAG_WRITE, AVPacket, av_free, av_get_bits_per_pixel,
+    av_pix_fmt_desc_get, av_q2d, av_write_frame, avio_close, avio_flush, avio_open, avio_size,
 };
 use ffmpeg_rs_raw::{Muxer, cstr};
-use tracing::{debug, info, trace, warn};
 use m3u8_rs::{ExtTag, MediaSegmentType, PartInf, PreloadHint};
 use std::collections::HashMap;
 use std::fs::{File, create_dir_all};
 use std::mem::transmute;
 use std::path::PathBuf;
 use std::ptr;
+use tracing::{debug, info, trace, warn};
 
 pub struct HlsVariant {
     /// Name of this variant (720p)
@@ -239,57 +238,61 @@ impl HlsVariant {
     }
 
     /// Process a single packet through the muxer
-    pub(crate) unsafe fn process_packet(&mut self, pkt: *mut AVPacket) -> Result<EgressResult> { unsafe {
-        let pkt_stream = *(*self.mux.context())
-            .streams
-            .add((*pkt).stream_index as usize);
+    pub(crate) unsafe fn process_packet(&mut self, pkt: *mut AVPacket) -> Result<EgressResult> {
+        unsafe {
+            let pkt_stream = *(*self.mux.context())
+                .streams
+                .add((*pkt).stream_index as usize);
 
-        let pkt_q = av_q2d((*pkt).time_base);
-        let mut result = EgressResult::None;
-        let stream_type = (*(*pkt_stream).codecpar).codec_type;
-        let mut can_split = stream_type == AVMEDIA_TYPE_VIDEO
-            && ((*pkt).flags & AV_PKT_FLAG_KEY == AV_PKT_FLAG_KEY);
-        let mut is_ref_pkt = (*pkt).stream_index == self.ref_stream_index;
+            let pkt_q = av_q2d((*pkt).time_base);
+            let mut result = EgressResult::None;
+            let stream_type = (*(*pkt_stream).codecpar).codec_type;
+            let mut can_split = stream_type == AVMEDIA_TYPE_VIDEO
+                && ((*pkt).flags & AV_PKT_FLAG_KEY == AV_PKT_FLAG_KEY);
+            let mut is_ref_pkt = (*pkt).stream_index == self.ref_stream_index;
 
-        if (*pkt).pts == AV_NOPTS_VALUE {
-            can_split = false;
-            is_ref_pkt = false;
-        }
-
-        if is_ref_pkt {
-            let pkt_duration = (*pkt).duration as f64 * pkt_q;
-            trace!(
-                "REF PKT index={}, pts={:.3}s, dur={:.3}s, flags={}",
-                (*pkt).stream_index,
-                (*pkt).pts as f64 * pkt_q,
-                pkt_duration,
-                (*pkt).flags
-            );
-        }
-        if is_ref_pkt && self.packets_written > 0 {
-            let pkt_pts = (*pkt).pts as f64 * pkt_q;
-            let cur_duration = pkt_pts - self.current_segment_start;
-            let cur_part_duration = pkt_pts - self.current_partial_start;
-
-            // check if current packet is keyframe, flush current segment
-            if can_split && cur_duration >= self.segment_length() as f64 {
-                result = self.split_next_seg(pkt_pts)?;
-            } else if self.low_latency && cur_part_duration >= self.partial_target_duration as f64 {
-                result = self.create_partial_segment(pkt_pts)?;
-                self.next_partial_independent = can_split;
+            if (*pkt).pts == AV_NOPTS_VALUE {
+                can_split = false;
+                is_ref_pkt = false;
             }
+
+            if is_ref_pkt {
+                let pkt_duration = (*pkt).duration as f64 * pkt_q;
+                trace!(
+                    "REF PKT index={}, pts={:.3}s, dur={:.3}s, flags={}",
+                    (*pkt).stream_index,
+                    (*pkt).pts as f64 * pkt_q,
+                    pkt_duration,
+                    (*pkt).flags
+                );
+            }
+            if is_ref_pkt && self.packets_written > 0 {
+                let pkt_pts = (*pkt).pts as f64 * pkt_q;
+                let cur_duration = pkt_pts - self.current_segment_start;
+                let cur_part_duration = pkt_pts - self.current_partial_start;
+
+                // check if current packet is keyframe, flush current segment
+                if can_split && cur_duration >= self.segment_length() as f64 {
+                    result = self.split_next_seg(pkt_pts)?;
+                } else if self.low_latency
+                    && cur_part_duration >= self.partial_target_duration as f64
+                {
+                    result = self.create_partial_segment(pkt_pts)?;
+                    self.next_partial_independent = can_split;
+                }
+            }
+
+            // write to current segment
+            self.mux.write_packet(pkt)?;
+            self.packets_written += 1;
+
+            Ok(result)
         }
+    }
 
-        // write to current segment
-        self.mux.write_packet(pkt)?;
-        self.packets_written += 1;
-
-        Ok(result)
-    }}
-
-    pub unsafe fn reset(&mut self) -> Result<()> { unsafe {
-        self.mux.close()
-    }}
+    pub unsafe fn reset(&mut self) -> Result<()> {
+        unsafe { self.mux.close() }
+    }
 
     /// Create a partial segment for LL-HLS
     fn create_partial_segment(&mut self, next_pkt_start: f64) -> Result<EgressResult> {
@@ -340,141 +343,146 @@ impl HlsVariant {
     }
 
     /// Create initialization segment for fMP4
-    unsafe fn create_init_segment(&mut self) -> Result<()> { unsafe {
-        if self.segment_type != SegmentType::FMP4 || self.init_segment_path.is_some() {
-            return Ok(());
+    unsafe fn create_init_segment(&mut self) -> Result<()> {
+        unsafe {
+            if self.segment_type != SegmentType::FMP4 || self.init_segment_path.is_some() {
+                return Ok(());
+            }
+
+            let init_path = self.out_dir.join("init.mp4").to_string_lossy().to_string();
+
+            // Create a temporary muxer for initialization segment
+            let mut init_opts = HashMap::new();
+            init_opts.insert(
+                "movflags".to_string(),
+                "+frag_keyframe+empty_moov+omit_tfhd_offset+separate_moof+default_base_moof"
+                    .to_string(),
+            );
+
+            let mut init_mux = Muxer::builder()
+                .with_output_path(init_path.as_str(), Some("mp4"))?
+                .build()?;
+
+            // Copy stream parameters from main muxer
+            let main_ctx = self.mux.context();
+            for i in 0..(*main_ctx).nb_streams {
+                let src_stream = *(*main_ctx).streams.add(i as usize);
+                let s = init_mux.add_copy_stream(src_stream)?;
+                ensure!((*s).index == (*src_stream).index, "Stream index mismatch");
+            }
+
+            init_mux.open(Some(init_opts))?;
+            av_write_frame(init_mux.context(), ptr::null_mut());
+            init_mux.close()?;
+
+            self.init_segment_path = Some("init.mp4".to_string());
+            info!("Created fMP4 initialization segment: {}", init_path);
+
+            Ok(())
         }
-
-        let init_path = self.out_dir.join("init.mp4").to_string_lossy().to_string();
-
-        // Create a temporary muxer for initialization segment
-        let mut init_opts = HashMap::new();
-        init_opts.insert(
-            "movflags".to_string(),
-            "+frag_keyframe+empty_moov+omit_tfhd_offset+separate_moof+default_base_moof"
-                .to_string(),
-        );
-
-        let mut init_mux = Muxer::builder()
-            .with_output_path(init_path.as_str(), Some("mp4"))?
-            .build()?;
-
-        // Copy stream parameters from main muxer
-        let main_ctx = self.mux.context();
-        for i in 0..(*main_ctx).nb_streams {
-            let src_stream = *(*main_ctx).streams.add(i as usize);
-            let s = init_mux.add_copy_stream(src_stream)?;
-            ensure!((*s).index == (*src_stream).index, "Stream index mismatch");
-        }
-
-        init_mux.open(Some(init_opts))?;
-        av_write_frame(init_mux.context(), ptr::null_mut());
-        init_mux.close()?;
-
-        self.init_segment_path = Some("init.mp4".to_string());
-        info!("Created fMP4 initialization segment: {}", init_path);
-
-        Ok(())
-    }}
+    }
 
     /// Reset the muxer state and start the next segment
-    unsafe fn split_next_seg(&mut self, next_pkt_start: f64) -> Result<EgressResult> { unsafe {
-        let completed_segment_idx = self.idx;
-        self.idx += 1;
-        self.current_partial_index = 0;
+    unsafe fn split_next_seg(&mut self, next_pkt_start: f64) -> Result<EgressResult> {
+        unsafe {
+            let completed_segment_idx = self.idx;
+            self.idx += 1;
+            self.current_partial_index = 0;
 
-        // Create initialization segment after first segment completion
-        // This ensures the init segment has the correct timebase from the encoder
-        if self.segment_type == SegmentType::FMP4
-            && self.init_segment_path.is_none()
-            && completed_segment_idx == 1
-        {
-            self.create_init_segment()?;
-        }
+            // Create initialization segment after first segment completion
+            // This ensures the init segment has the correct timebase from the encoder
+            if self.segment_type == SegmentType::FMP4
+                && self.init_segment_path.is_none()
+                && completed_segment_idx == 1
+            {
+                self.create_init_segment()?;
+            }
 
-        // Manually reset muxer avio
-        let ctx = self.mux.context();
-        let ret = av_write_frame(ctx, ptr::null_mut());
-        if ret < 0 {
-            bail!("Failed to split segment {}", ret);
-        }
-        avio_flush((*ctx).pb);
-        avio_close((*ctx).pb);
-        av_free((*ctx).url as *mut _);
+            // Manually reset muxer avio
+            let ctx = self.mux.context();
+            let ret = av_write_frame(ctx, ptr::null_mut());
+            if ret < 0 {
+                bail!("Failed to split segment {}", ret);
+            }
+            avio_flush((*ctx).pb);
+            avio_close((*ctx).pb);
+            av_free((*ctx).url as *mut _);
 
-        let next_seg_url = self.map_segment_path(self.idx, self.segment_type);
-        (*ctx).url = cstr!(next_seg_url.to_str().unwrap());
+            let next_seg_url = self.map_segment_path(self.idx, self.segment_type);
+            (*ctx).url = cstr!(next_seg_url.to_str().unwrap());
 
-        let ret = avio_open(&mut (*ctx).pb, (*ctx).url, AVIO_FLAG_WRITE);
-        if ret < 0 {
-            bail!("Failed to re-init avio");
-        }
+            let ret = avio_open(&mut (*ctx).pb, (*ctx).url, AVIO_FLAG_WRITE);
+            if ret < 0 {
+                bail!("Failed to re-init avio");
+            }
 
-        // Log the completed segment (previous index), not the next one
-        let completed_seg_path = self.map_segment_path(completed_segment_idx, self.segment_type);
-        let segment_size = completed_seg_path.metadata().map(|m| m.len()).unwrap_or(0);
+            // Log the completed segment (previous index), not the next one
+            let completed_seg_path =
+                self.map_segment_path(completed_segment_idx, self.segment_type);
+            let segment_size = completed_seg_path.metadata().map(|m| m.len()).unwrap_or(0);
 
-        let cur_duration = next_pkt_start - self.current_segment_start;
-        debug!(
-            "Finished segment {} [{:.3}s, {:.2} kB, {} pkts]",
-            completed_seg_path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy(),
-            cur_duration,
-            segment_size as f32 / 1024f32,
-            self.packets_written
-        );
+            let cur_duration = next_pkt_start - self.current_segment_start;
+            debug!(
+                "Finished segment {} [{:.3}s, {:.2} kB, {} pkts]",
+                completed_seg_path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy(),
+                cur_duration,
+                segment_size as f32 / 1024f32,
+                self.packets_written
+            );
 
-        let video_var_id = *self
-            .video_stream()
-            .unwrap_or(self.streams.first().unwrap())
-            .id();
+            let video_var_id = *self
+                .video_stream()
+                .unwrap_or(self.streams.first().unwrap())
+                .id();
 
-        // cleanup old segments
-        let deleted = self
-            .clean_segments()?
-            .into_iter()
-            .map(|seg| EgressSegment {
+            // cleanup old segments
+            let deleted = self
+                .clean_segments()?
+                .into_iter()
+                .map(|seg| EgressSegment {
+                    variant: video_var_id,
+                    idx: seg.index,
+                    duration: seg.duration,
+                    path: self.map_segment_path(seg.index, self.segment_type),
+                    sha256: seg.sha256,
+                })
+                .collect();
+
+            let hash = {
+                let mut f = File::open(&completed_seg_path)?;
+                hash_file_sync(&mut f)
+            }?;
+            // emit result of the previously completed segment,
+            let created = EgressSegment {
                 variant: video_var_id,
-                idx: seg.index,
-                duration: seg.duration,
-                path: self.map_segment_path(seg.index, self.segment_type),
-                sha256: seg.sha256,
+                idx: completed_segment_idx,
+                duration: cur_duration as f32,
+                path: completed_seg_path,
+                sha256: hash,
+            };
+
+            self.segments.push(HlsSegment::Full(SegmentInfo {
+                index: completed_segment_idx,
+                duration: cur_duration as f32,
+                kind: self.segment_type,
+                sha256: hash,
+            }));
+
+            self.write_playlist()?;
+
+            // Reset counters for next segment
+            self.packets_written = 0;
+            self.current_segment_start = next_pkt_start;
+
+            Ok(EgressResult::Segments {
+                created: vec![created],
+                deleted,
             })
-            .collect();
-
-        let hash = {
-            let mut f = File::open(&completed_seg_path)?;
-            hash_file_sync(&mut f)
-        }?;
-        // emit result of the previously completed segment,
-        let created = EgressSegment {
-            variant: video_var_id,
-            idx: completed_segment_idx,
-            duration: cur_duration as f32,
-            path: completed_seg_path,
-            sha256: hash,
-        };
-
-        self.segments.push(HlsSegment::Full(SegmentInfo {
-            index: completed_segment_idx,
-            duration: cur_duration as f32,
-            kind: self.segment_type,
-            sha256: hash,
-        }));
-
-        self.write_playlist()?;
-
-        // Reset counters for next segment
-        self.packets_written = 0;
-        self.current_segment_start = next_pkt_start;
-
-        Ok(EgressResult::Segments {
-            created: vec![created],
-            deleted,
-        })
-    }}
+        }
+    }
 
     pub fn video_stream(&self) -> Option<&HlsVariantStream> {
         self.streams
@@ -506,23 +514,24 @@ impl HlsVariant {
         };
         let mut ret = vec![];
         if let Some(seg_match) = drain_from_hls_segment
-            && let Some(drain_pos) = self.segments.iter().position(|e| e == seg_match) {
-                for seg in self.segments.drain(..drain_pos) {
-                    if let HlsSegment::Full(seg) = seg {
-                        let seg_path = self.out_dir.join(seg.filename());
-                        if let Err(e) = std::fs::remove_file(&seg_path) {
-                            warn!(
-                                "Failed to remove segment file: {} {}",
-                                seg_path.display(),
-                                e
-                            );
-                        }
-                        trace!("Removed segment file: {}", seg_path.display());
-
-                        ret.push(seg);
+            && let Some(drain_pos) = self.segments.iter().position(|e| e == seg_match)
+        {
+            for seg in self.segments.drain(..drain_pos) {
+                if let HlsSegment::Full(seg) = seg {
+                    let seg_path = self.out_dir.join(seg.filename());
+                    if let Err(e) = std::fs::remove_file(&seg_path) {
+                        warn!(
+                            "Failed to remove segment file: {} {}",
+                            seg_path.display(),
+                            e
+                        );
                     }
+                    trace!("Removed segment file: {}", seg_path.display());
+
+                    ret.push(seg);
                 }
             }
+        }
 
         Ok(ret)
     }
@@ -547,12 +556,13 @@ impl HlsVariant {
 
         // Add EXT-X-MAP initialization segment for fMP4
         if self.segment_type == SegmentType::FMP4
-            && let Some(ref init_path) = self.init_segment_path {
-                pl.unknown_tags.push(ExtTag {
-                    tag: "X-MAP".to_string(),
-                    rest: Some(format!("URI=\"{}\"", init_path)),
-                });
-            }
+            && let Some(ref init_path) = self.init_segment_path
+        {
+            pl.unknown_tags.push(ExtTag {
+                tag: "X-MAP".to_string(),
+                rest: Some(format!("URI=\"{}\"", init_path)),
+            });
+        }
 
         // append segment preload for next part segment
         if let Some(HlsSegment::Partial(partial)) = self.segments.last() {
@@ -591,49 +601,51 @@ impl HlsVariant {
         Ok(())
     }
 
-    unsafe fn to_codec_attr(&self) -> Option<String> { unsafe {
-        let mut codecs = Vec::new();
+    unsafe fn to_codec_attr(&self) -> Option<String> {
+        unsafe {
+            let mut codecs = Vec::new();
 
-        // Find video and audio streams and build codec string
-        for stream in &self.streams {
-            let av_stream = *(*self.mux.context()).streams.add(*stream.index());
-            let p = (*av_stream).codecpar;
+            // Find video and audio streams and build codec string
+            for stream in &self.streams {
+                let av_stream = *(*self.mux.context()).streams.add(*stream.index());
+                let p = (*av_stream).codecpar;
 
-            match stream {
-                HlsVariantStream::Video { .. } => {
-                    if (*p).codec_id == AV_CODEC_ID_H264 {
-                        // Use profile and level from codec parameters
-                        let profile_idc = (*p).profile as u8;
-                        let level_idc = (*p).level as u8;
+                match stream {
+                    HlsVariantStream::Video { .. } => {
+                        if (*p).codec_id == AV_CODEC_ID_H264 {
+                            // Use profile and level from codec parameters
+                            let profile_idc = (*p).profile as u8;
+                            let level_idc = (*p).level as u8;
 
-                        // For H.264, constraint flags are typically 0 unless specified
-                        // Common constraint flags: 0x40 (constraint_set1_flag) for baseline
-                        let constraint_flags = match profile_idc {
-                            66 => 0x40, // Baseline profile
-                            _ => 0x00,  // Main/High profiles typically have no constraints
-                        };
+                            // For H.264, constraint flags are typically 0 unless specified
+                            // Common constraint flags: 0x40 (constraint_set1_flag) for baseline
+                            let constraint_flags = match profile_idc {
+                                66 => 0x40, // Baseline profile
+                                _ => 0x00,  // Main/High profiles typically have no constraints
+                            };
 
-                        let avc1_code = format!(
-                            "avc1.{:02x}{:02x}{:02x}",
-                            profile_idc, constraint_flags, level_idc
-                        );
-                        codecs.push(avc1_code);
+                            let avc1_code = format!(
+                                "avc1.{:02x}{:02x}{:02x}",
+                                profile_idc, constraint_flags, level_idc
+                            );
+                            codecs.push(avc1_code);
+                        }
                     }
+                    HlsVariantStream::Audio { .. } => {
+                        // Standard AAC-LC codec string
+                        codecs.push("mp4a.40.2".to_string());
+                    }
+                    _ => {}
                 }
-                HlsVariantStream::Audio { .. } => {
-                    // Standard AAC-LC codec string
-                    codecs.push("mp4a.40.2".to_string());
-                }
-                _ => {}
+            }
+
+            if codecs.is_empty() {
+                None
+            } else {
+                Some(codecs.join(","))
             }
         }
-
-        if codecs.is_empty() {
-            None
-        } else {
-            Some(codecs.join(","))
-        }
-    }}
+    }
 
     pub fn to_playlist_variant(&self) -> m3u8_rs::VariantStream {
         unsafe {

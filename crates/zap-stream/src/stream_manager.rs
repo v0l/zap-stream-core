@@ -2,7 +2,6 @@ use crate::viewer::ViewerTracker;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
-use tracing::{info, warn};
 use nostr_sdk::serde_json;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
@@ -12,6 +11,7 @@ use std::time::Duration;
 use tokio::sync::{RwLock, broadcast};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use tracing::{info, warn};
 use zap_stream_core::ingress::EndpointStats;
 
 #[derive(Clone)]

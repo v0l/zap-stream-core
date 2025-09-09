@@ -14,7 +14,6 @@ use hyper::body::Incoming;
 use hyper::{Method, Request, Response};
 #[cfg(feature = "zap-stream")]
 use lnurl::pay::{LnURLPayInvoice, PayResponse};
-use tracing::{error, info, warn};
 use matchit::Router;
 use nostr_sdk::prelude::EventDeletionRequest;
 use nostr_sdk::{Client, NostrSigner, PublicKey, serde_json};
@@ -23,6 +22,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
+use tracing::{error, info, warn};
 use uuid::Uuid;
 use zap_stream_core::egress::hls::HlsEgress;
 use zap_stream_core::listen::ListenerEndpoint;
@@ -655,12 +655,13 @@ impl Api {
         let uid = self.db.upsert_user(&pubkey.to_bytes()).await?;
 
         if let Some(accept_tos) = account.accept_tos
-            && accept_tos {
-                let user = self.db.get_user(uid).await?;
-                if user.tos_accepted.is_none() {
-                    self.db.accept_tos(uid).await?;
-                }
+            && accept_tos
+        {
+            let user = self.db.get_user(uid).await?;
+            if user.tos_accepted.is_none() {
+                self.db.accept_tos(uid).await?;
             }
+        }
 
         Ok(())
     }
@@ -1012,22 +1013,23 @@ impl Api {
 
         // Publish Nostr deletion request event if the stream has an associated event
         if let Some(event_json) = &stream.event
-            && let Ok(stream_event) = serde_json::from_str::<nostr_sdk::Event>(event_json) {
-                let deletion_event = nostr_sdk::EventBuilder::delete(
-                    EventDeletionRequest::new()
-                        .id(stream_event.id)
-                        .coordinate(stream_event.coordinate().unwrap().into_owned()),
-                );
+            && let Ok(stream_event) = serde_json::from_str::<nostr_sdk::Event>(event_json)
+        {
+            let deletion_event = nostr_sdk::EventBuilder::delete(
+                EventDeletionRequest::new()
+                    .id(stream_event.id)
+                    .coordinate(stream_event.coordinate().unwrap().into_owned()),
+            );
 
-                if let Err(e) = self.nostr_client.send_event_builder(deletion_event).await {
-                    warn!(
-                        "Failed to publish deletion event for stream {}: {}",
-                        stream_id, e
-                    );
-                } else {
-                    info!("Published deletion request event for stream {}", stream_id);
-                }
+            if let Err(e) = self.nostr_client.send_event_builder(deletion_event).await {
+                warn!(
+                    "Failed to publish deletion event for stream {}: {}",
+                    stream_id, e
+                );
+            } else {
+                info!("Published deletion request event for stream {}", stream_id);
             }
+        }
 
         // Log admin action if this is an admin deleting someone else's stream
         if is_admin && stream.user_id != uid {
@@ -1165,29 +1167,30 @@ impl Api {
         }
 
         if let Some(credit_amount) = req.add_credit
-            && credit_amount > 0 {
-                self.db
-                    .add_admin_credit(uid, credit_amount, req.memo.as_deref())
-                    .await?;
+            && credit_amount > 0
+        {
+            self.db
+                .add_admin_credit(uid, credit_amount, req.memo.as_deref())
+                .await?;
 
-                // Log admin action
-                let message = format!("Added {} credits to user {}", credit_amount, uid);
-                let metadata = serde_json::json!({
-                    "target_user_id": uid,
-                    "credit_amount": credit_amount,
-                    "memo": req.memo
-                });
-                self.db
-                    .log_admin_action(
-                        admin_uid,
-                        "add_credit",
-                        Some("user"),
-                        Some(&uid.to_string()),
-                        &message,
-                        Some(&metadata.to_string()),
-                    )
-                    .await?;
-            }
+            // Log admin action
+            let message = format!("Added {} credits to user {}", credit_amount, uid);
+            let metadata = serde_json::json!({
+                "target_user_id": uid,
+                "credit_amount": credit_amount,
+                "memo": req.memo
+            });
+            self.db
+                .log_admin_action(
+                    admin_uid,
+                    "add_credit",
+                    Some("user"),
+                    Some(&uid.to_string()),
+                    &message,
+                    Some(&metadata.to_string()),
+                )
+                .await?;
+        }
 
         // Update user default stream details if any are provided
         if req.title.is_some()

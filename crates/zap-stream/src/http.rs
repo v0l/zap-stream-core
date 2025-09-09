@@ -13,7 +13,6 @@ use hyper::body::{Frame, Incoming};
 use hyper::http::response::Builder;
 use hyper::service::Service;
 use hyper::{Request, Response, StatusCode};
-use tracing::{error, warn};
 use matchit::Router;
 use serde::Serialize;
 use std::borrow::Cow;
@@ -27,6 +26,7 @@ use std::task::Poll;
 use tokio::fs::File;
 use tokio::io::{AsyncRead, AsyncSeek, ReadBuf};
 use tokio_util::io::ReaderStream;
+use tracing::{error, warn};
 use uuid::Uuid;
 use zap_stream_core::egress::hls::HlsEgress;
 

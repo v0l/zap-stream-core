@@ -1,8 +1,8 @@
 use crate::ingress::EndpointStats;
 use crate::pipeline::runner::PipelineCommand;
-use tracing::{debug, warn};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::UnboundedSender;
+use tracing::{debug, warn};
 
 /// Generic packet metrics collection for ingress and egress components
 #[derive(Debug, Clone)]

@@ -34,6 +34,8 @@ tiny-skia = "0.11.4"
 fontdue = "0.9.2"
 ringbuf = "0.4.7"
 libc = "0.2.175"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2.3"
 
 # srt
 srt-tokio = { version = "0.4.4", optional = true }

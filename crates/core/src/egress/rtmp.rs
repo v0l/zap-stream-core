@@ -6,7 +6,6 @@ use bytes::{BufMut, Bytes, BytesMut};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
     AVPacket, av_packet_clone, av_packet_copy_props, av_q2d,
 };
-use tracing::{error, info, trace, warn};
 use rml_rtmp::chunk_io::Packet;
 use rml_rtmp::handshake::{Handshake, HandshakeProcessResult, PeerType};
 use rml_rtmp::sessions::{
@@ -20,6 +19,7 @@ use std::io::Write;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tracing::{error, info, trace, warn};
 use url::Url;
 use uuid::Uuid;
 use xflv::errors::FlvMuxerError;

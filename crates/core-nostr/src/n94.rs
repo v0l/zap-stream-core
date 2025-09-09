@@ -1,7 +1,6 @@
 use crate::blossom::{BlobDescriptor, Blossom};
 use anyhow::{Result, bail};
 use futures::future::join_all;
-use tracing::{info, warn};
 use nostr_sdk::prelude::EventDeletionRequest;
 use nostr_sdk::{Client, Event, EventBuilder, EventId, Kind, RelayUrl, Tag, Timestamp};
 use std::collections::HashMap;
@@ -11,6 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::{Mutex, mpsc};
+use tracing::{info, warn};
 
 #[derive(Clone, Default)]
 pub struct N94StreamInfo {

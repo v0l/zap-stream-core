@@ -4,7 +4,6 @@ use crate::pipeline::runner::PipelineCommand;
 use anyhow::Result;
 use futures_util::StreamExt;
 use futures_util::stream::FusedStream;
-use tracing::info;
 use srt_tokio::{SrtListener, SrtSocket};
 use std::io::Read;
 use std::net::SocketAddr;
@@ -12,6 +11,7 @@ use std::sync::Arc;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio_util::sync::CancellationToken;
+use tracing::info;
 use uuid::Uuid;
 
 const MAX_SRT_BUFFER_SIZE: usize = 10 * 1024 * 1024; // 10MB limit

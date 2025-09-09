@@ -1,8 +1,8 @@
 use data_encoding::BASE32_NOPAD;
-use tracing::debug;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+use tracing::debug;
 
 pub struct ViewerInfo {
     pub stream_id: String,

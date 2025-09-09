@@ -1,13 +1,13 @@
 use anyhow::{Result, bail};
 use chrono::Utc;
 use clap::Parser;
-use tracing::{error, info};
 use nostr_sdk::{Client, EventBuilder, Filter, Keys, Kind, NostrSigner, Tag, TagKind, Url};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
+use tracing::{error, info};
 use zap_stream_core::egress::EgressSegment;
 use zap_stream_core::endpoint::{
     EndpointCapability, get_variants_from_endpoint, parse_capabilities,

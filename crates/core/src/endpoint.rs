@@ -7,9 +7,9 @@ use anyhow::Result;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{av_get_sample_fmt_name, avcodec_get_name};
 use ffmpeg_rs_raw::rstr;
-use tracing::{info, warn};
 use std::fmt::{Display, Formatter};
 use std::mem::transmute;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 pub struct EndpointConfig<'a> {

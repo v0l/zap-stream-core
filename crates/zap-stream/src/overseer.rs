@@ -11,7 +11,6 @@ use fedimint_tonic_lnd::invoicesrpc::lookup_invoice_msg::InvoiceRef;
 use fedimint_tonic_lnd::lnrpc::InvoiceSubscription;
 #[cfg(feature = "zap-stream")]
 use fedimint_tonic_lnd::verrpc::VersionRequest;
-use tracing::{error, info, warn};
 use nostr_sdk::prelude::Coordinate;
 use nostr_sdk::{
     Client, Event, EventBuilder, JsonUtil, Keys, Kind, NostrSigner, Tag, Timestamp, ToBech32,
@@ -22,6 +21,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use tracing::{error, info, warn};
 use url::Url;
 use uuid::Uuid;
 use zap_stream_core::egress::EgressSegment;
@@ -384,13 +384,11 @@ impl ZapStreamOverseer {
         let mut eb = EventBuilder::new(Kind::LiveEvent, "").tags(tags);
 
         // make sure this event is always newer
-        if let Some(previous_event) = &stream.event {
-            if let Ok(prev_event) = Event::from_json(previous_event) {
-                if prev_event.created_at >= Timestamp::now() {
+        if let Some(previous_event) = &stream.event
+            && let Ok(prev_event) = Event::from_json(previous_event)
+                && prev_event.created_at >= Timestamp::now() {
                     eb = eb.custom_created_at(prev_event.created_at.add(Timestamp::from_secs(1)));
                 }
-            }
-        }
 
         Ok(eb)
     }

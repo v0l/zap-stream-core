@@ -1,10 +1,10 @@
 use crate::ingress::{ConnectionInfo, spawn_pipeline};
 use crate::overseer::Overseer;
 use anyhow::Result;
-use tracing::info;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::runtime::Handle;
+use tracing::info;
 use uuid::Uuid;
 
 pub async fn listen(out_dir: String, path: PathBuf, overseer: Arc<dyn Overseer>) -> Result<()> {

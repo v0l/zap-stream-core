@@ -1,13 +1,13 @@
 use crate::hash_file;
 use anyhow::Result;
 use base64::Engine;
-use tracing::error;
 use nostr_sdk::{EventBuilder, JsonUtil, Kind, NostrSigner, Tag, Timestamp, serde_json};
 use serde::{Deserialize, Serialize};
 use std::ops::Add;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::fs::File;
+use tracing::error;
 use url::Url;
 
 #[derive(Clone)]
