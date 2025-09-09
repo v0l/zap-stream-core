@@ -7,18 +7,22 @@ use clap::Parser;
 use config::Config;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::{AV_CODEC_ID_H264, AV_CODEC_ID_HEVC};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    av_hwdevice_get_type_name, av_log_set_callback, av_version_info, avcodec_find_decoder,
+    AV_LOG_DEBUG, AV_LOG_ERROR, AV_LOG_FATAL, AV_LOG_INFO, AV_LOG_PANIC, AV_LOG_WARNING,
+    av_hwdevice_get_type_name, av_log_format_line, av_log_set_callback, av_version_info,
+    avcodec_find_decoder,
 };
-use ffmpeg_rs_raw::{Decoder, av_log_redirect, rstr};
+use ffmpeg_rs_raw::{Decoder, ffmpeg_sys_the_third, rstr};
 use hyper::server::conn::http1;
 use hyper_util::rt::TokioIo;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::ptr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
+use tracing::log::log;
 use tracing::{error, info, warn};
 use zap_stream_core::listen::try_create_listener;
 use zap_stream_core::overseer::Overseer;
@@ -34,6 +38,50 @@ mod websocket_metrics;
 
 #[derive(Parser, Debug)]
 struct Args {}
+
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "aarch64")))]
+type VaList = ffmpeg_sys_the_third::va_list;
+#[cfg(all(target_os = "linux", not(target_arch = "aarch64")))]
+type VaList = *mut ffmpeg_sys_the_third::__va_list_tag;
+#[cfg(target_os = "android")]
+type VaList = [u64; 4];
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn av_log_redirect(
+    av_class: *mut libc::c_void,
+    level: libc::c_int,
+    fmt: *const libc::c_char,
+    args: VaList,
+) {
+    use ffmpeg_sys_the_third::*;
+    let mut buf: [u8; 1024] = [0; 1024];
+    let mut prefix: libc::c_int = 1;
+    av_log_format_line(
+        av_class,
+        level,
+        fmt,
+        args,
+        buf.as_mut_ptr() as *mut libc::c_char,
+        1024,
+        ptr::addr_of_mut!(prefix),
+    );
+    let msg = String::from_utf8_lossy(buf.as_slice());
+    match level {
+        AV_LOG_DEBUG => {
+            tracing::debug!(target: "ffmpeg", "{}", msg)
+        }
+        AV_LOG_WARNING => {
+            tracing::warn!(target: "ffmpeg", "{}", msg)
+        }
+        AV_LOG_INFO => {
+            tracing::info!(target: "ffmpeg", "{}", msg)
+        }
+        AV_LOG_ERROR | AV_LOG_PANIC | AV_LOG_FATAL => {
+            tracing::error!(target: "ffmpeg", "{}", msg)
+        }
+        _ => tracing::trace!(target: "ffmpeg", "{}", msg),
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -95,7 +143,7 @@ async fn main() -> Result<()> {
         info!("Shutdown requested!");
         shutdown_sig.cancel();
     })
-    .expect("Error setting Ctrl-C handler");
+        .expect("Error setting Ctrl-C handler");
 
     // create ingest endpoints
     let overseer = overseer as Arc<dyn Overseer>;

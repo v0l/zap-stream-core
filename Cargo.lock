@@ -6117,6 +6117,7 @@ dependencies = [
  "hyper 1.6.0",
  "hyper-tungstenite",
  "hyper-util",
+ "libc",
  "lnurl-rs",
  "m3u8-rs",
  "matchit 0.8.6",
