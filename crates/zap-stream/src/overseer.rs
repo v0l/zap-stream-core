@@ -609,26 +609,53 @@ impl Overseer for ZapStreamOverseer {
 
         let stream_id = connection.id;
 
+        let (current_live, last_ended, last_ended_id) = self.db.get_user_prev_streams(uid).await?;
+
+        // check if the user is not live right now and has a stream that ended in the past 2mins
+        // otherwise we will resume the previous stream event
+        let has_recent_stream = current_live == 0
+            && last_ended
+                .map(|v| v.timestamp().abs_diff(Utc::now().timestamp()) < 120)
+                .unwrap_or(false);
+
         let mut new_stream = match &user_key {
             StreamKeyType::Primary(_) => {
-                let new_stream = UserStream {
-                    id: stream_id.to_string(),
-                    user_id: uid,
-                    starts: Utc::now(),
-                    state: UserStreamState::Live,
-                    endpoint_id: Some(endpoint.id),
-                    title: user.title.clone(),
-                    summary: user.summary.clone(),
-                    thumb: user.image.clone(),
-                    content_warning: user.content_warning.clone(),
-                    goal: user.goal.clone(),
-                    tags: user.tags.clone(),
-                    node_name: Some(self.node_name.clone()),
-                    ..Default::default()
-                };
+                if !has_recent_stream {
+                    // start a new stream
+                    let new_stream = UserStream {
+                        id: stream_id.to_string(),
+                        user_id: uid,
+                        starts: Utc::now(),
+                        state: UserStreamState::Live,
+                        endpoint_id: Some(endpoint.id),
+                        title: user.title.clone(),
+                        summary: user.summary.clone(),
+                        thumb: user.image.clone(),
+                        content_warning: user.content_warning.clone(),
+                        goal: user.goal.clone(),
+                        tags: user.tags.clone(),
+                        node_name: Some(self.node_name.clone()),
+                        ..Default::default()
+                    };
 
-                self.db.insert_stream(&new_stream).await?;
-                new_stream
+                    self.db.insert_stream(&new_stream).await?;
+                    new_stream
+                } else {
+                    // resume previously ended stream
+                    let stream_uuid = Uuid::parse_str(
+                        &last_ended_id
+                            .context("Expected stream id of last stream was not found")?,
+                    )
+                    .map_err(|e| anyhow!("Invalid stream key {} {}", stream_id, e))?;
+
+                    let mut stream = self.db.get_stream(&stream_uuid).await?;
+
+                    stream.state = UserStreamState::Live;
+                    stream.node_name = Some(self.node_name.clone());
+                    stream.endpoint_id = Some(endpoint.id);
+                    stream.ends = None;
+                    stream
+                }
             }
             StreamKeyType::FixedEventKey { stream_id, .. } => {
                 let stream_uuid = Uuid::parse_str(stream_id)

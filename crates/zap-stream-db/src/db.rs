@@ -3,6 +3,7 @@ use crate::{
     UserStream, UserStreamForward, UserStreamKey,
 };
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use rand::random;
 use sqlx::{MySqlPool, Row};
 use uuid::Uuid;
@@ -725,5 +726,31 @@ impl ZapStreamDb {
         .await?;
 
         Ok((logs, total as u64))
+    }
+
+    /// Get number of live streams and last stream ended timestamp for a user
+    pub async fn get_user_prev_streams(
+        &self,
+        user_id: u64,
+    ) -> Result<(u64, Option<DateTime<Utc>>, Option<String>)> {
+        let row = sqlx::query(
+            "select 
+                count(case when state = 2 then 1 end) as live_count,
+                (select ends from user_stream where user_id = ? and state = 3 order by ends desc limit 1) as last_ended,
+                (select id from user_stream where user_id = ? and state = 3 order by ends desc limit 1) as last_stream_id
+             from user_stream 
+             where user_id = ? and state = 2",
+        )
+        .bind(user_id)
+        .bind(user_id)
+        .bind(user_id)
+        .fetch_one(&self.db)
+        .await?;
+
+        let live_count: i64 = row.try_get("live_count")?;
+        let last_ended: Option<DateTime<Utc>> = row.try_get("last_ended")?;
+        let last_stream_id: Option<String> = row.try_get("last_stream_id")?;
+
+        Ok((live_count as u64, last_ended, last_stream_id))
     }
 }
