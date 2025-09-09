@@ -6,7 +6,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
     AVPacket, av_packet_clone, av_packet_copy_props, av_q2d,
 };
-use log::{error, info, trace, warn};
+use tracing::{error, info, trace, warn};
 use rml_rtmp::chunk_io::Packet;
 use rml_rtmp::handshake::{Handshake, HandshakeProcessResult, PeerType};
 use rml_rtmp::sessions::{

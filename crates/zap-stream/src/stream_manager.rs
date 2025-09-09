@@ -2,7 +2,7 @@ use crate::viewer::ViewerTracker;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
-use log::{info, warn};
+use tracing::{info, warn};
 use nostr_sdk::serde_json;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};

@@ -303,14 +303,14 @@ impl HlsTimingTester {
 
                 let mut frame = frame_gen.next()?;
                 if frame.is_null() {
-                    log::warn!("FrameGenerator returned null frame unexpectedly");
+                    tracing::warn!("FrameGenerator returned null frame unexpectedly");
                     break;
                 }
 
                 // Determine if this is audio or video frame and encode accordingly
                 if (*frame).sample_rate > 0 {
                     // Audio frame - don't increment video counter
-                    log::debug!("Generated audio frame, PTS: {}", (*frame).pts);
+                    tracing::debug!("Generated audio frame, PTS: {}", (*frame).pts);
                     for mut pkt in audio_encoder.encode_frame(frame)? {
                         let result = hls_muxer.mux_packet(pkt, &audio_stream.id())?;
                         if let crate::egress::EgressResult::Segments {
@@ -319,14 +319,14 @@ impl HlsTimingTester {
                         } = result
                         {
                             for segment in created {
-                                log::debug!("Created audio segment: {:?}", segment.path);
+                                tracing::debug!("Created audio segment: {:?}", segment.path);
                             }
                         }
                         ffmpeg_rs_raw::ffmpeg_sys_the_third::av_packet_free(&mut pkt);
                     }
                 } else {
                     // Video frame - increment video counter
-                    log::debug!(
+                    tracing::debug!(
                         "Generated video frame {}, PTS: {}",
                         video_frames_generated,
                         (*frame).pts
@@ -339,7 +339,7 @@ impl HlsTimingTester {
                         } = result
                         {
                             for segment in created {
-                                log::debug!("Created video segment: {:?}", segment.path);
+                                tracing::debug!("Created video segment: {:?}", segment.path);
                             }
                         }
                         ffmpeg_rs_raw::ffmpeg_sys_the_third::av_packet_free(&mut pkt);
@@ -366,7 +366,7 @@ impl HlsTimingTester {
             }
         }
 
-        log::info!(
+        tracing::info!(
             "Generated {} video frames ({:.1}s) of test HLS stream at {:?}",
             video_frames_generated,
             video_frames_generated as f32 / VIDEO_FPS,
@@ -376,11 +376,11 @@ impl HlsTimingTester {
         // Debug: List what files were actually created
         if let Ok(entries) = std::fs::read_dir(&output_dir) {
             for entry in entries.flatten() {
-                log::info!("Created file: {:?}", entry.path());
+                tracing::info!("Created file: {:?}", entry.path());
                 if entry.path().is_dir() {
                     if let Ok(subentries) = std::fs::read_dir(entry.path()) {
                         for subentry in subentries.flatten() {
-                            log::info!("  - {:?}", subentry.path());
+                            tracing::info!("  - {:?}", subentry.path());
                         }
                     }
                 }

@@ -2,7 +2,7 @@ use crate::cors::CORS;
 use anyhow::{Result, bail};
 use clap::Parser;
 use itertools::Itertools;
-use log::{debug, error, info, warn};
+use tracing::{debug, error, info, warn};
 use m3u8_rs::{
     MasterPlaylist, MediaPlaylist, MediaSegment, MediaSegmentType, Resolution, VariantStream,
 };

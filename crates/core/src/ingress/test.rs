@@ -9,7 +9,7 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
     AV_PROFILE_H264_MAIN, AVRational, av_frame_free, av_packet_free,
 };
 use ffmpeg_rs_raw::{Encoder, Muxer};
-use log::{info, warn};
+use tracing::{info, warn};
 use ringbuf::traits::{Observer, Split};
 use ringbuf::{HeapCons, HeapRb};
 use std::io::Read;

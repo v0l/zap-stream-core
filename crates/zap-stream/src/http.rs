@@ -13,7 +13,7 @@ use hyper::body::{Frame, Incoming};
 use hyper::http::response::Builder;
 use hyper::service::Service;
 use hyper::{Request, Response, StatusCode};
-use log::{error, warn};
+use tracing::{error, warn};
 use matchit::Router;
 use serde::Serialize;
 use std::borrow::Cow;

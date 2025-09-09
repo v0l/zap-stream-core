@@ -1,7 +1,7 @@
 use anyhow::{Result, bail};
 use chrono::Utc;
 use clap::Parser;
-use log::{error, info};
+use tracing::{error, info};
 use nostr_sdk::{Client, EventBuilder, Filter, Keys, Kind, NostrSigner, Tag, TagKind, Url};
 use std::path::PathBuf;
 use std::sync::Arc;

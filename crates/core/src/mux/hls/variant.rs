@@ -12,7 +12,7 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
     avio_open, avio_size,
 };
 use ffmpeg_rs_raw::{Muxer, cstr};
-use log::{debug, info, trace, warn};
+use tracing::{debug, info, trace, warn};
 use m3u8_rs::{ExtTag, MediaSegmentType, PartInf, PreloadHint};
 use std::collections::HashMap;
 use std::fs::{File, create_dir_all};

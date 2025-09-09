@@ -12,7 +12,7 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
 use ffmpeg_rs_raw::{Decoder, av_log_redirect, rstr};
 use hyper::server::conn::http1;
 use hyper_util::rt::TokioIo;
-use log::{error, info, warn};
+use tracing::{error, info, warn};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;

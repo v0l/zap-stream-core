@@ -11,7 +11,7 @@ use fedimint_tonic_lnd::invoicesrpc::lookup_invoice_msg::InvoiceRef;
 use fedimint_tonic_lnd::lnrpc::InvoiceSubscription;
 #[cfg(feature = "zap-stream")]
 use fedimint_tonic_lnd::verrpc::VersionRequest;
-use log::{error, info, warn};
+use tracing::{error, info, warn};
 use nostr_sdk::prelude::Coordinate;
 use nostr_sdk::{
     Client, Event, EventBuilder, JsonUtil, Keys, Kind, NostrSigner, Tag, Timestamp, ToBech32,

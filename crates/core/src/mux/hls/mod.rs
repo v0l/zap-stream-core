@@ -4,7 +4,7 @@ use crate::variant::{StreamMapping, VariantStream};
 use anyhow::Result;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPacket;
 use itertools::Itertools;
-use log::{trace, warn};
+use tracing::{trace, warn};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 use std::fs::{File, remove_dir_all};

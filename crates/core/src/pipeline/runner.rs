@@ -28,7 +28,7 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
 use ffmpeg_rs_raw::{
     AudioFifo, Decoder, Demuxer, Encoder, Resample, Scaler, StreamType, cstr, get_frame_from_hw,
 };
-use log::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::UnboundedReceiver;
 use uuid::Uuid;

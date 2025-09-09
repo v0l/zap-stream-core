@@ -2,7 +2,7 @@ use crate::metrics::PacketMetrics;
 use crate::overseer::Overseer;
 use crate::pipeline::runner::{PipelineCommand, PipelineRunner};
 use anyhow::Result;
-use log::{info, warn};
+use tracing::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::sync::Arc;

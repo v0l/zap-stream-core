@@ -1,7 +1,7 @@
 use crate::hash_file;
 use anyhow::Result;
 use base64::Engine;
-use log::error;
+use tracing::error;
 use nostr_sdk::{EventBuilder, JsonUtil, Kind, NostrSigner, Tag, Timestamp, serde_json};
 use serde::{Deserialize, Serialize};
 use std::ops::Add;

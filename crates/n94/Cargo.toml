@@ -11,7 +11,7 @@ zap-stream-core-nostr = { path = "../core-nostr" }
 
 uuid.workspace = true
 anyhow.workspace = true
-log.workspace = true
+tracing.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 pretty_env_logger.workspace = true

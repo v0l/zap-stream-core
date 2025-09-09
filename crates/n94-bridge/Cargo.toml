@@ -6,7 +6,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-log.workspace = true
+tracing.workspace = true
 tokio.workspace = true
 pretty_env_logger.workspace = true
 nostr-sdk.workspace = true

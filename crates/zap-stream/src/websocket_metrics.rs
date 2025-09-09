@@ -7,7 +7,7 @@ use http_body_util::{BodyExt, Empty, combinators::BoxBody};
 use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 use hyper_tungstenite::{HyperWebsocket, tungstenite::Message};
-use log::{debug, error, info, warn};
+use tracing::{debug, error, info, warn};
 use nostr_sdk::{PublicKey, serde_json};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;

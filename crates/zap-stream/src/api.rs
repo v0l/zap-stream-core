@@ -14,7 +14,7 @@ use hyper::body::Incoming;
 use hyper::{Method, Request, Response};
 #[cfg(feature = "zap-stream")]
 use lnurl::pay::{LnURLPayInvoice, PayResponse};
-use log::{error, info, warn};
+use tracing::{error, info, warn};
 use matchit::Router;
 use nostr_sdk::prelude::EventDeletionRequest;
 use nostr_sdk::{Client, NostrSigner, PublicKey, serde_json};

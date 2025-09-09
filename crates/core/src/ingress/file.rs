@@ -1,7 +1,7 @@
 use crate::ingress::{ConnectionInfo, spawn_pipeline};
 use crate::overseer::Overseer;
 use anyhow::Result;
-use log::info;
+use tracing::info;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::runtime::Handle;

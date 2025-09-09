@@ -1,6 +1,6 @@
 use crate::ingress::EndpointStats;
 use crate::pipeline::runner::PipelineCommand;
-use log::{debug, warn};
+use tracing::{debug, warn};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::UnboundedSender;
 

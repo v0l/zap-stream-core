@@ -4,7 +4,7 @@ use crate::pipeline::runner::PipelineCommand;
 use anyhow::Result;
 use futures_util::StreamExt;
 use futures_util::stream::FusedStream;
-use log::info;
+use tracing::info;
 use srt_tokio::{SrtListener, SrtSocket};
 use std::io::Read;
 use std::net::SocketAddr;

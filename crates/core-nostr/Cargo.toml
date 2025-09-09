@@ -12,7 +12,7 @@ anyhow.workspace = true
 serde.workspace = true
 url.workspace = true
 hex.workspace = true
-log.workspace = true
+tracing.workspace = true
 nostr-sdk.workspace = true
 
 reqwest = { version = "0.12.20", features = ["stream", "json", "http2", "default-tls"], default-features = false }
