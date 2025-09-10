@@ -469,6 +469,10 @@ impl PipelineRunner {
                         )?);
                     }
                     VariantStream::CopyVideo(v) if v.src_index() == (*packet).stream_index as _ => {
+                        // count frames for copy only pipelines
+                        if self.encoders.is_empty() {
+                            self.frame_ctr += 1;
+                        }
                         egress_results.extend(Self::egress_packet(
                             &mut self.egress,
                             packet,
