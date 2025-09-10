@@ -32,11 +32,13 @@ use zap_stream_core::endpoint::{
 };
 use zap_stream_core::ingress::ConnectionInfo;
 use zap_stream_core::mux::SegmentType;
-use zap_stream_core::overseer::{IngressInfo, Overseer, StatsType};
+use zap_stream_core::overseer::{ConnectResult, IngressInfo, Overseer, StatsType};
 use zap_stream_core::pipeline::{EgressType, PipelineConfig};
 use zap_stream_core::variant::{StreamMapping, VariantStream};
 use zap_stream_core_nostr::n94::{N94Publisher, N94Segment, N94StreamInfo, N94Variant};
-use zap_stream_db::{IngestEndpoint, StreamKeyType, UserStream, UserStreamState, ZapStreamDb};
+use zap_stream_db::{
+    IngestEndpoint, StreamKeyType, User, UserStream, UserStreamState, ZapStreamDb,
+};
 
 /// zap.stream NIP-53 overseer
 #[derive(Clone)]
@@ -386,9 +388,10 @@ impl ZapStreamOverseer {
         // make sure this event is always newer
         if let Some(previous_event) = &stream.event
             && let Ok(prev_event) = Event::from_json(previous_event)
-                && prev_event.created_at >= Timestamp::now() {
-                    eb = eb.custom_created_at(prev_event.created_at.add(Timestamp::from_secs(1)));
-                }
+            && prev_event.created_at >= Timestamp::now()
+        {
+            eb = eb.custom_created_at(prev_event.created_at.add(Timestamp::from_secs(1)));
+        }
 
         Ok(eb)
     }
@@ -489,6 +492,21 @@ impl ZapStreamOverseer {
         }
         Ok(())
     }
+
+    async fn get_user_key(&self, info: &ConnectionInfo) -> Result<(StreamKeyType, User)> {
+        let user_key = self
+            .db
+            .find_user_stream_key(&info.key)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("User not found"))?;
+
+        let uid = match user_key {
+            StreamKeyType::Primary(i) => i,
+            StreamKeyType::FixedEventKey { id, .. } => id,
+        };
+        let user = self.db.get_user(uid).await?;
+        Ok((user_key, user))
+    }
 }
 
 #[async_trait]
@@ -526,34 +544,37 @@ impl Overseer for ZapStreamOverseer {
         Ok(())
     }
 
+    async fn connect(&self, connection_info: &ConnectionInfo) -> Result<ConnectResult> {
+        let (_, user) = self.get_user_key(connection_info).await?;
+        let hex_pubkey = hex::encode(&user.pubkey);
+        if user.balance < 0 {
+            return Ok(ConnectResult::Deny {
+                reason: format!(
+                    "Not enough balance pubkey={}, balance={}",
+                    hex_pubkey, user.balance
+                ),
+            });
+        }
+
+        if user.is_blocked {
+            return Ok(ConnectResult::Deny {
+                reason: format!("User is blocked! pubkey={}", hex_pubkey),
+            });
+        }
+
+        Ok(ConnectResult::Allow {
+            enable_stream_dump: user.stream_dump_recording,
+        })
+    }
+
     async fn start_stream(
         &self,
         connection: &ConnectionInfo,
         stream_info: &IngressInfo,
     ) -> Result<PipelineConfig> {
-        let user_key = self
-            .db
-            .find_user_stream_key(&connection.key)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("User not found"))?;
-
-        let uid = match user_key {
-            StreamKeyType::Primary(i) => i,
-            StreamKeyType::FixedEventKey { id, .. } => id,
-        };
-        let user = self.db.get_user(uid).await?;
+        let (user_key, user) = self.get_user_key(connection).await?;
         let hex_pubkey = hex::encode(&user.pubkey);
-        if user.balance < 0 {
-            bail!(
-                "Not enough balance pubkey={}, balance={}",
-                hex_pubkey,
-                user.balance
-            );
-        }
-
-        if user.is_blocked {
-            bail!("User is blocked! pubkey={}", hex_pubkey);
-        }
+        let uid = user.id;
 
         // Get ingest endpoint configuration based on connection type
         let endpoint = self.detect_endpoint(connection).await?;

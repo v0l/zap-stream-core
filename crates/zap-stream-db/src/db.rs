@@ -467,6 +467,16 @@ impl ZapStreamDb {
         Ok(())
     }
 
+    /// Set user stream dump recording status
+    pub async fn set_stream_dump_recording(&self, uid: u64, enabled: bool) -> Result<()> {
+        sqlx::query("update user set stream_dump_recording = ? where id = ?")
+            .bind(enabled)
+            .bind(uid)
+            .execute(&self.db)
+            .await?;
+        Ok(())
+    }
+
     /// Update user's main stream key
     pub async fn update_user_stream_key(&self, uid: u64, new_key: &str) -> Result<()> {
         sqlx::query("update user set stream_key = ? where id = ?")

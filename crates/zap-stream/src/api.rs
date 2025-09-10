@@ -1080,6 +1080,7 @@ impl Api {
                 balance: user.balance,
                 is_admin: user.is_admin,
                 is_blocked: user.is_blocked,
+                stream_dump_recording: user.stream_dump_recording,
                 tos_accepted: user.tos_accepted.map(|t| t.timestamp() as u64),
                 title: user.title,
                 summary: user.summary,
@@ -1153,6 +1154,36 @@ impl Api {
             let metadata = serde_json::json!({
                 "target_user_id": uid,
                 "blocked_status": is_blocked
+            });
+            self.db
+                .log_admin_action(
+                    admin_uid,
+                    action,
+                    Some("user"),
+                    Some(&uid.to_string()),
+                    &message,
+                    Some(&metadata.to_string()),
+                )
+                .await?;
+        }
+
+        if let Some(enable_stream_dump_recording) = req.set_stream_dump_recording {
+            self.db.set_stream_dump_recording(uid, enable_stream_dump_recording).await?;
+
+            // Log admin action
+            let action = if enable_stream_dump_recording {
+                "enable_stream_dump_recording"
+            } else {
+                "disable_stream_dump_recording"
+            };
+            let message = format!(
+                "Stream dump recording {} for user {}",
+                if enable_stream_dump_recording { "enabled" } else { "disabled" },
+                uid
+            );
+            let metadata = serde_json::json!({
+                "target_user_id": uid,
+                "stream_dump_recording": enable_stream_dump_recording
             });
             self.db
                 .log_admin_action(
@@ -1731,6 +1762,7 @@ struct AdminUserInfo {
     pub balance: i64,
     pub is_admin: bool,
     pub is_blocked: bool,
+    pub stream_dump_recording: bool,
     pub tos_accepted: Option<u64>,
     pub title: Option<String>,
     pub summary: Option<String>,
@@ -1748,6 +1780,7 @@ struct AdminUsersResponse {
 struct AdminUserRequest {
     pub set_admin: Option<bool>,
     pub set_blocked: Option<bool>,
+    pub set_stream_dump_recording: Option<bool>,
     pub add_credit: Option<u64>,
     pub memo: Option<String>,
     pub title: Option<String>,

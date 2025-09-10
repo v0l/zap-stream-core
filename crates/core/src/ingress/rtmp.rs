@@ -1,5 +1,5 @@
 use crate::ingress::{BufferedReader, ConnectionInfo, setup_term_handler};
-use crate::overseer::Overseer;
+use crate::overseer::{ConnectResult, Overseer};
 use crate::pipeline::runner::{PipelineCommand, PipelineRunner};
 use anyhow::{Result, anyhow, bail};
 use bytes::{Bytes, BytesMut};
@@ -13,6 +13,7 @@ use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::thread::sleep;
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::runtime::Handle;
@@ -38,6 +39,8 @@ struct RtmpClient {
     pub published_stream: Option<RtmpPublishedStream>,
     muxer: FlvMuxer,
     tx: UnboundedSender<PipelineCommand>,
+    // Handler to accept/deny publish requests
+    publish_handler: Option<Box<dyn FnMut(&str, &str) -> (bool, Option<String>) + Send + 'static>>,
 }
 
 impl RtmpClient {
@@ -57,6 +60,7 @@ impl RtmpClient {
             ),
             msg_queue: VecDeque::from(res),
             published_stream: None,
+            publish_handler: None,
             muxer: FlvMuxer::new(),
             tx,
         })
@@ -64,6 +68,13 @@ impl RtmpClient {
 
     pub fn set_stream_dump_handle<W: Write + Send + 'static>(&mut self, dest: W) {
         self.buffer.set_dump_handle(dest);
+    }
+
+    pub fn set_publish_handler<F: FnMut(&str, &str) -> (bool, Option<String>) + Send + 'static>(
+        &mut self,
+        publish_handler: F,
+    ) {
+        self.publish_handler = Some(Box::new(publish_handler));
     }
 
     /// Read data until we get the publish request
@@ -77,6 +88,9 @@ impl RtmpClient {
             }
 
             if let Some(r_len) = self.read_data()? {
+                if r_len == 0 {
+                    bail!("EOF while waiting for publish request");
+                }
                 if !handshake_complete {
                     let data = &self.socket_buf[..r_len];
                     match hs.process_bytes(&data)? {
@@ -101,6 +115,9 @@ impl RtmpClient {
                 } else {
                     self.process_socket_buf(r_len)?;
                 }
+            } else {
+                // avoid spin loop
+                sleep(Duration::from_millis(10));
             }
         }
         Ok(())
@@ -216,13 +233,27 @@ impl RtmpClient {
                             .reject_request(request_id, "0", "stream already published")?;
                     self.msg_queue.extend(mx);
                 } else {
-                    let mx = self.session.accept_request(request_id)?;
-                    self.msg_queue.extend(mx);
-                    info!(
-                        "Published stream request: {app_name}/{stream_key} [{:?}]",
-                        mode
-                    );
-                    self.published_stream = Some(RtmpPublishedStream(app_name, stream_key));
+                    let (should_accept, msg) = if let Some(h) = &mut self.publish_handler {
+                        h(&app_name, &stream_key)
+                    } else {
+                        (true, None)
+                    };
+                    if should_accept {
+                        let mx = self.session.accept_request(request_id)?;
+                        self.msg_queue.extend(mx);
+                        info!(
+                            "Published stream request: {app_name}/{stream_key} [{:?}]",
+                            mode
+                        );
+                        self.published_stream = Some(RtmpPublishedStream(app_name, stream_key));
+                    } else {
+                        let mx = self.session.reject_request(
+                            request_id,
+                            "0",
+                            &msg.unwrap_or("not allowed".to_string()),
+                        )?;
+                        self.msg_queue.extend(mx);
+                    }
                 }
             }
             ServerSessionEvent::PublishStreamFinished {
@@ -351,10 +382,29 @@ fn socket_handler(
     }
 
     let mut cc = RtmpClient::new(socket.into_std()?, tx)?;
-
-    // Dump raw RTMP stream for debugging
-    let dump_stream = File::create(out_dir.join("stream.dump"))?;
-    cc.set_stream_dump_handle(dump_stream);
+    let ip_addr = addr.to_string();
+    let ov_pub = overseer.clone();
+    let handle_pub = handle.clone();
+    cc.set_publish_handler(move |app, key| {
+        if app.is_empty() || key.is_empty() {
+            return (false, Some("Invalid app or key".to_string()));
+        }
+        let info = ConnectionInfo {
+            id,
+            endpoint: "rtmp",
+            ip_addr: ip_addr.clone(),
+            app_name: app.to_string(),
+            key: key.to_string(),
+        };
+        match handle_pub.block_on(ov_pub.connect(&info)) {
+            Ok(ConnectResult::Allow { .. }) => (true, None),
+            Ok(ConnectResult::Deny { reason }) => {
+                warn!("Connection denied: {reason}");
+                return (false, Some(reason));
+            }
+            Err(e) => (false, Some(format!("Failed to publish stream: {}", e))),
+        }
+    });
 
     if let Err(e) = cc.read_until_publish_request(Duration::from_secs(10)) {
         bail!("Error waiting for publish request: {}", e)

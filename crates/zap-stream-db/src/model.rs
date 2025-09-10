@@ -22,6 +22,8 @@ pub struct User {
     pub is_blocked: bool,
     /// Streams are recorded
     pub recording: bool,
+    /// Stream dump recording is enabled
+    pub stream_dump_recording: bool,
     /// Default stream title
     pub title: Option<String>,
     /// Default stream summary

@@ -45,11 +45,20 @@ pub enum StatsType {
     Egress(EndpointStats),
 }
 
+#[derive(Debug, Clone)]
+pub enum ConnectResult {
+    Allow { enable_stream_dump: bool },
+    Deny { reason: String },
+}
+
 #[async_trait]
 /// The control process that oversees streaming operations
 pub trait Overseer: Send + Sync {
     /// Check all streams
     async fn check_streams(&self) -> Result<()>;
+
+    /// Authorize connection for user
+    async fn connect(&self, connection_info: &ConnectionInfo) -> Result<ConnectResult>;
 
     /// Set up a new streaming pipeline
     async fn start_stream(

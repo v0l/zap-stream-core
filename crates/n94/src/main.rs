@@ -15,7 +15,7 @@ use zap_stream_core::endpoint::{
 use zap_stream_core::ingress::ConnectionInfo;
 use zap_stream_core::listen::try_create_listener;
 use zap_stream_core::mux::SegmentType;
-use zap_stream_core::overseer::{IngressInfo, Overseer, StatsType};
+use zap_stream_core::overseer::{ConnectResult, IngressInfo, Overseer, StatsType};
 use zap_stream_core::pipeline::{EgressType, PipelineConfig};
 use zap_stream_core::variant::{StreamMapping, VariantStream};
 use zap_stream_core_nostr::n94::{N94Publisher, N94Segment, N94StreamInfo, N94Variant};
@@ -292,9 +292,15 @@ impl Overseer for N94Overseer {
         Ok(())
     }
 
+    async fn connect(&self, _connection_info: &ConnectionInfo) -> Result<ConnectResult> {
+        Ok(ConnectResult::Allow {
+            enable_stream_dump: false,
+        })
+    }
+
     async fn start_stream(
         &self,
-        connection: &ConnectionInfo,
+        _connection: &ConnectionInfo,
         stream_info: &IngressInfo,
     ) -> Result<PipelineConfig> {
         let cfg = get_variants_from_endpoint(stream_info, &self.capabilities)?;
