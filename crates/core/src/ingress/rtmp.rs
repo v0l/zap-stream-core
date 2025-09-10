@@ -12,7 +12,7 @@ use std::fs::File;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -376,28 +376,36 @@ fn socket_handler(
     tx: UnboundedSender<PipelineCommand>,
     rx: UnboundedReceiver<PipelineCommand>,
 ) -> Result<()> {
-    let out_dir = out_dir.join(id.to_string());
-    if !out_dir.exists() {
-        std::fs::create_dir_all(&out_dir)?;
-    }
-
     let mut cc = RtmpClient::new(socket.into_std()?, tx)?;
     let ip_addr = addr.to_string();
     let ov_pub = overseer.clone();
     let handle_pub = handle.clone();
+    let dump_stream = Arc::new(Mutex::new(false));
+    let id = Arc::new(Mutex::new(id));
+    let id_pub = id.clone();
+    let dump_stream_pub = dump_stream.clone();
     cc.set_publish_handler(move |app, key| {
         if app.is_empty() || key.is_empty() {
             return (false, Some("Invalid app or key".to_string()));
         }
         let info = ConnectionInfo {
-            id,
+            id: *id_pub.lock().unwrap(),
             endpoint: "rtmp",
             ip_addr: ip_addr.clone(),
             app_name: app.to_string(),
             key: key.to_string(),
         };
         match handle_pub.block_on(ov_pub.connect(&info)) {
-            Ok(ConnectResult::Allow { .. }) => (true, None),
+            Ok(ConnectResult::Allow {
+                stream_id_override,
+                enable_stream_dump,
+            }) => {
+                *dump_stream_pub.lock().unwrap() = enable_stream_dump;
+                if let Some(o) = stream_id_override {
+                    *id_pub.lock().unwrap() = o;
+                }
+                (true, None)
+            }
             Ok(ConnectResult::Deny { reason }) => {
                 warn!("Connection denied: {reason}");
                 return (false, Some(reason));
@@ -410,6 +418,17 @@ fn socket_handler(
         bail!("Error waiting for publish request: {}", e)
     }
 
+    let id = *id.lock().unwrap();
+    let out_dir = out_dir.join(id.to_string());
+    if !out_dir.exists() {
+        std::fs::create_dir_all(&out_dir)?;
+    }
+
+    if *dump_stream.lock().unwrap()
+        && let Ok(f) = File::create(out_dir.join("stream.dump"))
+    {
+        cc.set_stream_dump_handle(f);
+    }
     let pr = cc.published_stream.as_ref().unwrap();
     let info = ConnectionInfo {
         id,

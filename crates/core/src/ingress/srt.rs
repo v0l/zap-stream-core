@@ -36,7 +36,7 @@ pub async fn listen(
             }
             Some(request) = packets.incoming().next() => {
                 let socket = request.accept(None).await?;
-                let info = ConnectionInfo {
+                let mut info = ConnectionInfo {
                     id: Uuid::new_v4(),
                     endpoint: "srt",
                     ip_addr: socket.settings().remote.to_string(),
@@ -48,14 +48,13 @@ pub async fn listen(
                         .map_or(String::new(), |s| s.to_string()),
                 };
                 let (tx, rx) = unbounded_channel();
-                let mut br = BufferedReader::new(4096, MAX_SRT_BUFFER_SIZE, "SRT", Some(tx.clone()));
+                let mut dump_stream = false;
                 match overseer.connect(&info).await {
-                    Ok(ConnectResult::Allow { enable_stream_dump }) => {
-                        if enable_stream_dump {
-                            // Dump raw SRT stream for debugging
-                            let dump_stream = File::create(out_dir.join("stream.dump"))?;
-                            br.set_dump_handle(dump_stream);
+                    Ok(ConnectResult::Allow { enable_stream_dump, stream_id_override }) => {
+                        if let Some(id) = stream_id_override {
+                            info.id = id;
                         }
+                        dump_stream = enable_stream_dump;
                     }
                     Ok(ConnectResult::Deny { reason }) => {
                         warn!("Connection denied: {reason}");
@@ -66,6 +65,7 @@ pub async fn listen(
                     }
                 }
 
+                let mut br = BufferedReader::new(4096, MAX_SRT_BUFFER_SIZE, "SRT", Some(tx.clone()));
                 setup_term_handler(shutdown.clone(), tx.clone());
                 let out_dir = out_dir.join(info.id.to_string());
                 if !out_dir.exists() {
@@ -73,8 +73,10 @@ pub async fn listen(
                 }
 
                 // Dump raw SRT stream for debugging
-                let dump_stream = File::create(out_dir.join("stream.dump"))?;
-                br.set_dump_handle(dump_stream);
+                if dump_stream {
+                    let h = File::create(out_dir.join("stream.dump"))?;
+                    br.set_dump_handle(h);
+                }
 
                 // spawn pipeline runner thread
                 if let Err(e) = spawn_pipeline(

@@ -147,6 +147,14 @@ impl ZapStreamDb {
             .map_err(anyhow::Error::new)
     }
 
+    pub async fn try_get_stream(&self, id: &Uuid) -> Result<Option<UserStream>> {
+        sqlx::query_as("select * from user_stream where id = ?")
+            .bind(id.to_string())
+            .fetch_optional(&self.db)
+            .await
+            .map_err(anyhow::Error::new)
+    }
+
     /// Get the list of active streams
     pub async fn list_live_streams(&self) -> Result<Vec<UserStream>> {
         Ok(sqlx::query_as("select * from user_stream where state = 2")
@@ -742,10 +750,10 @@ impl ZapStreamDb {
     pub async fn get_user_prev_streams(
         &self,
         user_id: u64,
-    ) -> Result<(u64, Option<DateTime<Utc>>, Option<String>)> {
+    ) -> Result<(u64, Option<DateTime<Utc>>, Option<Uuid>)> {
         let row = sqlx::query(
             "select 
-                count(case when state = 2 then 1 end) as live_count,
+                count(state) as live_count,
                 (select ends from user_stream where user_id = ? and state = 3 order by ends desc limit 1) as last_ended,
                 (select id from user_stream where user_id = ? and state = 3 order by ends desc limit 1) as last_stream_id
              from user_stream 
@@ -761,6 +769,10 @@ impl ZapStreamDb {
         let last_ended: Option<DateTime<Utc>> = row.try_get("last_ended")?;
         let last_stream_id: Option<String> = row.try_get("last_stream_id")?;
 
-        Ok((live_count as u64, last_ended, last_stream_id))
+        Ok((
+            live_count as u64,
+            last_ended,
+            last_stream_id.and_then(|b| Uuid::parse_str(&b).ok()),
+        ))
     }
 }

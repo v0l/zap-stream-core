@@ -562,8 +562,23 @@ impl Overseer for ZapStreamOverseer {
             });
         }
 
+        let (current_live, last_ended, last_ended_id) =
+            self.db.get_user_prev_streams(user.id).await?;
+
+        // check if the user is not live right now and has a stream that ended in the past 2mins
+        // otherwise we will resume the previous stream event
+        let has_recent_stream = current_live == 0
+            && last_ended
+                .map(|v| v.timestamp().abs_diff(Utc::now().timestamp()) < 120)
+                .unwrap_or(false);
+
         Ok(ConnectResult::Allow {
             enable_stream_dump: user.stream_dump_recording,
+            stream_id_override: if has_recent_stream {
+                last_ended_id
+            } else {
+                None
+            },
         })
     }
 
@@ -626,20 +641,21 @@ impl Overseer for ZapStreamOverseer {
         //     egress.push(EgressType::RTMPForwarder(all_var_ids.clone(), fwd.target));
         // }
 
+        // in cases where the previous stream should be resumed, the pipeline ID will match a previous
+        // stream so we should first try to find the current pipeline id as if it already exists
         let stream_id = connection.id;
-
-        let (current_live, last_ended, last_ended_id) = self.db.get_user_prev_streams(uid).await?;
-
-        // check if the user is not live right now and has a stream that ended in the past 2mins
-        // otherwise we will resume the previous stream event
-        let has_recent_stream = current_live == 0
-            && last_ended
-                .map(|v| v.timestamp().abs_diff(Utc::now().timestamp()) < 120)
-                .unwrap_or(false);
+        let prev_stream = self.db.try_get_stream(&stream_id).await?;
 
         let mut new_stream = match &user_key {
             StreamKeyType::Primary(_) => {
-                if !has_recent_stream {
+                // resume previously ended stream
+                if let Some(mut prev_stream) = prev_stream {
+                    prev_stream.state = UserStreamState::Live;
+                    prev_stream.node_name = Some(self.node_name.clone());
+                    prev_stream.endpoint_id = Some(endpoint.id);
+                    prev_stream.ends = None;
+                    prev_stream
+                } else {
                     // start a new stream
                     let new_stream = UserStream {
                         id: stream_id.to_string(),
@@ -659,21 +675,6 @@ impl Overseer for ZapStreamOverseer {
 
                     self.db.insert_stream(&new_stream).await?;
                     new_stream
-                } else {
-                    // resume previously ended stream
-                    let stream_uuid = Uuid::parse_str(
-                        &last_ended_id
-                            .context("Expected stream id of last stream was not found")?,
-                    )
-                    .map_err(|e| anyhow!("Invalid stream key {} {}", stream_id, e))?;
-
-                    let mut stream = self.db.get_stream(&stream_uuid).await?;
-
-                    stream.state = UserStreamState::Live;
-                    stream.node_name = Some(self.node_name.clone());
-                    stream.endpoint_id = Some(endpoint.id);
-                    stream.ends = None;
-                    stream
                 }
             }
             StreamKeyType::FixedEventKey { stream_id, .. } => {
@@ -750,11 +751,6 @@ impl Overseer for ZapStreamOverseer {
             ingress_info: stream_info.clone(),
             video_src: cfg.video_src.unwrap().index,
             audio_src: cfg.audio_src.map(|s| s.index),
-            replace_connection_id: if matches!(user_key, StreamKeyType::FixedEventKey { .. }) {
-                Some(new_stream.id.parse()?)
-            } else {
-                None
-            },
         })
     }
 

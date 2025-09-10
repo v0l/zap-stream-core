@@ -47,8 +47,15 @@ pub enum StatsType {
 
 #[derive(Debug, Clone)]
 pub enum ConnectResult {
-    Allow { enable_stream_dump: bool },
-    Deny { reason: String },
+    Allow {
+        /// Enable dumping stream data to disk for debugging purposes
+        enable_stream_dump: bool,
+        /// Replace the stream/pipeline id
+        stream_id_override: Option<Uuid>,
+    },
+    Deny {
+        reason: String,
+    },
 }
 
 #[async_trait]

@@ -52,9 +52,7 @@ pub struct PipelineConfig {
     /// Primary source video stream
     pub video_src: usize,
     /// Primary audio source stream
-    pub audio_src: Option<usize>,
-    /// Replace the connection id in the runner
-    pub replace_connection_id: Option<Uuid>,
+    pub audio_src: Option<usize>
 }
 
 impl Display for PipelineConfig {
