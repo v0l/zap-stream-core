@@ -545,7 +545,7 @@ impl Overseer for ZapStreamOverseer {
     }
 
     async fn connect(&self, connection_info: &ConnectionInfo) -> Result<ConnectResult> {
-        let (_, user) = self.get_user_key(connection_info).await?;
+        let (user_key, user) = self.get_user_key(connection_info).await?;
         let hex_pubkey = hex::encode(&user.pubkey);
         if user.balance < 0 {
             return Ok(ConnectResult::Deny {
@@ -564,6 +564,14 @@ impl Overseer for ZapStreamOverseer {
 
         let (current_live, last_ended, last_ended_id) =
             self.db.get_user_prev_streams(user.id).await?;
+
+        // reject multiple live streams for the same primary key
+        if matches!(user_key, StreamKeyType::Primary(_)) && current_live != 0 {
+            return Ok(ConnectResult::Deny {
+                reason: "Primary key is already in use, please check if you are already live!"
+                    .to_string(),
+            });
+        }
 
         // check if the user is not live right now and has a stream that ended in the past 2mins
         // otherwise we will resume the previous stream event
