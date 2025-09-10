@@ -10,7 +10,7 @@ use rml_rtmp::sessions::{
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{ErrorKind, Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::{Shutdown, SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
@@ -84,11 +84,15 @@ impl RtmpClient {
         let mut handshake_complete = false;
         while self.published_stream.is_none() {
             if (Instant::now() - start) > timeout {
+                // finish processing any messages in the queue
+                self.process_msg_queue()?;
                 bail!("Timed out waiting for publish request");
             }
 
             if let Some(r_len) = self.read_data()? {
                 if r_len == 0 {
+                    // finish processing any messages in the queue
+                    self.process_msg_queue()?;
                     bail!("EOF while waiting for publish request");
                 }
                 if !handshake_complete {
@@ -247,12 +251,11 @@ impl RtmpClient {
                         );
                         self.published_stream = Some(RtmpPublishedStream(app_name, stream_key));
                     } else {
-                        let mx = self.session.reject_request(
-                            request_id,
-                            "0",
-                            &msg.unwrap_or("not allowed".to_string()),
-                        )?;
+                        let msg = msg.unwrap_or("not allowed".to_string());
+                        info!("Publish request was rejected for {app_name}/{stream_key}: {msg}");
+                        let mx = self.session.reject_request(request_id, "0", &msg)?;
                         self.msg_queue.extend(mx);
+                        self.socket.shutdown(Shutdown::Read)?; //half-close
                     }
                 }
             }
