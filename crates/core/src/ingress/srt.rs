@@ -5,13 +5,15 @@ use anyhow::Result;
 use futures_util::StreamExt;
 use futures_util::stream::FusedStream;
 use srt_tokio::{SrtListener, SrtSocket};
+use std::fs::File;
 use std::io::Read;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{error, info};
 use uuid::Uuid;
 
 const MAX_SRT_BUFFER_SIZE: usize = 10 * 1024 * 1024; // 10MB limit
@@ -25,6 +27,7 @@ pub async fn listen(
     let binder: SocketAddr = addr.parse()?;
     let (_binding, mut packets) = SrtListener::builder().bind(binder).await?;
 
+    let out_dir = PathBuf::from(out_dir);
     info!("SRT listening on: {}", &addr);
     loop {
         tokio::select! {
@@ -46,22 +49,33 @@ pub async fn listen(
                 };
                 let (tx, rx) = unbounded_channel();
                 setup_term_handler(shutdown.clone(), tx.clone());
+                let out_dir = out_dir.join(info.id.to_string());
+                if !out_dir.exists() {
+                    std::fs::create_dir_all(&out_dir)?;
+                }
+                let mut br = BufferedReader::new(4096, MAX_SRT_BUFFER_SIZE, "SRT", Some(tx.clone()));
+
+                // Dump raw SRT stream for debugging
+                let dump_stream = File::create(out_dir.join("stream.dump"))?;
+                br.set_dump_handle(dump_stream);
 
                 // spawn pipeline runner thread
-                spawn_pipeline(
+                if let Err(e) = spawn_pipeline(
                     Handle::current(),
                     info,
-                    out_dir.clone(),
+                    out_dir,
                     overseer.clone(),
                     Box::new(SrtReader {
                         handle: Handle::current(),
                         socket,
-                        buffer: BufferedReader::new(4096, MAX_SRT_BUFFER_SIZE, "SRT", Some(tx.clone())),
+                        buffer: br,
                         tx,
                     }),
                     None,
                     Some(rx),
-                );
+                ) {
+                    error!("Failed to spawn pipeline: {}", e);
+                }
             }
         }
     }

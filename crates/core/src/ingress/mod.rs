@@ -3,7 +3,8 @@ use crate::overseer::Overseer;
 use crate::pipeline::runner::{PipelineCommand, PipelineRunner};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::io::Read;
+use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Instant;
@@ -44,7 +45,7 @@ pub struct ConnectionInfo {
 pub fn spawn_pipeline(
     handle: Handle,
     info: ConnectionInfo,
-    out_dir: String,
+    out_dir: PathBuf,
     seer: Arc<dyn Overseer>,
     reader: Box<dyn Read + Send>,
     url: Option<String>,
@@ -93,6 +94,7 @@ pub struct BufferedReader {
     pub max_buffer_size: usize,
     pub last_buffer_log: Instant,
     pub metrics: PacketMetrics,
+    dump_handle: Option<Box<dyn Write + Send + 'static>>,
 }
 
 impl BufferedReader {
@@ -107,11 +109,20 @@ impl BufferedReader {
             max_buffer_size: max_size,
             last_buffer_log: Instant::now(),
             metrics: PacketMetrics::new(source_name, metrics_sender),
+            dump_handle: None,
         }
+    }
+
+    pub fn set_dump_handle<W: Write + Send + 'static>(&mut self, handle: W) {
+        self.dump_handle = Some(Box::new(handle));
     }
 
     /// Add data to buffer with size limit and performance tracking
     pub fn add_data(&mut self, data: &[u8]) {
+        if let Some(dump_handle) = &mut self.dump_handle {
+            dump_handle.write_all(data).unwrap();
+        }
+
         // Inline buffer management to avoid borrow issues
         if self.buf.len() + data.len() > self.max_buffer_size {
             let bytes_to_drop = (self.buf.len() + data.len()) - self.max_buffer_size;

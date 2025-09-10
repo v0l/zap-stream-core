@@ -12,6 +12,7 @@ use ffmpeg_rs_raw::{Encoder, Muxer};
 use ringbuf::traits::{Observer, Split};
 use ringbuf::{HeapCons, HeapRb};
 use std::io::Read;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tiny_skia::Pixmap;
@@ -38,6 +39,10 @@ pub async fn listen(
     };
     let (tx, rx) = unbounded_channel();
     setup_term_handler(shutdown.clone(), tx.clone());
+    let out_dir = PathBuf::from(out_dir).join(info.id.to_string());
+    if !out_dir.exists() {
+        std::fs::create_dir_all(&out_dir)?;
+    }
     let src = TestPatternSrc::new(tx)?;
     let h = spawn_pipeline(
         Handle::current(),

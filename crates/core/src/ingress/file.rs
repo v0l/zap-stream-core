@@ -4,7 +4,7 @@ use anyhow::Result;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::runtime::Handle;
-use tracing::info;
+use tracing::{error, info};
 use uuid::Uuid;
 
 pub async fn listen(out_dir: String, path: PathBuf, overseer: Arc<dyn Overseer>) -> Result<()> {
@@ -17,9 +17,13 @@ pub async fn listen(out_dir: String, path: PathBuf, overseer: Arc<dyn Overseer>)
         app_name: "".to_string(),
         key: "test".to_string(),
     };
+    let out_dir = PathBuf::from(out_dir).join(info.id.to_string());
+    if !out_dir.exists() {
+        std::fs::create_dir_all(&out_dir)?;
+    }
     let url = path.to_str().unwrap().to_string();
     let file = std::fs::File::open(path)?;
-    spawn_pipeline(
+    if let Err(e) = spawn_pipeline(
         Handle::current(),
         info,
         out_dir.clone(),
@@ -27,7 +31,9 @@ pub async fn listen(out_dir: String, path: PathBuf, overseer: Arc<dyn Overseer>)
         Box::new(file),
         Some(url),
         None,
-    );
+    ) {
+        error!("Failed to spawn pipeline: {}", e);
+    }
 
     Ok(())
 }

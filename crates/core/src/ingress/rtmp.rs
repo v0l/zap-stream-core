@@ -8,13 +8,15 @@ use rml_rtmp::sessions::{
     ServerSession, ServerSessionConfig, ServerSessionEvent, ServerSessionResult,
 };
 use std::collections::VecDeque;
+use std::fs::File;
 use std::io::{ErrorKind, Read, Write};
-use std::net::TcpStream;
+use std::net::{SocketAddr, TcpStream};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::runtime::Handle;
-use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
@@ -29,6 +31,7 @@ struct RtmpPublishedStream(String, String);
 
 struct RtmpClient {
     socket: TcpStream,
+    socket_buf: [u8; 4096],
     buffer: BufferedReader,
     session: ServerSession,
     msg_queue: VecDeque<ServerSessionResult>,
@@ -45,6 +48,7 @@ impl RtmpClient {
         Ok(Self {
             socket,
             session: ses,
+            socket_buf: [0; 4096],
             buffer: BufferedReader::new(
                 1024 * 1024,
                 MAX_MEDIA_BUFFER_SIZE,
@@ -58,6 +62,10 @@ impl RtmpClient {
         })
     }
 
+    pub fn set_stream_dump_handle<W: Write + Send + 'static>(&mut self, dest: W) {
+        self.buffer.set_dump_handle(dest);
+    }
+
     /// Read data until we get the publish request
     pub fn read_until_publish_request(&mut self, timeout: Duration) -> Result<()> {
         let start = Instant::now();
@@ -68,8 +76,9 @@ impl RtmpClient {
                 bail!("Timed out waiting for publish request");
             }
 
-            if let Some(data) = self.read_data()? {
+            if let Some(r_len) = self.read_data()? {
                 if !handshake_complete {
+                    let data = &self.socket_buf[..r_len];
                     match hs.process_bytes(&data)? {
                         HandshakeProcessResult::InProgress { response_bytes } => {
                             if !response_bytes.is_empty() {
@@ -90,16 +99,15 @@ impl RtmpClient {
                         }
                     }
                 } else {
-                    self.process_bytes(&data)?;
+                    self.process_socket_buf(r_len)?;
                 }
             }
         }
         Ok(())
     }
 
-    fn read_data(&mut self) -> Result<Option<Vec<u8>>> {
-        let mut buf = [0; 4096];
-        let r = match self.socket.read(&mut buf) {
+    fn read_data(&mut self) -> Result<Option<usize>> {
+        let r = match self.socket.read(&mut self.socket_buf) {
             Ok(r) => r,
             Err(e) => {
                 return match e.kind() {
@@ -110,10 +118,19 @@ impl RtmpClient {
             }
         };
         if r == 0 {
-            return Ok(Some(Vec::new()));
+            return Ok(Some(0));
         }
 
-        Ok(Some(buf[..r].to_vec()))
+        Ok(Some(r))
+    }
+
+    fn process_socket_buf(&mut self, len: usize) -> Result<()> {
+        let data = &self.socket_buf[..len];
+        let msg = self.session.handle_input(data)?;
+        if !msg.is_empty() {
+            self.msg_queue.extend(msg);
+        }
+        self.process_msg_queue()
     }
 
     fn process_bytes(&mut self, data: &[u8]) -> Result<()> {
@@ -255,15 +272,15 @@ impl Read for RtmpClient {
         // Block until we have enough data to fill the buffer
         while self.buffer.buf.len() < buf.len() {
             match self.read_data() {
-                Ok(Some(data)) if data.is_empty() => {
+                Ok(Some(r_len)) if r_len == 0 => {
                     let r = self.buffer.read_buffered(buf);
                     if r == 0 {
                         return Err(std::io::Error::other(anyhow!("EOF")));
                     }
                     return Ok(r);
                 }
-                Ok(Some(data)) => {
-                    if let Err(e) = self.process_bytes(&data) {
+                Ok(Some(r_len)) => {
+                    if let Err(e) = self.process_socket_buf(r_len) {
                         error!("Error processing bytes: {}", e);
                         return Ok(0);
                     }
@@ -294,51 +311,78 @@ pub async fn listen(
             _ = shutdown.cancelled() => {
                 break;
             }
-            Ok((socket, ip)) = listener.accept() => {
+            Ok((socket, addr)) = listener.accept() => {
                 let overseer = overseer.clone();
-                let out_dir = out_dir.clone();
-                let handle = Handle::current();
+                let out_dir = PathBuf::from(out_dir.clone());
+
                 let new_id = Uuid::new_v4();
                 let shutdown = shutdown.clone();
+                let handle = Handle::current();
                 let (tx, rx) = unbounded_channel();
                 setup_term_handler(shutdown, tx.clone());
                 std::thread::Builder::new()
                     .name(format!("client:rtmp:{}", new_id))
                     .spawn(move || {
-                        let mut cc = RtmpClient::new(socket.into_std()?, tx)?;
-                        if let Err(e) = cc.read_until_publish_request(Duration::from_secs(10)) {
-                            bail!("Error waiting for publish request: {}", e)
-                        }
-
-                        let pr = cc.published_stream.as_ref().unwrap();
-                        let info = ConnectionInfo {
-                            id: new_id,
-                            ip_addr: ip.to_string(),
-                            endpoint: "rtmp",
-                            app_name: pr.0.trim().to_string(),
-                            key: pr.1.trim().to_string(),
-                        };
-                        let mut pl = match PipelineRunner::new(
-                            handle,
-                            out_dir,
-                            overseer,
-                            info,
-                            Box::new(cc),
-                            None,
-                            Some(rx),
-                        ) {
-                            Ok(pl) => pl,
-                            Err(e) => {
-                                bail!("Failed to create PipelineRunner {}", e)
-                            }
-                        };
-                        pl.run();
-                        Ok(())
-                    })?;
+                    if let Err(e) = socket_handler(new_id, handle, socket, addr, out_dir, overseer, tx, rx) {
+                        error!("Error handling RTMP socket: {}", e);
+                    }
+                })?;
             }
         }
     }
 
     info!("RTMP listener stopped.");
+    Ok(())
+}
+
+fn socket_handler(
+    id: Uuid,
+    handle: Handle,
+    socket: tokio::net::TcpStream,
+    addr: SocketAddr,
+    out_dir: PathBuf,
+    overseer: Arc<dyn Overseer>,
+    tx: UnboundedSender<PipelineCommand>,
+    rx: UnboundedReceiver<PipelineCommand>,
+) -> Result<()> {
+    let out_dir = out_dir.join(id.to_string());
+    if !out_dir.exists() {
+        std::fs::create_dir_all(&out_dir)?;
+    }
+
+    let mut cc = RtmpClient::new(socket.into_std()?, tx)?;
+
+    // Dump raw RTMP stream for debugging
+    let dump_stream = File::create(out_dir.join("stream.dump"))?;
+    cc.set_stream_dump_handle(dump_stream);
+
+    if let Err(e) = cc.read_until_publish_request(Duration::from_secs(10)) {
+        bail!("Error waiting for publish request: {}", e)
+    }
+
+    let pr = cc.published_stream.as_ref().unwrap();
+    let info = ConnectionInfo {
+        id,
+        ip_addr: addr.to_string(),
+        endpoint: "rtmp",
+        app_name: pr.0.trim().to_string(),
+        key: pr.1.trim().to_string(),
+    };
+
+    let mut pl = match PipelineRunner::new(
+        handle,
+        out_dir,
+        overseer,
+        info,
+        Box::new(cc),
+        None,
+        Some(rx),
+    ) {
+        Ok(pl) => pl,
+        Err(e) => {
+            bail!("Failed to create PipelineRunner {}", e)
+        }
+    };
+    pl.run();
     Ok(())
 }

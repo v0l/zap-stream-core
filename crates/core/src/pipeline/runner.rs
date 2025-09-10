@@ -164,15 +164,13 @@ unsafe impl Send for PipelineRunner {}
 impl PipelineRunner {
     pub fn new(
         handle: Handle,
-        out_dir: String,
+        out_dir: PathBuf,
         overseer: Arc<dyn Overseer>,
         connection: ConnectionInfo,
         recv: Box<dyn Read + Send>,
         url: Option<String>,
         command: Option<UnboundedReceiver<PipelineCommand>>,
     ) -> Result<Self> {
-        let out_dir = PathBuf::from(out_dir).join(connection.id.to_string());
-
         Ok(Self {
             handle,
             out_dir,
