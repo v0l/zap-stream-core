@@ -498,7 +498,7 @@ impl ZapStreamOverseer {
             .db
             .find_user_stream_key(&info.key)
             .await?
-            .ok_or_else(|| anyhow::anyhow!("User not found"))?;
+            .ok_or_else(|| anyhow::anyhow!("User not found or invalid stream key"))?;
 
         let uid = match user_key {
             StreamKeyType::Primary(i) => i,
