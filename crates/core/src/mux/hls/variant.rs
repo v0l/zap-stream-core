@@ -178,7 +178,7 @@ impl HlsVariant {
             // Proper fMP4 segmentation flags for HLS
             opts.insert(
                 "movflags".to_string(),
-                "+frag_keyframe+empty_moov+default_base_moof".to_string(),
+                "+frag_custom+empty_moov+default_base_moof".to_string(),
             );
         };
 
@@ -211,13 +211,14 @@ impl HlsVariant {
         Ok(variant)
     }
 
+    /// Enable HLS-LL
+    pub fn enable_low_latency(&mut self, target_duration: f32) {
+        self.low_latency = true;
+        self.partial_target_duration = target_duration;
+    }
+
     pub fn segment_length(&self) -> f32 {
-        let min_segment_length = if self.low_latency {
-            (self.segment_length_target * 3.0).max(6.0) // make segments 3x longer in LL mode or minimum 6s
-        } else {
-            2.0
-        };
-        self.segment_length_target.max(min_segment_length)
+        self.segment_length_target.max(2.0)
     }
 
     pub fn partial_segment_length(&self) -> f32 {
@@ -271,14 +272,18 @@ impl HlsVariant {
                 let cur_duration = pkt_pts - self.current_segment_start;
                 let cur_part_duration = pkt_pts - self.current_partial_start;
 
-                // check if current packet is keyframe, flush current segment
-                if can_split && cur_duration >= self.segment_length() as f64 {
-                    result = self.split_next_seg(pkt_pts)?;
-                } else if self.low_latency
-                    && cur_part_duration >= self.partial_target_duration as f64
-                {
-                    result = self.create_partial_segment(pkt_pts)?;
+                let should_end_this_segment = cur_duration >= self.segment_length() as f64;
+                let split_seg = can_split && should_end_this_segment;
+                let split_partial = stream_type == AVMEDIA_TYPE_VIDEO
+                    && self.low_latency
+                    && (cur_part_duration >= self.partial_target_duration as f64 || split_seg);
+
+                if split_partial {
+                    self.split_partial_segment(pkt_pts, true)?;
                     self.next_partial_independent = can_split;
+                }
+                if split_seg {
+                    result = self.split_next_seg(pkt_pts, !split_partial)?;
                 }
             }
 
@@ -295,9 +300,12 @@ impl HlsVariant {
     }
 
     /// Create a partial segment for LL-HLS
-    fn create_partial_segment(&mut self, next_pkt_start: f64) -> Result<EgressResult> {
+    fn split_partial_segment(&mut self, next_pkt_start: f64, flush: bool) -> Result<()> {
         let ctx = self.mux.context();
         let end_pos = unsafe {
+            if flush {
+                av_write_frame(ctx, ptr::null_mut());
+            }
             avio_flush((*ctx).pb);
             avio_size((*ctx).pb) as u64
         };
@@ -339,7 +347,7 @@ impl HlsVariant {
 
         self.write_playlist()?;
 
-        Ok(EgressResult::None)
+        Ok(())
     }
 
     /// Create initialization segment for fMP4
@@ -383,7 +391,7 @@ impl HlsVariant {
     }
 
     /// Reset the muxer state and start the next segment
-    unsafe fn split_next_seg(&mut self, next_pkt_start: f64) -> Result<EgressResult> {
+    unsafe fn split_next_seg(&mut self, next_pkt_start: f64, flush: bool) -> Result<EgressResult> {
         unsafe {
             let completed_segment_idx = self.idx;
             self.idx += 1;
@@ -400,9 +408,11 @@ impl HlsVariant {
 
             // Manually reset muxer avio
             let ctx = self.mux.context();
-            let ret = av_write_frame(ctx, ptr::null_mut());
-            if ret < 0 {
-                bail!("Failed to split segment {}", ret);
+            if flush {
+                let ret = av_write_frame(ctx, ptr::null_mut());
+                if ret < 0 {
+                    bail!("Failed to split segment {}", ret);
+                }
             }
             avio_flush((*ctx).pb);
             avio_close((*ctx).pb);
