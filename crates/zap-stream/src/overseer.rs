@@ -547,7 +547,9 @@ impl Overseer for ZapStreamOverseer {
     async fn connect(&self, connection_info: &ConnectionInfo) -> Result<ConnectResult> {
         let (user_key, user) = self.get_user_key(connection_info).await?;
         let hex_pubkey = hex::encode(&user.pubkey);
-        if user.balance < 0 {
+
+        let endpoint = self.detect_endpoint(connection_info).await?;
+        if user.balance <= 0 && endpoint.cost != 0 {
             return Ok(ConnectResult::Deny {
                 reason: format!(
                     "Not enough balance pubkey={}, balance={}",
@@ -788,28 +790,30 @@ impl Overseer for ZapStreamOverseer {
             .tick_stream(pipeline_id, stream.user_id, duration, cost)
             .await?;
 
-        // Check for low balance and send notification if needed
-        if let Some(threshold_msats) = self.low_balance_threshold_msats {
-            let balance_before = bal + cost; // Calculate balance before this deduction
-            if balance_before > threshold_msats as i64 && bal <= threshold_msats as i64 {
-                // Balance just crossed the threshold, send notification
-                if let Ok(user) = self.db.get_user(stream.user_id).await
-                    && let Err(e) = self
-                        .send_low_balance_notification(
-                            stream.user_id,
-                            &user.pubkey,
-                            bal,
-                            pipeline_id,
-                        )
-                        .await
-                {
-                    warn!("Failed to send low balance notification: {}", e);
+        if cost_per_minute > 0 {
+            // Check for low balance and send notification if needed
+            if let Some(threshold_msats) = self.low_balance_threshold_msats {
+                let balance_before = bal + cost; // Calculate balance before this deduction
+                if balance_before > threshold_msats as i64 && bal <= threshold_msats as i64 {
+                    // Balance just crossed the threshold, send notification
+                    if let Ok(user) = self.db.get_user(stream.user_id).await
+                        && let Err(e) = self
+                            .send_low_balance_notification(
+                                stream.user_id,
+                                &user.pubkey,
+                                bal,
+                                pipeline_id,
+                            )
+                            .await
+                    {
+                        warn!("Failed to send low balance notification: {}", e);
+                    }
                 }
             }
-        }
 
-        if bal <= 0 {
-            bail!("Balance has run out");
+            if bal <= 0 {
+                bail!("Balance has run out");
+            }
         }
 
         // Update last segment time for this stream
