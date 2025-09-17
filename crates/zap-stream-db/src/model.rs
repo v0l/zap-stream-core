@@ -36,6 +36,8 @@ pub struct User {
     pub content_warning: Option<String>,
     /// Default stream goal
     pub goal: Option<String>,
+    /// Nostr Wallet Connect configuration
+    pub nwc: Option<String>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Type)]
@@ -126,9 +128,11 @@ pub struct Payment {
     pub is_paid: bool,
     pub amount: u64,
     pub created: DateTime<Utc>,
+    pub expires: DateTime<Utc>,
     pub nostr: Option<String>,
     pub payment_type: PaymentType,
     pub fee: u64,
+    pub external_data: Option<String>,
 }
 
 #[derive(Debug, Clone, FromRow)]

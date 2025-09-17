@@ -47,7 +47,7 @@ hyper-tungstenite = "0.18.0"
 
 # direct deps
 config = { version = "0.15.6", features = ["yaml"] }
-payments-rs = { git = "https://github.com/v0l/payments-rs", rev = "2714fcd94e6eeb5ceda958754a8dd0e7bf9c17a1", optional = true }
+payments-rs = { git = "https://github.com/v0l/payments-rs", rev = "414adc2186a163e6684f9451d95377dd5d07a015", optional = true, default-features = false, features = ["method-lnd", "method-bitvora"] }
 base64 = { version = "0.22.1" }
 clap = { version = "4.5.16", features = ["derive"] }
 futures-util = "0.3.31"
@@ -55,10 +55,13 @@ matchit = "0.8.4"
 mustache = "0.9.0"
 http-range-header = "0.4.2"
 sysinfo = "0.36.1"
-lnurl-rs = { version = "0.9.0", optional = true, default-features = false }
+lnurl-rs = { git = "https://github.com/v0l/lnurl-rs", optional = true, default-features = false, rev = "fa5ae64a0bdd02ace357ded57032cd893056e349", features = ["async"] }
 redis = { version = "0.32.5", features = ["cluster", "tokio-comp", "tokio-native-tls-comp"] }
 libc = "0.2.175"
+nwc = { version = "0.43.0" }
+tokio-stream = "0.1.17"
 
 # Migration dependencies
 tiberius = "0.12.3"
 sqlx = { version = "0.8.0", features = ["runtime-tokio-rustls", "mysql", "chrono", "uuid"] }
+log = "0.4.28"

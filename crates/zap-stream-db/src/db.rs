@@ -6,6 +6,7 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rand::random;
 use sqlx::{MySqlPool, Row};
+use std::ops::Add;
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -287,9 +288,11 @@ impl ZapStreamDb {
         amount: u64,
         payment_type: PaymentType,
         fee: u64,
+        expires: DateTime<Utc>,
         nostr: Option<String>,
+        external_data: Option<String>,
     ) -> Result<()> {
-        sqlx::query("insert into payment (payment_hash, user_id, invoice, amount, payment_type, fee, nostr) values (?, ?, ?, ?, ?, ?, ?)")
+        sqlx::query("insert into payment (payment_hash, user_id, invoice, amount, payment_type, fee, nostr, expires, external_data) values (?, ?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(payment_hash)
             .bind(user_id)
             .bind(invoice)
@@ -297,6 +300,8 @@ impl ZapStreamDb {
             .bind(payment_type)
             .bind(fee)
             .bind(nostr)
+            .bind(expires)
+            .bind(external_data)
             .execute(&self.db)
             .await?;
         Ok(())
@@ -352,6 +357,15 @@ impl ZapStreamDb {
         .bind(offset)
         .fetch_all(&self.db)
         .await?)
+    }
+
+    /// Get pending payments
+    pub async fn get_pending_payments(&self) -> Result<Vec<Payment>> {
+        Ok(sqlx::query_as(
+            "select * from payment where is_paid = false and payment_type in (0,1) and expires > current_timestamp() order by created desc",
+        )
+            .fetch_all(&self.db)
+            .await?)
     }
 
     /// Get the latest completed payment
@@ -495,6 +509,26 @@ impl ZapStreamDb {
         Ok(())
     }
 
+    /// Update user's NWC (Nostr Wallet Connect) configuration
+    pub async fn update_user_nwc(&self, uid: u64, nwc: Option<&str>) -> Result<()> {
+        sqlx::query("update user set nwc = ? where id = ?")
+            .bind(nwc)
+            .bind(uid)
+            .execute(&self.db)
+            .await?;
+        Ok(())
+    }
+
+    /// Get user's NWC (Nostr Wallet Connect) configuration
+    pub async fn get_user_nwc(&self, uid: u64) -> Result<Option<String>> {
+        Ok(sqlx::query("select nwc from user where id = ?")
+            .bind(uid)
+            .fetch_optional(&self.db)
+            .await?
+            .and_then(|row| row.try_get::<Option<String>, _>(0).ok())
+            .flatten())
+    }
+
     /// Get user by pubkey
     pub async fn get_user_by_pubkey(&self, pubkey: &[u8; 32]) -> Result<Option<User>> {
         Ok(sqlx::query_as("select * from user where pubkey = ?")
@@ -548,6 +582,8 @@ impl ZapStreamDb {
             amount,
             PaymentType::Credit,
             0,
+            Utc::now().add(chrono::Duration::seconds(1)),
+            None,
             None,
         )
         .await?;

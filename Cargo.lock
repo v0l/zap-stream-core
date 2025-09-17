@@ -2332,9 +2332,8 @@ checksum = "241eaef5fd12c88705a01fc1066c48c4b36e0dd4377dcdc7ec3942cea7a69956"
 
 [[package]]
 name = "lnurl-rs"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "41eacdd87b675792f7752f3dd0937a00241a504c3956c47f72986490662e1db4"
+version = "0.8.0"
+source = "git+https://github.com/v0l/lnurl-rs?rev=fa5ae64a0bdd02ace357ded57032cd893056e349#fa5ae64a0bdd02ace357ded57032cd893056e349"
 dependencies = [
  "aes",
  "anyhow",
@@ -2343,6 +2342,7 @@ dependencies = [
  "bitcoin",
  "cbc",
  "email_address",
+ "reqwest",
  "serde",
  "serde_json",
  "url",
@@ -2766,6 +2766,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nwc"
+version = "0.43.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "adb6990c75699662813e9c61b82dcd6d28fe34dad00858992fdd38320c57ff4a"
+dependencies = [
+ "async-utility",
+ "nostr",
+ "nostr-relay-pool",
+ "tracing",
+]
+
+[[package]]
 name = "objc2-core-foundation"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2914,11 +2926,10 @@ checksum = "df94ce210e5bc13cb6651479fa48d14f601d9858cfe0467f43ae157023b938d3"
 [[package]]
 name = "payments-rs"
 version = "0.1.0"
-source = "git+https://github.com/v0l/payments-rs?rev=2714fcd94e6eeb5ceda958754a8dd0e7bf9c17a1#2714fcd94e6eeb5ceda958754a8dd0e7bf9c17a1"
+source = "git+https://github.com/v0l/payments-rs?rev=414adc2186a163e6684f9451d95377dd5d07a015#414adc2186a163e6684f9451d95377dd5d07a015"
 dependencies = [
  "anyhow",
  "async-trait",
- "chrono",
  "fedimint-tonic-lnd",
  "futures",
  "hex",
@@ -2926,7 +2937,6 @@ dependencies = [
  "lightning-invoice",
  "log 0.4.28",
  "reqwest",
- "rocket",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -6112,10 +6122,12 @@ dependencies = [
  "hyper-util",
  "libc",
  "lnurl-rs",
+ "log 0.4.28",
  "m3u8-rs",
  "matchit",
  "mustache",
  "nostr-sdk",
+ "nwc",
  "payments-rs",
  "pretty_env_logger",
  "redis",
@@ -6125,6 +6137,7 @@ dependencies = [
  "sysinfo",
  "tiberius",
  "tokio",
+ "tokio-stream",
  "tokio-util 0.7.15",
  "tracing",
  "tungstenite 0.27.0",

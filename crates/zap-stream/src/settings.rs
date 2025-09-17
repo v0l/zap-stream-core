@@ -50,9 +50,8 @@ impl Display for LocalOverseerVariant {
 pub struct OverseerConfig {
     /// MySQL connection string
     pub database: String,
-    #[cfg(feature = "zap-stream")]
-    /// LND node connection details
-    pub lnd: LndSettings,
+    /// Backend payment target
+    pub payments: PaymentBackend,
     /// Relays to publish events to
     pub relays: Vec<String>,
     /// Nsec to sign nostr events
@@ -66,13 +65,31 @@ pub struct OverseerConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LndSettings {
-    pub address: String,
-    pub cert: String,
-    pub macaroon: String,
+pub struct RedisConfig {
+    pub url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RedisConfig {
-    pub url: String,
+#[serde(rename_all = "lowercase")]
+pub enum PaymentBackend {
+    #[serde(rename_all = "kebab-case")]
+    LND {
+        address: String,
+        cert: String,
+        macaroon: String,
+    },
+    #[serde(rename_all = "kebab-case")]
+    Bitvora {
+        api_token: String,
+        webhook_secret: String,
+    },
+    #[serde(rename_all = "kebab-case")]
+    NWC {
+        url: String,
+    },
+    #[serde(rename_all = "kebab-case")]
+    // Plain LUD-16 payment backend
+    LNURL {
+        address: String,
+    },
 }

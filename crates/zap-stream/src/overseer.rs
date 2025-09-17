@@ -1,4 +1,5 @@
-use crate::settings::{LndSettings, RedisConfig, Settings};
+use crate::payments::create_lightning;
+use crate::settings::{PaymentBackend, RedisConfig, Settings};
 use crate::stream_manager::StreamManager;
 use anyhow::{Result, anyhow, bail, ensure};
 use async_trait::async_trait;
@@ -14,6 +15,7 @@ use std::collections::HashSet;
 use std::ops::Add;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
@@ -40,9 +42,8 @@ use zap_stream_db::{
 pub struct ZapStreamOverseer {
     /// Database instance for accounts/streams
     db: ZapStreamDb,
-    #[cfg(feature = "zap-stream")]
-    /// LND node connection
-    lnd: payments_rs::lightning::LndNode,
+    /// Generic node backend
+    lightning: Arc<dyn LightningNode + Send + Sync>,
     /// Nostr client for publishing events
     client: Client,
     /// Public facing URL pointing to [out_dir]
@@ -79,7 +80,7 @@ impl ZapStreamOverseer {
             &settings.public_url,
             &settings.overseer.nsec,
             &settings.overseer.database,
-            &settings.overseer.lnd,
+            &settings.overseer.payments,
             &settings.overseer.relays,
             &settings.overseer.blossom,
             settings.overseer.segment_length.unwrap_or(2.0),
@@ -94,7 +95,7 @@ impl ZapStreamOverseer {
         public_url: &String,
         private_key: &str,
         db: &str,
-        #[cfg(feature = "zap-stream")] lnd: &LndSettings,
+        payments: &PaymentBackend,
         relays: &Vec<String>,
         blossom_servers: &Option<Vec<String>>,
         segment_length: f32,
@@ -119,14 +120,7 @@ impl ZapStreamOverseer {
             );
         }
 
-        #[cfg(feature = "zap-stream")]
-        let lnd = payments_rs::lightning::LndNode::new(
-            &lnd.address,
-            &PathBuf::from(&lnd.cert),
-            &PathBuf::from(&lnd.macaroon),
-        )
-        .await?;
-
+        let payments = create_lightning(payments, db.clone()).await?;
         let keys = Keys::from_str(private_key)?;
         let client = nostr_sdk::ClientBuilder::new().signer(keys.clone()).build();
         for r in relays {
@@ -139,8 +133,7 @@ impl ZapStreamOverseer {
 
         let mut overseer = Self {
             db,
-            #[cfg(feature = "zap-stream")]
-            lnd,
+            lightning: payments,
             n94: blossom_servers
                 .as_ref()
                 .map(|s| N94Publisher::new(client.clone(), s, 3, segment_length)),
@@ -168,14 +161,13 @@ impl ZapStreamOverseer {
         self.db.clone()
     }
 
-    #[cfg(feature = "zap-stream")]
-    pub fn lnd_client(&self) -> payments_rs::lightning::LndNode {
-        self.lnd.clone()
+    pub fn lightning(&self) -> Arc<dyn LightningNode + Send + Sync> {
+        self.lightning.clone()
     }
 
     #[cfg(feature = "zap-stream")]
     pub fn start_payment_handler(&self, token: CancellationToken) -> JoinHandle<Result<()>> {
-        let mut ln = self.lnd.clone();
+        let mut ln = self.lightning.clone();
         let db = self.db.clone();
         let client = self.client.clone();
         tokio::spawn(async move {

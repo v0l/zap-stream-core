@@ -10,13 +10,11 @@ use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::{Method, Request, Response};
-#[cfg(feature = "zap-stream")]
 use lnurl::pay::{LnURLPayInvoice, PayResponse};
 use matchit::Router;
 use nostr_sdk::prelude::EventDeletionRequest;
 use nostr_sdk::{Client, NostrSigner, PublicKey, serde_json};
-#[cfg(feature = "zap-stream")]
-use payments_rs::lightning::{AddInvoiceRequest, LightningNode, LndNode};
+use payments_rs::lightning::{AddInvoiceRequest, LightningNode};
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::pin::Pin;
@@ -52,14 +50,14 @@ enum Route {
     AdminIngestEndpoints,
     AdminIngestEndpointsId,
     DeleteStream,
+    WebhookBitvora,
 }
 
 #[derive(Clone)]
 pub struct Api {
     db: ZapStreamDb,
     settings: Settings,
-    #[cfg(feature = "zap-stream")]
-    lnd: LndNode,
+    payments: Arc<dyn LightningNode>,
     router: Router<Route>,
     overseer: Arc<dyn Overseer>,
     stream_manager: StreamManager,
@@ -138,23 +136,23 @@ impl Api {
             .insert("/api/v1/stream/{id}", Route::DeleteStream)
             .unwrap();
 
-        #[cfg(feature = "zap-stream")]
-        {
-            router.insert("/api/v1/topup", Route::Topup).unwrap();
-            router.insert("/api/v1/withdraw", Route::Withdraw).unwrap();
-            router
-                .insert("/.well-known/lnurlp/{name}", Route::Zap)
-                .unwrap();
-            router
-                .insert("/api/v1/zap/{pubkey}", Route::ZapCallback)
-                .unwrap();
-        }
+        router.insert("/api/v1/topup", Route::Topup).unwrap();
+        #[cfg(feature = "withdrawal")]
+        router.insert("/api/v1/withdraw", Route::Withdraw).unwrap();
+        router
+            .insert("/.well-known/lnurlp/{name}", Route::Zap)
+            .unwrap();
+        router
+            .insert("/api/v1/zap/{pubkey}", Route::ZapCallback)
+            .unwrap();
+        router
+            .insert("/api/v1/webhook/bitvora", Route::WebhookBitvora)
+            .unwrap();
 
         Self {
             db: overseer.database(),
             settings,
-            #[cfg(feature = "zap-stream")]
-            lnd: overseer.lnd_client(),
+            payments: overseer.lightning(),
             router,
             stream_manager: overseer.stream_manager(),
             nostr_client: overseer.nostr_client(),
@@ -676,7 +674,7 @@ impl Api {
         let uid = self.db.upsert_user(&pubkey.to_bytes()).await?;
 
         let response = self
-            .lnd
+            .payments
             .add_invoice(AddInvoiceRequest {
                 amount: amount_msats as _,
                 memo: Some(format!("zap.stream topup for user {}", pubkey.to_hex())),
@@ -684,21 +682,28 @@ impl Api {
             })
             .await?;
 
-        let r_hash = hex::decode(&response.payment_hash)?;
+        let pr = response.pr();
+        let r_hash = hex::decode(&response.payment_hash())?;
         // Create payment entry for this topup invoice
         self.db
             .create_payment(
                 &r_hash,
                 uid,
-                Some(&response.pr),
+                Some(&response.pr()),
                 amount_msats as _,
                 zap_stream_db::PaymentType::TopUp,
                 0,
+                DateTime::from_timestamp(
+                    response.parsed_invoice.expires_at().unwrap().as_secs() as _,
+                    0,
+                )
+                .unwrap(),
                 nostr,
+                response.external_id,
             )
             .await?;
 
-        Ok(TopupResponse { pr: response.pr })
+        Ok(TopupResponse { pr })
     }
 
     async fn update_event(&self, pubkey: &PublicKey, patch_event: PatchEvent) -> Result<()> {

@@ -7,9 +7,8 @@ use clap::Parser;
 use config::Config;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::{AV_CODEC_ID_H264, AV_CODEC_ID_HEVC};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    AV_LOG_DEBUG, AV_LOG_ERROR, AV_LOG_FATAL, AV_LOG_INFO, AV_LOG_PANIC, AV_LOG_WARNING,
-    av_hwdevice_get_type_name, av_log_format_line, av_log_set_callback, av_version_info,
-    avcodec_find_decoder,
+    AV_LOG_FATAL, AV_LOG_INFO, AV_LOG_PANIC, AV_LOG_WARNING, av_hwdevice_get_type_name,
+    av_log_format_line, av_log_set_callback, av_version_info, avcodec_find_decoder,
 };
 use ffmpeg_rs_raw::{Decoder, ffmpeg_sys_the_third, rstr};
 use hyper::server::conn::http1;
@@ -22,7 +21,6 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
-use tracing::log::log;
 use tracing::{error, info, warn};
 use zap_stream_core::listen::try_create_listener;
 use zap_stream_core::overseer::Overseer;
@@ -31,6 +29,7 @@ mod api;
 mod auth;
 mod http;
 mod overseer;
+mod payments;
 mod settings;
 mod stream_manager;
 mod viewer;
