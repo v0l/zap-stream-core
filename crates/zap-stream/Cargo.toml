@@ -6,10 +6,11 @@ rust-version.workspace = true
 
 [features]
 default = ["srt", "rtmp", "test-pattern", "zap-stream"]
-zap-stream = ["dep:fedimint-tonic-lnd", "dep:lnurl-rs"]
+zap-stream = ["dep:payments-rs", "dep:lnurl-rs"]
 srt = ["zap-stream-core/ingress-srt"]
 rtmp = ["zap-stream-core/ingress-rtmp"]
 test-pattern = ["zap-stream-db/test-pattern", "zap-stream-core/ingress-test"]
+withdrawal = []
 
 [dependencies]
 zap-stream-db = { path = "../zap-stream-db" }
@@ -46,7 +47,7 @@ hyper-tungstenite = "0.18.0"
 
 # direct deps
 config = { version = "0.15.6", features = ["yaml"] }
-fedimint-tonic-lnd = { version = "0.2.0", default-features = false, features = ["invoicesrpc", "versionrpc"], optional = true }
+payments-rs = { git = "https://github.com/v0l/payments-rs", rev = "2714fcd94e6eeb5ceda958754a8dd0e7bf9c17a1", optional = true }
 base64 = { version = "0.22.1" }
 clap = { version = "4.5.16", features = ["derive"] }
 futures-util = "0.3.31"

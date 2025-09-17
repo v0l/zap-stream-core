@@ -81,35 +81,29 @@ where
 {
     pub fn new(files_dir: PathBuf, plugin: T) -> Self {
         let mut router = Router::new();
-        router.insert("/", HttpServerPath::Index).unwrap();
-        router.insert("/index.html", HttpServerPath::Index).unwrap();
+        router.insert("/", HttpServerPath::Index).expect("invalid route");
+        router.insert("/index.html", HttpServerPath::Index).expect("invalid route");
         router
             .insert(
                 format!("/{{stream}}/{}/live.m3u8", HlsEgress::PATH),
                 HttpServerPath::HlsMasterPlaylist,
             )
-            .unwrap();
+            .expect("invalid route");
         router
             .insert(
                 format!("/{{stream}}/{}/{{variant}}/live.m3u8", HlsEgress::PATH),
                 HttpServerPath::HlsVariantPlaylist,
             )
-            .unwrap();
+            .expect("invalid route");
         router
             .insert(
-                format!("/{{stream}}/{}/{{variant}}/{{seg}}.ts", HlsEgress::PATH),
+                format!("/{{stream}}/{}/{{variant}}/{{seg}}", HlsEgress::PATH),
                 HttpServerPath::HlsSegmentFile,
             )
-            .unwrap();
-        router
-            .insert(
-                format!("/{{stream}}/{}/{{variant}}/{{seg}}.m4s", HlsEgress::PATH),
-                HttpServerPath::HlsSegmentFile,
-            )
-            .unwrap();
+            .expect("invalid route");
         router
             .insert("/api/v1/ws", HttpServerPath::WebSocketMetrics)
-            .unwrap();
+            .expect("invalid route");
 
         Self {
             files_dir,
@@ -177,6 +171,11 @@ where
                                 .body(BoxBody::default())?);
                         }
                     };
+                    if range.start > range.end {
+                        return Ok(response
+                            .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                            .body(BoxBody::default())?);
+                    }
                     let r_body = RangeBody::new(file, metadata.len(), range.clone());
 
                     response = response.status(StatusCode::PARTIAL_CONTENT);

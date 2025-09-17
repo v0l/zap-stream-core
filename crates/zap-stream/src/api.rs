@@ -6,8 +6,6 @@ use crate::websocket_metrics::WebSocketMetricsServer;
 use anyhow::{Result, anyhow, bail};
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
-#[cfg(feature = "zap-stream")]
-use fedimint_tonic_lnd::lnrpc::Invoice;
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
@@ -17,6 +15,8 @@ use lnurl::pay::{LnURLPayInvoice, PayResponse};
 use matchit::Router;
 use nostr_sdk::prelude::EventDeletionRequest;
 use nostr_sdk::{Client, NostrSigner, PublicKey, serde_json};
+#[cfg(feature = "zap-stream")]
+use payments_rs::lightning::{AddInvoiceRequest, LightningNode, LndNode};
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::pin::Pin;
@@ -59,7 +59,7 @@ pub struct Api {
     db: ZapStreamDb,
     settings: Settings,
     #[cfg(feature = "zap-stream")]
-    lnd: fedimint_tonic_lnd::Client,
+    lnd: LndNode,
     router: Router<Route>,
     overseer: Arc<dyn Overseer>,
     stream_manager: StreamManager,
@@ -227,7 +227,7 @@ impl Api {
                     let rsp = self.topup(&auth.pubkey, amount * 1000, None).await?;
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
-                #[cfg(feature = "zap-stream")]
+                #[cfg(all(feature = "zap-stream", feature = "withdrawal"))]
                 (&Method::POST, Route::Withdraw) => {
                     let auth = check_nip98_auth(&req, &self.settings, &self.db).await?;
                     let full_url = format!(
@@ -675,27 +675,22 @@ impl Api {
     ) -> Result<TopupResponse> {
         let uid = self.db.upsert_user(&pubkey.to_bytes()).await?;
 
-        // Create Lightning invoice
-        let invoice_req = Invoice {
-            value_msat: amount_msats as _,
-            memo: format!("zap.stream topup for user {}", pubkey.to_hex()),
-            ..Default::default()
-        };
-
         let response = self
             .lnd
-            .clone()
-            .lightning()
-            .add_invoice(invoice_req)
+            .add_invoice(AddInvoiceRequest {
+                amount: amount_msats as _,
+                memo: Some(format!("zap.stream topup for user {}", pubkey.to_hex())),
+                expire: None,
+            })
             .await?;
-        let invoice_response = response.into_inner();
 
+        let r_hash = hex::decode(&response.payment_hash)?;
         // Create payment entry for this topup invoice
         self.db
             .create_payment(
-                &invoice_response.r_hash,
+                &r_hash,
                 uid,
-                Some(&invoice_response.payment_request),
+                Some(&response.pr),
                 amount_msats as _,
                 zap_stream_db::PaymentType::TopUp,
                 0,
@@ -703,9 +698,7 @@ impl Api {
             )
             .await?;
 
-        Ok(TopupResponse {
-            pr: invoice_response.payment_request,
-        })
+        Ok(TopupResponse { pr: response.pr })
     }
 
     async fn update_event(&self, pubkey: &PublicKey, patch_event: PatchEvent) -> Result<()> {
@@ -778,7 +771,8 @@ impl Api {
         Ok(())
     }
 
-    #[cfg(feature = "zap-stream")]
+    // TODO: broken
+    #[cfg(all(feature = "zap-stream", feature = "withdrawal"))]
     async fn withdraw(&self, pubkey: &PublicKey, invoice: String) -> Result<WithdrawResponse> {
         let uid = self.db.upsert_user(&pubkey.to_bytes()).await?;
         let user = self.db.get_user(uid).await?;
@@ -786,7 +780,7 @@ impl Api {
         let mut lnd = self.lnd.clone();
 
         // Decode invoice to get amount and payment hash
-        let decode_req = fedimint_tonic_lnd::lnrpc::PayReqString {
+        let decode_req = voltage_tonic_lnd::lnrpc::PayReqString {
             pay_req: invoice.clone(),
         };
         let decode_response = lnd.lightning().decode_pay_req(decode_req).await?;
@@ -818,7 +812,7 @@ impl Api {
             .await?;
 
         // 3. Attempt Lightning payment
-        let send_req = fedimint_tonic_lnd::lnrpc::SendRequest {
+        let send_req = voltage_tonic_lnd::lnrpc::SendRequest {
             payment_request: invoice.clone(),
             ..Default::default()
         };
@@ -1168,7 +1162,9 @@ impl Api {
         }
 
         if let Some(enable_stream_dump_recording) = req.set_stream_dump_recording {
-            self.db.set_stream_dump_recording(uid, enable_stream_dump_recording).await?;
+            self.db
+                .set_stream_dump_recording(uid, enable_stream_dump_recording)
+                .await?;
 
             // Log admin action
             let action = if enable_stream_dump_recording {
@@ -1178,7 +1174,11 @@ impl Api {
             };
             let message = format!(
                 "Stream dump recording {} for user {}",
-                if enable_stream_dump_recording { "enabled" } else { "disabled" },
+                if enable_stream_dump_recording {
+                    "enabled"
+                } else {
+                    "disabled"
+                },
                 uid
             );
             let metadata = serde_json::json!({

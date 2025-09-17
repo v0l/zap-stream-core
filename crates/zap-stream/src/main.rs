@@ -143,7 +143,7 @@ async fn main() -> Result<()> {
         info!("Shutdown requested!");
         shutdown_sig.cancel();
     })
-        .expect("Error setting Ctrl-C handler");
+    .expect("Error setting Ctrl-C handler");
 
     // create ingest endpoints
     let overseer = overseer as Arc<dyn Overseer>;

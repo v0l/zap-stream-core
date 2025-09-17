@@ -1,20 +1,15 @@
 use crate::settings::{LndSettings, RedisConfig, Settings};
 use crate::stream_manager::StreamManager;
-use anyhow::{Context, Result, anyhow, bail, ensure};
+use anyhow::{Result, anyhow, bail, ensure};
 use async_trait::async_trait;
 use chrono::Utc;
-#[cfg(feature = "zap-stream")]
-use fedimint_tonic_lnd::invoicesrpc::LookupInvoiceMsg;
-#[cfg(feature = "zap-stream")]
-use fedimint_tonic_lnd::invoicesrpc::lookup_invoice_msg::InvoiceRef;
-#[cfg(feature = "zap-stream")]
-use fedimint_tonic_lnd::lnrpc::InvoiceSubscription;
-#[cfg(feature = "zap-stream")]
-use fedimint_tonic_lnd::verrpc::VersionRequest;
+use futures_util::StreamExt;
 use nostr_sdk::prelude::Coordinate;
 use nostr_sdk::{
     Client, Event, EventBuilder, JsonUtil, Keys, Kind, NostrSigner, Tag, Timestamp, ToBech32,
 };
+#[cfg(feature = "zap-stream")]
+use payments_rs::lightning::{InvoiceUpdate, LightningNode};
 use std::collections::HashSet;
 use std::ops::Add;
 use std::path::PathBuf;
@@ -47,7 +42,7 @@ pub struct ZapStreamOverseer {
     db: ZapStreamDb,
     #[cfg(feature = "zap-stream")]
     /// LND node connection
-    lnd: fedimint_tonic_lnd::Client,
+    lnd: payments_rs::lightning::LndNode,
     /// Nostr client for publishing events
     client: Client,
     /// Public facing URL pointing to [out_dir]
@@ -125,24 +120,12 @@ impl ZapStreamOverseer {
         }
 
         #[cfg(feature = "zap-stream")]
-        let lnd = {
-            let mut lnd = fedimint_tonic_lnd::connect(
-                lnd.address.clone(),
-                PathBuf::from(&lnd.cert),
-                PathBuf::from(&lnd.macaroon),
-            )
-            .await
-            .context("Failed to connect to LND")?;
-
-            let version = lnd
-                .versioner()
-                .get_version(VersionRequest::default())
-                .await
-                .context("Failed to get LND version")?;
-            info!("LND connected: v{}", version.into_inner().version);
-
-            lnd
-        };
+        let lnd = payments_rs::lightning::LndNode::new(
+            &lnd.address,
+            &PathBuf::from(&lnd.cert),
+            &PathBuf::from(&lnd.macaroon),
+        )
+        .await?;
 
         let keys = Keys::from_str(private_key)?;
         let client = nostr_sdk::ClientBuilder::new().signer(keys.clone()).build();
@@ -186,7 +169,7 @@ impl ZapStreamOverseer {
     }
 
     #[cfg(feature = "zap-stream")]
-    pub fn lnd_client(&self) -> fedimint_tonic_lnd::Client {
+    pub fn lnd_client(&self) -> payments_rs::lightning::LndNode {
         self.lnd.clone()
     }
 
@@ -198,30 +181,19 @@ impl ZapStreamOverseer {
         tokio::spawn(async move {
             loop {
                 // get last completed payment
-                let last_payment_index = if let Some(pl) = db.get_latest_completed_payment().await?
-                {
-                    let mut req = LookupInvoiceMsg::default();
-                    req.invoice_ref = Some(InvoiceRef::PaymentHash(pl.payment_hash));
-                    if let Ok(inv) = ln.invoices().lookup_invoice_v2(req).await {
-                        inv.into_inner().settle_index
-                    } else {
-                        0
-                    }
+                let last_payment_hash = if let Some(pl) = db.get_latest_completed_payment().await? {
+                    Some(pl.payment_hash)
                 } else {
-                    0
+                    None
                 };
                 info!(
-                    "Listening to invoices from settle_index {}",
-                    last_payment_index
+                    "Listening to invoices from {}",
+                    last_payment_hash
+                        .as_ref()
+                        .map(|h| hex::encode(h))
+                        .unwrap_or("Now".to_string())
                 );
-                let mut stream = ln
-                    .lightning()
-                    .subscribe_invoices(InvoiceSubscription {
-                        add_index: 0,
-                        settle_index: last_payment_index,
-                    })
-                    .await? // TODO: unlock rl
-                    .into_inner();
+                let mut stream = ln.subscribe_invoices(last_payment_hash).await?;
 
                 loop {
                     tokio::select! {
@@ -229,49 +201,20 @@ impl ZapStreamOverseer {
                             info!("Payment handler exiting...");
                             return Ok(());
                         }
-                        Ok(msg) = stream.message() => {
+                        Some(msg) = stream.next() => {
                             info!("Received message: {:?}", msg);
                             match msg {
-                               Some(data) => {
-                                    info!(
-                                        "Got payment update: preimage={}, settle_index={}",
-                                        hex::encode(&data.r_hash),
-                                        data.settle_index
-                                    );
-                                    if data.settle_index != 0 {
-                                        match db.complete_payment(&data.r_hash, 0).await {
-                                            Ok(b) => {
-                                                if b {
-                                                    info!("Completed payment!");
-                                                    let payment = db.get_payment(&data.r_hash).await?.unwrap();
-                                                    if let Some(nostr) = payment.nostr
-                                                        && let Err(e) = Self::try_send_zap_receipt(
-                                                            &client,
-                                                            &nostr,
-                                                            &data.payment_request,
-                                                            &data.r_preimage,
-                                                        )
-                                                        .await
-                                                        {
-                                                            warn!("Failed to send zap receipt {}", e);
-                                                        }
-                                                } else {
-                                                    warn!(
-                                                        "No payments updated! Maybe it doesnt exist or it's already processed."
-                                                    )
-                                                }
-                                            }
-                                            Err(e) => {
-                                                error!(
-                                                    "Failed to complete payment {}: {}",
-                                                    hex::encode(data.r_hash),
-                                                    e
-                                                );
-                                            }
-                                        }
+                               InvoiceUpdate::Settled {
+                                    payment_hash, preimage, ..
+                                } => {
+                                    if let Err(e) = Self::try_complete_payment(payment_hash, preimage, &db, &client).await {
+                                        error!("Failed to complete payment: {}", e);
                                     }
                                 }
-                                None => break,
+                                InvoiceUpdate::Error(error) => {
+                                    error!("Invoice update error: {}", error);
+                                }
+                                _ => {}
                             }
                         }
                     }
@@ -283,11 +226,46 @@ impl ZapStreamOverseer {
         })
     }
 
+    async fn try_complete_payment(
+        payment_hash: String,
+        pre_image: Option<String>,
+        db: &ZapStreamDb,
+        client: &Client,
+    ) -> Result<()> {
+        let ph = hex::decode(&payment_hash)?;
+        match db.complete_payment(&ph, 0).await {
+            Ok(b) => {
+                if b {
+                    info!("Completed payment!");
+                    let payment = db.get_payment(&ph).await?.unwrap();
+                    if let Some(nostr) = payment.nostr {
+                        Self::try_send_zap_receipt(
+                            &client,
+                            &nostr,
+                            payment
+                                .invoice
+                                .ok_or(anyhow!("invoice was empty"))?
+                                .as_str(),
+                            pre_image,
+                        )
+                        .await?;
+                    }
+                } else {
+                    warn!("No payments updated! Maybe it doesnt exist or it's already processed.")
+                }
+            }
+            Err(e) => {
+                error!("Failed to complete payment {}: {}", payment_hash, e);
+            }
+        }
+        Ok(())
+    }
+
     async fn try_send_zap_receipt(
         client: &Client,
         zap_request: &str,
         invoice: &str,
-        pre_image: &Vec<u8>,
+        pre_image: Option<String>,
     ) -> Result<()> {
         let ev = Event::from_json(zap_request)?;
         ensure!(ev.kind == Kind::ZapRequest, "Wrong zap request kind");
@@ -298,11 +276,13 @@ impl ZapStreamOverseer {
             .iter()
             .filter(|t| t.single_letter_tag().is_some())
             .cloned();
-        let receipt = EventBuilder::new(Kind::ZapReceipt, "")
+        let mut receipt = EventBuilder::new(Kind::ZapReceipt, "")
             .tags(copy_tags)
             .tag(Tag::description(zap_request))
-            .tag(Tag::parse(["bolt11", invoice])?)
-            .tag(Tag::parse(["preimage", &hex::encode(pre_image)])?);
+            .tag(Tag::parse(["bolt11", invoice])?);
+        if let Some(r) = pre_image {
+            receipt = receipt.tag(Tag::parse(["preimage", &r])?);
+        }
 
         let id = client.send_event_builder(receipt).await?;
         info!("Sent zap receipt {}", id.val);
