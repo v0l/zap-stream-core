@@ -4,13 +4,15 @@ This document describes the REST API endpoints available in the zap.stream core 
 
 ## Authentication
 
-The API uses NIP-98 (Nostr HTTP Auth) for authentication. All protected endpoints require an `Authorization` header with the following format:
+The API uses NIP-98 (Nostr HTTP Auth) for authentication. All protected endpoints require an `Authorization` header with
+the following format:
 
 ```
 Authorization: Nostr <base64-encoded-nostr-event>
 ```
 
 The Nostr event must:
+
 - Be of kind 27235 (NIP-98 HTTP Auth)
 - Have a valid signature
 - Include appropriate `method` and `url` tags matching the request
@@ -25,6 +27,7 @@ All API endpoints are prefixed with `/api/v1/`
 ### Utility
 
 #### Get Server Time
+
 ```
 GET /api/v1/time
 ```
@@ -32,17 +35,20 @@ GET /api/v1/time
 **Authentication:** Not required
 
 **Response:**
+
 ```json
 {
   "time": 1640995200000
 }
 ```
 
-**Description:** Returns the current server time as a Unix timestamp in milliseconds. Useful for client synchronization and NIP-98 authentication timestamp validation.
+**Description:** Returns the current server time as a Unix timestamp in milliseconds. Useful for client synchronization
+and NIP-98 authentication timestamp validation.
 
 ### Account Management
 
 #### Get Account Information
+
 ```
 GET /api/v1/account
 ```
@@ -50,14 +56,17 @@ GET /api/v1/account
 **Authentication:** Required
 
 **Response:**
+
 ```json
 {
   "endpoints": [
     {
       "name": "string",
-      "url": "string", 
+      "url": "string",
       "key": "string",
-      "capabilities": ["string"],
+      "capabilities": [
+        "string"
+      ],
       "cost": {
         "unit": "string",
         "rate": 0.0
@@ -77,18 +86,23 @@ GET /api/v1/account
   ],
   "details": {
     "title": "string",
-    "summary": "string", 
+    "summary": "string",
     "image": "string",
-    "tags": ["string"],
+    "tags": [
+      "string"
+    ],
     "content_warning": "string",
     "goal": "string"
   }
 }
 ```
 
-**Description:** Returns comprehensive account information including streaming endpoints with the primary stream key (which creates a new Nostr event for each stream), account balance, terms of service status, RTMP forward destinations, and stream details.
+**Description:** Returns comprehensive account information including streaming endpoints with the primary stream key (
+which creates a new Nostr event for each stream), account balance, terms of service status, RTMP forward destinations,
+and stream details.
 
 #### Update Account
+
 ```
 PATCH /api/v1/account
 ```
@@ -96,13 +110,15 @@ PATCH /api/v1/account
 **Authentication:** Required
 
 **Request Body:**
+
 ```json
 {
   "accept_tos": true
 }
 ```
 
-**Response:** 
+**Response:**
+
 ```json
 {}
 ```
@@ -112,6 +128,7 @@ PATCH /api/v1/account
 ### Payment Operations
 
 #### Request Top-up
+
 ```
 GET /api/v1/topup?amount=<amount>
 ```
@@ -119,18 +136,22 @@ GET /api/v1/topup?amount=<amount>
 **Authentication:** Required
 
 **Query Parameters:**
+
 - `amount` (required): Amount to top up in millisatoshi
 
 **Response:**
+
 ```json
 {
   "pr": "string"
 }
 ```
 
-**Description:** Generates a Lightning Network payment request for adding funds to the account balance. Returns a payment request (invoice) that can be paid to credit the account.
+**Description:** Generates a Lightning Network payment request for adding funds to the account balance. Returns a
+payment request (invoice) that can be paid to credit the account.
 
 #### Withdraw Funds
+
 ```
 POST /api/v1/withdraw?invoice=<payment_request>
 ```
@@ -138,9 +159,11 @@ POST /api/v1/withdraw?invoice=<payment_request>
 **Authentication:** Required
 
 **Query Parameters:**
+
 - `invoice` (required): Lightning Network payment request to pay
 
 **Response:**
+
 ```json
 {
   "fee": 0,
@@ -148,11 +171,13 @@ POST /api/v1/withdraw?invoice=<payment_request>
 }
 ```
 
-**Description:** Withdraws funds from the account balance by paying a Lightning Network invoice. Returns the fee charged and payment preimage on success.
+**Description:** Withdraws funds from the account balance by paying a Lightning Network invoice. Returns the fee charged
+and payment preimage on success.
 
 ### Stream Management
 
 #### Update Stream Event
+
 ```
 PATCH /api/v1/event
 ```
@@ -160,19 +185,23 @@ PATCH /api/v1/event
 **Authentication:** Required
 
 **Request Body:**
+
 ```json
 {
   "id": "string",
   "title": "string",
   "summary": "string",
-  "image": "string", 
-  "tags": ["string"],
+  "image": "string",
+  "tags": [
+    "string"
+  ],
   "content_warning": "string",
   "goal": "string"
 }
 ```
 
 **Response:**
+
 ```json
 {}
 ```
@@ -182,6 +211,7 @@ PATCH /api/v1/event
 ### RTMP Forward Management
 
 #### Create RTMP Forward
+
 ```
 POST /api/v1/forward
 ```
@@ -189,6 +219,7 @@ POST /api/v1/forward
 **Authentication:** Required
 
 **Request Body:**
+
 ```json
 {
   "name": "string",
@@ -197,15 +228,18 @@ POST /api/v1/forward
 ```
 
 **Response:**
+
 ```json
 {
   "id": 0
 }
 ```
 
-**Description:** Creates a new RTMP forward destination. RTMP forwards allow streaming to multiple platforms simultaneously by forwarding the stream to external RTMP endpoints (e.g., YouTube, Twitch, etc.).
+**Description:** Creates a new RTMP forward destination. RTMP forwards allow streaming to multiple platforms
+simultaneously by forwarding the stream to external RTMP endpoints (e.g., YouTube, Twitch, etc.).
 
 #### Delete RTMP Forward
+
 ```
 DELETE /api/v1/forward/{id}
 ```
@@ -213,9 +247,11 @@ DELETE /api/v1/forward/{id}
 **Authentication:** Required
 
 **Path Parameters:**
+
 - `id`: Forward ID to delete
 
 **Response:**
+
 ```json
 {}
 ```
@@ -225,6 +261,7 @@ DELETE /api/v1/forward/{id}
 ### History and Keys
 
 #### Get Account History
+
 ```
 GET /api/v1/history
 ```
@@ -232,24 +269,47 @@ GET /api/v1/history
 **Authentication:** Required
 
 **Response:**
+
 ```json
 {
   "items": [
     {
-      "created": 0,
+      "created": 1704067200,
       "type": 0,
-      "amount": 0.0,
-      "desc": "string"
+      "amount": 1000.5,
+      "desc": "Lightning top-up"
+    },
+    {
+      "created": 1704153600,
+      "type": 1,
+      "amount": 250.0,
+      "desc": "Stream: My Live Stream"
+    },
+    {
+      "created": 1704240000,
+      "type": 1,
+      "amount": 50.0,
+      "desc": "Withdrawal"
     }
   ],
   "page": 0,
-  "page_size": 0
+  "page_size": 50
 }
 ```
 
-**Description:** Returns paginated transaction history for the account including payments, withdrawals, and streaming costs.
+**Description:** Returns paginated transaction history for the account including payments, withdrawals, and streaming
+costs.
+
+**Response Fields:**
+
+- `created`: Unix timestamp when the transaction occurred
+- `type`: Transaction type - `0` for credits (payments received, top-ups, admin credits, zaps), `1` for debits (
+  withdrawals, streaming costs)
+- `amount`: Transaction amount in satoshis (sats)
+- `desc`: Description of the transaction - may include stream titles, "Withdrawal", "Admin Credit", or Nostr zap content
 
 #### Get Additional Stream Keys
+
 ```
 GET /api/v1/keys
 ```
@@ -257,6 +317,7 @@ GET /api/v1/keys
 **Authentication:** Required
 
 **Response:**
+
 ```json
 [
   {
@@ -269,9 +330,12 @@ GET /api/v1/keys
 ]
 ```
 
-**Description:** Returns all additional stream keys for the account. These are separate from the primary stream key (returned in account info) and are used for fixed stream events, planned streams, or 24/7 streams with pre-defined Nostr events.
+**Description:** Returns all additional stream keys for the account. These are separate from the primary stream key (
+returned in account info) and are used for fixed stream events, planned streams, or 24/7 streams with pre-defined Nostr
+events.
 
 #### Create Additional Stream Key
+
 ```
 POST /api/v1/keys
 ```
@@ -279,13 +343,16 @@ POST /api/v1/keys
 **Authentication:** Required
 
 **Request Body:**
+
 ```json
 {
   "event": {
     "title": "string",
     "summary": "string",
     "image": "string",
-    "tags": ["string"],
+    "tags": [
+      "string"
+    ],
     "content_warning": "string",
     "goal": "string"
   },
@@ -294,6 +361,7 @@ POST /api/v1/keys
 ```
 
 **Response:**
+
 ```json
 {
   "key": "string",
@@ -301,9 +369,12 @@ POST /api/v1/keys
 }
 ```
 
-**Description:** Creates an additional stream key with pre-defined event metadata and optional expiration time. Unlike the primary stream key (which creates a new Nostr event each time), these keys are tied to a specific Nostr event and are ideal for planned streams, scheduled events, or 24/7 streaming scenarios.
+**Description:** Creates an additional stream key with pre-defined event metadata and optional expiration time. Unlike
+the primary stream key (which creates a new Nostr event each time), these keys are tied to a specific Nostr event and
+are ideal for planned streams, scheduled events, or 24/7 streaming scenarios.
 
 #### Delete Stream
+
 ```
 DELETE /api/v1/stream/{id}
 ```
@@ -311,18 +382,22 @@ DELETE /api/v1/stream/{id}
 **Authentication:** Required
 
 **Path Parameters:**
+
 - `id`: Stream ID (UUID) to delete
 
 **Response:**
+
 ```json
 {}
 ```
 
-**Description:** Deletes a stream. Users can only delete their own streams. Also publishes a Nostr deletion event if the stream has an associated Nostr event.
+**Description:** Deletes a stream. Users can only delete their own streams. Also publishes a Nostr deletion event if the
+stream has an associated Nostr event.
 
 ### Lightning Address (LNURL)
 
 #### LNURL Pay Endpoint
+
 ```
 GET /.well-known/lnurlp/{name}
 ```
@@ -330,9 +405,11 @@ GET /.well-known/lnurlp/{name}
 **Authentication:** Not required
 
 **Path Parameters:**
+
 - `name`: User pubkey (hex encoded)
 
 **Response:**
+
 ```json
 {
   "callback": "https://example.com/api/v1/zap/{pubkey}",
@@ -349,6 +426,7 @@ GET /.well-known/lnurlp/{name}
 **Description:** LNURL pay endpoint for Lightning Address support. Returns payment parameters for zapping a user.
 
 #### Zap Callback
+
 ```
 GET /api/v1/zap/{pubkey}
 ```
@@ -356,35 +434,42 @@ GET /api/v1/zap/{pubkey}
 **Authentication:** Not required
 
 **Path Parameters:**
+
 - `pubkey`: Target user's pubkey (hex encoded)
 
 **Query Parameters:**
+
 - `amount` (required): Amount to zap in millisatoshi
 - `nostr` (optional): Base64-encoded Nostr zap request event
 
 **Response:**
+
 ```json
 {
   "pr": "lnbc..."
 }
 ```
 
-**Description:** Handles the LNURL pay callback. Creates a Lightning invoice for zapping the specified user. Supports Nostr zap requests for proper zap attribution.
+**Description:** Handles the LNURL pay callback. Creates a Lightning invoice for zapping the specified user. Supports
+Nostr zap requests for proper zap attribution.
 
 ## WebSocket API
 
 ### Real-time Metrics WebSocket
+
 ```
 WS /api/v1/ws
 ```
 
 **Protocol:** WebSocket
 
-**Description:** Provides real-time streaming metrics via WebSocket connection for both streamer dashboards and admin interfaces. Supports role-based access control with different metric types based on user permissions.
+**Description:** Provides real-time streaming metrics via WebSocket connection for both streamer dashboards and admin
+interfaces. Supports role-based access control with different metric types based on user permissions.
 
 #### Authentication
 
-WebSocket authentication uses NIP-98 (Nostr HTTP Auth) via JSON messages after connection establishment. The token should be a base64-encoded NIP-98 event (without the "Authorization: Nostr " prefix).
+WebSocket authentication uses NIP-98 (Nostr HTTP Auth) via JSON messages after connection establishment. The token
+should be a base64-encoded NIP-98 event (without the "Authorization: Nostr " prefix).
 
 ```json
 {
@@ -396,6 +481,7 @@ WebSocket authentication uses NIP-98 (Nostr HTTP Auth) via JSON messages after c
 ```
 
 **NIP-98 Event Requirements:**
+
 - Event kind: 27235 (NIP-98 HTTP Auth)
 - Valid signature and timestamp (within 120 seconds)
 - URL tag: `ws://yourserver.com/api/v1/ws` (WebSocket URL)
@@ -405,9 +491,10 @@ WebSocket authentication uses NIP-98 (Nostr HTTP Auth) via JSON messages after c
 #### Message Types
 
 ##### Authentication Response
+
 ```json
 {
-  "type": "AuthResponse", 
+  "type": "AuthResponse",
   "data": {
     "success": true,
     "is_admin": true,
@@ -417,11 +504,12 @@ WebSocket authentication uses NIP-98 (Nostr HTTP Auth) via JSON messages after c
 ```
 
 or for regular users:
+
 ```json
 {
   "type": "AuthResponse",
   "data": {
-    "success": true, 
+    "success": true,
     "is_admin": false,
     "pubkey": "npub1..."
   }
@@ -429,6 +517,7 @@ or for regular users:
 ```
 
 ##### Subscribe to Stream Metrics
+
 ```json
 {
   "type": "SubscribeStream",
@@ -438,9 +527,11 @@ or for regular users:
 }
 ```
 
-**Authorization:** Authenticated users can subscribe to stream metrics. Regular users can only access their own streams, while admins can access any stream.
+**Authorization:** Authenticated users can subscribe to stream metrics. Regular users can only access their own streams,
+while admins can access any stream.
 
 ##### Subscribe to Overall Metrics
+
 ```json
 {
   "type": "SubscribeOverall",
@@ -451,6 +542,7 @@ or for regular users:
 **Authorization:** Admin access required.
 
 ##### Stream Metrics (Broadcast)
+
 ```json
 {
   "type": "StreamMetrics",
@@ -480,9 +572,12 @@ or for regular users:
 }
 ```
 
-**Description:** Real-time metrics for individual streams containing pipeline performance data and viewer counts. Broadcast automatically when metrics are updated for subscribed streams. The `endpoint_stats` field contains per-endpoint bitrate information for all active ingress and egress endpoints.
+**Description:** Real-time metrics for individual streams containing pipeline performance data and viewer counts.
+Broadcast automatically when metrics are updated for subscribed streams. The `endpoint_stats` field contains
+per-endpoint bitrate information for all active ingress and egress endpoints.
 
 ##### Node Metrics (Broadcast)
+
 ```json
 {
   "type": "NodeMetrics",
@@ -496,9 +591,13 @@ or for regular users:
 }
 ```
 
-**Description:** Individual node performance metrics broadcast every 5 seconds for subscribed admin clients. Each streaming node reports its own system metrics including CPU usage (as a ratio from 0.0 to 1.0), memory usage in bytes, and uptime. Available only to admin users. Clients can aggregate data from multiple nodes to compute system-wide statistics.
+**Description:** Individual node performance metrics broadcast every 5 seconds for subscribed admin clients. Each
+streaming node reports its own system metrics including CPU usage (as a ratio from 0.0 to 1.0), memory usage in bytes,
+and uptime. Available only to admin users. Clients can aggregate data from multiple nodes to compute system-wide
+statistics.
 
 ##### Error Messages
+
 ```json
 {
   "type": "Error",
@@ -512,59 +611,62 @@ or for regular users:
 
 ```typescript
 interface EndpointStats {
-  name: string;
-  bitrate: number;
+    name: string;
+    bitrate: number;
 }
 
 interface ActiveStreamInfo {
-  node_name: string;
-  stream_id: string;
-  started_at: string;
-  last_segment_time: string;
-  viewers: number;
-  average_fps: number;
-  target_fps: number;
-  frame_count: number;
-  endpoint_name: string;
-  input_resolution: string;
-  ip_address: string;
-  ingress_name: string;
-  endpoint_stats: Record<string, EndpointStats>;
+    node_name: string;
+    stream_id: string;
+    started_at: string;
+    last_segment_time: string;
+    viewers: number;
+    average_fps: number;
+    target_fps: number;
+    frame_count: number;
+    endpoint_name: string;
+    input_resolution: string;
+    ip_address: string;
+    ingress_name: string;
+    endpoint_stats: Record<string, EndpointStats>;
 }
 
 interface NodeInfo {
-  node_name: string;
-  cpu: number;
-  memory_used: number;
-  memory_total: number;
-  uptime: number;
+    node_name: string;
+    cpu: number;
+    memory_used: number;
+    memory_total: number;
+    uptime: number;
 }
 
-type MetricMessage = 
-  | { type: "Auth"; data: { token: string } }
-  | { type: "SubscribeStream"; data: { stream_id: string } }
-  | { type: "SubscribeOverall"; data: null }
-  | { type: "StreamMetrics"; data: ActiveStreamInfo }
-  | { type: "NodeMetrics"; data: NodeInfo }
-  | { type: "AuthResponse"; data: { success: boolean; is_admin: boolean; pubkey: string } }
-  | { type: "Error"; data: { message: string } };
+type MetricMessage =
+    | { type: "Auth"; data: { token: string } }
+    | { type: "SubscribeStream"; data: { stream_id: string } }
+    | { type: "SubscribeOverall"; data: null }
+    | { type: "StreamMetrics"; data: ActiveStreamInfo }
+    | { type: "NodeMetrics"; data: NodeInfo }
+    | { type: "AuthResponse"; data: { success: boolean; is_admin: boolean; pubkey: string } }
+    | { type: "Error"; data: { message: string } };
 ```
 
 #### Request/Response Patterns
 
 **Authentication Flow:**
+
 ```
 Client → { type: "Auth", data: { token: "base64_nip98_event" } }
 Server → { type: "AuthResponse", data: { success: true, is_admin: false, pubkey: "npub1..." } }
 ```
 
 **Stream Subscription (Users):**
+
 ```
 Client → { type: "SubscribeStream", data: { stream_id: "stream_123" } }
 Server → { type: "StreamMetrics", data: { ... ActiveStreamInfo } } (on updates)
 ```
 
 **Overall Metrics Subscription (Admins Only):**
+
 ```
 Client → { type: "SubscribeOverall", data: null }
 Server → { type: "NodeMetrics", data: { ... NodeInfo } } (every 5 seconds)
@@ -572,6 +674,7 @@ Server → { type: "StreamMetrics", data: { ... ActiveStreamInfo } } (on updates
 ```
 
 **Error Responses:**
+
 ```
 Server → { type: "Error", data: { message: "Authentication required" } }
 Server → { type: "Error", data: { message: "Access denied: You can only access your own streams" } }
@@ -581,7 +684,8 @@ Server → { type: "Error", data: { message: "Admin access required for overall 
 #### Connection Management
 
 - **Automatic Reconnection:** Clients should implement automatic reconnection with exponential backoff
-- **Heartbeat:** The server sends node metrics every 5 seconds; clients can detect disconnection if no messages received for 10+ seconds
+- **Heartbeat:** The server sends node metrics every 5 seconds; clients can detect disconnection if no messages received
+  for 10+ seconds
 - **Error Handling:** Always handle `Error` message types and display appropriate user feedback
 
 #### Rate Limiting
@@ -606,7 +710,8 @@ Error responses include a JSON body with error details where applicable.
 
 ## Rate Limiting
 
-The API may implement rate limiting based on account balance and usage patterns. Specific limits are not documented but will be enforced server-side.
+The API may implement rate limiting based on account balance and usage patterns. Specific limits are not documented but
+will be enforced server-side.
 
 ## CORS Support
 
