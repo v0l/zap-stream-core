@@ -13,6 +13,7 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
 use ffmpeg_rs_raw::{Decoder, ffmpeg_sys_the_third, rstr};
 use hyper::server::conn::http1;
 use hyper_util::rt::TokioIo;
+use std::io::stdout;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::ptr;
@@ -22,6 +23,8 @@ use tokio::net::TcpListener;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::{EnvFilter, Layer};
 use zap_stream_core::listen::try_create_listener;
 use zap_stream_core::overseer::Overseer;
 
@@ -84,9 +87,14 @@ pub unsafe extern "C" fn av_log_redirect(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    pretty_env_logger::init();
-
     let _args = Args::parse();
+
+    let logger = tracing_subscriber::registry().with(
+        tracing_subscriber::fmt::Layer::new()
+            .with_writer(stdout)
+            .with_filter(EnvFilter::from_default_env()),
+    );
+    tracing::subscriber::set_global_default(logger)?;
 
     info!("Starting zap-stream");
 

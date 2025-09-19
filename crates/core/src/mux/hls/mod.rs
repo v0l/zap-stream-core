@@ -103,7 +103,8 @@ impl HlsMuxer {
             .sorted_by(|a, b| a.0.group_id().cmp(&b.0.group_id()))
             .chunk_by(|a| a.0.group_id())
         {
-            let var = HlsVariant::new(out_dir.clone(), k, group, segment_type, segment_length)?;
+            let mut var = HlsVariant::new(out_dir.clone(), k, group, segment_type, segment_length)?;
+            var.enable_low_latency(segment_length / 4.0);
             vars.push(var);
         }
 

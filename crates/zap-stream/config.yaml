@@ -3,6 +3,7 @@
 # All the endpoints must be valid URI's
 endpoints:
   - "rtmp://127.0.0.1:3336"
+  - "test-pattern://"
 
 # Public hostname which points to the IP address used to listen for all [endpoints]
 endpoints_public_hostname: "localhost"
@@ -18,6 +19,9 @@ listen_http: "127.0.0.1:8080"
 
 # Overseer is the main control structure which controls access to the service
 overseer:
+  # At what balance we should alert the streamer to topup
+  low_balance_threshold: 500
+  # Primary nsec key for publishing stream events
   nsec: "nsec1wya428srvpu96n4h78gualaj7wqw4ecgatgja8d5ytdqrxw56r2se440y4"
   #blossom:
   #  - "http://localhost:8881"
@@ -31,12 +35,12 @@ overseer:
     #bitvora:
     #  api_token: "abc123"
     #  webhook_secret: "abc123"
-    nwc:
-      url: "nostr+walletconnect://f4f933dbf21bc80ab223ed593f681c9dc20feaac1c9b9e5596614d8882be5ba8?relay=ws://localhost:7766&secret=4341e0e3d983d739aba8f529935112f7535c36c7cb36fe1bece375e780483459"
-    #lnd:
-    #  address: "https://127.0.0.1:10001"
-    #  cert: "/home/kieran/.polar/networks/1/volumes/lnd/alice/tls.cert"
-    #  macaroon: "/home/kieran/.polar/networks/1/volumes/lnd/alice/data/chain/bitcoin/regtest/admin.macaroon"
+    #nwc:
+    #  url: "nostr+walletconnect://f4f933dbf21bc80ab223ed593f681c9dc20feaac1c9b9e5596614d8882be5ba8?relay=ws://localhost:7766&secret=4341e0e3d983d739aba8f529935112f7535c36c7cb36fe1bece375e780483459"
+    lnd:
+      address: "https://127.0.0.1:10001"
+      cert: "/home/kieran/.polar/networks/1/volumes/lnd/alice/tls.cert"
+      macaroon: "/home/kieran/.polar/networks/1/volumes/lnd/alice/data/chain/bitcoin/regtest/admin.macaroon"
 
 # Redis server for coordination
 redis:

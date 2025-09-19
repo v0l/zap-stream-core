@@ -60,8 +60,8 @@ pub struct OverseerConfig {
     pub blossom: Option<Vec<String>>,
     /// Segment length for HLS egress
     pub segment_length: Option<f32>,
-    /// Low balance notification threshold in millisats
-    pub low_balance_threshold_msats: Option<u64>,
+    /// Low balance notification threshold in sats
+    pub low_balance_threshold: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

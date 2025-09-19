@@ -1,24 +1,28 @@
 use crate::payments::create_lightning;
 use crate::settings::{PaymentBackend, RedisConfig, Settings};
 use crate::stream_manager::StreamManager;
-use anyhow::{Result, anyhow, bail, ensure};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
 use nostr_sdk::prelude::Coordinate;
 use nostr_sdk::{
     Client, Event, EventBuilder, JsonUtil, Keys, Kind, NostrSigner, Tag, Timestamp, ToBech32,
 };
+use nwc::NWC;
+use nwc::prelude::{NostrWalletConnectURI, PayInvoiceRequest};
+use payments_rs::lightning::AddInvoiceRequest;
 #[cfg(feature = "zap-stream")]
 use payments_rs::lightning::{InvoiceUpdate, LightningNode};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ops::Add;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
+use tracing::{error, info, span, warn};
 use url::Url;
 use uuid::Uuid;
 use zap_stream_core::egress::EgressSegment;
@@ -34,7 +38,7 @@ use zap_stream_core::pipeline::{EgressType, PipelineConfig};
 use zap_stream_core::variant::{StreamMapping, VariantStream};
 use zap_stream_core_nostr::n94::{N94Publisher, N94Segment, N94StreamInfo, N94Variant};
 use zap_stream_db::{
-    IngestEndpoint, StreamKeyType, User, UserStream, UserStreamState, ZapStreamDb,
+    IngestEndpoint, Payment, StreamKeyType, User, UserStream, UserStreamState, ZapStreamDb,
 };
 
 /// zap.stream NIP-53 overseer
@@ -54,10 +58,12 @@ pub struct ZapStreamOverseer {
     n94: Option<N94Publisher>,
     /// HLS segment length
     segment_length: f32,
-    /// Low balance notification threshold in millisats
-    low_balance_threshold_msats: Option<u64>,
+    /// Low balance notification threshold in sats
+    low_balance_threshold: Option<u64>,
     /// Node name for horizontal scaling
     node_name: String,
+    /// NWC topup handles
+    nwc_topup_requests: Arc<RwLock<HashMap<u64, JoinHandle<()>>>>,
 }
 
 impl ZapStreamOverseer {
@@ -70,7 +76,7 @@ impl ZapStreamOverseer {
             &settings.overseer.relays,
             &settings.overseer.blossom,
             settings.overseer.segment_length.unwrap_or(2.0),
-            settings.overseer.low_balance_threshold_msats,
+            settings.overseer.low_balance_threshold,
             &settings.redis,
             shutdown,
         )
@@ -84,7 +90,7 @@ impl ZapStreamOverseer {
             &settings.overseer.relays,
             &settings.overseer.blossom,
             settings.overseer.segment_length.unwrap_or(2.0),
-            settings.overseer.low_balance_threshold_msats,
+            settings.overseer.low_balance_threshold,
             &settings.redis,
             shutdown,
         )
@@ -99,7 +105,7 @@ impl ZapStreamOverseer {
         relays: &Vec<String>,
         blossom_servers: &Option<Vec<String>>,
         segment_length: f32,
-        low_balance_threshold_msats: Option<u64>,
+        low_balance_threshold: Option<u64>,
         redis: &Option<RedisConfig>,
         shutdown: CancellationToken,
     ) -> Result<Self> {
@@ -109,7 +115,7 @@ impl ZapStreamOverseer {
         #[cfg(debug_assertions)]
         {
             let uid = db.upsert_user(&[0; 32]).await?;
-            db.update_user_balance(uid, 100_000_000).await?;
+            //db.update_user_balance(uid, 100_000_000).await?;
             let user = db.get_user(uid).await?;
 
             info!(
@@ -141,8 +147,9 @@ impl ZapStreamOverseer {
             segment_length,
             public_url: public_url.clone(),
             stream_manager: StreamManager::new(node_name.clone()),
-            low_balance_threshold_msats,
+            low_balance_threshold,
             node_name,
+            nwc_topup_requests: Arc::new(RwLock::new(HashMap::new())),
         };
         if let Some(r) = redis {
             let r_client = redis::Client::open(r.url.clone())?;
@@ -167,7 +174,7 @@ impl ZapStreamOverseer {
 
     #[cfg(feature = "zap-stream")]
     pub fn start_payment_handler(&self, token: CancellationToken) -> JoinHandle<Result<()>> {
-        let mut ln = self.lightning.clone();
+        let ln = self.lightning.clone();
         let db = self.db.clone();
         let client = self.client.clone();
         tokio::spawn(async move {
@@ -194,7 +201,7 @@ impl ZapStreamOverseer {
                             return Ok(());
                         }
                         Some(msg) = stream.next() => {
-                            info!("Received message: {:?}", msg);
+                            //info!("Received message: {:?}", msg);
                             match msg {
                                InvoiceUpdate::Settled {
                                     payment_hash, preimage, ..
@@ -428,37 +435,37 @@ impl ZapStreamOverseer {
     }
 
     /// Send low balance notification as live chat message
-    async fn send_low_balance_notification(
-        &self,
-        user_id: u64,
-        user_pubkey: &[u8],
-        current_balance: i64,
-        stream_id: &Uuid,
-    ) -> Result<()> {
-        if self.low_balance_threshold_msats.is_some() {
-            let balance_sats = current_balance / 1000; // Convert millisats to sats
+    async fn send_low_balance_notification(&self, user: &User, stream: &UserStream) -> Result<()> {
+        if self.low_balance_threshold.is_some() {
+            let balance_sats = user.balance / 1000; // Convert millisats to sats
             let message = format!(
                 "⚠️ Low Balance Warning ⚠️ Your streaming balance is low: {} sats. Please top up your account to avoid stream interruption.",
                 balance_sats
             );
 
             // Send live chat message to the stream
-            let signer = self.client.signer().await?;
-            let stream_pubkey = signer.get_public_key().await?;
-            let coord =
-                Coordinate::new(Kind::LiveEvent, stream_pubkey).identifier(stream_id.to_string());
+            let stream_event = if let Some(e) = &stream.event {
+                Event::from_json(e)?
+            } else {
+                bail!("Cannot send low balance notification, stream event json is empty!")
+            };
 
-            let chat_event = EventBuilder::new(Kind::Custom(1311), message)
-                .tag(Tag::parse(&["a".to_string(), coord.to_string()])?);
+            let chat_event = EventBuilder::new(Kind::Custom(1311), message).tag(Tag::coordinate(
+                stream_event
+                    .coordinate()
+                    .context("stream event json invalid")?
+                    .into_owned(),
+                None,
+            ));
 
             match self.client.send_event_builder(chat_event).await {
                 Ok(_) => info!(
                     "Sent low balance notification to stream {} for user {}",
-                    stream_id, user_id
+                    stream.id, user.id
                 ),
                 Err(e) => warn!(
-                    "Failed to send low balance notification to stream {}: {}",
-                    stream_id, e
+                    "Failed to send low balance notification to stream {} for user {}: {}",
+                    stream.id, user.id, e
                 ),
             }
         }
@@ -478,6 +485,48 @@ impl ZapStreamOverseer {
         };
         let user = self.db.get_user(uid).await?;
         Ok((user_key, user))
+    }
+
+    #[cfg(feature = "zap-stream")]
+    pub async fn topup(
+        &self,
+        pubkey: &[u8; 32],
+        amount_msats: u64,
+        nostr: Option<String>,
+    ) -> Result<Payment> {
+        let uid = self.db.upsert_user(pubkey).await?;
+
+        let response = self
+            .lightning
+            .add_invoice(AddInvoiceRequest {
+                amount: amount_msats,
+                memo: Some(format!("zap.stream topup for user {}", hex::encode(pubkey))),
+                expire: None,
+            })
+            .await?;
+
+        let r_hash = hex::decode(&response.payment_hash())?;
+        // Create payment entry for this topup invoice
+        self.db
+            .create_payment(
+                &r_hash,
+                uid,
+                Some(&response.pr()),
+                amount_msats,
+                zap_stream_db::PaymentType::TopUp,
+                0,
+                DateTime::from_timestamp(
+                    response.parsed_invoice.expires_at().unwrap().as_secs() as _,
+                    0,
+                )
+                .unwrap(),
+                nostr,
+                response.external_id,
+            )
+            .await?;
+
+        let payment = self.db.get_payment(&r_hash).await?;
+        Ok(payment.unwrap())
     }
 }
 
@@ -763,21 +812,78 @@ impl Overseer for ZapStreamOverseer {
             .await?;
 
         if cost_per_minute > 0 {
-            // Check for low balance and send notification if needed
-            if let Some(threshold_msats) = self.low_balance_threshold_msats {
-                let balance_before = bal + cost; // Calculate balance before this deduction
-                if balance_before > threshold_msats as i64 && bal <= threshold_msats as i64 {
-                    // Balance just crossed the threshold, send notification
-                    if let Ok(user) = self.db.get_user(stream.user_id).await
-                        && let Err(e) = self
-                            .send_low_balance_notification(
-                                stream.user_id,
-                                &user.pubkey,
-                                bal,
-                                pipeline_id,
-                            )
+            let user = self
+                .db
+                .get_user(stream.user_id)
+                .await
+                .context("Failed to get user")?;
+            // try to auto-topup with NWC when balance is below 1000 sats
+            const NWC_TOPUP_AMOUNT: u64 = 1000_000;
+            if user.balance < NWC_TOPUP_AMOUNT as _ && user.nwc.is_some() {
+                let has_task = { self.nwc_topup_requests.read().await.contains_key(&user.id) };
+                if !has_task {
+                    let user = user.clone();
+                    let overseer = self.clone();
+                    let jh = tokio::spawn(async move {
+                        let nwc_url = match NostrWalletConnectURI::parse(user.nwc.unwrap()) {
+                            Ok(u) => u,
+                            Err(e) => {
+                                error!("Failed to parse NWC url for user {}: {}", user.id, e);
+                                overseer.nwc_topup_requests.write().await.remove(&user.id);
+                                return;
+                            }
+                        };
+                        let nwc = NWC::new(nwc_url);
+
+                        let pubkey = user.pubkey.as_slice().try_into().unwrap();
+                        let topup = match overseer.topup(pubkey, NWC_TOPUP_AMOUNT, None).await {
+                            Ok(v) => v,
+                            Err(e) => {
+                                error!("Failed to get topup for user {}: {}", user.id, e);
+                                overseer.nwc_topup_requests.write().await.remove(&user.id);
+                                return;
+                            }
+                        };
+
+                        let pr = if let Some(pr) = topup.invoice {
+                            pr
+                        } else {
+                            error!("Cannot make payment, invoice was null");
+                            overseer.nwc_topup_requests.write().await.remove(&user.id);
+                            return;
+                        };
+                        match nwc
+                            .pay_invoice(PayInvoiceRequest {
+                                id: None,
+                                invoice: pr,
+                                amount: None,
+                            })
                             .await
-                    {
+                        {
+                            Ok(p) => {
+                                info!(
+                                    "NWC auto-topup complete for user {} preimage={}, fees={}",
+                                    user.id,
+                                    p.preimage,
+                                    p.fees_paid.unwrap_or(0)
+                                );
+                            }
+                            Err(e) => error!("Failed to pay invoice for user {}: {}", user.id, e),
+                        }
+                        overseer.nwc_topup_requests.write().await.remove(&user.id);
+                    });
+                    self.nwc_topup_requests.write().await.insert(user.id, jh);
+                    info!("Starting NWC topup for {}", user.id);
+                }
+            }
+
+            // Check for low balance and send notification if needed
+            if let Some(threshold) = self.low_balance_threshold {
+                let threshold = threshold as i64 * 1000; // convert to msats
+                let balance_before = bal + cost; // Calculate balance before this deduction
+                if balance_before > threshold && bal <= threshold {
+                    // Balance just crossed the threshold, send notification
+                    if let Err(e) = self.send_low_balance_notification(&user, &stream).await {
                         warn!("Failed to send low balance notification: {}", e);
                     }
                 }

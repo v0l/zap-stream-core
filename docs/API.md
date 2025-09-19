@@ -93,13 +93,18 @@ GET /api/v1/account
     ],
     "content_warning": "string",
     "goal": "string"
-  }
+  },
+  "has_nwc": false
 }
 ```
 
 **Description:** Returns comprehensive account information including streaming endpoints with the primary stream key (
 which creates a new Nostr event for each stream), account balance, terms of service status, RTMP forward destinations,
-and stream details.
+stream details, and NWC (Nostr Wallet Connect) configuration.
+
+**Response Fields (GET):**
+
+- `has_nwc`: Boolean indicating whether NWC is configured for this account
 
 #### Update Account
 
@@ -113,7 +118,8 @@ PATCH /api/v1/account
 
 ```json
 {
-  "accept_tos": true
+  "accept_tos": true,
+  "nwc": "nostr+walletconnect://..."
 }
 ```
 
@@ -123,7 +129,15 @@ PATCH /api/v1/account
 {}
 ```
 
-**Description:** Updates account settings, primarily used for accepting terms of service.
+**Description:** Updates account settings, including accepting terms of service and configuring NWC (Nostr Wallet Connect) for automated withdrawals.
+
+**NWC Configuration:**
+
+- `nwc` (optional): A Nostr Wallet Connect URI string in the format `nostr+walletconnect://...`
+- When provided, the server will validate the NWC connection and ensure it has `pay_invoice` permissions
+- NWC allows for automated withdrawal processing through connected Nostr wallet applications
+- The NWC URI should be obtained from a compatible Nostr wallet that supports the NWC protocol
+
 
 ### Payment Operations
 

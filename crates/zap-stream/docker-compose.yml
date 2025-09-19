@@ -30,7 +30,7 @@ services:
     image: redis
     ports:
       - "6399:6379"
-  alby:
+  alby_alice:
     image: ghcr.io/getalby/hub:latest
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -46,9 +46,27 @@ services:
       - "WORK_DIR=/data"
     volumes:
       - "/home/kieran/.polar/networks/1/volumes/lnd/alice:/root/.lnd:ro"
-      - "alby:/data"
+      - "alby_alice:/data"
+  alby_bob:
+    image: ghcr.io/getalby/hub:latest
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8883:8080"
+    environment:
+      - "RELAY=ws://host.docker.internal:7766"
+      - "LND_ADDRESS=host.docker.internal:10003"
+      - "LND_CERT_FILE=/root/.lnd/tls.cert"
+      - "LND_MACAROON_FILE=/root/.lnd/data/chain/bitcoin/regtest/admin.macaroon"
+      - "LN_BACKEND_TYPE=LND"
+      - "NETWORK=regtest"
+      - "WORK_DIR=/data"
+    volumes:
+      - "/home/kieran/.polar/networks/1/volumes/lnd/carol:/root/.lnd:ro"
+      - "alby_bob:/data"
 volumes:
   db:
   blossom:
   relay:
-  alby:
+  alby_alice:
+  alby_bob:

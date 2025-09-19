@@ -14,6 +14,8 @@ use lnurl::pay::{LnURLPayInvoice, PayResponse};
 use matchit::Router;
 use nostr_sdk::prelude::EventDeletionRequest;
 use nostr_sdk::{Client, NostrSigner, PublicKey, serde_json};
+use nwc::NWC;
+use nwc::prelude::NostrWalletConnectURI;
 use payments_rs::lightning::{AddInvoiceRequest, LightningNode};
 use serde::{Deserialize, Serialize};
 use std::future::Future;
@@ -646,6 +648,7 @@ impl Api {
                 content_warning: user.content_warning,
                 goal: user.goal,
             }),
+            has_nwc: user.nwc.is_some(),
         })
     }
 
@@ -661,6 +664,17 @@ impl Api {
             }
         }
 
+        if let Some(url) = account.nwc {
+            // test connection
+            let parsed = NostrWalletConnectURI::parse(&url)?;
+            let nwc = NWC::new(parsed);
+            let info = nwc.get_info().await?;
+            let perm = "pay_invoice".to_string();
+            if !info.methods.contains(&perm) {
+                bail!("NWC connection does not allow paying invoices!");
+            }
+            self.db.update_user_nwc(uid, Some(&url)).await?;
+        }
         Ok(())
     }
 
@@ -1639,6 +1653,7 @@ struct AccountInfo {
     pub tos: AccountTos,
     pub forwards: Vec<ForwardDest>,
     pub details: Option<PatchEventDetails>,
+    pub has_nwc: bool,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -1665,6 +1680,7 @@ struct AccountTos {
 #[derive(Deserialize, Serialize)]
 struct PatchAccount {
     pub accept_tos: Option<bool>,
+    pub nwc: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]

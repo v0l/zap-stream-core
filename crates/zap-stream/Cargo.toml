@@ -17,11 +17,11 @@ zap-stream-db = { path = "../zap-stream-db" }
 zap-stream-core = { path = "../core" }
 zap-stream-core-nostr = { path = "../core-nostr" }
 
-pretty_env_logger.workspace = true
 uuid.workspace = true
 ffmpeg-rs-raw.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
+tracing-subscriber.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 async-trait.workspace = true
@@ -55,7 +55,7 @@ matchit = "0.8.4"
 mustache = "0.9.0"
 http-range-header = "0.4.2"
 sysinfo = "0.36.1"
-lnurl-rs = { git = "https://github.com/v0l/lnurl-rs", optional = true, default-features = false, rev = "fa5ae64a0bdd02ace357ded57032cd893056e349", features = ["async"] }
+lnurl-rs = { git = "https://github.com/benthecarman/lnurl-rs", optional = true, default-features = false, rev = "745aea89c404f14d8adc18b594ac002d9cab9b49", features = ["async"] }
 redis = { version = "0.32.5", features = ["cluster", "tokio-comp", "tokio-native-tls-comp"] }
 libc = "0.2.175"
 nwc = { version = "0.43.0" }
