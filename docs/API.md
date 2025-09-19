@@ -86,7 +86,7 @@ GET /api/v1/account
 }
 ```
 
-**Description:** Returns comprehensive account information including streaming endpoints, account balance, terms of service status, forward destinations, and stream details.
+**Description:** Returns comprehensive account information including streaming endpoints with the primary stream key (which creates a new Nostr event for each stream), account balance, terms of service status, RTMP forward destinations, and stream details.
 
 #### Update Account
 ```
@@ -179,9 +179,9 @@ PATCH /api/v1/event
 
 **Description:** Updates stream event metadata such as title, description, image, tags, content warnings, and goals.
 
-### Forward Management
+### RTMP Forward Management
 
-#### Create Forward
+#### Create RTMP Forward
 ```
 POST /api/v1/forward
 ```
@@ -203,9 +203,9 @@ POST /api/v1/forward
 }
 ```
 
-**Description:** Creates a new payment forward destination. Forwards allow automatic routing of payments to external Lightning addresses or Nostr zap targets.
+**Description:** Creates a new RTMP forward destination. RTMP forwards allow streaming to multiple platforms simultaneously by forwarding the stream to external RTMP endpoints (e.g., YouTube, Twitch, etc.).
 
-#### Delete Forward
+#### Delete RTMP Forward
 ```
 DELETE /api/v1/forward/{id}
 ```
@@ -220,7 +220,7 @@ DELETE /api/v1/forward/{id}
 {}
 ```
 
-**Description:** Removes a payment forward destination by ID.
+**Description:** Removes an RTMP forward destination by ID.
 
 ### History and Keys
 
@@ -249,7 +249,7 @@ GET /api/v1/history
 
 **Description:** Returns paginated transaction history for the account including payments, withdrawals, and streaming costs.
 
-#### Get Stream Keys
+#### Get Additional Stream Keys
 ```
 GET /api/v1/keys
 ```
@@ -269,9 +269,9 @@ GET /api/v1/keys
 ]
 ```
 
-**Description:** Returns all active stream keys for the account.
+**Description:** Returns all additional stream keys for the account. These are separate from the primary stream key (returned in account info) and are used for fixed stream events, planned streams, or 24/7 streams with pre-defined Nostr events.
 
-#### Create Stream Key
+#### Create Additional Stream Key
 ```
 POST /api/v1/keys
 ```
@@ -285,7 +285,7 @@ POST /api/v1/keys
     "title": "string",
     "summary": "string",
     "image": "string",
-    "tags": ["string"], 
+    "tags": ["string"],
     "content_warning": "string",
     "goal": "string"
   },
@@ -301,7 +301,7 @@ POST /api/v1/keys
 }
 ```
 
-**Description:** Creates a new stream key with associated event metadata and optional expiration time.
+**Description:** Creates an additional stream key with pre-defined event metadata and optional expiration time. Unlike the primary stream key (which creates a new Nostr event each time), these keys are tied to a specific Nostr event and are ideal for planned streams, scheduled events, or 24/7 streaming scenarios.
 
 #### Delete Stream
 ```
