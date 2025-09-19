@@ -210,7 +210,6 @@ impl Api {
                     self.update_event(&auth.pubkey, patch_event).await?;
                     Ok(base.body(Self::body_json(&())?)?)
                 }
-                #[cfg(feature = "zap-stream")]
                 (&Method::GET, Route::Topup) => {
                     let auth = check_nip98_auth(&req, &self.settings, &self.db).await?;
                     let full_url = format!(
@@ -227,7 +226,7 @@ impl Api {
                     let rsp = self.topup(&auth.pubkey, amount * 1000, None).await?;
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
-                #[cfg(all(feature = "zap-stream", feature = "withdrawal"))]
+                #[cfg(all(feature = "withdrawal"))]
                 (&Method::POST, Route::Withdraw) => {
                     let auth = check_nip98_auth(&req, &self.settings, &self.db).await?;
                     let full_url = format!(
@@ -249,7 +248,6 @@ impl Api {
                     let rsp = self.withdraw(&auth.pubkey, invoice).await?;
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
-                #[cfg(feature = "zap-stream")]
                 (&Method::GET, Route::Zap) => {
                     let target = params.get("name").ok_or(anyhow!("Missing name/pubkey"))?;
                     let target_user = if let Ok(pk) = hex::decode(target) {
@@ -286,7 +284,6 @@ impl Api {
                     };
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
-                #[cfg(feature = "zap-stream")]
                 (&Method::GET, Route::ZapCallback) => {
                     let target = params.get("pubkey").ok_or(anyhow!("Missing name/pubkey"))?;
                     let target_user = if let Ok(pk) = hex::decode(target) {
@@ -678,7 +675,6 @@ impl Api {
         Ok(())
     }
 
-    #[cfg(feature = "zap-stream")]
     async fn topup(
         &self,
         pubkey: &PublicKey,
@@ -697,7 +693,7 @@ impl Api {
             .await?;
 
         let pr = response.pr();
-        let r_hash = hex::decode(&response.payment_hash())?;
+        let r_hash = hex::decode(response.payment_hash())?;
         // Create payment entry for this topup invoice
         self.db
             .create_payment(
@@ -791,7 +787,7 @@ impl Api {
     }
 
     // TODO: broken
-    #[cfg(all(feature = "zap-stream", feature = "withdrawal"))]
+    #[cfg(all(feature = "withdrawal"))]
     async fn withdraw(&self, pubkey: &PublicKey, invoice: String) -> Result<WithdrawResponse> {
         let uid = self.db.upsert_user(&pubkey.to_bytes()).await?;
         let user = self.db.get_user(uid).await?;

@@ -81,8 +81,12 @@ where
 {
     pub fn new(files_dir: PathBuf, plugin: T) -> Self {
         let mut router = Router::new();
-        router.insert("/", HttpServerPath::Index).expect("invalid route");
-        router.insert("/index.html", HttpServerPath::Index).expect("invalid route");
+        router
+            .insert("/", HttpServerPath::Index)
+            .expect("invalid route");
+        router
+            .insert("/index.html", HttpServerPath::Index)
+            .expect("invalid route");
         router
             .insert(
                 format!("/{{stream}}/{}/live.m3u8", HlsEgress::PATH),

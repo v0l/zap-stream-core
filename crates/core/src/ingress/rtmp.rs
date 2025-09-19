@@ -97,7 +97,7 @@ impl RtmpClient {
                 }
                 if !handshake_complete {
                     let data = &self.socket_buf[..r_len];
-                    match hs.process_bytes(&data)? {
+                    match hs.process_bytes(data)? {
                         HandshakeProcessResult::InProgress { response_bytes } => {
                             if !response_bytes.is_empty() {
                                 self.socket.write_all(&response_bytes)?;
@@ -411,7 +411,7 @@ fn socket_handler(
             }
             Ok(ConnectResult::Deny { reason }) => {
                 warn!("Connection denied: {reason}");
-                return (false, Some(reason));
+                (false, Some(reason))
             }
             Err(e) => (false, Some(format!("Failed to publish stream: {}", e))),
         }

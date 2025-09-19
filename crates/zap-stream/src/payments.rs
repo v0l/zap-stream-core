@@ -77,7 +77,7 @@ impl LightningNode for LNURLNode {
                 &self.pay_response,
                 req.amount,
                 None,
-                req.memo.as_ref().map(|r| r.as_str()),
+                req.memo.as_deref(),
             )
             .await?;
 

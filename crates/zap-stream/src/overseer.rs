@@ -11,9 +11,7 @@ use nostr_sdk::{
 };
 use nwc::NWC;
 use nwc::prelude::{NostrWalletConnectURI, PayInvoiceRequest};
-use payments_rs::lightning::AddInvoiceRequest;
-#[cfg(feature = "zap-stream")]
-use payments_rs::lightning::{InvoiceUpdate, LightningNode};
+use payments_rs::lightning::{AddInvoiceRequest, InvoiceUpdate, LightningNode};
 use std::collections::{HashMap, HashSet};
 use std::ops::Add;
 use std::path::PathBuf;
@@ -22,7 +20,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, span, warn};
+use tracing::{error, info, warn};
 use url::Url;
 use uuid::Uuid;
 use zap_stream_core::egress::EgressSegment;
@@ -68,21 +66,7 @@ pub struct ZapStreamOverseer {
 
 impl ZapStreamOverseer {
     pub async fn from_settings(settings: &Settings, shutdown: CancellationToken) -> Result<Self> {
-        #[cfg(not(feature = "zap-stream"))]
-        return Ok(ZapStreamOverseer::new(
-            &settings.public_url,
-            &settings.overseer.nsec,
-            &settings.overseer.database,
-            &settings.overseer.relays,
-            &settings.overseer.blossom,
-            settings.overseer.segment_length.unwrap_or(2.0),
-            settings.overseer.low_balance_threshold,
-            &settings.redis,
-            shutdown,
-        )
-        .await?);
-        #[cfg(feature = "zap-stream")]
-        return ZapStreamOverseer::new(
+        ZapStreamOverseer::new(
             &settings.public_url,
             &settings.overseer.nsec,
             &settings.overseer.database,
@@ -94,7 +78,7 @@ impl ZapStreamOverseer {
             &settings.redis,
             shutdown,
         )
-        .await;
+        .await
     }
 
     pub async fn new(
@@ -115,14 +99,16 @@ impl ZapStreamOverseer {
         #[cfg(debug_assertions)]
         {
             let uid = db.upsert_user(&[0; 32]).await?;
-            //db.update_user_balance(uid, 100_000_000).await?;
-            let user = db.get_user(uid).await?;
+            let z_user = db.get_user(uid).await?;
+            if z_user.balance == 0 {
+                db.update_user_balance(uid, 100_000_000).await?;
+            }
 
             info!(
                 "ZERO pubkey: uid={},key={},balance={}",
-                user.id,
-                user.stream_key,
-                user.balance / 1000
+                z_user.id,
+                z_user.stream_key,
+                z_user.balance / 1000
             );
         }
 
@@ -172,7 +158,6 @@ impl ZapStreamOverseer {
         self.lightning.clone()
     }
 
-    #[cfg(feature = "zap-stream")]
     pub fn start_payment_handler(&self, token: CancellationToken) -> JoinHandle<Result<()>> {
         let ln = self.lightning.clone();
         let db = self.db.clone();
@@ -189,7 +174,7 @@ impl ZapStreamOverseer {
                     "Listening to invoices from {}",
                     last_payment_hash
                         .as_ref()
-                        .map(|h| hex::encode(h))
+                        .map(hex::encode)
                         .unwrap_or("Now".to_string())
                 );
                 let mut stream = ln.subscribe_invoices(last_payment_hash).await?;
@@ -239,7 +224,7 @@ impl ZapStreamOverseer {
                     let payment = db.get_payment(&ph).await?.unwrap();
                     if let Some(nostr) = payment.nostr {
                         Self::try_send_zap_receipt(
-                            &client,
+                            client,
                             &nostr,
                             payment
                                 .invoice
@@ -487,7 +472,6 @@ impl ZapStreamOverseer {
         Ok((user_key, user))
     }
 
-    #[cfg(feature = "zap-stream")]
     pub async fn topup(
         &self,
         pubkey: &[u8; 32],
@@ -505,7 +489,7 @@ impl ZapStreamOverseer {
             })
             .await?;
 
-        let r_hash = hex::decode(&response.payment_hash())?;
+        let r_hash = hex::decode(response.payment_hash())?;
         // Create payment entry for this topup invoice
         self.db
             .create_payment(

@@ -84,12 +84,8 @@ pub enum PaymentBackend {
         webhook_secret: String,
     },
     #[serde(rename_all = "kebab-case")]
-    NWC {
-        url: String,
-    },
+    NWC { url: String },
     #[serde(rename_all = "kebab-case")]
     // Plain LUD-16 payment backend
-    LNURL {
-        address: String,
-    },
+    LNURL { address: String },
 }

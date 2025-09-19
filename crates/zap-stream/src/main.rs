@@ -7,8 +7,7 @@ use clap::Parser;
 use config::Config;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::{AV_CODEC_ID_H264, AV_CODEC_ID_HEVC};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    AV_LOG_FATAL, AV_LOG_INFO, AV_LOG_PANIC, AV_LOG_WARNING, av_hwdevice_get_type_name,
-    av_log_format_line, av_log_set_callback, av_version_info, avcodec_find_decoder,
+    av_hwdevice_get_type_name, av_log_set_callback, av_version_info, avcodec_find_decoder,
 };
 use ffmpeg_rs_raw::{Decoder, ffmpeg_sys_the_third, rstr};
 use hyper::server::conn::http1;
@@ -54,7 +53,7 @@ pub unsafe extern "C" fn av_log_redirect(
     level: libc::c_int,
     fmt: *const libc::c_char,
     args: VaList,
-) {
+) { unsafe {
     use ffmpeg_sys_the_third::*;
     let mut buf: [u8; 1024] = [0; 1024];
     let mut prefix: libc::c_int = 1;
@@ -83,7 +82,7 @@ pub unsafe extern "C" fn av_log_redirect(
         }
         _ => tracing::trace!(target: "ffmpeg", "{}", msg),
     }
-}
+}}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -142,7 +141,6 @@ async fn main() -> Result<()> {
     let mut tasks = vec![];
 
     //listen for invoice
-    #[cfg(feature = "zap-stream")]
     tasks.push(overseer.start_payment_handler(shutdown.clone()));
 
     let shutdown_sig = shutdown.clone();

@@ -265,7 +265,7 @@ impl FrameGenerator {
             }
             let buf = slice::from_raw_parts_mut(
                 (*self.next_frame).data[0],
-                (self.width as usize * self.height as usize * 4),
+                self.width as usize * self.height as usize * 4,
             );
             for chunk in buf.chunks_exact_mut(4) {
                 chunk[0] = color32[0];
@@ -285,7 +285,7 @@ impl FrameGenerator {
             }
             let buf = slice::from_raw_parts_mut(
                 (*self.next_frame).data[0],
-                (self.width as usize * self.height as usize * 4),
+                self.width as usize * self.height as usize * 4,
             );
             if buf.len() < data.len() {
                 bail!("Frame buffer is too small");

@@ -28,16 +28,13 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
 use ffmpeg_rs_raw::{
     AudioFifo, Decoder, Demuxer, Encoder, Resample, Scaler, StreamType, cstr, get_frame_from_hw,
 };
-use itertools::Itertools;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::UnboundedReceiver;
-use tracing::level_filters::LevelFilter;
-use tracing::{debug, error, info, span, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 use tracing_appender::{non_blocking, rolling};
-use tracing_subscriber::filter::Directive;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{
-    EnvFilter, Layer, Registry, fmt, layer::SubscriberExt, util::SubscriberInitExt,
+    EnvFilter, Layer, fmt, layer::SubscriberExt,
 };
 use uuid::Uuid;
 

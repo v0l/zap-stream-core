@@ -26,7 +26,6 @@ steps:
       - docker login -u voidic -p $DOCKER_TOKEN
       - docker buildx create --name mybuilder --bootstrap --use
       - docker buildx build --push --platform linux/amd64 -t voidic/zap-stream-core:latest -f ./crates/zap-stream/Dockerfile .
-      - docker buildx build --push --platform linux/amd64 -t voidic/zap-stream-core:standalone -f ./crates/zap-stream/Dockerfile --build-arg CARGO_FEATURES="--no-default-features --features rtmp" .
       - docker buildx build --push --platform linux/amd64 -t voidic/n94-bridge:latest -f ./crates/n94-bridge/Dockerfile .
       - kill $(cat /var/run/docker.pid)
 

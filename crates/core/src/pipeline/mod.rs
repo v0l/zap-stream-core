@@ -52,7 +52,7 @@ pub struct PipelineConfig {
     /// Primary source video stream
     pub video_src: usize,
     /// Primary audio source stream
-    pub audio_src: Option<usize>
+    pub audio_src: Option<usize>,
 }
 
 impl Display for PipelineConfig {
