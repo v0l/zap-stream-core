@@ -661,7 +661,9 @@ impl Api {
             }
         }
 
-        if let Some(url) = account.nwc {
+        if let Some(url) = account.nwc
+            && account.remove_nwc.is_none()
+        {
             // test connection
             let parsed = NostrWalletConnectURI::parse(&url)?;
             let nwc = NWC::new(parsed);
@@ -672,6 +674,13 @@ impl Api {
             }
             self.db.update_user_nwc(uid, Some(&url)).await?;
         }
+
+        if let Some(x) = account.remove_nwc
+            && x
+        {
+            self.db.update_user_nwc(uid, None).await?;
+        }
+
         Ok(())
     }
 
@@ -1675,8 +1684,12 @@ struct AccountTos {
 
 #[derive(Deserialize, Serialize)]
 struct PatchAccount {
+    /// Accept TOS
     pub accept_tos: Option<bool>,
+    /// Configure a new NWC
     pub nwc: Option<String>,
+    /// Remove configured NWC
+    pub remove_nwc: Option<bool>,
 }
 
 #[derive(Deserialize, Serialize)]

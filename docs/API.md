@@ -119,7 +119,8 @@ PATCH /api/v1/account
 ```json
 {
   "accept_tos": true,
-  "nwc": "nostr+walletconnect://..."
+  "nwc": "nostr+walletconnect://...",
+  "remove_nwc": false
 }
 ```
 
@@ -134,9 +135,12 @@ PATCH /api/v1/account
 **NWC Configuration:**
 
 - `nwc` (optional): A Nostr Wallet Connect URI string in the format `nostr+walletconnect://...`
-- When provided, the server will validate the NWC connection and ensure it has `pay_invoice` permissions
+  - When provided, the server will validate the NWC connection and ensure it has `pay_invoice` permissions
+  - The NWC URI should be obtained from a compatible Nostr wallet that supports the NWC protocol
+- `remove_nwc` (optional): Boolean flag to remove the currently configured NWC connection
+  - Set to `true` to disconnect and remove the current NWC configuration
+  - Cannot be used simultaneously with the `nwc` parameter
 - NWC allows for automated withdrawal processing through connected Nostr wallet applications
-- The NWC URI should be obtained from a compatible Nostr wallet that supports the NWC protocol
 
 
 ### Payment Operations
