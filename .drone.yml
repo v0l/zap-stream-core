@@ -24,7 +24,7 @@ steps:
     commands:
       - dockerd --data-root /cache/dockerd &
       - docker login -u voidic -p $DOCKER_TOKEN
-      - docker buildx create --platforms linux/arm64,linux/amd64 --bootstrap --use
+      - docker buildx create --platform linux/arm64,linux/amd64 --bootstrap --use
       - docker buildx build --push --platform linux/amd64 -platform linux/arm64 -t voidic/zap-stream-core:latest -f ./crates/zap-stream/Dockerfile .
       - docker buildx build --push --platform linux/amd64 -t voidic/n94-bridge:latest -f ./crates/n94-bridge/Dockerfile .
       - kill $(cat /var/run/docker.pid)
