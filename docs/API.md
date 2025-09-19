@@ -22,6 +22,24 @@ All API endpoints are prefixed with `/api/v1/`
 
 ## Endpoints
 
+### Utility
+
+#### Get Server Time
+```
+GET /api/v1/time
+```
+
+**Authentication:** Not required
+
+**Response:**
+```json
+{
+  "time": 1640995200000
+}
+```
+
+**Description:** Returns the current server time as a Unix timestamp in milliseconds. Useful for client synchronization and NIP-98 authentication timestamp validation.
+
 ### Account Management
 
 #### Get Account Information
@@ -284,6 +302,74 @@ POST /api/v1/keys
 ```
 
 **Description:** Creates a new stream key with associated event metadata and optional expiration time.
+
+#### Delete Stream
+```
+DELETE /api/v1/stream/{id}
+```
+
+**Authentication:** Required
+
+**Path Parameters:**
+- `id`: Stream ID (UUID) to delete
+
+**Response:**
+```json
+{}
+```
+
+**Description:** Deletes a stream. Users can only delete their own streams. Also publishes a Nostr deletion event if the stream has an associated Nostr event.
+
+### Lightning Address (LNURL)
+
+#### LNURL Pay Endpoint
+```
+GET /.well-known/lnurlp/{name}
+```
+
+**Authentication:** Not required
+
+**Path Parameters:**
+- `name`: User pubkey (hex encoded)
+
+**Response:**
+```json
+{
+  "callback": "https://example.com/api/v1/zap/{pubkey}",
+  "maxSendable": 1000000000,
+  "minSendable": 1000,
+  "tag": "payRequest",
+  "metadata": "[[\"text/plain\", \"Zap for {pubkey}\"]]",
+  "commentAllowed": null,
+  "allowsNostr": true,
+  "nostrPubkey": "server_pubkey_here"
+}
+```
+
+**Description:** LNURL pay endpoint for Lightning Address support. Returns payment parameters for zapping a user.
+
+#### Zap Callback
+```
+GET /api/v1/zap/{pubkey}
+```
+
+**Authentication:** Not required
+
+**Path Parameters:**
+- `pubkey`: Target user's pubkey (hex encoded)
+
+**Query Parameters:**
+- `amount` (required): Amount to zap in millisatoshi
+- `nostr` (optional): Base64-encoded Nostr zap request event
+
+**Response:**
+```json
+{
+  "pr": "lnbc..."
+}
+```
+
+**Description:** Handles the LNURL pay callback. Creates a Lightning invoice for zapping the specified user. Supports Nostr zap requests for proper zap attribution.
 
 ## WebSocket API
 
