@@ -413,7 +413,12 @@ where
                 Ok(res) => Ok(res),
                 Err(e) => {
                     error!("{}", e);
-                    Ok(Response::builder().status(500).body(BoxBody::default())?)
+                    Ok(Self::base_response()
+                        .status(500)
+                        .header("content-type", "text/plain")
+                        .body(BoxBody::new(
+                            Full::new(Bytes::from(e.to_string())).map_err(|e| match e {}),
+                        ))?)
                 }
             }
         })
