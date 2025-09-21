@@ -589,10 +589,10 @@ impl Overseer for ZapStreamOverseer {
 
         Ok(ConnectResult::Allow {
             enable_stream_dump: user.stream_dump_recording,
-            stream_id_override: if has_recent_stream {
-                last_ended_id
-            } else {
-                None
+            stream_id_override: match (has_recent_stream, user_key) {
+                (true, StreamKeyType::Primary(_)) => last_ended_id,
+                (_, StreamKeyType::FixedEventKey { stream_id, .. }) => stream_id.parse().ok(),
+                _ => None,
             },
         })
     }
@@ -775,7 +775,11 @@ impl Overseer for ZapStreamOverseer {
         added: &Vec<EgressSegment>,
         deleted: &Vec<EgressSegment>,
     ) -> Result<()> {
-        let stream = self.db.get_stream(pipeline_id).await?;
+        let stream = self
+            .db
+            .get_stream(pipeline_id)
+            .await
+            .context("Failed to find stream")?;
 
         let duration = added.iter().fold(0.0, |acc, v| acc + v.duration);
 
