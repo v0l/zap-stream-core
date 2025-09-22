@@ -1,0 +1,51 @@
+name: zap-stream-core
+services:
+  db:
+    image: mariadb
+    restart: unless-stopped
+    environment:
+      - "MARIADB_ROOT_PASSWORD=root"
+      - "MARIADB_DATABASE=zap_stream"
+    volumes:
+      - "./data/db:/var/lib/mysql/"
+  redis:
+    restart: unless-stopped
+    image: redis
+  core:
+    image: voidic/zap-stream-core
+    restart: unless-stopped
+    depends_on:
+      - db
+      - redis
+    environment:
+      - "RUST_LOG=info"
+    volumes:
+      - "./data/core:/app/data" # Path to store media
+      - "./compose-config.yaml:/app/config.yaml"
+    ports:
+      - "1935:1935"
+      - "80:8080"
+  admin:
+    image: voidic/zap-stream-core-admin
+    restart: unless-stopped
+    profiles:
+      - admin
+    depends_on:
+      - core
+    ports:
+      - "8080:80"
+  # Cloudflared tunnel
+  # Docs: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/get-started/create-remote-tunnel/
+  # Setup application for main API: http://core:8080
+  # Setup another application for the Admin UI (optional): http://admin:80
+  cloudflared:
+    image: cloudflare/cloudflared
+    restart: unless-stopped
+    command:
+      - "tunnel"
+      - "--no-autoupdate"
+      - "run"
+      - "--token"
+      - "<my-secret-cloudflare-token>"
+    profiles:
+      - cloudflared
