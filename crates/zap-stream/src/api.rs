@@ -1630,7 +1630,7 @@ impl HttpServerPlugin for Api {
         let ws_server = WebSocketMetricsServer::new(
             self.db.clone(),
             self.stream_manager.clone(),
-            self.settings.public_url.clone(),
+            self.settings.clone(),
         );
         Box::pin(async move {
             // Handle the WebSocket upgrade

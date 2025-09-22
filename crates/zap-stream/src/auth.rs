@@ -1,6 +1,7 @@
 use anyhow::{Result, bail};
 use base64::Engine;
 use chrono::{DateTime, Utc};
+use log::info;
 use nostr_sdk::{Alphabet, Event, Kind, PublicKey, SingleLetterTag, TagKind, serde_json};
 use url::Url;
 use zap_stream_db::ZapStreamDb;
@@ -25,6 +26,7 @@ pub struct AuthRequest {
     pub expected_url: Url,
     pub expected_method: String,
     pub skip_url_check: bool,
+    pub admin_pubkey: Option<String>,
 }
 
 /// Generic NIP-98 authentication that works for both HTTP and WebSocket
@@ -101,7 +103,16 @@ pub async fn authenticate_nip98(auth_request: AuthRequest, db: &ZapStreamDb) -> 
 
     // Get user ID and check admin status
     let user_id = db.upsert_user(&event.pubkey.to_bytes()).await?;
-    let is_admin = db.is_admin(user_id).await?;
+    let mut is_admin = db.is_admin(user_id).await?;
+    // automatically mark as admin
+    if !is_admin
+        && let Some(apk) = auth_request.admin_pubkey
+        && apk.eq_ignore_ascii_case(&event.pubkey.to_hex())
+    {
+        info!("Automatically marking user {} as admin", user_id);
+        db.set_admin(user_id, true).await?;
+        is_admin = true;
+    }
 
     Ok(AuthResult {
         pubkey: event.pubkey,

@@ -20,6 +20,7 @@ Then edit the config file `compose-config.yaml` to suit your needs.
 
 Make sure to modify the following values:
 
+- `admin_pubkey`: Your regular nostr pubkey in hex, this must be set to be able to login with the admin UI.
 - `endpoints_public_hostname`: The hostname of the ingress endpoints (RTMP), this is returned by the API so if its
   incorrect your users may not be able to connect. This can be the same as `public_url` if they both resolve to the
   public IP of the server.

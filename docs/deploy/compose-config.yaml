@@ -13,6 +13,9 @@ output_dir: "./out"
 # Public URL for serving files for [output_dir]
 public_url: "https://kieran.zap-stream"
 
+# Admin pukey (hex), this must be set if you want to use the Admin UI
+admin_pubkey: "63fe6318dc58583cfe16810f86dd09e18bfd76aabc24a0081ce2856f330504ed"
+
 # Bind address for http server serving files from [output_dir]
 listen_http: "0.0.0.0:8080"
 

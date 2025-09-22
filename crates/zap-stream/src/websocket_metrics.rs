@@ -1,4 +1,5 @@
 use crate::auth::{AuthRequest, TokenSource, authenticate_nip98};
+use crate::settings::Settings;
 use crate::stream_manager::{ActiveStreamInfo, NodeInfo, StreamManager, StreamManagerMetric};
 use anyhow::Result;
 use bytes::Bytes;
@@ -42,7 +43,7 @@ pub enum MetricMessage {
 pub struct WebSocketMetricsServer {
     db: ZapStreamDb,
     stream_manager: StreamManager,
-    public_url: String,
+    settings: Settings,
 }
 
 #[derive(Clone)]
@@ -55,11 +56,11 @@ struct ClientSession {
 }
 
 impl WebSocketMetricsServer {
-    pub fn new(db: ZapStreamDb, stream_manager: StreamManager, public_url: String) -> Self {
+    pub fn new(db: ZapStreamDb, stream_manager: StreamManager, settings: Settings) -> Self {
         Self {
             db,
             stream_manager,
-            public_url,
+            settings,
         }
     }
 
@@ -78,12 +79,12 @@ impl WebSocketMetricsServer {
         let (response, websocket) = hyper_tungstenite::upgrade(request, None)?;
 
         let db = self.db.clone();
-        let public_url = self.public_url.clone();
+        let settings = self.settings.clone();
         let stream_manager = self.stream_manager.clone();
 
         tokio::spawn(async move {
             if let Err(e) =
-                Self::handle_websocket_connection(websocket, db, stream_manager, public_url).await
+                Self::handle_websocket_connection(websocket, db, stream_manager, settings).await
             {
                 error!("WebSocket connection error: {}", e);
             }
@@ -96,7 +97,7 @@ impl WebSocketMetricsServer {
         websocket: HyperWebsocket,
         db: ZapStreamDb,
         stream_manager: StreamManager,
-        public_url: String,
+        settings: Settings,
     ) -> Result<()> {
         let ws_stream = websocket.await?;
         let (mut ws_sender, mut ws_receiver) = ws_stream.split();
@@ -122,7 +123,7 @@ impl WebSocketMetricsServer {
                                 &text,
                                 &mut session,
                                 &db,
-                                &public_url,
+                                &settings,
                                 &mut ws_sender
                             ).await {
                                 error!("Error handling client message: {}", e);
@@ -178,7 +179,7 @@ impl WebSocketMetricsServer {
         text: &str,
         session: &mut ClientSession,
         db: &ZapStreamDb,
-        public_url: &str,
+        settings: &Settings,
         ws_sender: &mut futures_util::stream::SplitSink<
             hyper_tungstenite::WebSocketStream<hyper_util::rt::TokioIo<hyper::upgrade::Upgraded>>,
             Message,
@@ -191,7 +192,10 @@ impl WebSocketMetricsServer {
                 // For WebSocket, construct the expected URL
                 let expected_url = format!(
                     "{}/api/v1/ws",
-                    public_url.trim_end_matches('/').replace("http", "ws")
+                    settings
+                        .public_url
+                        .trim_end_matches('/')
+                        .replace("http", "ws")
                 );
 
                 let auth_request = AuthRequest {
@@ -199,6 +203,7 @@ impl WebSocketMetricsServer {
                     expected_url: expected_url.parse()?,
                     expected_method: "GET".to_string(),
                     skip_url_check: false,
+                    admin_pubkey: settings.admin_pubkey.clone(),
                 };
 
                 match authenticate_nip98(auth_request, db).await {

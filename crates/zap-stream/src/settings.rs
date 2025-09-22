@@ -25,6 +25,9 @@ pub struct Settings {
     /// Binding address for http server serving files from [output_dir]
     pub listen_http: String,
 
+    /// Admin pubkey
+    pub admin_pubkey: Option<String>,
+
     /// Overseer service see [Overseer] for more info
     pub overseer: OverseerConfig,
 

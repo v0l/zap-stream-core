@@ -456,6 +456,7 @@ pub async fn check_nip98_auth(
         expected_url: request_uri.parse()?,
         expected_method: req.method().as_str().to_string(),
         skip_url_check: settings.ignore_auth_url.unwrap_or(false),
+        admin_pubkey: settings.admin_pubkey.clone(),
     };
 
     authenticate_nip98(auth_request, db).await
