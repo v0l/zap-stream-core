@@ -156,7 +156,7 @@ impl ZapStreamOverseer {
                 name: a.name.clone(),
                 display_name: None,
                 about: a.about.clone(),
-                website: Some(public_url.clone()),
+                website: Some(overseer.map_to_public_url("api/v1")?.to_string()),
                 picture: a.picture.clone(),
                 ..Default::default()
             };
