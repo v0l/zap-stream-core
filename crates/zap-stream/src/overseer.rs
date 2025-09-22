@@ -1,5 +1,5 @@
 use crate::payments::create_lightning;
-use crate::settings::{PaymentBackend, RedisConfig, Settings};
+use crate::settings::{AdvertiseConfig, PaymentBackend, RedisConfig, Settings};
 use crate::stream_manager::StreamManager;
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use async_trait::async_trait;
@@ -7,7 +7,8 @@ use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
 use nostr_sdk::prelude::Coordinate;
 use nostr_sdk::{
-    Client, Event, EventBuilder, JsonUtil, Keys, Kind, NostrSigner, Tag, Timestamp, ToBech32,
+    Client, Event, EventBuilder, JsonUtil, Keys, Kind, Metadata, NostrSigner, Tag, Timestamp,
+    ToBech32,
 };
 use nwc::NWC;
 use nwc::prelude::{NostrWalletConnectURI, PayInvoiceRequest};
@@ -75,6 +76,7 @@ impl ZapStreamOverseer {
             &settings.overseer.blossom,
             settings.overseer.segment_length.unwrap_or(2.0),
             settings.overseer.low_balance_threshold,
+            &settings.overseer.advertise,
             &settings.redis,
             shutdown,
         )
@@ -90,6 +92,7 @@ impl ZapStreamOverseer {
         blossom_servers: &Option<Vec<String>>,
         segment_length: f32,
         low_balance_threshold: Option<u64>,
+        advertise: &Option<AdvertiseConfig>,
         redis: &Option<RedisConfig>,
         shutdown: CancellationToken,
     ) -> Result<Self> {
@@ -129,7 +132,7 @@ impl ZapStreamOverseer {
             n94: blossom_servers
                 .as_ref()
                 .map(|s| N94Publisher::new(client.clone(), s, 3, segment_length)),
-            client,
+            client: client.clone(),
             segment_length,
             public_url: public_url.clone(),
             stream_manager: StreamManager::new(node_name.clone()),
@@ -146,6 +149,24 @@ impl ZapStreamOverseer {
         }
         let _ = overseer.stream_manager.start_cleanup_task(shutdown.clone());
         let _ = overseer.stream_manager.start_node_metrics_task(shutdown);
+
+        // advertise self via NIP-89
+        if let Some(a) = advertise {
+            let meta = Metadata {
+                name: a.name.clone(),
+                display_name: None,
+                about: a.about.clone(),
+                website: Some(public_url.clone()),
+                picture: a.picture.clone(),
+                ..Default::default()
+            };
+            let app = EventBuilder::new(Kind::Custom(31_990), meta.as_json())
+                .tag(Tag::identifier("zap-stream-core"))
+                .tag(Tag::parse(["k", "30311"])?)
+                .tag(Tag::parse(["i", "api:zap-stream"])?);
+            info!("Advertising app handler: {}", meta.as_json());
+            client.send_event_builder(app).await?;
+        }
 
         Ok(overseer)
     }

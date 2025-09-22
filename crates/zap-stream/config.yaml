@@ -3,7 +3,6 @@
 # All the endpoints must be valid URI's
 endpoints:
   - "rtmp://127.0.0.1:3336"
-  - "test-pattern://"
 
 # Public hostname which points to the IP address used to listen for all [endpoints]
 endpoints_public_hostname: "localhost"
@@ -41,6 +40,11 @@ overseer:
       address: "https://127.0.0.1:10001"
       cert: "/home/kieran/.polar/networks/1/volumes/lnd/alice/tls.cert"
       macaroon: "/home/kieran/.polar/networks/1/volumes/lnd/alice/data/chain/bitcoin/regtest/admin.macaroon"
+  # Advertise this server on nostr for public use (NIP-89)
+  advertise:
+    name: "My Stream Server"
+    about: "Running zap-stream-core!"
+    picture: "https://zap.stream/logo.png"
 
 # Redis server for coordination
 redis:

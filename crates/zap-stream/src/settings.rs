@@ -62,6 +62,18 @@ pub struct OverseerConfig {
     pub segment_length: Option<f32>,
     /// Low balance notification threshold in sats
     pub low_balance_threshold: Option<u64>,
+    /// Advertise this server on nostr for others to use (NIP-89)
+    pub advertise: Option<AdvertiseConfig>
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdvertiseConfig {
+    /// Metadata name
+    pub name: Option<String>,
+    /// Metadata about
+    pub about: Option<String>,
+    /// Metadata picture
+    pub picture: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
