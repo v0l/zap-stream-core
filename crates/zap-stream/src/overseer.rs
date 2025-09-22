@@ -161,7 +161,11 @@ impl ZapStreamOverseer {
                 ..Default::default()
             };
             let app = EventBuilder::new(Kind::Custom(31_990), meta.as_json())
-                .tag(Tag::identifier("zap-stream-core"))
+                .tag(Tag::identifier(
+                    a.id.as_ref()
+                        .map(|s| s.as_str())
+                        .unwrap_or("zap-stream-core"),
+                ))
                 .tag(Tag::parse(["k", "30311"])?)
                 .tag(Tag::parse(["i", "api:zap-stream"])?);
             info!("Advertising app handler: {}", meta.as_json());

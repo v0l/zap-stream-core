@@ -42,6 +42,10 @@ overseer:
       macaroon: "/home/kieran/.polar/networks/1/volumes/lnd/alice/data/chain/bitcoin/regtest/admin.macaroon"
   # Advertise this server on nostr for public use (NIP-89)
   advertise:
+    # Optional override for the NIP-89 'd' tag identifier
+    # Only use this if you have more than 1 zap-stream-core server per pubkey
+    # The default value is 'zap-stream-core'
+    #id: "instance-1"
     name: "My Stream Server"
     about: "Running zap-stream-core!"
     picture: "https://zap.stream/logo.png"
