@@ -179,7 +179,7 @@ impl LightningNode for NWCNode {
                             warn!("Failed to send payment update: {}", e);
                         }
                     }
-                    NotificationResult::PaymentSent(_) => {}
+                    _ => {}
                 }
                 Ok(false)
             })
