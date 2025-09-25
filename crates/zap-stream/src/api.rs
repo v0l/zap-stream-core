@@ -905,46 +905,42 @@ impl Api {
 
     async fn get_user_history(&self, uid: u64, page: u64, limit: u64) -> Result<HistoryResponse> {
         let offset = page * limit;
-        let payments = self.db.get_payment_history(uid, offset, limit).await?;
+        let history_entries = self.db.get_unified_user_history(uid, offset, limit).await?;
 
-        let mut items: Vec<HistoryEntry> = payments
+        let items: Vec<HistoryEntry> = history_entries
             .into_iter()
-            .filter(|p| p.is_paid) // Only include paid payments like C# version
-            .map(|p| HistoryEntry {
-                created: p.created.timestamp() as u64,
-                entry_type: match p.payment_type {
-                    zap_stream_db::PaymentType::Withdrawal => 1, // Debit
-                    _ => 0, // Credit (TopUp, Zap, Credit, AdmissionFee)
-                },
-                amount: p.amount as f64 / 1000.0, // Convert from milli-sats to sats
-                desc: match p.payment_type {
-                    zap_stream_db::PaymentType::Withdrawal => Some("Withdrawal".to_string()),
-                    zap_stream_db::PaymentType::Credit => Some("Admin Credit".to_string()),
-                    zap_stream_db::PaymentType::Zap => p.nostr.clone(), // Nostr content
-                    _ => None,
-                },
+            .map(|entry| {
+                let (entry_type, desc) = if let Some(payment_type) = entry.payment_type {
+                    // This is a payment entry
+                    let entry_type = match payment_type {
+                        3 => 1, // Withdrawal = Debit (PaymentType::Withdrawal = 3)
+                        _ => 0, // Credit (TopUp, Zap, Credit, AdmissionFee)
+                    };
+                    let desc = match payment_type {
+                        3 => Some("Withdrawal".to_string()), // PaymentType::Withdrawal = 3
+                        2 => Some("Admin Credit".to_string()), // PaymentType::Credit = 2
+                        1 => entry.nostr, // PaymentType::Zap = 1, use nostr content
+                        _ => None,
+                    };
+                    (entry_type, desc)
+                } else {
+                    // This is a stream entry
+                    let desc = Some(format!(
+                        "Stream: {}",
+                        entry.stream_title
+                            .unwrap_or_else(|| entry.stream_id.unwrap_or_else(|| "Unknown".to_string()))
+                    ));
+                    (1, desc) // Debit
+                };
+
+                HistoryEntry {
+                    created: entry.created.timestamp() as u64,
+                    entry_type,
+                    amount: entry.amount as f64 / 1000.0, // Convert from milli-sats to sats
+                    desc,
+                }
             })
             .collect();
-
-        // Add ended streams as debit entries
-        let ended_streams = self.db.get_user_ended_streams(uid).await?;
-        let stream_entries: Vec<HistoryEntry> = ended_streams
-            .into_iter()
-            .map(|s| HistoryEntry {
-                created: s.ends.unwrap_or(s.starts).timestamp() as u64, // Use end time, fallback to start time
-                entry_type: 1,                                          // Debit
-                amount: s.cost as f64 / 1000.0, // Convert from milli-sats to sats
-                desc: Some(format!(
-                    "Stream: {}",
-                    s.title.unwrap_or_else(|| s.id.clone())
-                )),
-            })
-            .collect();
-
-        items.extend(stream_entries);
-
-        // Sort all items by created time (descending)
-        items.sort_by(|a, b| b.created.cmp(&a.created));
 
         Ok(HistoryResponse {
             items,

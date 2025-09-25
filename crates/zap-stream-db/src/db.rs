@@ -1,6 +1,6 @@
 use crate::{
     AuditLog, AuditLogWithPubkeys, IngestEndpoint, Payment, PaymentType, StreamKeyType, User,
-    UserStream, UserStreamForward, UserStreamKey,
+    UserStream, UserStreamForward, UserStreamKey, UserHistoryEntry,
 };
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -626,6 +626,50 @@ impl ZapStreamDb {
         .bind(user_id)
         .fetch_all(&self.db)
         .await?)
+    }
+
+    /// Get unified user history combining payments and completed streams with proper pagination
+    pub async fn get_unified_user_history(
+        &self,
+        user_id: u64,
+        offset: u64,
+        limit: u64,
+    ) -> Result<Vec<UserHistoryEntry>> {
+        let query = r#"
+            (
+                SELECT
+                    created,
+                    amount,
+                    payment_type,
+                    nostr,
+                    NULL as stream_title,
+                    NULL as stream_id
+                FROM payment
+                WHERE user_id = ? AND is_paid = true
+            )
+            UNION ALL
+            (
+                SELECT
+                    COALESCE(ends, starts) as created,
+                    cost as amount,
+                    NULL as payment_type,
+                    NULL as nostr,
+                    title as stream_title,
+                    id as stream_id
+                FROM user_stream
+                WHERE user_id = ? AND state = 3 AND cost > 0
+            )
+            ORDER BY created DESC
+            LIMIT ? OFFSET ?
+        "#;
+
+        Ok(sqlx::query_as(query)
+            .bind(user_id)
+            .bind(user_id)
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&self.db)
+            .await?)
     }
 
     /// Log an admin action to the audit table

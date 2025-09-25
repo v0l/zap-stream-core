@@ -168,3 +168,13 @@ pub struct AuditLogWithPubkeys {
     pub admin_pubkey: Vec<u8>,
     pub target_pubkey: Option<Vec<u8>>,
 }
+
+#[derive(Debug, Clone, FromRow)]
+pub struct UserHistoryEntry {
+    pub created: DateTime<Utc>,
+    pub amount: u64,
+    pub payment_type: Option<u8>, // Payment type for payments, None for streams
+    pub nostr: Option<String>,    // Nostr content for zaps
+    pub stream_title: Option<String>, // Stream title for stream entries
+    pub stream_id: Option<String>,    // Stream ID for stream entries
+}
