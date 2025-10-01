@@ -972,8 +972,18 @@ impl Api {
     ) -> Result<CreateStreamKeyResponse> {
         let uid = self.db.upsert_user(&pubkey.to_bytes()).await?;
 
+        // Generate a new stream key first
+        let key = Uuid::new_v4().to_string();
+
         // Create a new stream record for this key
         let stream_id = Uuid::new_v4();
+
+        // Create the stream key record and get its ID
+        let key_id = self
+            .db
+            .create_stream_key(uid, &key, req.expires, &stream_id.to_string())
+            .await?;
+
         let new_stream = zap_stream_db::UserStream {
             id: stream_id.to_string(),
             user_id: uid,
@@ -985,18 +995,12 @@ impl Api {
             tags: req.event.tags.map(|t| t.join(",")),
             content_warning: req.event.content_warning,
             goal: req.event.goal,
+            stream_key_id: Some(key_id),
             ..Default::default()
         };
 
-        // Create the stream record
+        // Create the stream record with the stream_key_id set
         self.db.insert_stream(&new_stream).await?;
-
-        // Generate a new stream key
-        let key = Uuid::new_v4().to_string();
-        let _key_id = self
-            .db
-            .create_stream_key(uid, &key, req.expires, &stream_id.to_string())
-            .await?;
 
         // For now, return minimal response - event building would require nostr integration
         Ok(CreateStreamKeyResponse {

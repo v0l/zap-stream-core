@@ -1,6 +1,6 @@
 use crate::{
     AuditLog, AuditLogWithPubkeys, IngestEndpoint, Payment, PaymentType, StreamKeyType, User,
-    UserStream, UserStreamForward, UserStreamKey, UserHistoryEntry,
+    UserStream, UserStreamForward, UserStreamKey, UserHistoryEntry, UserPreviousStreams,
 };
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -103,11 +103,30 @@ impl ZapStreamDb {
     }
 
     pub async fn insert_stream(&self, user_stream: &UserStream) -> Result<()> {
-        sqlx::query("insert into user_stream (id, user_id, state, starts) values (?, ?, ?, ?)")
+        sqlx::query(
+            "insert into user_stream (id, user_id, state, starts, ends, title, summary, image, thumb, tags, content_warning, goal, pinned, cost, duration, fee, event, endpoint_id, node_name, stream_key_id)
+             values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
             .bind(&user_stream.id)
             .bind(user_stream.user_id)
             .bind(&user_stream.state)
             .bind(user_stream.starts)
+            .bind(user_stream.ends)
+            .bind(&user_stream.title)
+            .bind(&user_stream.summary)
+            .bind(&user_stream.image)
+            .bind(&user_stream.thumb)
+            .bind(&user_stream.tags)
+            .bind(&user_stream.content_warning)
+            .bind(&user_stream.goal)
+            .bind(&user_stream.pinned)
+            .bind(user_stream.cost)
+            .bind(user_stream.duration)
+            .bind(user_stream.fee)
+            .bind(&user_stream.event)
+            .bind(user_stream.endpoint_id)
+            .bind(&user_stream.node_name)
+            .bind(user_stream.stream_key_id)
             .execute(&self.db)
             .await?;
 
@@ -116,7 +135,7 @@ impl ZapStreamDb {
 
     pub async fn update_stream(&self, user_stream: &UserStream) -> Result<()> {
         sqlx::query(
-            "update user_stream set state = ?, starts = ?, ends = ?, title = ?, summary = ?, image = ?, thumb = ?, tags = ?, content_warning = ?, goal = ?, pinned = ?, fee = ?, event = ?, endpoint_id = ?, node_name = ? where id = ?",
+            "update user_stream set state = ?, starts = ?, ends = ?, title = ?, summary = ?, image = ?, thumb = ?, tags = ?, content_warning = ?, goal = ?, pinned = ?, cost = ?, duration = ?, fee = ?, event = ?, endpoint_id = ?, node_name = ?, stream_key_id = ? where id = ?",
         )
             .bind(&user_stream.state)
             .bind(user_stream.starts)
@@ -129,10 +148,13 @@ impl ZapStreamDb {
             .bind(&user_stream.content_warning)
             .bind(&user_stream.goal)
             .bind(&user_stream.pinned)
+            .bind(user_stream.cost)
+            .bind(user_stream.duration)
             .bind(user_stream.fee)
             .bind(&user_stream.event)
             .bind(user_stream.endpoint_id)
             .bind(&user_stream.node_name)
+            .bind(user_stream.stream_key_id)
             .bind(&user_stream.id)
             .execute(&self.db)
             .await
@@ -826,33 +848,25 @@ impl ZapStreamDb {
         Ok((logs, total as u64))
     }
 
-    /// Get number of live streams and last stream ended timestamp for a user
+    /// Get number of live streams (separately counting primary key vs stream key) and last stream ended timestamp for a user
     pub async fn get_user_prev_streams(
         &self,
         user_id: u64,
-    ) -> Result<(u64, Option<DateTime<Utc>>, Option<Uuid>)> {
-        let row = sqlx::query(
-            "select 
-                count(state) as live_count,
-                (select ends from user_stream where user_id = ? and state = 3 order by ends desc limit 1) as last_ended,
-                (select id from user_stream where user_id = ? and state = 3 order by ends desc limit 1) as last_stream_id
-             from user_stream 
+    ) -> Result<UserPreviousStreams> {
+        sqlx::query_as(
+            "select
+                cast(coalesce(sum(case when stream_key_id is null then 1 else 0 end), 0) as signed) as live_primary_count,
+                cast(coalesce(sum(case when stream_key_id is not null then 1 else 0 end), 0) as signed) as live_stream_key_count,
+                (select ends from user_stream where user_id = ? and state = 3 and stream_key_id is null order by ends desc limit 1) as last_ended,
+                (select id from user_stream where user_id = ? and state = 3 and stream_key_id is null order by ends desc limit 1) as last_stream_id
+             from user_stream
              where user_id = ? and state = 2",
         )
         .bind(user_id)
         .bind(user_id)
         .bind(user_id)
         .fetch_one(&self.db)
-        .await?;
-
-        let live_count: i64 = row.try_get("live_count")?;
-        let last_ended: Option<DateTime<Utc>> = row.try_get("last_ended")?;
-        let last_stream_id: Option<String> = row.try_get("last_stream_id")?;
-
-        Ok((
-            live_count as u64,
-            last_ended,
-            last_stream_id.and_then(|b| Uuid::parse_str(&b).ok()),
-        ))
+        .await
+        .map_err(anyhow::Error::new)
     }
 }

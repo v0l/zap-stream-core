@@ -61,45 +61,74 @@ impl Display for UserStreamState {
     }
 }
 
+/// A stream event belonging to a user
 #[derive(Debug, Clone, Default, FromRow)]
 pub struct UserStream {
+    /// Unique stream id (UUID)
     pub id: String,
+    /// The user who owns this stream
     pub user_id: u64,
+    /// Timestamp when the stream started or starts when planned
     pub starts: DateTime<Utc>,
+    /// Timestamp when the stream ended, or ends when planned
     pub ends: Option<DateTime<Utc>>,
+    /// Current state of the stream live/ended/planned
     pub state: UserStreamState,
+    /// Stream title
     pub title: Option<String>,
+    /// Stream summary long description
     pub summary: Option<String>,
+    /// Poster image URL
     pub image: Option<String>,
+    /// Thumbnail image URL
     pub thumb: Option<String>,
+    /// Comma-seperated list of hashtags
     pub tags: Option<String>,
+    /// Content warning tag
     pub content_warning: Option<String>,
+    /// Stream zap goal event ID
     pub goal: Option<String>,
+    /// Pinned comment event ID
     pub pinned: Option<String>,
+    /// Total cost in milli-sats
     pub cost: u64,
+    /// Total stream duration in seconds
     pub duration: f32,
+    /// Entry fee to be paid by viewers
     pub fee: Option<u32>,
+    /// The raw NOSTR event json for this stream
     pub event: Option<String>,
+    /// The ingest endpoint id
     pub endpoint_id: Option<u64>,
-    pub last_segment: Option<DateTime<Utc>>,
+    /// The node hostname running this stream
     pub node_name: Option<String>,
+    /// Fixed key ID used for this stream event
+    pub stream_key_id: Option<u64>,
 }
 
 #[derive(Debug, Clone, FromRow)]
 pub struct UserStreamForward {
     pub id: u64,
+    /// Owner user id
     pub user_id: u64,
+    /// User designated label
     pub name: String,
+    /// Target RTMP url for forwarding
     pub target: String,
 }
 
 #[derive(Debug, Clone, FromRow)]
 pub struct UserStreamKey {
     pub id: u64,
+    /// The owner user id
     pub user_id: u64,
+    /// The stream key (UUID)
     pub key: String,
+    /// Timestamp when the key was created
     pub created: DateTime<Utc>,
+    /// Expiration timestamp for this stream key
     pub expires: Option<DateTime<Utc>>,
+    /// Fixed user stream this key references (UUID)
     pub stream_id: String,
 }
 
@@ -176,5 +205,17 @@ pub struct UserHistoryEntry {
     pub payment_type: Option<u8>, // Payment type for payments, None for streams
     pub nostr: Option<String>,    // Nostr content for zaps
     pub stream_title: Option<String>, // Stream title for stream entries
-    pub stream_id: Option<String>,    // Stream ID for stream entries
+    pub stream_id: Option<String>, // Stream ID for stream entries
+}
+
+#[derive(Debug, Clone, FromRow)]
+pub struct UserPreviousStreams {
+    /// Number of live streams using primary key (stream_key_id is null)
+    pub live_primary_count: i64,
+    /// Number of live streams using stream key (stream_key_id is not null)
+    pub live_stream_key_count: i64,
+    /// Timestamp when the last primary key stream ended
+    pub last_ended: Option<DateTime<Utc>>,
+    /// ID of the last primary key stream that ended
+    pub last_stream_id: Option<String>,
 }

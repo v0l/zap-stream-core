@@ -1,4 +1,5 @@
-- Setup multi-variant output
-- API parity https://git.v0l.io/Kieran/zap.stream/issues/7
-- HLS-LL
-- Delete old segments (N94)
+- Defer HLS cleanup to allow re-connects
+- Handle discontinuity in HLS on re-connect
+- FIX issue with source variant duration calc causing massive costs
+- Add API support for no account balance setup
+- Add config option for TOS link

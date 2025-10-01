@@ -594,11 +594,10 @@ impl Overseer for ZapStreamOverseer {
             });
         }
 
-        let (current_live, last_ended, last_ended_id) =
-            self.db.get_user_prev_streams(user.id).await?;
+        let prev_streams = self.db.get_user_prev_streams(user.id).await?;
 
         // reject multiple live streams for the same primary key
-        if matches!(user_key, StreamKeyType::Primary(_)) && current_live != 0 {
+        if matches!(user_key, StreamKeyType::Primary(_)) && prev_streams.live_primary_count != 0 {
             return Ok(ConnectResult::Deny {
                 reason: "Primary key is already in use, please check if you are already live!"
                     .to_string(),
@@ -607,16 +606,30 @@ impl Overseer for ZapStreamOverseer {
 
         // check if the user is not live right now and has a stream that ended in the past 2mins
         // otherwise we will resume the previous stream event
-        let has_recent_stream = current_live == 0
-            && last_ended
+        let has_recent_stream = prev_streams.live_primary_count == 0
+            && prev_streams
+                .last_ended
                 .map(|v| v.timestamp().abs_diff(Utc::now().timestamp()) < 120)
                 .unwrap_or(false);
 
         Ok(ConnectResult::Allow {
             enable_stream_dump: user.stream_dump_recording,
             stream_id_override: match (has_recent_stream, user_key) {
-                (true, StreamKeyType::Primary(_)) => last_ended_id,
-                (_, StreamKeyType::FixedEventKey { stream_id, .. }) => stream_id.parse().ok(),
+                (true, StreamKeyType::Primary(_)) => {
+                    let prev_id = prev_streams
+                        .last_stream_id
+                        .and_then(|id| id.parse().ok())
+                        .ok_or(anyhow!(
+                            "Expected previous stream key not found, or could not be parsed!"
+                        ))?;
+                    info!("Resuming previous stream {}", prev_id);
+                    Some(prev_id)
+                }
+                (_, StreamKeyType::FixedEventKey { stream_id, .. }) => Some(
+                    stream_id
+                        .parse()
+                        .map_err(|e| anyhow!("Failed to parse fixed stream id: {}", e))?,
+                ),
                 _ => None,
             },
         })
