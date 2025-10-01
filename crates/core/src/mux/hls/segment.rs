@@ -3,6 +3,7 @@ use crate::mux::SegmentType;
 use crate::mux::hls::variant::HlsVariant;
 use m3u8_rs::{ByteRange, MediaSegment, MediaSegmentType, Part};
 use std::path::PathBuf;
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 #[derive(PartialEq)]
@@ -40,6 +41,8 @@ pub struct SegmentInfo {
     pub duration: f32,
     pub kind: SegmentType,
     pub sha256: [u8; 32],
+    pub timestamp: DateTime<Utc>,
+    pub discontinuity: bool,
 }
 
 impl SegmentInfo {
@@ -47,6 +50,8 @@ impl SegmentInfo {
         MediaSegmentType::Full(MediaSegment {
             uri: self.filename(),
             duration: self.duration,
+            program_date_time: Some(self.timestamp.fixed_offset()),
+            discontinuity: self.discontinuity,
             ..MediaSegment::default()
         })
     }

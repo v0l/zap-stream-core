@@ -195,6 +195,16 @@ impl ZapStreamDb {
         )
     }
 
+    /// Get recently ended streams by node
+    pub async fn list_recently_ended_streams_by_node(&self, node_name: &str) -> Result<Vec<UserStream>> {
+        Ok(
+            sqlx::query_as("select * from user_stream where state = 3 and node_name = ? and ends > now() - interval 10 minute")
+                .bind(node_name)
+                .fetch_all(&self.db)
+                .await?,
+        )
+    }
+
     /// Add [duration] & [cost] to a stream and return the new user balance
     pub async fn tick_stream(
         &self,

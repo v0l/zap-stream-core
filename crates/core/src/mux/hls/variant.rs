@@ -3,7 +3,8 @@ use crate::hash_file_sync;
 use crate::mux::hls::segment::{HlsSegment, PartialSegmentInfo, SegmentInfo};
 use crate::mux::{HlsVariantStream, SegmentType};
 use crate::variant::{StreamMapping, VariantStream};
-use anyhow::{Result, bail, ensure};
+use anyhow::{Result, anyhow, bail, ensure};
+use chrono::Utc;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_H264;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVMediaType::AVMEDIA_TYPE_VIDEO;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
@@ -11,7 +12,9 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
     av_pix_fmt_desc_get, av_q2d, av_write_frame, avio_close, avio_flush, avio_open, avio_size,
 };
 use ffmpeg_rs_raw::{Muxer, cstr};
-use m3u8_rs::{ExtTag, MediaSegmentType, PartInf, PreloadHint};
+use m3u8_rs::Playlist::MediaPlaylist;
+use m3u8_rs::{ExtTag, MediaSegmentType, PartInf, Playlist, PreloadHint};
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs::{File, create_dir_all};
 use std::mem::transmute;
@@ -59,6 +62,8 @@ pub struct HlsVariant {
 }
 
 impl HlsVariant {
+    pub const PLAYLIST_NAME: &'static str = "live.m3u8";
+
     pub fn new<'a>(
         out_dir: PathBuf,
         group: usize,
@@ -68,9 +73,28 @@ impl HlsVariant {
     ) -> Result<Self> {
         let name = format!("stream_{}", group);
 
+        let mut segments = Vec::new();
         let var_dir = out_dir.join(&name);
         if !var_dir.exists() {
             create_dir_all(&var_dir)?;
+        } else {
+            // resume seq, read playlist, avoid CDN cache hits for previous stream
+            match Self::try_load_media_seq(&var_dir) {
+                Ok(i) => {
+                    // setup segments
+                    segments = i;
+                    // mark last segment as discontinuity
+                    if let Some(HlsSegment::Full(last)) = segments
+                        .iter_mut()
+                        .rfind(|s| matches!(s, HlsSegment::Full(_)))
+                    {
+                        last.discontinuity = true;
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to load media sequence: {}", e);
+                }
+            }
         }
 
         let mut mux = unsafe {
@@ -187,13 +211,28 @@ impl HlsVariant {
             //av_dump_format(mux.context(), 0, ptr::null_mut(), 0);
         }
 
+        let idx = segments
+            .iter()
+            .max_by(|a, b| match (a, b) {
+                (HlsSegment::Full(a), HlsSegment::Full(b)) => a.index.cmp(&b.index),
+                _ => Ordering::Less,
+            })
+            .and_then(|s| {
+                if let HlsSegment::Full(f) = s {
+                    Some(f.index + 1)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(1);
+
         let variant = Self {
             name: name.clone(),
             segment_window: 30.0,
             mux,
             streams,
-            idx: 1,
-            segments: Vec::new(),
+            idx,
+            segments,
             out_dir: var_dir,
             segment_type,
             current_segment_start: 0.0,
@@ -209,6 +248,71 @@ impl HlsVariant {
         };
 
         Ok(variant)
+    }
+
+    /// Try to read the playlist and get the segment list
+    pub fn try_load_media_seq(dir: &PathBuf) -> Result<Vec<HlsSegment>> {
+        let file = dir.join(Self::PLAYLIST_NAME);
+        let content = std::fs::read(&file)?;
+        let (_, pl) = m3u8_rs::parse_playlist(&content)
+            .map_err(|e| anyhow::anyhow!("failed to parse playlist: {}", e))?;
+        match pl {
+            Playlist::MasterPlaylist(_) => bail!("Invalid MasterPlaylist, expected MediaPlaylist"),
+            MediaPlaylist(pl) => {
+                let mut idx_ctr = pl.media_sequence;
+                let mut partial_ctr = 1;
+                let mut ret = Vec::new();
+
+                // map HLS segments from playlist back into internal structs
+                for seg in &pl.segments {
+                    let mapped_seg = match seg {
+                        MediaSegmentType::Full(f) => {
+                            let full_seg = HlsSegment::Full(SegmentInfo {
+                                index: idx_ctr,
+                                duration: f.duration,
+                                kind: if f.uri.ends_with(".ts") {
+                                    SegmentType::MPEGTS
+                                } else {
+                                    SegmentType::FMP4
+                                },
+                                discontinuity: f.discontinuity,
+                                sha256: hash_file_sync(&mut File::open(dir.join(&f.uri))?)?,
+                                timestamp: f
+                                    .program_date_time
+                                    .map(|t| t.to_utc())
+                                    .unwrap_or_default(),
+                            });
+                            idx_ctr += 1;
+                            partial_ctr = 1; // always reset on full segment
+                            full_seg
+                        }
+                        MediaSegmentType::Partial(p) => {
+                            let part_seg = HlsSegment::Partial(PartialSegmentInfo {
+                                index: partial_ctr, //assume order is correct
+                                parent_index: idx_ctr,
+                                // we use byte-range style, so filename always is the same as full segment name
+                                parent_kind: if p.uri.ends_with(".ts") {
+                                    SegmentType::MPEGTS
+                                } else {
+                                    SegmentType::FMP4
+                                },
+                                duration: p.duration,
+                                independent: p.independent,
+                                byte_range: p.byte_range.as_ref().map(|r| (r.length, r.offset)),
+                            });
+                            partial_ctr += 1;
+                            part_seg
+                        }
+                        MediaSegmentType::PreloadHint(_) => {
+                            // ignore
+                            continue;
+                        }
+                    };
+                    ret.push(mapped_seg);
+                }
+                Ok(ret)
+            }
+        }
     }
 
     /// Enable HLS-LL
@@ -399,10 +503,7 @@ impl HlsVariant {
 
             // Create initialization segment after first segment completion
             // This ensures the init segment has the correct timebase from the encoder
-            if self.segment_type == SegmentType::FMP4
-                && self.init_segment_path.is_none()
-                && completed_segment_idx == 1
-            {
+            if self.segment_type == SegmentType::FMP4 && self.init_segment_path.is_none() {
                 self.create_init_segment()?;
             }
 
@@ -478,7 +579,9 @@ impl HlsVariant {
                 index: completed_segment_idx,
                 duration: cur_duration as f32,
                 kind: self.segment_type,
+                discontinuity: false,
                 sha256: hash,
+                timestamp: Utc::now(),
             }));
 
             self.write_playlist()?;
@@ -606,7 +709,7 @@ impl HlsVariant {
             .unwrap_or(self.idx);
         pl.end_list = false;
 
-        let mut f_out = File::create(self.out_dir.join("live.m3u8"))?;
+        let mut f_out = File::create(self.out_dir.join(Self::PLAYLIST_NAME))?;
         pl.write_to(&mut f_out)?;
         Ok(())
     }
@@ -666,7 +769,7 @@ impl HlsVariant {
             let fps = av_q2d((*codec_par).framerate);
             m3u8_rs::VariantStream {
                 is_i_frame: false,
-                uri: format!("{}/live.m3u8", self.name),
+                uri: format!("{}/{}", self.name, Self::PLAYLIST_NAME),
                 bandwidth: if bitrate == 0 {
                     // make up bitrate when unknown (copy streams)
                     // this is the bitrate as a raw decoded stream, it's not accurate at all

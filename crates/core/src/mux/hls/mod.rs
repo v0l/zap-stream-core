@@ -191,15 +191,3 @@ impl HlsMuxer {
         remaining_segments
     }
 }
-
-impl Drop for HlsMuxer {
-    fn drop(&mut self) {
-        if let Err(e) = remove_dir_all(&self.out_dir) {
-            warn!(
-                "Failed to clean up hls dir: {} {}",
-                self.out_dir.display(),
-                e
-            );
-        }
-    }
-}

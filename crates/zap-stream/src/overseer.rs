@@ -18,6 +18,7 @@ use std::ops::Add;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+use tokio::fs::remove_dir_all;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -63,9 +64,14 @@ pub struct ZapStreamOverseer {
     node_name: String,
     /// NWC topup handles
     nwc_topup_requests: Arc<RwLock<HashMap<u64, JoinHandle<()>>>>,
+    /// Primary output directory for media
+    out_dir: PathBuf,
 }
 
 impl ZapStreamOverseer {
+    /// Time window when we allow resuming a recently ended stream on the primary key
+    const RECONNECT_WINDOW_SECONDS: u64 = 120;
+
     pub async fn from_settings(settings: &Settings, shutdown: CancellationToken) -> Result<Self> {
         ZapStreamOverseer::new(
             &settings.public_url,
@@ -78,6 +84,7 @@ impl ZapStreamOverseer {
             settings.overseer.low_balance_threshold,
             &settings.overseer.advertise,
             &settings.redis,
+            PathBuf::from(&settings.output_dir),
             shutdown,
         )
         .await
@@ -94,6 +101,7 @@ impl ZapStreamOverseer {
         low_balance_threshold: Option<u64>,
         advertise: &Option<AdvertiseConfig>,
         redis: &Option<RedisConfig>,
+        out_dir: PathBuf,
         shutdown: CancellationToken,
     ) -> Result<Self> {
         let db = ZapStreamDb::new(db).await?;
@@ -139,6 +147,7 @@ impl ZapStreamOverseer {
             low_balance_threshold,
             node_name,
             nwc_topup_requests: Arc::new(RwLock::new(HashMap::new())),
+            out_dir,
         };
         if let Some(r) = redis {
             let r_client = redis::Client::open(r.url.clone())?;
@@ -571,6 +580,34 @@ impl Overseer for ZapStreamOverseer {
                 }
             }
         }
+
+        let recently_ended = self
+            .db
+            .list_recently_ended_streams_by_node(&self.node_name)
+            .await?;
+        for stream in recently_ended {
+            let should_cleanup = if let Some(e) = &stream.ends
+                // ends in the past
+                && *e < Utc::now()
+                // reconnect window expired
+                && Utc::now().timestamp().abs_diff(e.timestamp()) > Self::RECONNECT_WINDOW_SECONDS
+            {
+                true
+            } else {
+                false
+            };
+
+            if !should_cleanup {
+                continue;
+            }
+            let out_dir_hls = self.out_dir.join(stream.id).join(HlsEgress::PATH);
+            if out_dir_hls.exists() {
+                info!("Deleting expired HLS stream data {}", out_dir_hls.display());
+                if let Err(e) = remove_dir_all(&out_dir_hls).await {
+                    warn!("Failed to delete expired HLS stream data: {}", e);
+                }
+            }
+        }
         Ok(())
     }
 
@@ -609,7 +646,9 @@ impl Overseer for ZapStreamOverseer {
         let has_recent_stream = prev_streams.live_primary_count == 0
             && prev_streams
                 .last_ended
-                .map(|v| v.timestamp().abs_diff(Utc::now().timestamp()) < 120)
+                .map(|v| {
+                    v.timestamp().abs_diff(Utc::now().timestamp()) < Self::RECONNECT_WINDOW_SECONDS
+                })
                 .unwrap_or(false);
 
         Ok(ConnectResult::Allow {

@@ -6151,6 +6151,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bytes",
+ "chrono",
  "ffmpeg-rs-raw",
  "fontdue",
  "futures-util",
