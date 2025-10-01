@@ -6,11 +6,11 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPacket;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
-use std::fs::{File, remove_dir_all};
+use std::fs::File;
 use std::ops::Sub;
 use std::path::PathBuf;
 use tokio::time::Instant;
-use tracing::{trace, warn};
+use tracing::trace;
 use uuid::Uuid;
 
 mod segment;

@@ -3,7 +3,7 @@ use crate::hash_file_sync;
 use crate::mux::hls::segment::{HlsSegment, PartialSegmentInfo, SegmentInfo};
 use crate::mux::{HlsVariantStream, SegmentType};
 use crate::variant::{StreamMapping, VariantStream};
-use anyhow::{Result, anyhow, bail, ensure};
+use anyhow::{Result, bail, ensure};
 use chrono::Utc;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_H264;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVMediaType::AVMEDIA_TYPE_VIDEO;
