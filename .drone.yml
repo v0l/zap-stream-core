@@ -22,7 +22,7 @@ steps:
       - name: temp
         path: /dockerd
     commands:
-      - dockerd --data-root /cache/dockerd --exec-root /dockerd
+      - dockerd --data-root /cache/dockerd --exec-root /dockerd --pidfile /dockerd/docker.pid -H unix:///dockerd/docker.sock
   - name: Login Docker
     image: docker
     volumes:
