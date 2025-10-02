@@ -6,8 +6,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     --mount=type=cache,target=/var/lib/dpkg,sharing=locked \
     apt update && \
-    apt install -y protobuf-compiler && \
-    rm -rf /var/lib/apt/lists/*
+    apt install -y protobuf-compiler
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=shared \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
