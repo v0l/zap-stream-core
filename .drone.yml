@@ -23,42 +23,21 @@ steps:
         path: /dockerd
     commands:
       - dockerd --data-root /cache/dockerd --exec-root /dockerd --pidfile /dockerd/docker.pid -H unix:///dockerd/docker.sock
-  - name: Login Docker
+  - name: Build core
     image: docker
     volumes:
       - name: temp
         path: /dockerd
     environment:
+      DOCKER_HOST: "unix:///dockerd/docker.sock"
       DOCKER_TOKEN:
         from_secret: docker_hub
-      DOCKER_HOST: "unix:///dockerd/docker.sock"
     depends_on:
       - Spawn Docker
     commands:
       - docker login -u voidic -p $DOCKER_TOKEN
       - docker buildx create --platform linux/arm64,linux/amd64 --bootstrap --name multi --use
-  - name: Build core AMD64
-    image: docker
-    volumes:
-      - name: temp
-        path: /dockerd
-    environment:
-      DOCKER_HOST: "unix:///dockerd/docker.sock"
-    depends_on:
-      - Login Docker
-    commands:
-      - docker buildx build --builder multi --push --platform linux/amd64 -t voidic/zap-stream-core:latest -f ./crates/zap-stream/Dockerfile .
-  - name: Build core ARM64
-    image: docker
-    volumes:
-      - name: temp
-        path: /dockerd
-    environment:
-      DOCKER_HOST: "unix:///dockerd/docker.sock"
-    depends_on:
-      - Login Docker
-    commands:
-      - docker buildx build --builder multi --push --platform linux/arm64 -t voidic/zap-stream-core:latest -f ./crates/zap-stream/Dockerfile .
+      - docker buildx build --push --platform linux/amd64,linux/arm64 -t voidic/zap-stream-core:latest -f ./crates/zap-stream/Dockerfile .
   - name: Build N94-Bridge
     image: docker
     volumes:
@@ -66,10 +45,14 @@ steps:
         path: /dockerd
     environment:
       DOCKER_HOST: "unix:///dockerd/docker.sock"
+      DOCKER_TOKEN:
+        from_secret: docker_hub
     depends_on:
-      - Login Docker
+      - Spawn Docker
     commands:
-      - docker buildx build --builder multi --push --platform linux/amd64,linux/arm64 -t voidic/n94-bridge:latest -f ./crates/n94-bridge/Dockerfile .
+      - docker login -u voidic -p $DOCKER_TOKEN
+      - docker buildx create --platform linux/arm64,linux/amd64 --bootstrap --name multi --use
+      - docker buildx build --push --platform linux/amd64,linux/arm64 -t voidic/n94-bridge:latest -f ./crates/n94-bridge/Dockerfile .
   - name: Kill docker
     image: docker
     volumes:
@@ -77,7 +60,6 @@ steps:
         path: /dockerd
     depends_on:
       - Build N94-Bridge
-      - Build core ARM64
-      - Build core AMD64
+      - Build core
     commands:
       - kill $(cat /dockerd/docker.pid)
