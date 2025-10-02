@@ -9,10 +9,6 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/src/target \
-    cargo fetch
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-        --mount=type=cache,target=/usr/local/cargo/git \
-        --mount=type=cache,target=/app/src/target \
     cargo install --path ./crates/zap-stream --root /app/build ${CARGO_FEATURES}
 
 FROM rust:trixie
