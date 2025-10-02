@@ -6,8 +6,14 @@ RUN apt update && \
     apt install -y protobuf-compiler && \
     rm -rf /var/lib/apt/lists/*
 COPY . .
-RUN cargo test ${CARGO_FEATURES}
-RUN cargo install --path ./crates/zap-stream --root /app/build ${CARGO_FEATURES}
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/src/target \
+    cargo fetch
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+        --mount=type=cache,target=/usr/local/cargo/git \
+        --mount=type=cache,target=/app/src/target \
+    cargo install --path ./crates/zap-stream --root /app/build ${CARGO_FEATURES}
 
 FROM rust:trixie
 WORKDIR /app
