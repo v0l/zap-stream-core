@@ -21,6 +21,7 @@ steps:
       - dockerd --data-root /cache/dockerd
   - name: Login Docker
     image: docker
+    privileged: true
     environment:
       DOCKER_TOKEN:
         from_secret: docker_hub
@@ -29,17 +30,21 @@ steps:
       - docker buildx create --platform linux/arm64,linux/amd64 --bootstrap --use
   - name: Build core AMD64
     image: docker
+    privileged: true
     commands:
       - docker buildx build --push --platform linux/amd64 -t voidic/zap-stream-core:latest -f ./crates/zap-stream/Dockerfile .
   - name: Build core ARM64
     image: docker
+    privileged: true
     commands:
       - docker buildx build --push --platform linux/arm64 -t voidic/zap-stream-core:latest -f ./crates/zap-stream/Dockerfile .
   - name: Build N94-Bridge
     image: docker
+    privileged: true
     commands:
       - docker buildx build --push --platform linux/amd64,linux/arm64 -t voidic/n94-bridge:latest -f ./crates/n94-bridge/Dockerfile .
   - name: Kill docker
     image: docker
+    privileged: true
     commands:
       - kill $(cat /var/run/docker.pid)
