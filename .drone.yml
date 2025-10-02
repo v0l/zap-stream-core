@@ -36,7 +36,7 @@ steps:
       - Spawn Docker
     commands:
       - docker login -u voidic -p $DOCKER_TOKEN
-      - docker buildx create --platform linux/arm64,linux/amd64 --bootstrap --name multi --use
+      - docker buildx create --platform linux/arm64,linux/amd64 --bootstrap --name multi --use --platform kuberentes --driver-opt=namespace=git,qemu.install=true
   - name: Build core AMD64
     image: docker
     volumes:
