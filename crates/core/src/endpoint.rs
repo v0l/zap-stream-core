@@ -217,7 +217,7 @@ pub fn get_variants_from_endpoint<'a>(
                             },
                             bitrate: 192_000,
                             codec: "aac".to_string(),
-                            channels: 2,
+                            channels: audio_src.channels as _,
                             sample_rate: 48_000,
                             sample_fmt: "fltp".to_owned(),
                         }));
