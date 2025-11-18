@@ -2,10 +2,7 @@ FROM voidic/rust-ffmpeg:latest AS build
 WORKDIR /app/src
 ENV LD_LIBRARY_PATH=$FFMPEG_DIR/lib
 ARG CARGO_FEATURES=""
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
-    --mount=type=cache,target=/var/lib/dpkg,sharing=locked \
-    apt update && \
+RUN apt update && \
     apt install -y protobuf-compiler
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=shared \
