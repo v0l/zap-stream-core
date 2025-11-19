@@ -838,7 +838,7 @@ impl PipelineRunner {
                     format: s.format,
                     width: s.width,
                     height: s.height,
-                    fps: s.fps,
+                    fps: if s.fps.is_normal() { s.fps } else { 30.0 },
                     sample_rate: s.sample_rate,
                     channels: s.channels,
                     language: s.language.clone(),
