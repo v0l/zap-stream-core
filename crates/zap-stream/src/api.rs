@@ -623,7 +623,7 @@ impl Api {
 
         Ok(AccountInfo {
             endpoints,
-            balance: (user.balance / 1000) as _,
+            balance: user.balance / 1000,
             tos: AccountTos {
                 accepted: user.tos_accepted.is_some(),
                 link: "https://zap.stream/tos".to_string(),
@@ -1654,7 +1654,7 @@ impl HttpServerPlugin for Api {
 #[derive(Deserialize, Serialize)]
 struct AccountInfo {
     pub endpoints: Vec<Endpoint>,
-    pub balance: u64,
+    pub balance: i64,
     pub tos: AccountTos,
     pub forwards: Vec<ForwardDest>,
     pub details: Option<PatchEventDetails>,
