@@ -858,25 +858,20 @@ impl Overseer for ZapStreamOverseer {
             .await
             .context("Failed to find stream")?;
 
-        let duration = added.iter().fold(0.0, |acc, v| acc + v.duration);
-
         // Get the cost per minute from the ingest endpoint, or use default
-        let cost_per_minute = if let Some(endpoint_id) = stream.endpoint_id {
-            let ep = self.db.get_ingest_endpoint(endpoint_id).await?;
-            ep.cost
+        let endpoint = if let Some(endpoint_id) = stream.endpoint_id {
+            self.db.get_ingest_endpoint(endpoint_id).await?
         } else {
             bail!("Endpoint id not set on stream");
         };
 
-        // Convert duration from seconds to minutes and calculate cost
-        let duration_minutes = duration / 60.0;
-        let cost = (cost_per_minute as f32 * duration_minutes).round() as i64;
+        let (duration, cost) = get_cost(&endpoint, added);
         let bal = self
             .db
             .tick_stream(pipeline_id, stream.user_id, duration, cost)
             .await?;
 
-        if cost_per_minute > 0 {
+        if cost > 0 {
             let user = self
                 .db
                 .get_user(stream.user_id)
@@ -1064,5 +1059,196 @@ fn into_n94_segment(seg: &EgressSegment) -> N94Segment {
         duration: seg.duration,
         path: seg.path.clone(),
         sha256: seg.sha256,
+    }
+}
+
+fn get_cost(endpoint: &IngestEndpoint, segments: &[EgressSegment]) -> (f32, i64) {
+    // count total duration from all segments (including copied)
+    let duration = segments
+        .iter()
+        .fold(0.0, |acc, v| acc + v.duration);
+
+    let cost_per_minute = endpoint.cost;
+
+    // Convert duration from seconds to minutes and calculate cost
+    let duration_minutes = duration / 60.0;
+
+    // cost can never be negative
+    let cost = (cost_per_minute as f32 * duration_minutes).round().max(0.0);
+    let cost = if cost.is_normal() { cost as i64 } else { 0 };
+
+    // Ensure duration is also non-negative
+    let duration = duration.max(0.0);
+
+    (duration, cost)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use uuid::Uuid;
+
+    fn create_test_endpoint(cost: u64) -> IngestEndpoint {
+        IngestEndpoint {
+            id: 1,
+            name: "test_endpoint".to_string(),
+            cost,
+            capabilities: None,
+        }
+    }
+
+    fn create_test_segment(duration: f32) -> EgressSegment {
+        EgressSegment {
+            variant: Uuid::new_v4(),
+            idx: 0,
+            duration,
+            path: PathBuf::from("/test"),
+            sha256: [0u8; 32],
+        }
+    }
+
+    #[test]
+    fn test_get_cost_positive_values() {
+        let endpoint = create_test_endpoint(1000); // 1000 millisats per minute
+        let segments = vec![
+            create_test_segment(60.0), // 1 minute
+            create_test_segment(30.0), // 30 seconds
+        ];
+
+        let (duration, cost) = get_cost(&endpoint, &segments);
+
+        assert!(duration >= 0.0, "Duration should never be negative");
+        assert!(cost >= 0, "Cost should never be negative");
+        assert_eq!(duration, 90.0);
+        assert_eq!(cost, 1500); // 1.5 minutes * 1000 millisats/minute
+    }
+
+    #[test]
+    fn test_get_cost_zero_cost_endpoint() {
+        let endpoint = create_test_endpoint(0); // Free endpoint
+        let segments = vec![create_test_segment(120.0)];
+
+        let (duration, cost) = get_cost(&endpoint, &segments);
+
+        assert!(duration >= 0.0, "Duration should never be negative");
+        assert!(cost >= 0, "Cost should never be negative");
+        assert_eq!(duration, 120.0);
+        assert_eq!(cost, 0);
+    }
+
+    #[test]
+    fn test_get_cost_zero_duration() {
+        let endpoint = create_test_endpoint(1000);
+        let segments = vec![create_test_segment(0.0)];
+
+        let (duration, cost) = get_cost(&endpoint, &segments);
+
+        assert!(duration >= 0.0, "Duration should never be negative");
+        assert!(cost >= 0, "Cost should never be negative");
+        assert_eq!(duration, 0.0);
+        assert_eq!(cost, 0);
+    }
+
+    #[test]
+    fn test_get_cost_empty_segments() {
+        let endpoint = create_test_endpoint(1000);
+        let segments = vec![];
+
+        let (duration, cost) = get_cost(&endpoint, &segments);
+
+        assert!(duration >= 0.0, "Duration should never be negative");
+        assert!(cost >= 0, "Cost should never be negative");
+        assert_eq!(duration, 0.0);
+        assert_eq!(cost, 0);
+    }
+
+    #[test]
+    fn test_get_cost_all_segments_counted() {
+        let endpoint = create_test_endpoint(1000);
+        let segments = vec![
+            create_test_segment(60.0), // 1 minute
+            create_test_segment(60.0), // 1 minute
+        ];
+
+        let (duration, cost) = get_cost(&endpoint, &segments);
+
+        assert!(duration >= 0.0, "Duration should never be negative");
+        assert!(cost >= 0, "Cost should never be negative");
+        // All segments should count
+        assert_eq!(duration, 120.0);
+        assert_eq!(cost, 2000); // 2 minutes * 1000 millisats/minute
+    }
+
+    #[test]
+    fn test_get_cost_negative_duration_handling() {
+        let endpoint = create_test_endpoint(1000);
+        // Test with negative duration (edge case that shouldn't happen in practice)
+        let segments = vec![create_test_segment(-60.0)];
+
+        let (duration, cost) = get_cost(&endpoint, &segments);
+
+        // Even with invalid input, output should never be negative
+        assert!(duration >= 0.0, "Duration should never be negative, even with invalid input");
+        assert!(cost >= 0, "Cost should never be negative, even with invalid input");
+    }
+
+    #[test]
+    fn test_get_cost_mixed_positive_negative_durations() {
+        let endpoint = create_test_endpoint(1000);
+        let segments = vec![
+            create_test_segment(120.0), // Positive
+            create_test_segment(-30.0), // Negative (invalid)
+        ];
+
+        let (duration, cost) = get_cost(&endpoint, &segments);
+
+        assert!(duration >= 0.0, "Duration should never be negative");
+        assert!(cost >= 0, "Cost should never be negative");
+    }
+
+    #[test]
+    fn test_get_cost_large_values() {
+        let endpoint = create_test_endpoint(u64::MAX); // Very large cost
+        let segments = vec![create_test_segment(3600.0)]; // 1 hour
+
+        let (duration, cost) = get_cost(&endpoint, &segments);
+
+        assert!(duration >= 0.0, "Duration should never be negative");
+        assert!(cost >= 0, "Cost should never be negative");
+        assert_eq!(duration, 3600.0);
+        // Cost should be calculated but not negative
+        assert!(cost >= 0);
+    }
+
+    #[test]
+    fn test_get_cost_fractional_durations() {
+        let endpoint = create_test_endpoint(1000);
+        let segments = vec![
+            create_test_segment(1.5),  // 1.5 seconds
+            create_test_segment(2.3),  // 2.3 seconds
+            create_test_segment(0.7),  // 0.7 seconds
+        ];
+
+        let (duration, cost) = get_cost(&endpoint, &segments);
+
+        assert!(duration >= 0.0, "Duration should never be negative");
+        assert!(cost >= 0, "Cost should never be negative");
+        assert!((duration - 4.5).abs() < 0.01); // Should sum to 4.5 seconds
+    }
+
+    #[test]
+    fn test_get_cost_infinity_and_nan_handling() {
+        let endpoint = create_test_endpoint(1000);
+
+        // Test with infinity
+        let segments = vec![create_test_segment(f32::INFINITY)];
+        let (_duration, cost) = get_cost(&endpoint, &segments);
+        assert!(cost >= 0, "Cost should be non-negative even with infinity input");
+
+        // Test with NaN
+        let segments = vec![create_test_segment(f32::NAN)];
+        let (_duration, cost) = get_cost(&endpoint, &segments);
+        assert!(cost >= 0, "Cost should be non-negative even with NaN input");
     }
 }

@@ -5,7 +5,7 @@ use crate::variant::mapping::VariantMapping;
 use crate::variant::video::VideoVariant;
 use anyhow::Result;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::{av_get_sample_fmt_name, avcodec_get_name};
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::avcodec_get_name;
 use ffmpeg_rs_raw::rstr;
 use std::fmt::{Display, Formatter};
 use std::mem::transmute;
@@ -119,24 +119,24 @@ pub fn get_variants_from_endpoint<'a>(
                     dst_index += 1;
                 }
 
+                // Add audio variant for source quality (transcoded to AAC for compatibility)
                 if let Some(audio_src) = audio_src {
-                    vars.push(VariantStream::CopyAudio(AudioVariant {
+                    vars.push(VariantStream::Audio(AudioVariant {
                         mapping: VariantMapping {
                             id: Uuid::new_v4(),
                             src_index: audio_src.index,
                             dst_index,
                             group_id,
                         },
-                        bitrate: 0,
-                        codec: unsafe {
-                            rstr!(avcodec_get_name(transmute(audio_src.codec as i32))).to_string()
-                        },
+                        bitrate: 192_000, // High quality AAC for source variant
+                        codec: "aac".to_string(),
                         channels: audio_src.channels as _,
-                        sample_rate: audio_src.sample_rate as _,
-                        sample_fmt: unsafe {
-                            rstr!(av_get_sample_fmt_name(transmute(audio_src.codec as i32)))
-                                .to_string()
+                        sample_rate: if audio_src.sample_rate == 44100 || audio_src.sample_rate == 48000 {
+                            audio_src.sample_rate as _
+                        } else {
+                            48_000 // Default to 48kHz if non-standard sample rate
                         },
+                        sample_fmt: "fltp".to_owned(),
                     }));
                     dst_index += 1;
                 }
@@ -218,7 +218,11 @@ pub fn get_variants_from_endpoint<'a>(
                             bitrate: 192_000,
                             codec: "aac".to_string(),
                             channels: audio_src.channels as _,
-                            sample_rate: 48_000,
+                            sample_rate: if audio_src.sample_rate == 44100 || audio_src.sample_rate == 48000 {
+                                audio_src.sample_rate as _
+                            } else {
+                                48_000 // Default to 48kHz if non-standard sample rate
+                            },
                             sample_fmt: "fltp".to_owned(),
                         }));
                         dst_index += 1;

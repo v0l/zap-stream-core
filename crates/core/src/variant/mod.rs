@@ -81,8 +81,8 @@ impl Display for VariantStream {
             VariantStream::Video(v) => write!(f, "{}", v),
             VariantStream::Audio(a) => write!(f, "{}", a),
             VariantStream::Subtitle(s) => write!(f, "{}", s),
-            VariantStream::CopyVideo(c) => write!(f, "{}", c),
-            VariantStream::CopyAudio(c) => write!(f, "{}", c),
+            VariantStream::CopyVideo(c) => write!(f, "Copy {}", c),
+            VariantStream::CopyAudio(c) => write!(f, "Copy {}", c),
         }
     }
 }

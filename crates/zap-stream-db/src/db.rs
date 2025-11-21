@@ -1,6 +1,6 @@
 use crate::{
     AuditLog, AuditLogWithPubkeys, IngestEndpoint, Payment, PaymentType, StreamKeyType, User,
-    UserStream, UserStreamForward, UserStreamKey, UserHistoryEntry, UserPreviousStreams,
+    UserHistoryEntry, UserPreviousStreams, UserStream, UserStreamForward, UserStreamKey,
 };
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -196,7 +196,10 @@ impl ZapStreamDb {
     }
 
     /// Get recently ended streams by node
-    pub async fn list_recently_ended_streams_by_node(&self, node_name: &str) -> Result<Vec<UserStream>> {
+    pub async fn list_recently_ended_streams_by_node(
+        &self,
+        node_name: &str,
+    ) -> Result<Vec<UserStream>> {
         Ok(
             sqlx::query_as("select * from user_stream where state = 3 and node_name = ? and ends > now() - interval 10 minute")
                 .bind(node_name)
@@ -215,18 +218,24 @@ impl ZapStreamDb {
     ) -> Result<i64> {
         let mut tx = self.db.begin().await?;
 
-        sqlx::query("update user_stream set duration = duration + ?, cost = cost + ? where id = ?")
+        if cost > 0 || duration > 0.0 {
+            sqlx::query(
+                "update user_stream set duration = duration + ?, cost = cost + ? where id = ?",
+            )
             .bind(duration)
             .bind(cost)
             .bind(stream_id.to_string())
             .execute(&mut *tx)
             .await?;
+        }
 
-        sqlx::query("update user set balance = balance - ? where id = ?")
-            .bind(cost)
-            .bind(user_id)
-            .execute(&mut *tx)
-            .await?;
+        if cost > 0 {
+            sqlx::query("update user set balance = balance - ? where id = ?")
+                .bind(cost)
+                .bind(user_id)
+                .execute(&mut *tx)
+                .await?;
+        }
 
         let balance: i64 = sqlx::query("select balance from user where id = ?")
             .bind(user_id)
@@ -859,10 +868,7 @@ impl ZapStreamDb {
     }
 
     /// Get number of live streams (separately counting primary key vs stream key) and last stream ended timestamp for a user
-    pub async fn get_user_prev_streams(
-        &self,
-        user_id: u64,
-    ) -> Result<UserPreviousStreams> {
+    pub async fn get_user_prev_streams(&self, user_id: u64) -> Result<UserPreviousStreams> {
         sqlx::query_as(
             "select
                 cast(coalesce(sum(case when stream_key_id is null then 1 else 0 end), 0) as signed) as live_primary_count,
