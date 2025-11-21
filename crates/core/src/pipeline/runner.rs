@@ -32,10 +32,7 @@ use tokio::runtime::Handle;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tracing::{debug, error, info, trace, warn};
 use tracing_appender::{non_blocking, rolling};
-use tracing_subscriber::registry::LookupSpan;
-use tracing_subscriber::{
-    EnvFilter, Layer, fmt, layer::SubscriberExt,
-};
+use tracing_subscriber::{EnvFilter, Layer, fmt, layer::SubscriberExt};
 use uuid::Uuid;
 
 /// Idle mode timeout in seconds
@@ -134,8 +131,11 @@ pub struct PipelineRunner {
     /// Output directory where all stream data is saved
     out_dir: PathBuf,
 
-    /// Thumbnail generation interval (0 = disabled)
+    /// Thumbnail generation interval in milliseconds (0 = disabled)
     thumb_interval: u64,
+
+    /// Time when the last thumbnail was generated
+    last_thumb: Instant,
 
     /// Current runner state (normal or idle)
     state: RunnerState,
@@ -168,6 +168,7 @@ impl PipelineRunner {
         url: Option<String>,
         command: Option<UnboundedReceiver<PipelineCommand>>,
     ) -> Result<Self> {
+        const DEFAULT_THUMB_INTERVAL: u64 = 1000 * 60 * 5;
         Ok(Self {
             handle,
             out_dir,
@@ -183,7 +184,8 @@ impl PipelineRunner {
             egress: Vec::new(),
             frame_ctr: 0,
             fps_last_frame_ctr: 0,
-            thumb_interval: 1800,
+            thumb_interval: DEFAULT_THUMB_INTERVAL,
+            last_thumb: Instant::now().sub(Duration::from_millis(DEFAULT_THUMB_INTERVAL)),
             state: RunnerState::Normal,
             consecutive_decode_failures: 0,
             max_consecutive_failures: DEFAULT_MAX_CONSECUTIVE_FAILURES,
@@ -236,7 +238,10 @@ impl PipelineRunner {
 
     /// Save a decoded frame as a thumbnail
     fn generate_thumb_from_frame(&mut self, frame: *mut AVFrame) -> Result<()> {
-        if self.thumb_interval > 0 && (self.frame_ctr % self.thumb_interval) == 0 {
+        if self.thumb_interval > 0
+            && self.last_thumb.elapsed().as_millis() > self.thumb_interval as u128
+        {
+            self.last_thumb = Instant::now();
             let frame = unsafe { av_frame_clone(frame).addr() };
             let dst_pic = self.out_dir.join("thumb.webp");
             let overseer = self.overseer.clone();
@@ -401,10 +406,33 @@ impl PipelineRunner {
                 bail!("Pipeline not configured, cant process packet")
             };
 
+            // Track last PTS values for continuity in idle mode
+            let stream_index = (*packet).stream_index as usize;
+            if stream_index == config.video_src {
+                self.last_video_pts = (*packet).pts + (*packet).duration;
+                self.frame_ctr += 1;
+            } else if Some(stream_index) == config.audio_src {
+                self.last_audio_pts = (*packet).pts + (*packet).duration;
+            }
+
             // Process all packets (original or converted)
             let mut egress_results = vec![];
-            // only process via decoder if there is more than 1 encoder
-            if !self.encoders.is_empty() {
+
+            // Check if this packet needs transcoding (not just copying)
+            let needs_transcode = config.variants.iter().any(|var| match var {
+                VariantStream::Video(v) if v.src_index() == stream_index => true,
+                VariantStream::Audio(v) if v.src_index() == stream_index => true,
+                _ => false,
+            });
+
+            // Check if we need to decode for thumbnail generation
+            // Only decode for thumbnails if it's the video source and thumbnails are enabled
+            let needs_thumb_decode = stream_index == config.video_src
+                && self.thumb_interval > 0
+                && self.last_thumb.elapsed().as_millis() > self.thumb_interval as u128;
+
+            // only process via decoder if we have encoders and (need transcoding OR thumbnail generation)
+            if !self.encoders.is_empty() && (needs_transcode || needs_thumb_decode) {
                 let frames = match self.decoder.decode_pkt(packet) {
                     Ok(f) => {
                         // Reset failure counter on successful decode
@@ -448,6 +476,10 @@ impl PipelineRunner {
                             (*frame).pts -= (*stream).start_time;
                         }
                         (*frame).time_base = (*stream).time_base;
+                    }
+
+                    if stream_index == config.video_src {
+                        self.generate_thumb_from_frame(frame)?;
                     }
 
                     let results = self.process_frame(&config, stream_idx as usize, frame)?;
@@ -560,15 +592,6 @@ impl PipelineRunner {
                     }
                     _ => {}
                 }
-            }
-
-            // Track last PTS values for continuity in idle mode
-            if stream_index == config.video_src {
-                self.last_video_pts = (*frame).pts + (*frame).duration;
-                self.generate_thumb_from_frame(frame)?;
-                self.frame_ctr += 1;
-            } else if Some(stream_index) == config.audio_src {
-                self.last_audio_pts = (*frame).pts + (*frame).duration;
             }
 
             av_frame_free(&mut frame);
