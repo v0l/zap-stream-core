@@ -801,7 +801,7 @@ impl PipelineRunner {
                                 .on_segments(&self.connection.id, &created, &deleted)
                                 .await
                         {
-                            bail!("Failed to process segment {}", e.to_string());
+                            bail!("Failed to process segment {}", e);
                         }
                     }
                     Ok(())

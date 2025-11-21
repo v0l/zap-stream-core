@@ -166,20 +166,17 @@ impl LightningNode for NWCNode {
         let _: JoinHandle<Result<()>> = tokio::spawn(async move {
             conn.subscribe_to_notifications().await?;
             conn.handle_notifications(|n| async {
-                match n.notification {
-                    NotificationResult::PaymentReceived(i) => {
-                        if let Err(e) = tx
-                            .send(InvoiceUpdate::Settled {
-                                payment_hash: i.payment_hash,
-                                preimage: Some(i.preimage),
-                                external_id: None,
-                            })
-                            .await
-                        {
-                            warn!("Failed to send payment update: {}", e);
-                        }
+                if let NotificationResult::PaymentReceived(i) = n.notification {
+                    if let Err(e) = tx
+                        .send(InvoiceUpdate::Settled {
+                            payment_hash: i.payment_hash,
+                            preimage: Some(i.preimage),
+                            external_id: None,
+                        })
+                        .await
+                    {
+                        warn!("Failed to send payment update: {}", e);
                     }
-                    _ => {}
                 }
                 Ok(false)
             })

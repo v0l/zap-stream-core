@@ -171,8 +171,7 @@ impl ZapStreamOverseer {
             };
             let app = EventBuilder::new(Kind::Custom(31_990), meta.as_json())
                 .tag(Tag::identifier(
-                    a.id.as_ref()
-                        .map(|s| s.as_str())
+                    a.id.as_deref()
                         .unwrap_or("zap-stream-core"),
                 ))
                 .tag(Tag::parse(["k", "30311"])?)
