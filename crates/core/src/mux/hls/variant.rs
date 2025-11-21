@@ -464,11 +464,11 @@ impl HlsVariant {
             let init_path = self.out_dir.join("init.mp4").to_string_lossy().to_string();
 
             // Create a temporary muxer for initialization segment
+            // Use +write_colr to write colr atom with explicit color/pixel format info
             let mut init_opts = HashMap::new();
             init_opts.insert(
                 "movflags".to_string(),
-                "+frag_keyframe+empty_moov+omit_tfhd_offset+separate_moof+default_base_moof"
-                    .to_string(),
+                "+frag_custom+dash+delay_moov+default_base_moof+write_colr".to_string(),
             );
 
             let mut init_mux = Muxer::builder()
