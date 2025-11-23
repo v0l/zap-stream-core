@@ -22,8 +22,8 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_WEBP;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPictureType::AV_PICTURE_TYPE_NONE;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    AV_NOPTS_VALUE, AVFrame, AVPacket, av_frame_clone, av_frame_free, av_get_sample_fmt,
-    av_packet_clone, av_packet_copy_props, av_packet_free, av_rescale_q,
+    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVFrame, AVPacket, av_frame_clone, av_frame_free,
+    av_get_sample_fmt, av_packet_clone, av_packet_copy_props, av_packet_free, av_rescale_q,
 };
 use ffmpeg_rs_raw::{
     AudioFifo, Decoder, Demuxer, Encoder, Resample, Scaler, StreamType, cstr, get_frame_from_hw,
@@ -426,10 +426,13 @@ impl PipelineRunner {
             });
 
             // Check if we need to decode for thumbnail generation
-            // Only decode for thumbnails if it's the video source and thumbnails are enabled
+            // Only decode for thumbnails if it's the video source, thumbnails are enabled,
+            // and the packet is a keyframe (contains a full frame of data)
+            let is_keyframe = (*packet).flags & AV_PKT_FLAG_KEY == AV_PKT_FLAG_KEY;
             let needs_thumb_decode = stream_index == config.video_src
                 && self.thumb_interval > 0
-                && self.last_thumb.elapsed().as_millis() > self.thumb_interval as u128;
+                && self.last_thumb.elapsed().as_millis() > self.thumb_interval as u128
+                && is_keyframe;
 
             // only process via decoder if we have encoders and (need transcoding OR thumbnail generation)
             if !self.encoders.is_empty() && (needs_transcode || needs_thumb_decode) {
