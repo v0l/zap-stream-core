@@ -693,7 +693,7 @@ impl ZapStreamDb {
                 SELECT
                     COALESCE(ends, starts) as created,
                     cost as amount,
-                    NULL as payment_type,
+                    CAST(NULL AS UNSIGNED INTEGER) as payment_type,
                     NULL as nostr,
                     title as stream_title,
                     id as stream_id
