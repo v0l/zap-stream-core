@@ -428,7 +428,7 @@ impl PipelineRunner {
             // Check if we need to decode for thumbnail generation
             // Only decode for thumbnails if it's the video source, thumbnails are enabled,
             // and the packet is a keyframe (contains a full frame of data)
-            let is_keyframe = (*packet).flags & AV_PKT_FLAG_KEY == AV_PKT_FLAG_KEY;
+            let is_keyframe = (*packet).flags & AV_PKT_FLAG_KEY != 0;
             let needs_thumb_decode = stream_index == config.video_src
                 && self.thumb_interval > 0
                 && self.last_thumb.elapsed().as_millis() > self.thumb_interval as u128
