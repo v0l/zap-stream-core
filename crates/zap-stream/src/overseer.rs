@@ -171,8 +171,7 @@ impl ZapStreamOverseer {
             };
             let app = EventBuilder::new(Kind::Custom(31_990), meta.as_json())
                 .tag(Tag::identifier(
-                    a.id.as_deref()
-                        .unwrap_or("zap-stream-core"),
+                    a.id.as_deref().unwrap_or("zap-stream-core"),
                 ))
                 .tag(Tag::parse(["k", "30311"])?)
                 .tag(Tag::parse(["i", "api:zap-stream"])?);
@@ -326,32 +325,49 @@ impl ZapStreamOverseer {
                 ends.timestamp().to_string(),
             ])?);
         }
-        if let Some(ref title) = stream.title {
+        if let Some(ref title) = stream.title
+            && !title.trim().is_empty()
+        {
             tags.push(Tag::parse(&["title".to_string(), title.to_string()])?);
         }
-        if let Some(ref summary) = stream.summary {
+        if let Some(ref summary) = stream.summary
+            && !summary.trim().is_empty()
+        {
             tags.push(Tag::parse(&["summary".to_string(), summary.to_string()])?);
         }
-        if let Some(ref image) = stream.image {
+        if let Some(ref image) = stream.image
+            && !image.trim().is_empty()
+        {
             tags.push(Tag::parse(&["image".to_string(), image.to_string()])?);
         }
-        if let Some(ref thumb) = stream.thumb {
+        if let Some(ref thumb) = stream.thumb
+            && !thumb.trim().is_empty()
+        {
             tags.push(Tag::parse(&["thumb".to_string(), thumb.to_string()])?);
         }
-        if let Some(ref content_warning) = stream.content_warning {
+        if let Some(ref content_warning) = stream.content_warning
+            && !content_warning.trim().is_empty()
+        {
             tags.push(Tag::parse(&[
                 "content_warning".to_string(),
                 content_warning.to_string(),
             ])?);
         }
-        if let Some(ref goal) = stream.goal {
+        if let Some(ref goal) = stream.goal
+            && !goal.trim().is_empty()
+        {
             tags.push(Tag::parse(&["goal".to_string(), goal.to_string()])?);
         }
-        if let Some(ref pinned) = stream.pinned {
+        if let Some(ref pinned) = stream.pinned
+            && !pinned.trim().is_empty()
+        {
             tags.push(Tag::parse(&["pinned".to_string(), pinned.to_string()])?);
         }
         if let Some(ref tags_csv) = stream.tags {
             for tag in tags_csv.split(',') {
+                if tag.trim().is_empty() {
+                    continue;
+                }
                 tags.push(Tag::parse(&["t".to_string(), tag.to_string()])?);
             }
         }
@@ -1063,9 +1079,7 @@ fn into_n94_segment(seg: &EgressSegment) -> N94Segment {
 
 fn get_cost(endpoint: &IngestEndpoint, segments: &[EgressSegment]) -> (f32, i64) {
     // count total duration from all segments (including copied)
-    let duration = segments
-        .iter()
-        .fold(0.0, |acc, v| acc + v.duration);
+    let duration = segments.iter().fold(0.0, |acc, v| acc + v.duration);
 
     let cost_per_minute = endpoint.cost;
 
@@ -1188,8 +1202,14 @@ mod tests {
         let (duration, cost) = get_cost(&endpoint, &segments);
 
         // Even with invalid input, output should never be negative
-        assert!(duration >= 0.0, "Duration should never be negative, even with invalid input");
-        assert!(cost >= 0, "Cost should never be negative, even with invalid input");
+        assert!(
+            duration >= 0.0,
+            "Duration should never be negative, even with invalid input"
+        );
+        assert!(
+            cost >= 0,
+            "Cost should never be negative, even with invalid input"
+        );
     }
 
     #[test]
@@ -1224,9 +1244,9 @@ mod tests {
     fn test_get_cost_fractional_durations() {
         let endpoint = create_test_endpoint(1000);
         let segments = vec![
-            create_test_segment(1.5),  // 1.5 seconds
-            create_test_segment(2.3),  // 2.3 seconds
-            create_test_segment(0.7),  // 0.7 seconds
+            create_test_segment(1.5), // 1.5 seconds
+            create_test_segment(2.3), // 2.3 seconds
+            create_test_segment(0.7), // 0.7 seconds
         ];
 
         let (duration, cost) = get_cost(&endpoint, &segments);
@@ -1243,7 +1263,10 @@ mod tests {
         // Test with infinity
         let segments = vec![create_test_segment(f32::INFINITY)];
         let (_duration, cost) = get_cost(&endpoint, &segments);
-        assert!(cost >= 0, "Cost should be non-negative even with infinity input");
+        assert!(
+            cost >= 0,
+            "Cost should be non-negative even with infinity input"
+        );
 
         // Test with NaN
         let segments = vec![create_test_segment(f32::NAN)];
