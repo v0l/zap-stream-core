@@ -68,6 +68,8 @@ impl StreamManagerMetric {
 /// Manages active streams, viewer tracking
 #[derive(Clone)]
 pub struct StreamManager {
+    /// Minimum update interval in minutes
+    min_update_minutes: i64,
     /// This instances node name
     node_name: String,
     /// Currently active streams with timing info
@@ -92,6 +94,7 @@ impl StreamManager {
             viewer_tracker: Arc::new(RwLock::new(ViewerTracker::new())),
             stream_viewer_states: Arc::new(RwLock::new(HashMap::new())),
             broadcaster: tx,
+            min_update_minutes: 5,
         }
     }
 
@@ -314,7 +317,7 @@ impl StreamManager {
             if let Some(state) = viewer_states.get(stream_id) {
                 // Update if count changed OR if 10 minutes have passed since last update
                 viewer_count != state.last_published_count
-                    || (now - state.last_update_time).num_minutes() >= 10
+                    || (now - state.last_update_time).num_minutes() >= self.min_update_minutes
             } else {
                 // First time tracking this stream, always update
                 viewer_count > 0
