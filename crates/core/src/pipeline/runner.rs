@@ -249,6 +249,10 @@ impl PipelineRunner {
             let id = self.connection.id;
             std::thread::spawn(move || unsafe {
                 let mut frame = frame as *mut AVFrame; //TODO: danger??
+                if frame.is_null() {
+                    error!("Thumbnail frame pointer was null!");
+                    return;
+                }
                 let thumb_start = Instant::now();
 
                 if let Err(e) = Self::save_thumb(frame, &dst_pic) {
@@ -481,6 +485,9 @@ impl PipelineRunner {
                         (*frame).time_base = (*stream).time_base;
                     }
 
+                    // Copy frame from GPU if using hwaccel decoding
+                    let frame = get_frame_from_hw(frame)?;
+
                     if stream_index == config.video_src {
                         self.generate_thumb_from_frame(frame)?;
                     }
@@ -525,12 +532,9 @@ impl PipelineRunner {
         &mut self,
         config: &PipelineConfig,
         stream_index: usize,
-        frame: *mut AVFrame,
+        mut frame: *mut AVFrame,
     ) -> Result<Vec<EgressResult>> {
         unsafe {
-            // Copy frame from GPU if using hwaccel decoding
-            let mut frame = get_frame_from_hw(frame)?;
-
             let mut egress_results = Vec::new();
             // Get the variants which want this pkt
             let pkt_vars = config
