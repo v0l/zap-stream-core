@@ -98,6 +98,20 @@ impl StreamManager {
         }
     }
 
+    pub async fn new_with_redis(node_name: String, redis: redis::Client) -> Result<Self> {
+        let (tx, rx) = broadcast::channel(16);
+        std::mem::forget(rx); // TODO: fix this
+
+        Ok(Self {
+            node_name,
+            active_streams: Arc::new(RwLock::new(HashMap::new())),
+            viewer_tracker: Arc::new(RwLock::new(ViewerTracker::with_redis(redis).await?)),
+            stream_viewer_states: Arc::new(RwLock::new(HashMap::new())),
+            broadcaster: tx,
+            min_update_minutes: 5,
+        })
+    }
+
     pub fn start_cleanup_task(&self, token: CancellationToken) -> JoinHandle<()> {
         let mgr = self.clone();
         tokio::task::spawn(async move {
@@ -308,8 +322,8 @@ impl StreamManager {
         &self,
         stream_id: &str,
     ) -> Result<bool, anyhow::Error> {
-        let viewers = self.viewer_tracker.read().await;
-        let viewer_count = viewers.get_viewer_count(stream_id);
+        let mut viewers = self.viewer_tracker.write().await;
+        let viewer_count = viewers.get_viewer_count(stream_id).await;
         let now = Utc::now();
 
         let should_update = {
@@ -341,13 +355,13 @@ impl StreamManager {
     }
 
     pub async fn get_viewer_count(&self, stream_id: &str) -> usize {
-        let viewers = self.viewer_tracker.read().await;
-        viewers.get_viewer_count(stream_id)
+        let mut viewers = self.viewer_tracker.write().await;
+        viewers.get_viewer_count(stream_id).await
     }
 
     pub async fn track_viewer(&self, stream_id: &str, token: &str) {
         let mut viewers = self.viewer_tracker.write().await;
-        viewers.track_viewer(stream_id, token);
+        viewers.track_viewer(stream_id, token).await;
     }
 
     pub async fn update_pipeline_metrics(

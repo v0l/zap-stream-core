@@ -1,8 +1,12 @@
+use anyhow::Result;
+use chrono::Utc;
 use data_encoding::BASE32_NOPAD;
+use redis::AsyncCommands;
+use redis::aio::MultiplexedConnection;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
-use tracing::debug;
+use tracing::{debug, warn};
 
 pub struct ViewerInfo {
     pub stream_id: String,
@@ -12,6 +16,7 @@ pub struct ViewerInfo {
 pub struct ViewerTracker {
     viewers: HashMap<String, ViewerInfo>,
     timeout_duration: Duration,
+    redis: Option<MultiplexedConnection>,
 }
 
 impl ViewerTracker {
@@ -19,7 +24,17 @@ impl ViewerTracker {
         Self {
             viewers: HashMap::new(),
             timeout_duration: Duration::from_secs(600), // 10 minutes
+            redis: None,
         }
+    }
+
+    pub async fn with_redis(redis: redis::Client) -> Result<Self> {
+        let conn = redis.get_multiplexed_async_connection().await?;
+        Ok(Self {
+            viewers: HashMap::new(),
+            timeout_duration: Duration::from_secs(600), // 10 minutes
+            redis: Some(conn),
+        })
     }
 
     pub fn generate_viewer_token(ip_address: &str, user_agent: Option<&str>) -> String {
@@ -41,7 +56,34 @@ impl ViewerTracker {
         BASE32_NOPAD.encode(fingerprint).to_lowercase()
     }
 
-    pub fn track_viewer(&mut self, stream_id: &str, token: &str) {
+    pub async fn track_viewer(&mut self, stream_id: &str, token: &str) {
+        if let Some(conn) = &mut self.redis {
+            let key = format!("viewers:{}", stream_id);
+            let now = Utc::now().timestamp();
+
+            // Add viewer to sorted set with current timestamp as score
+            match conn.zadd::<_, _, _, ()>(&key, token, now).await {
+                Ok(_) => {
+                    debug!(
+                        "Tracked viewer {} for stream {} in Redis ZSET",
+                        token, stream_id
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to track viewer in Redis: {}, falling back to in-memory",
+                        e
+                    );
+                    self.track_viewer_in_memory(stream_id, token);
+                }
+            }
+        } else {
+            // Fall back to in-memory tracking
+            self.track_viewer_in_memory(stream_id, token);
+        }
+    }
+
+    fn track_viewer_in_memory(&mut self, stream_id: &str, token: &str) {
         if let Some(existing) = self.viewers.get_mut(token) {
             debug!("Updating viewer {} for stream {}", token, stream_id);
             existing.last_seen = Instant::now();
@@ -55,7 +97,35 @@ impl ViewerTracker {
         }
     }
 
-    pub fn get_viewer_count(&self, stream_id: &str) -> usize {
+    pub async fn get_viewer_count(&mut self, stream_id: &str) -> usize {
+        if let Some(conn) = &mut self.redis {
+            let key = format!("viewers:{}", stream_id);
+
+            // First, clean up expired viewers
+            let now = Utc::now().timestamp();
+            let cutoff = now - self.timeout_duration.as_secs() as i64;
+
+            // Remove viewers with timestamp older than cutoff (scores less than cutoff)
+            if let Err(e) = conn.zrembyscore::<_, _, _, ()>(&key, "-inf", cutoff).await {
+                warn!("Failed to clean up expired viewers in Redis: {}", e);
+            }
+
+            // Use ZCARD for O(1) count operation
+            match conn.zcard::<_, usize>(&key).await {
+                Ok(count) => {
+                    debug!("Found {} viewers for stream {} in Redis", count, stream_id);
+                    return count;
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to count viewers in Redis: {}, falling back to in-memory",
+                        e
+                    );
+                }
+            }
+        }
+
+        // Fall back to in-memory counting
         self.viewers
             .values()
             .filter(|v| v.stream_id == stream_id)

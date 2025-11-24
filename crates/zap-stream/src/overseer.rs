@@ -134,6 +134,17 @@ impl ZapStreamOverseer {
         let node_name = sysinfo::System::host_name()
             .ok_or_else(|| anyhow::anyhow!("Failed to get hostname!"))?;
 
+        // Initialize StreamManager with Redis if available
+        let (stream_manager, redis_client) = if let Some(r) = redis {
+            let r_client = redis::Client::open(r.url.clone())?;
+            (
+                StreamManager::new_with_redis(node_name.clone(), r_client.clone()).await?,
+                Some(r_client),
+            )
+        } else {
+            (StreamManager::new(node_name.clone()), None)
+        };
+
         let mut overseer = Self {
             db,
             lightning: payments,
@@ -143,14 +154,15 @@ impl ZapStreamOverseer {
             client: client.clone(),
             segment_length,
             public_url: public_url.clone(),
-            stream_manager: StreamManager::new(node_name.clone()),
+            stream_manager,
             low_balance_threshold,
             node_name,
             nwc_topup_requests: Arc::new(RwLock::new(HashMap::new())),
             out_dir,
         };
-        if let Some(r) = redis {
-            let r_client = redis::Client::open(r.url.clone())?;
+
+        // Enable Redis stats distribution if available
+        if let Some(r_client) = redis_client {
             let _ = overseer
                 .stream_manager
                 .enable_redis(r_client, shutdown.clone())
