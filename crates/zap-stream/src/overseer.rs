@@ -784,7 +784,7 @@ impl Overseer for ZapStreamOverseer {
                         endpoint_id: Some(endpoint.id),
                         title: user.title.clone(),
                         summary: user.summary.clone(),
-                        thumb: user.image.clone(),
+                        image: user.image.clone(),
                         content_warning: user.content_warning.clone(),
                         goal: user.goal.clone(),
                         tags: user.tags.clone(),
