@@ -830,7 +830,54 @@ nak curl -X PATCH "https://api.zap.stream/api/v1/admin/ingest-endpoints/1" \
 nak curl -X DELETE "https://api.zap.stream/api/v1/admin/ingest-endpoints/1"
 ```
 
-### 9. Real-time Metrics WebSocket
+### 9. Get Pipeline Log
+
+**Endpoint**: `GET /api/v1/admin/pipeline-log/{stream_id}`
+
+**Description**: Retrieve the contents of the pipeline.log file for a specific stream. This log contains detailed debug information about the stream processing pipeline, including FFmpeg operations, encoding/decoding events, and any errors encountered during stream processing.
+
+**Path Parameters**:
+- `stream_id`: UUID of the stream (e.g., `550e8400-e29b-41d4-a716-446655440000`)
+
+**Example Request**:
+```bash
+nak curl -X GET "https://api.zap.stream/api/v1/admin/pipeline-log/550e8400-e29b-41d4-a716-446655440000"
+```
+
+**Response Format**:
+- **Content-Type**: `text/plain; charset=utf-8`
+- **Body**: Raw log file contents as plain text
+
+**Response Examples**:
+
+When log file exists:
+```
+2024-01-01T12:00:00.123Z INFO Pipeline run starting
+2024-01-01T12:00:01.456Z DEBUG Video stream detected: 1920x1080, 30fps
+2024-01-01T12:00:02.789Z INFO Encoder initialized: H264, 3000kbps
+...
+```
+
+When log file doesn't exist:
+```
+Pipeline log file not found. This may be because the stream has not been started yet or the stream ID is invalid.
+```
+
+**Error Responses**:
+- `401 Unauthorized`: Missing or invalid authentication
+- `403 Forbidden`: User does not have admin privileges
+- `500 Internal Server Error`: Failed to read the log file (e.g., permission issues)
+
+**Audit Log**: This operation is logged with action type `view_pipeline_log` for security compliance. The log entry includes the stream ID.
+
+**Notes**:
+- The pipeline.log file is created when a stream processing pipeline starts in the PipelineRunner
+- The file is located at `{output_dir}/{stream_id}/pipeline.log`
+- Each stream has its own pipeline.log file
+- Log rotation is not currently implemented, so the file may grow large over time
+- The log contains detailed FFmpeg debug output and stream processing information
+
+### 10. Real-time Metrics WebSocket
 
 **Endpoint**: `WS /api/v1/ws`
 

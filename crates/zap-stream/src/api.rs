@@ -51,6 +51,7 @@ enum Route {
     AdminAuditLog,
     AdminIngestEndpoints,
     AdminIngestEndpointsId,
+    AdminPipelineLog,
     DeleteStream,
     WebhookBitvora,
 }
@@ -133,6 +134,9 @@ impl Api {
                 "/api/v1/admin/ingest-endpoints/{id}",
                 Route::AdminIngestEndpointsId,
             )
+            .unwrap();
+        router
+            .insert("/api/v1/admin/pipeline-log/{stream_id}", Route::AdminPipelineLog)
             .unwrap();
         router
             .insert("/api/v1/stream/{id}", Route::DeleteStream)
@@ -554,6 +558,27 @@ impl Api {
                     let id: u64 = endpoint_id.parse()?;
                     self.admin_delete_ingest_endpoint(admin_uid, id).await?;
                     Ok(base.body(Self::body_json(&())?)?)
+                }
+                (&Method::GET, Route::AdminPipelineLog) => {
+                    let auth = check_nip98_auth(&req, &self.settings, &self.db).await?;
+                    let admin_uid = self.check_admin_access(&auth.pubkey).await?;
+                    let stream_id = params
+                        .get("stream_id")
+                        .ok_or_else(|| anyhow!("Missing stream_id"))?;
+                    let log_content = self.admin_get_pipeline_log(admin_uid, stream_id).await?;
+                    let response = Response::builder()
+                        .header("server", "zap-stream")
+                        .header("content-type", "text/plain; charset=utf-8")
+                        .header("access-control-allow-origin", "*")
+                        .header("access-control-allow-headers", "*")
+                        .header(
+                            "access-control-allow-methods",
+                            "HEAD, GET, PATCH, DELETE, POST, OPTIONS",
+                        )
+                        .body(Full::from(log_content)
+                            .map_err(|e| match e {})
+                            .boxed())?;
+                    Ok(response)
                 }
                 (&Method::DELETE, Route::DeleteStream) => {
                     let auth = check_nip98_auth(&req, &self.settings, &self.db).await?;
@@ -1584,6 +1609,47 @@ impl Api {
             .await?;
 
         Ok(())
+    }
+
+    async fn admin_get_pipeline_log(&self, admin_uid: u64, stream_id: &str) -> Result<String> {
+        use tokio::fs;
+
+        // Validate stream_id is a valid UUID to prevent path traversal attacks
+        let stream_uuid = Uuid::parse_str(stream_id)
+            .context("Invalid stream_id format, must be a valid UUID")?;
+
+        // Construct path to pipeline.log in stream's output directory
+        // Using the parsed UUID's string representation ensures it's sanitized
+        let log_path = std::path::Path::new(&self.settings.output_dir)
+            .join(stream_uuid.to_string())
+            .join("pipeline.log");
+
+        // Try to read the log file
+        let log_content = match fs::read_to_string(&log_path).await {
+            Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // Return helpful message if file doesn't exist
+                String::from("Pipeline log file not found. This may be because the stream has not been started yet or the stream ID is invalid.")
+            }
+            Err(e) => {
+                // Return error for other IO errors
+                bail!("Failed to read pipeline log: {}", e);
+            }
+        };
+
+        // Log admin action
+        self.db
+            .log_admin_action(
+                admin_uid,
+                "view_pipeline_log",
+                Some("stream"),
+                Some(stream_id),
+                &format!("Admin viewed pipeline log for stream {}", stream_id),
+                None,
+            )
+            .await?;
+
+        Ok(log_content)
     }
 }
 
