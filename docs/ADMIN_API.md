@@ -830,7 +830,52 @@ nak curl -X PATCH "https://api.zap.stream/api/v1/admin/ingest-endpoints/1" \
 nak curl -X DELETE "https://api.zap.stream/api/v1/admin/ingest-endpoints/1"
 ```
 
-### 9. Real-time Metrics WebSocket
+### 9. Get Pipeline Log
+
+**Endpoint**: `GET /api/v1/admin/pipeline-log`
+
+**Description**: Retrieve the contents of the pipeline.log file from the output directory. This log contains detailed debug information about stream processing pipelines, including FFmpeg operations, encoding/decoding events, and any errors encountered during stream processing.
+
+**Query Parameters**: None
+
+**Example Request**:
+```bash
+nak curl -X GET "https://api.zap.stream/api/v1/admin/pipeline-log"
+```
+
+**Response Format**:
+- **Content-Type**: `text/plain; charset=utf-8`
+- **Body**: Raw log file contents as plain text
+
+**Response Examples**:
+
+When log file exists:
+```
+2024-01-01T12:00:00.123Z INFO Pipeline run starting
+2024-01-01T12:00:01.456Z DEBUG Video stream detected: 1920x1080, 30fps
+2024-01-01T12:00:02.789Z INFO Encoder initialized: H264, 3000kbps
+...
+```
+
+When log file doesn't exist:
+```
+Pipeline log file not found. This may be because no stream has been started yet.
+```
+
+**Error Responses**:
+- `401 Unauthorized`: Missing or invalid authentication
+- `403 Forbidden`: User does not have admin privileges
+- `500 Internal Server Error`: Failed to read the log file (e.g., permission issues)
+
+**Audit Log**: This operation is logged with action type `view_pipeline_log` for security compliance.
+
+**Notes**:
+- The pipeline.log file is created when a stream processing pipeline starts
+- The file is located in the configured `output_dir` directory
+- Log rotation is not currently implemented, so the file may grow large over time
+- The log contains detailed FFmpeg debug output and stream processing information
+
+### 10. Real-time Metrics WebSocket
 
 **Endpoint**: `WS /api/v1/ws`
 
