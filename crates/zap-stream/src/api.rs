@@ -1614,9 +1614,14 @@ impl Api {
     async fn admin_get_pipeline_log(&self, admin_uid: u64, stream_id: &str) -> Result<String> {
         use tokio::fs;
 
+        // Validate stream_id is a valid UUID to prevent path traversal attacks
+        let stream_uuid = Uuid::parse_str(stream_id)
+            .context("Invalid stream_id format, must be a valid UUID")?;
+
         // Construct path to pipeline.log in stream's output directory
+        // Using the parsed UUID's string representation ensures it's sanitized
         let log_path = std::path::Path::new(&self.settings.output_dir)
-            .join(stream_id)
+            .join(stream_uuid.to_string())
             .join("pipeline.log");
 
         // Try to read the log file
