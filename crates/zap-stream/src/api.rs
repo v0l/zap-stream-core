@@ -136,7 +136,7 @@ impl Api {
             )
             .unwrap();
         router
-            .insert("/api/v1/admin/pipeline-log", Route::AdminPipelineLog)
+            .insert("/api/v1/admin/pipeline-log/{stream_id}", Route::AdminPipelineLog)
             .unwrap();
         router
             .insert("/api/v1/stream/{id}", Route::DeleteStream)
@@ -562,7 +562,10 @@ impl Api {
                 (&Method::GET, Route::AdminPipelineLog) => {
                     let auth = check_nip98_auth(&req, &self.settings, &self.db).await?;
                     let admin_uid = self.check_admin_access(&auth.pubkey).await?;
-                    let log_content = self.admin_get_pipeline_log(admin_uid).await?;
+                    let stream_id = params
+                        .get("stream_id")
+                        .ok_or_else(|| anyhow!("Missing stream_id"))?;
+                    let log_content = self.admin_get_pipeline_log(admin_uid, stream_id).await?;
                     let response = Response::builder()
                         .header("server", "zap-stream")
                         .header("content-type", "text/plain; charset=utf-8")
@@ -1608,18 +1611,20 @@ impl Api {
         Ok(())
     }
 
-    async fn admin_get_pipeline_log(&self, admin_uid: u64) -> Result<String> {
+    async fn admin_get_pipeline_log(&self, admin_uid: u64, stream_id: &str) -> Result<String> {
         use tokio::fs;
 
-        // Construct path to pipeline.log in output directory
-        let log_path = std::path::Path::new(&self.settings.output_dir).join("pipeline.log");
+        // Construct path to pipeline.log in stream's output directory
+        let log_path = std::path::Path::new(&self.settings.output_dir)
+            .join(stream_id)
+            .join("pipeline.log");
 
         // Try to read the log file
         let log_content = match fs::read_to_string(&log_path).await {
             Ok(content) => content,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 // Return helpful message if file doesn't exist
-                String::from("Pipeline log file not found. This may be because no stream has been started yet.")
+                String::from("Pipeline log file not found. This may be because the stream has not been started yet or the stream ID is invalid.")
             }
             Err(e) => {
                 // Return error for other IO errors
@@ -1632,9 +1637,9 @@ impl Api {
             .log_admin_action(
                 admin_uid,
                 "view_pipeline_log",
-                Some("system"),
-                None,
-                "Admin viewed pipeline log",
+                Some("stream"),
+                Some(stream_id),
+                &format!("Admin viewed pipeline log for stream {}", stream_id),
                 None,
             )
             .await?;
