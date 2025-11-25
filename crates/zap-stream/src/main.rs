@@ -67,7 +67,11 @@ pub unsafe extern "C" fn av_log_redirect(
         1024,
         ptr::addr_of_mut!(prefix),
     );
-    let msg = String::from_utf8_lossy(buf.as_slice());
+    // Find the null terminator to avoid logging trailing null bytes
+    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    let msg = String::from_utf8_lossy(&buf[..len])
+        .trim_end()
+        .to_string();
     match level {
         AV_LOG_DEBUG => {
             tracing::debug!(target: "ffmpeg", "{}", msg)

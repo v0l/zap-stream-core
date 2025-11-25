@@ -8,8 +8,9 @@ use chrono::Utc;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_H264;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVMediaType::AVMEDIA_TYPE_VIDEO;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVIO_FLAG_WRITE, AVPacket, av_free, av_get_bits_per_pixel,
-    av_pix_fmt_desc_get, av_q2d, av_write_frame, avio_close, avio_flush, avio_open, avio_size,
+    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVIO_FLAG_WRITE, AVPacket, av_free,
+    av_get_bits_per_pixel, av_pix_fmt_desc_get, av_q2d, av_write_frame,
+    avio_close, avio_flush, avio_open, avio_size,
 };
 use ffmpeg_rs_raw::{Muxer, cstr};
 use m3u8_rs::Playlist::MediaPlaylist;
@@ -20,7 +21,7 @@ use std::fs::{File, create_dir_all};
 use std::mem::transmute;
 use std::path::PathBuf;
 use std::ptr;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 pub struct HlsVariant {
     /// Name of this variant (720p)
@@ -392,7 +393,13 @@ impl HlsVariant {
             }
 
             // write to current segment
-            self.mux.write_packet(pkt)?;
+            match self.mux.write_packet(pkt) {
+                Ok(r) => r,
+                Err(e) => {
+                    error!("Error muxing HLS packet: var={} {}", self.name, e);
+                    return Err(e);
+                }
+            }
             self.packets_written += 1;
 
             Ok(result)

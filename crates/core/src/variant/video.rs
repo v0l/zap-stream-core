@@ -1,6 +1,6 @@
 use ffmpeg_rs_raw::Encoder;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::AV_CODEC_FLAG_GLOBAL_HEADER;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVColorSpace::AVCOL_SPC_BT709;
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::{AV_CODEC_FLAG_GLOBAL_HEADER, AVRational};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
@@ -107,6 +107,10 @@ impl VideoVariant {
                     // Set GLOBAL_HEADER flag for fMP4 HLS and recorder contexts
                     if need_global_header {
                         (*ctx).flags |= AV_CODEC_FLAG_GLOBAL_HEADER as i32;
+                    }
+                    (*ctx).time_base = AVRational {
+                        num: 1,
+                        den: 90_000,
                     }
                 })
                 .open(Some(opt))?;

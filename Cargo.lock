@@ -376,16 +376,16 @@ checksum = "383d29d513d8764dcdc42ea295d979eb99c3c9f00607b3692cf68a431f7dca72"
 
 [[package]]
 name = "bindgen"
-version = "0.72.1"
+version = "0.69.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "993776b509cfb49c750f11b8f07a46fa23e0a1386ffc01fb1e7d343efc387895"
+checksum = "271383c67ccabffb7381723dea0672a673f292304fcb45c01cc648c7a8d58088"
 dependencies = [
  "bitflags 2.9.4",
  "cexpr",
  "clang-sys",
- "itertools 0.13.0",
- "log 0.4.28",
- "prettyplease",
+ "itertools 0.12.1",
+ "lazy_static",
+ "lazycell",
  "proc-macro2",
  "quote",
  "regex",
@@ -1270,8 +1270,8 @@ dependencies = [
 
 [[package]]
 name = "ffmpeg-rs-raw"
-version = "0.1.0"
-source = "git+https://git.v0l.io/Kieran/ffmpeg-rs-raw.git?rev=3395f9fadd0a8e9498e7d6bfcf0c03bb7bc51e79#3395f9fadd0a8e9498e7d6bfcf0c03bb7bc51e79"
+version = "0.3.0"
+source = "git+https://git.v0l.io/Kieran/ffmpeg-rs-raw.git?rev=3d5f7a52fdab0b4b4c81e09f99fa9f3a8d0e71da#3d5f7a52fdab0b4b4c81e09f99fa9f3a8d0e71da"
 dependencies = [
  "anyhow",
  "ffmpeg-sys-the-third",
@@ -1283,7 +1283,7 @@ dependencies = [
 [[package]]
 name = "ffmpeg-sys-the-third"
 version = "3.0.1+ffmpeg-7.1"
-source = "git+https://git.v0l.io/Kieran/ffmpeg-the-third.git?rev=3059cf6666e0b2d6eaeea00224c25cc95fad5b4a#3059cf6666e0b2d6eaeea00224c25cc95fad5b4a"
+source = "git+https://github.com/v0l/ffmpeg-the-third.git?rev=bf1d21071e92ad7d212f9129eaf13faabeb42920#bf1d21071e92ad7d212f9129eaf13faabeb42920"
 dependencies = [
  "bindgen",
  "cc",
@@ -2237,9 +2237,9 @@ checksum = "7943c866cc5cd64cbc25b2e01621d07fa8eb2a1a23160ee81ce38704e97b8ecf"
 
 [[package]]
 name = "itertools"
-version = "0.13.0"
+version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
+checksum = "ba291022dbbd398a455acf126c1e341954079855bc60dfdda641363bd6922569"
 dependencies = [
  "either",
 ]
@@ -2308,6 +2308,12 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 dependencies = [
  "spin",
 ]
+
+[[package]]
+name = "lazycell"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "830d08ce1d1d941e6b30645f1a0eb5643013d835ce3779a5fc208261dbe10f55"
 
 [[package]]
 name = "libc"
@@ -3833,9 +3839,9 @@ checksum = "56f7d92ca342cea22a06f2121d944b4fd82af56988c270852495420f961d4ace"
 
 [[package]]
 name = "rustc-hash"
-version = "2.1.1"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "357703d41365b4b27c590e3ed91eabb1b663f07c4c084095e60cbed4362dff0d"
+checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
 
 [[package]]
 name = "rustc_version"

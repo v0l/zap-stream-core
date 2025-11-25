@@ -22,8 +22,9 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_WEBP;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPictureType::AV_PICTURE_TYPE_NONE;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVFrame, AVPacket, av_frame_clone, av_frame_free,
-    av_get_sample_fmt, av_packet_clone, av_packet_copy_props, av_packet_free, av_rescale_q,
+    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVFrame, AVPacket, av_dump_format, av_frame_clone,
+    av_frame_free, av_get_sample_fmt, av_packet_clone, av_packet_copy_props, av_packet_free,
+    av_rescale_q,
 };
 use ffmpeg_rs_raw::{
     AudioFifo, Decoder, Demuxer, Encoder, Resample, Scaler, StreamType, cstr, get_frame_from_hw,
@@ -558,6 +559,13 @@ impl PipelineRunner {
                         } else {
                             frame
                         };
+                        trace!(
+                            "Video frame to encoder: var={}, pts={}, dts={}, duration={}",
+                            var.id(),
+                            (*frame).pts,
+                            (*frame).pkt_dts,
+                            (*frame).duration
+                        );
                         egress_results.extend(Self::encode_mux_frame(
                             &mut self.egress,
                             var,
@@ -625,7 +633,19 @@ impl PipelineRunner {
                 (*frame).time_base = (*enc_ctx).time_base;
             }
 
-            let packets = encoder.encode_frame(frame)?;
+            let packets = match encoder.encode_frame(frame) {
+                Ok(pkt) => pkt,
+                Err(e) => {
+                    error!(
+                        "Failed to encode frame: var={}, pts={}, duration={} {}",
+                        var.id(),
+                        (*frame).pts,
+                        (*frame).duration,
+                        e
+                    );
+                    return Err(e);
+                }
+            };
             let mut ret = vec![];
             for mut pkt in packets {
                 ret.extend(Self::egress_packet(egress, pkt, &var.id())?);
@@ -720,7 +740,9 @@ impl PipelineRunner {
                     .with_writer(non_blocking)
                     .with_ansi(false)
                     .with_thread_ids(true)
-                    .with_filter(EnvFilter::new("zap_stream_core=debug,zap_stream=debug")),
+                    .with_filter(EnvFilter::new(
+                        "zap_stream_core=debug,zap_stream=debug,ffmpeg=warn",
+                    )),
             );
 
         tracing::subscriber::with_default(logger, || {

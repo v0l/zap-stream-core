@@ -1,3 +1,3 @@
-- FIX issue with source variant duration calc causing massive costs
+- FIX issue with source variant duration calc causing massive costs (cant replicate)
 - Add API support for no account balance setup
 - Add config option for TOS link
