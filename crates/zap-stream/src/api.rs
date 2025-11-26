@@ -3,7 +3,7 @@ use crate::overseer::ZapStreamOverseer;
 use crate::settings::Settings;
 use crate::stream_manager::StreamManager;
 use crate::websocket_metrics::WebSocketMetricsServer;
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use http_body_util::combinators::BoxBody;
@@ -136,7 +136,10 @@ impl Api {
             )
             .unwrap();
         router
-            .insert("/api/v1/admin/pipeline-log/{stream_id}", Route::AdminPipelineLog)
+            .insert(
+                "/api/v1/admin/pipeline-log/{stream_id}",
+                Route::AdminPipelineLog,
+            )
             .unwrap();
         router
             .insert("/api/v1/stream/{id}", Route::DeleteStream)
@@ -575,9 +578,7 @@ impl Api {
                             "access-control-allow-methods",
                             "HEAD, GET, PATCH, DELETE, POST, OPTIONS",
                         )
-                        .body(Full::from(log_content)
-                            .map_err(|e| match e {})
-                            .boxed())?;
+                        .body(Full::from(log_content).map_err(|e| match e {}).boxed())?;
                     Ok(response)
                 }
                 (&Method::DELETE, Route::DeleteStream) => {
@@ -952,8 +953,9 @@ impl Api {
                     // This is a stream entry
                     let desc = Some(format!(
                         "Stream: {}",
-                        entry.stream_title
-                            .unwrap_or_else(|| entry.stream_id.unwrap_or_else(|| "Unknown".to_string()))
+                        entry.stream_title.unwrap_or_else(|| entry
+                            .stream_id
+                            .unwrap_or_else(|| "Unknown".to_string()))
                     ));
                     (1, desc) // Debit
                 };
@@ -1653,8 +1655,8 @@ impl Api {
         use tokio::fs;
 
         // Validate stream_id is a valid UUID to prevent path traversal attacks
-        let stream_uuid = Uuid::parse_str(stream_id)
-            .context("Invalid stream_id format, must be a valid UUID")?;
+        let stream_uuid =
+            Uuid::parse_str(stream_id).context("Invalid stream_id format, must be a valid UUID")?;
 
         // Construct path to pipeline.log in stream's output directory
         // Using the parsed UUID's string representation ensures it's sanitized
@@ -1667,7 +1669,9 @@ impl Api {
             Ok(content) => content,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 // Return helpful message if file doesn't exist
-                String::from("Pipeline log file not found. This may be because the stream has not been started yet or the stream ID is invalid.")
+                String::from(
+                    "Pipeline log file not found. This may be because the stream has not been started yet or the stream ID is invalid.",
+                )
             }
             Err(e) => {
                 // Return error for other IO errors
