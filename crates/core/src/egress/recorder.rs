@@ -1,6 +1,5 @@
 use anyhow::Result;
-use ffmpeg_rs_raw::Muxer;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPacket;
+use ffmpeg_rs_raw::{AvPacketRef, Muxer};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use uuid::Uuid;
@@ -58,25 +57,19 @@ impl RecorderEgress {
 }
 
 impl Egress for RecorderEgress {
-    unsafe fn process_pkt(
-        &mut self,
-        packet: *mut AVPacket,
-        variant: &Uuid,
-    ) -> Result<EgressResult> {
-        unsafe {
-            if let Some(stream) = self.var_map.get(variant) {
-                // Update metrics with packet data (auto-reports when interval elapsed)
-                self.metrics.update((*packet).size as usize);
+    fn process_pkt(&mut self, mut packet: AvPacketRef, variant: &Uuid) -> Result<EgressResult> {
+        if let Some(stream) = self.var_map.get(variant) {
+            // Update metrics with packet data (auto-reports when interval elapsed)
+            self.metrics.update(packet.size as usize);
 
-                // very important for muxer to know which stream this pkt belongs to
-                (*packet).stream_index = *stream;
-                self.muxer.write_packet(packet)?;
-            }
-            Ok(EgressResult::None)
+            // very important for muxer to know which stream this pkt belongs to
+            packet.stream_index = *stream;
+            self.muxer.write_packet(&packet)?;
         }
+        Ok(EgressResult::None)
     }
 
-    unsafe fn reset(&mut self) -> Result<EgressResult> {
+    fn reset(&mut self) -> Result<EgressResult> {
         unsafe {
             self.muxer.close()?;
             Ok(EgressResult::None)

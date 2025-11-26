@@ -1,20 +1,20 @@
 use crate::overseer::IngressStream;
 use anyhow::{Result, bail};
-use ffmpeg_rs_raw::Scaler;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVColorSpace::AVCOL_SPC_RGB;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPictureType::AV_PICTURE_TYPE_NONE;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_RGBA;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVSampleFormat::AV_SAMPLE_FMT_FLTP;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    AVFrame, AVPixelFormat, AVRational, AVStream, av_channel_layout_default, av_frame_alloc,
+    AVPixelFormat, AVRational, AVStream, av_channel_layout_default, av_frame_alloc,
     av_frame_free, av_frame_get_buffer, av_q2d, av_rescale_q,
 };
+use ffmpeg_rs_raw::{AvFrameRef, Scaler};
 use fontdue::Font;
 use fontdue::layout::{CoordinateSystem, Layout, TextStyle};
 use std::mem::transmute;
 use std::ops::Sub;
 use std::time::{Duration, Instant};
-use std::{ptr, slice};
+use std::slice;
 
 /// Frame generator
 pub struct FrameGenerator {
@@ -36,21 +36,10 @@ pub struct FrameGenerator {
     audio_timebase: AVRational,
 
     // internal
-    next_frame: *mut AVFrame,
+    next_frame: Option<AvFrameRef>,
     scaler: Scaler,
     font: Font,
     start: Instant,
-}
-
-impl Drop for FrameGenerator {
-    fn drop(&mut self) {
-        unsafe {
-            if !self.next_frame.is_null() {
-                av_frame_free(&mut self.next_frame);
-                self.next_frame = std::ptr::null_mut();
-            }
-        }
-    }
 }
 
 impl FrameGenerator {
@@ -84,7 +73,7 @@ impl FrameGenerator {
             font,
             start: Instant::now(),
             scaler: Scaler::default(),
-            next_frame: ptr::null_mut(),
+            next_frame: None,
         })
     }
 
@@ -196,7 +185,7 @@ impl FrameGenerator {
 
     /// Create a new frame for composing text / images
     pub fn begin(&mut self) -> Result<()> {
-        if self.next_frame.is_null() {
+        if self.next_frame.is_none() {
             unsafe {
                 let mut src_frame = av_frame_alloc();
                 if src_frame.is_null() {
@@ -217,7 +206,7 @@ impl FrameGenerator {
                     av_frame_free(&mut src_frame);
                     bail!("Failed to get frame buffer");
                 }
-                self.next_frame = src_frame;
+                self.next_frame.replace(AvFrameRef::new(src_frame));
             }
         }
         Ok(())
@@ -225,11 +214,69 @@ impl FrameGenerator {
 
     /// Write some text into the next frame
     pub fn write_text(&mut self, msg: &str, size: f32, x: f32, y: f32) -> Result<()> {
-        if self.next_frame.is_null() {
+        if self.next_frame.is_none() {
             bail!("Must call begin() before writing text")
         }
         let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
         layout.append(&[&self.font], &TextStyle::new(msg, size, 0));
+
+        self.write_layout(layout, x, y)?;
+        Ok(())
+    }
+
+    /// Write text with a black background and padding
+    pub fn write_text_with_background(
+        &mut self,
+        msg: &str,
+        size: f32,
+        x: f32,
+        y: f32,
+        padding: f32,
+    ) -> Result<()> {
+        if self.next_frame.is_none() {
+            bail!("Must call begin() before writing text")
+        }
+        let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
+        layout.append(&[&self.font], &TextStyle::new(msg, size, 0));
+
+        // Calculate text bounds
+        let mut max_x: f32 = 0.0;
+        let mut max_y: f32 = 0.0;
+        for g in layout.glyphs() {
+            let right = g.x + g.width as f32;
+            let bottom = g.y + g.height as f32;
+            if right > max_x {
+                max_x = right;
+            }
+            if bottom > max_y {
+                max_y = bottom;
+            }
+        }
+
+        // Draw black background rectangle with padding
+        let bg_x = (x - padding).max(0.0) as usize;
+        let bg_y = (y - padding).max(0.0) as usize;
+        let bg_width = (max_x + 2.0 * padding) as usize;
+        let bg_height = (size * 0.25) as usize + (max_y + 2.0 * padding) as usize;
+
+        unsafe {
+            let Some(next_frame) = &self.next_frame else {
+                bail!("Next frame must not be null");
+            };
+            let linesize = next_frame.linesize[0] as usize;
+            let data = next_frame.data[0];
+
+            for row in bg_y..(bg_y + bg_height).min(self.height as usize) {
+                for col in bg_x..(bg_x + bg_width).min(self.width as usize) {
+                    let offset = 4 * col + row * linesize;
+                    let pixel = data.add(offset);
+                    *pixel.offset(0) = 0; // R
+                    *pixel.offset(1) = 0; // G
+                    *pixel.offset(2) = 0; // B
+                    *pixel.offset(3) = 255; // A
+                }
+            }
+        }
 
         self.write_layout(layout, x, y)?;
         Ok(())
@@ -245,9 +292,12 @@ impl FrameGenerator {
                     let dst_y = y as usize + y1 + g.y as usize;
                     let offset_src = (x1 + y1 * metrics.width) * 3;
                     unsafe {
+                        let Some(next_frame) = &self.next_frame else {
+                            bail!("Next frame must not be null");
+                        };
                         let offset_dst =
-                            4 * dst_x + dst_y * (*self.next_frame).linesize[0] as usize;
-                        let pixel_dst = (*self.next_frame).data[0].add(offset_dst);
+                            4 * dst_x + dst_y * next_frame.linesize[0] as usize;
+                        let pixel_dst = next_frame.data[0].add(offset_dst);
                         *pixel_dst.offset(0) = bitmap[offset_src];
                         *pixel_dst.offset(1) = bitmap[offset_src + 1];
                         *pixel_dst.offset(2) = bitmap[offset_src + 2];
@@ -260,11 +310,11 @@ impl FrameGenerator {
 
     pub unsafe fn fill_color(&mut self, color32: [u8; 4]) -> Result<()> {
         unsafe {
-            if self.next_frame.is_null() {
+            let Some(next_frame) = &self.next_frame else {
                 bail!("Must call begin() before writing frame data")
-            }
+            };
             let buf = slice::from_raw_parts_mut(
-                (*self.next_frame).data[0],
+                next_frame.data[0],
                 self.width as usize * self.height as usize * 4,
             );
             for chunk in buf.chunks_exact_mut(4) {
@@ -280,11 +330,11 @@ impl FrameGenerator {
     /// Copy data directly into the frame buffer (must be RGBA data)
     pub unsafe fn copy_frame_data(&mut self, data: &[u8]) -> Result<()> {
         unsafe {
-            if self.next_frame.is_null() {
+            let Some(next_frame) = &self.next_frame else {
                 bail!("Must call begin() before writing frame data")
-            }
+            };
             let buf = slice::from_raw_parts_mut(
-                (*self.next_frame).data[0],
+                next_frame.data[0],
                 self.width as usize * self.height as usize * 4,
             );
             if buf.len() < data.len() {
@@ -305,13 +355,15 @@ impl FrameGenerator {
     }
 
     /// Generate audio to stay synchronized with video frames
-    unsafe fn generate_audio_frame(&mut self) -> Result<*mut AVFrame> {
+    unsafe fn generate_audio_frame(&mut self) -> Result<Option<AvFrameRef>> {
         unsafe {
             const FREQUENCY: f32 = 440.0; // A4 note
+            const PULSE_DURATION_MS: f32 = 50.0;
+            const PULSE_PERIOD_MS: f32 = 1000.0;
 
             // audio is disabled if sample rate is 0
             if self.audio_sample_rate == 0 {
-                return Ok(ptr::null_mut());
+                return Ok(None);
             }
 
             // Calculate audio PTS needed to stay ahead of next video frame
@@ -334,27 +386,34 @@ impl FrameGenerator {
                 av_channel_layout_default(&mut (*audio_frame).ch_layout, self.audio_channels as _);
                 av_frame_get_buffer(audio_frame, 0);
 
-                // Generate sine wave samples for all channels
                 for ch in 0..self.audio_channels {
                     let data = (*audio_frame).data[ch as usize] as *mut f32;
                     for i in 0..self.audio_frame_size {
-                        let sample_time =
-                            (self.audio_pts + i as i64) as f32 / self.audio_sample_rate as f32;
-                        let sample_value =
-                            (2.0 * std::f32::consts::PI * FREQUENCY * sample_time).sin() * 0.5;
+                        let sample_idx = self.audio_pts + i as i64;
+                        let time_ms = (sample_idx as f32 / self.audio_sample_rate as f32) * 1000.0;
+                        let time_in_period = time_ms % PULSE_PERIOD_MS;
+
+                        let sample_value = if time_in_period < PULSE_DURATION_MS {
+                            // During pulse: generate sine wave
+                            let sample_time = sample_idx as f32 / self.audio_sample_rate as f32;
+                            (2.0 * std::f32::consts::PI * FREQUENCY * sample_time).sin() * 0.1
+                        } else {
+                            // Silent period
+                            0.0
+                        };
                         *data.add(i as _) = sample_value;
                     }
                 }
 
-                return Ok(audio_frame);
+                return Ok(Some(AvFrameRef::new(audio_frame)));
             }
 
-            Ok(ptr::null_mut())
+            Ok(None)
         }
     }
 
     /// Return the next frame for encoding (blocking)
-    pub unsafe fn next(&mut self) -> Result<*mut AVFrame> {
+    pub unsafe fn next(&mut self) -> Result<Option<AvFrameRef>> {
         unsafe {
             // set start time to now if this is the first call to next()
             if self.video_pts == 0 {
@@ -363,13 +422,13 @@ impl FrameGenerator {
 
             // try to get audio frames before video frames (non-blocking)
             let audio_frame = self.generate_audio_frame()?;
-            if !audio_frame.is_null() {
-                self.audio_pts += (*audio_frame).duration;
-                return Ok(audio_frame);
+            if let Some(audio_frame) = audio_frame {
+                self.audio_pts += audio_frame.duration;
+                return Ok(Some(audio_frame));
             }
 
             // auto-init frame
-            if self.next_frame.is_null() {
+            if self.next_frame.is_none() {
                 self.begin()?;
             }
 
@@ -387,24 +446,23 @@ impl FrameGenerator {
                     std::thread::sleep(wait_time);
                 }
             }
+            let Some(next_frame) = self.next_frame.take() else {
+                return Ok(None);
+            };
 
             // convert to output pixel format, or just return internal frame if it matches output
-            if self.video_sample_fmt != transmute((*self.next_frame).format) {
+            if self.video_sample_fmt != transmute(next_frame.format) {
                 let out_frame = self.scaler.process_frame(
-                    self.next_frame,
+                    &next_frame,
                     self.width,
                     self.height,
                     self.video_sample_fmt,
                 )?;
-                self.video_pts += (*self.next_frame).duration;
-                av_frame_free(&mut self.next_frame);
-                self.next_frame = ptr::null_mut();
-                Ok(out_frame)
+                self.video_pts += next_frame.duration;
+                Ok(Some(out_frame))
             } else {
-                let ret = self.next_frame;
-                self.video_pts += (*self.next_frame).duration;
-                self.next_frame = ptr::null_mut();
-                Ok(ret)
+                self.video_pts += next_frame.duration;
+                Ok(Some(next_frame))
             }
         }
     }
@@ -451,7 +509,7 @@ mod tests {
 
             // Generate frames for 2 seconds (60 video frames at 30fps)
             for i in 0..120 {
-                let mut frame = frame_gen.next().unwrap();
+                let mut frame = frame_gen.next().unwrap().unwrap();
 
                 if (*frame).sample_rate > 0 {
                     // Audio frame
@@ -493,8 +551,6 @@ mod tests {
                         total_audio_samples
                     );
                 }
-
-                av_frame_free(&mut frame);
             }
 
             println!("\nSummary:");
@@ -555,7 +611,7 @@ mod tests {
 
             // Generate 60 frames to test PTS progression
             for _ in 0..60 {
-                let mut frame = frame_gen.next().unwrap();
+                let mut frame = frame_gen.next().unwrap().unwrap();
 
                 if (*frame).sample_rate > 0 {
                     // Audio frame - check PTS progression
@@ -574,8 +630,6 @@ mod tests {
                     }
                     last_video_pts = (*frame).pts;
                 }
-
-                av_frame_free(&mut frame);
             }
 
             // Verify audio PTS gaps are consistent (should be 1024 samples)

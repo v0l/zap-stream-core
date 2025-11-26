@@ -635,14 +635,14 @@ fn analyze_segment_with_reader(reader: Box<dyn Read>) -> Result<SegmentDurations
         let packet_result = unsafe { demuxer.get_packet() };
         match packet_result {
             Ok((pkt, stream)) => {
-                if pkt.is_null() {
+                let Some(pkt) = pkt else {
                     break; // End of stream
-                }
+                };
 
                 unsafe {
                     let codec_type = (*(*stream).codecpar).codec_type;
-                    let pts = (*pkt).pts;
-                    let duration = (*pkt).duration;
+                    let pts = pkt.pts;
+                    let duration = pkt.duration;
                     let current_stream_idx = (*stream).index as usize;
 
                     match codec_type {

@@ -3,7 +3,6 @@ use std::io::{Read, stdout};
 use std::mem::transmute;
 use std::ops::Sub;
 use std::path::{Path, PathBuf};
-use std::ptr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -12,7 +11,6 @@ use crate::egress::recorder::RecorderEgress;
 #[cfg(feature = "egress-rtmp")]
 use crate::egress::rtmp::RtmpEgress;
 use crate::egress::{Egress, EgressResult, EncoderOrSourceStream};
-use crate::frame::AvFrameRef;
 use crate::generator::FrameGenerator;
 use crate::ingress::{ConnectionInfo, EndpointStats};
 use crate::overseer::{IngressInfo, IngressStream, IngressStreamType, Overseer, StatsType};
@@ -24,11 +22,12 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_WEBP;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPictureType::AV_PICTURE_TYPE_NONE;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVFrame, AVPacket, av_frame_clone, av_frame_free,
-    av_get_sample_fmt, av_packet_clone, av_packet_copy_props, av_packet_free, av_rescale_q,
+    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, av_get_sample_fmt,
+    av_rescale_q,
 };
 use ffmpeg_rs_raw::{
-    AudioFifo, Decoder, Demuxer, Encoder, Resample, Scaler, StreamType, cstr, get_frame_from_hw,
+    AudioFifo, AvFrameRef, AvPacketRef, Decoder, Demuxer, Encoder, Resample, Scaler, StreamType,
+    cstr, get_frame_from_hw,
 };
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -211,59 +210,46 @@ impl PipelineRunner {
     }
 
     /// Save image to disk
-    unsafe fn save_thumb(frame: *mut AVFrame, dst_pic: &Path) -> Result<()> {
+    unsafe fn save_thumb(frame: &AvFrameRef, dst_pic: &Path) -> Result<()> {
         unsafe {
-            let mut free_frame = false;
+            let encoder = Encoder::new(AV_CODEC_ID_WEBP)?
+                .with_height(frame.height)
+                .with_width(frame.width)
+                .with_pix_fmt(AV_PIX_FMT_YUV420P)
+                .open(None)?;
+
             // use scaler to convert pixel format if not YUV420P
-            let mut frame = if (*frame).format != transmute(AV_PIX_FMT_YUV420P) {
+            if frame.format != transmute(AV_PIX_FMT_YUV420P) {
                 let mut sw = Scaler::new();
                 let new_frame = sw.process_frame(
                     frame,
-                    (*frame).width as _,
-                    (*frame).height as _,
+                    frame.width as _,
+                    frame.height as _,
                     AV_PIX_FMT_YUV420P,
                 )?;
-                free_frame = true;
-                new_frame
+                encoder.save_picture(&new_frame, dst_pic.to_str().unwrap())?;
             } else {
-                frame
+                encoder.save_picture(frame, dst_pic.to_str().unwrap())?;
             };
-
-            let encoder = Encoder::new(AV_CODEC_ID_WEBP)?
-                .with_height((*frame).height)
-                .with_width((*frame).width)
-                .with_pix_fmt(transmute((*frame).format))
-                .open(None)?;
-
-            encoder.save_picture(frame, dst_pic.to_str().unwrap())?;
-            if free_frame {
-                av_frame_free(&mut frame);
-            }
             Ok(())
         }
     }
 
     /// Save a decoded frame as a thumbnail
-    fn generate_thumb_from_frame(&mut self, frame: *mut AVFrame) -> Result<()> {
+    fn generate_thumb_from_frame(&mut self, frame: &AvFrameRef) -> Result<()> {
         if self.thumb_interval > 0
             && self.last_thumb.elapsed().as_millis() > self.thumb_interval as u128
         {
             self.last_thumb = Instant::now();
-            let frame = unsafe { av_frame_clone(frame).addr() };
+            let frame = frame.clone();
             let dst_pic = self.out_dir.join("thumb.webp");
             let overseer = self.overseer.clone();
             let handle = self.handle.clone();
             let id = self.connection.id;
             std::thread::spawn(move || unsafe {
-                let mut frame = frame as *mut AVFrame; //TODO: danger??
-                if frame.is_null() {
-                    error!("Thumbnail frame pointer was null!");
-                    return;
-                }
                 let thumb_start = Instant::now();
 
-                if let Err(e) = Self::save_thumb(frame, &dst_pic) {
-                    av_frame_free(&mut frame);
+                if let Err(e) = Self::save_thumb(&frame, &dst_pic) {
                     warn!("Failed to save thumb: {}", e);
                 }
 
@@ -275,13 +261,12 @@ impl PipelineRunner {
                 );
                 if let Err(e) = handle.block_on(overseer.on_thumbnail(
                     &id,
-                    (*frame).width as _,
-                    (*frame).height as _,
+                    frame.width as _,
+                    frame.height as _,
                     &dst_pic,
                 )) {
                     warn!("Failed to handle on_thumbnail: {}", e);
                 }
-                av_frame_free(&mut frame);
             });
         }
         Ok(())
@@ -350,13 +335,13 @@ impl PipelineRunner {
     unsafe fn process_normal_mode(&mut self, config: &PipelineConfig) -> Result<Vec<EgressResult>> {
         unsafe {
             let (pkt, _stream) = self.demuxer.get_packet()?;
-            if pkt.is_null() {
+            if let Some(pkt) = pkt {
+                self.process_packet(pkt)
+            } else {
                 warn!("Demuxer get_packet failed, entering idle mode");
                 self.switch_to_idle_mode(config)
                     .context("Failed to switch to idle mode after demuxer failure")?;
                 Ok(vec![])
-            } else {
-                self.process_packet(pkt)
             }
         }
     }
@@ -392,26 +377,27 @@ impl PipelineRunner {
                 frame_gen.write_text(&message, 48.0, 50.0, 50.0)?;
                 frame_gen.write_text("Please reconnect to resume streaming", 24.0, 50.0, 120.0)?;
 
-                let frame = frame_gen.next()?;
-                // Wrap in AvFrameRef immediately for ownership management
-                let frame_ref = AvFrameRef::new(frame);
-                let stream = if frame_ref.sample_rate > 0 {
-                    // Audio frame
-                    config
-                        .audio_src
-                        .context("got audio frame with no audio src?")?
+                if let Some(frame) = frame_gen.next()? {
+                    let stream = if frame.sample_rate > 0 {
+                        // Audio frame
+                        config
+                            .audio_src
+                            .context("got audio frame with no audio src?")?
+                    } else {
+                        // Video frame
+                        config.video_src
+                    };
+                    self.process_frame(config, stream, frame)
                 } else {
-                    // Video frame
-                    config.video_src
-                };
-                self.process_frame(config, stream, frame_ref)
+                    Ok(vec![])
+                }
             } else {
                 bail!("process_idle_mode called but not in idle state")
             }
         }
     }
 
-    unsafe fn process_packet(&mut self, mut packet: *mut AVPacket) -> Result<Vec<EgressResult>> {
+    unsafe fn process_packet(&mut self, packet: AvPacketRef) -> Result<Vec<EgressResult>> {
         unsafe {
             let config = if let Some(config) = &self.config {
                 config.clone()
@@ -420,12 +406,12 @@ impl PipelineRunner {
             };
 
             // Track last PTS values for continuity in idle mode
-            let stream_index = (*packet).stream_index as usize;
+            let stream_index = packet.stream_index as usize;
             if stream_index == config.video_src {
-                self.last_video_pts = (*packet).pts + (*packet).duration;
+                self.last_video_pts = packet.pts + packet.duration;
                 self.frame_ctr += 1;
             } else if Some(stream_index) == config.audio_src {
-                self.last_audio_pts = (*packet).pts + (*packet).duration;
+                self.last_audio_pts = packet.pts + packet.duration;
             }
 
             // Process all packets (original or converted)
@@ -441,7 +427,7 @@ impl PipelineRunner {
             // Check if we need to decode for thumbnail generation
             // Only decode for thumbnails if it's the video source, thumbnails are enabled,
             // and the packet is a keyframe (contains a full frame of data)
-            let is_keyframe = (*packet).flags & AV_PKT_FLAG_KEY != 0;
+            let is_keyframe = packet.flags & AV_PKT_FLAG_KEY != 0;
             let needs_thumb_decode = stream_index == config.video_src
                 && self.thumb_interval > 0
                 && self.last_thumb.elapsed().as_millis() > self.thumb_interval as u128
@@ -451,13 +437,9 @@ impl PipelineRunner {
             if !self.encoders.is_empty() && (needs_transcode || needs_thumb_decode) {
                 trace!(
                     "PKT->DECODER: stream={}, pts={}, dts={}, duration={}, flags={}",
-                    (*packet).stream_index,
-                    (*packet).pts,
-                    (*packet).dts,
-                    (*packet).duration,
-                    (*packet).flags
+                    stream_index, packet.pts, packet.dts, packet.duration, packet.flags
                 );
-                let frames = match self.decoder.decode_pkt(packet) {
+                let frames = match self.decoder.decode_pkt(Some(&packet)) {
                     Ok(f) => {
                         // Reset failure counter on successful decode
                         self.consecutive_decode_failures = 0;
@@ -465,23 +447,12 @@ impl PipelineRunner {
                     }
                     Err(e) => {
                         self.consecutive_decode_failures += 1;
-
-                        // Enhanced error logging with context
-                        let packet_info = if !packet.is_null() {
-                            format!(
-                                "stream_idx={}, size={}, pts={}, dts={}",
-                                (*packet).stream_index,
-                                (*packet).size,
-                                (*packet).pts,
-                                (*packet).dts
-                            )
-                        } else {
-                            "null packet".to_string()
-                        };
-
                         warn!(
                             "Error decoding packet ({}): {}. Consecutive failures: {}/{}. Skipping packet.",
-                            packet_info,
+                            format!(
+                                "stream_idx={}, size={}, pts={}, dts={}",
+                                stream_index, packet.size, packet.pts, packet.dts
+                            ),
                             e,
                             self.consecutive_decode_failures,
                             self.max_consecutive_failures
@@ -491,15 +462,15 @@ impl PipelineRunner {
                     }
                 };
 
-                for (frame, stream_idx) in frames {
+                for (mut frame, stream_idx) in frames {
                     trace!(
                         "DECODER->FRAME: stream={}, pts={}, pkt_dts={}, duration={}, tb={}/{}",
                         stream_idx,
-                        (*frame).pts,
-                        (*frame).pkt_dts,
-                        (*frame).duration,
-                        (*frame).time_base.num,
-                        (*frame).time_base.den
+                        frame.pts,
+                        frame.pkt_dts,
+                        frame.duration,
+                        frame.time_base.num,
+                        frame.time_base.den
                     );
                     let stream = self.demuxer.get_stream(stream_idx as usize)?;
                     // Adjust frame pts time without start_offset
@@ -507,26 +478,23 @@ impl PipelineRunner {
                     if !stream.is_null() {
                         let start_time = (*stream).start_time;
                         if start_time != AV_NOPTS_VALUE && start_time != 0 {
-                            (*frame).pts -= start_time;
+                            frame.pts -= start_time;
                             trace!(
                                 "FRAME PTS ADJUST: pts now={}, subtracted start_time={}",
-                                (*frame).pts,
-                                start_time
+                                frame.pts, start_time
                             );
                         }
-                        (*frame).time_base = (*stream).time_base;
+                        frame.time_base = (*stream).time_base;
                     }
 
                     // Copy frame from GPU if using hwaccel decoding
                     let frame = get_frame_from_hw(frame)?;
 
                     if stream_index == config.video_src {
-                        self.generate_thumb_from_frame(frame)?;
+                        self.generate_thumb_from_frame(&frame)?;
                     }
 
-                    // Wrap in AvFrameRef immediately for ownership management
-                    let frame_ref = AvFrameRef::new(frame);
-                    let results = self.process_frame(&config, stream_idx as usize, frame_ref)?;
+                    let results = self.process_frame(&config, stream_idx as usize, frame)?;
                     egress_results.extend(results);
                 }
             }
@@ -534,25 +502,23 @@ impl PipelineRunner {
             // egress (mux) copy variants
             for var in config.variants {
                 match var {
-                    VariantStream::CopyAudio(v) if v.src_index() == (*packet).stream_index as _ => {
+                    VariantStream::CopyAudio(v) if v.src_index() == stream_index => {
                         egress_results.extend(Self::egress_packet(
                             &mut self.egress,
-                            packet,
+                            &packet,
                             &v.id(),
                         )?);
                     }
-                    VariantStream::CopyVideo(v) if v.src_index() == (*packet).stream_index as _ => {
+                    VariantStream::CopyVideo(v) if v.src_index() == stream_index => {
                         egress_results.extend(Self::egress_packet(
                             &mut self.egress,
-                            packet,
+                            &packet,
                             &v.id(),
                         )?);
                     }
                     _ => {}
                 }
             }
-
-            av_packet_free(&mut packet);
             Ok(egress_results)
         }
     }
@@ -626,8 +592,8 @@ impl PipelineRunner {
                                     frame_ref.time_base.den
                                 );
 
-                                let mut new_frame = s.process_frame(
-                                    frame_ref.ptr(),
+                                let new_frame = s.process_frame(
+                                    &frame_ref,
                                     v.width,
                                     v.height,
                                     transmute(v.pixel_format),
@@ -639,18 +605,16 @@ impl PipelineRunner {
                                     enc,
                                     new_frame,
                                 )?);
-                                av_frame_free(&mut new_frame);
                             } else {
                                 egress_results.extend(Self::encode_mux_frame(
                                     &mut self.egress,
                                     var,
                                     enc,
-                                    frame_ref.ptr(),
+                                    frame_ref.clone(),
                                 )?);
                             };
                         }
                     }
-                    // frame_ref is dropped here, which calls av_frame_free
                 }
             } else {
                 // Process audio variants (no reordering needed)
@@ -665,14 +629,13 @@ impl PipelineRunner {
 
                         if let Some((r, f)) = self.resampler.get_mut(&a.id()) {
                             let frame_size = (*enc.codec_context()).frame_size;
-                            let mut resampled_frame = r.process_frame(frame.ptr())?;
-                            f.buffer_frame(resampled_frame)?;
-                            av_frame_free(&mut resampled_frame);
+                            let resampled_frame = r.process_frame(&frame)?;
+                            f.buffer_frame(&resampled_frame)?;
                             // drain FIFO
                             while let Some(mut audio_frame) = f.get_frame(frame_size as usize)? {
                                 // Set correct timebase for audio (1/sample_rate)
-                                (*audio_frame).time_base.num = 1;
-                                (*audio_frame).time_base.den = a.sample_rate as i32;
+                                audio_frame.time_base.num = 1;
+                                audio_frame.time_base.den = a.sample_rate as i32;
 
                                 // Need to re-borrow encoder after resampler borrow
                                 let enc = self.encoders.get_mut(&var_id).unwrap();
@@ -682,14 +645,13 @@ impl PipelineRunner {
                                     enc,
                                     audio_frame,
                                 )?);
-                                av_frame_free(&mut audio_frame);
                             }
                         } else {
                             egress_results.extend(Self::encode_mux_frame(
                                 &mut self.egress,
                                 var,
                                 enc,
-                                frame.ptr(),
+                                frame.clone(),
                             )?);
                         }
                     }
@@ -705,54 +667,50 @@ impl PipelineRunner {
         egress: &mut Vec<Box<dyn Egress>>,
         var: &VariantStream,
         encoder: &mut Encoder,
-        frame: *mut AVFrame,
+        mut frame: AvFrameRef,
     ) -> Result<Vec<EgressResult>> {
         unsafe {
             // before encoding frame, rescale timestamps
-            if !frame.is_null() {
-                let enc_ctx = encoder.codec_context();
-                (*frame).pict_type = AV_PICTURE_TYPE_NONE;
-                (*frame).pts = av_rescale_q((*frame).pts, (*frame).time_base, (*enc_ctx).time_base);
-                (*frame).pkt_dts = AV_NOPTS_VALUE;
-                (*frame).duration =
-                    av_rescale_q((*frame).duration, (*frame).time_base, (*enc_ctx).time_base);
-                (*frame).time_base = (*enc_ctx).time_base;
+            let enc_ctx = encoder.codec_context();
+            frame.pict_type = AV_PICTURE_TYPE_NONE;
+            frame.pts = av_rescale_q(frame.pts, frame.time_base, (*enc_ctx).time_base);
+            frame.pkt_dts = AV_NOPTS_VALUE;
+            frame.duration = av_rescale_q(frame.duration, frame.time_base, (*enc_ctx).time_base);
+            frame.time_base = (*enc_ctx).time_base;
 
-                trace!(
-                    "FRAME->ENCODER: var={}, pts={}, duration={}, tb={}/{}",
-                    var.id(),
-                    (*frame).pts,
-                    (*frame).duration,
-                    (*frame).time_base.num,
-                    (*frame).time_base.den
-                );
-            }
+            trace!(
+                "FRAME->ENCODER: var={}, pts={}, duration={}, tb={}/{}",
+                var.id(),
+                frame.pts,
+                frame.duration,
+                frame.time_base.num,
+                frame.time_base.den
+            );
 
-            let packets = match encoder.encode_frame(frame) {
+            let packets = match encoder.encode_frame(Some(&frame)) {
                 Ok(pkt) => pkt,
                 Err(e) => {
                     error!(
                         "Failed to encode frame: var={}, pts={}, duration={} {}",
                         var.id(),
-                        (*frame).pts,
-                        (*frame).duration,
+                        frame.pts,
+                        frame.duration,
                         e
                     );
                     return Err(e);
                 }
             };
             let mut ret = vec![];
-            for mut pkt in packets {
+            for pkt in packets {
                 trace!(
                     "ENCODER->PKT: var={}, pts={}, dts={}, duration={}, flags={}",
                     var.id(),
-                    (*pkt).pts,
-                    (*pkt).dts,
-                    (*pkt).duration,
-                    (*pkt).flags
+                    pkt.pts,
+                    pkt.dts,
+                    pkt.duration,
+                    pkt.flags
                 );
-                ret.extend(Self::egress_packet(egress, pkt, &var.id())?);
-                av_packet_free(&mut pkt);
+                ret.extend(Self::egress_packet(egress, &pkt, &var.id())?);
             }
             Ok(ret)
         }
@@ -760,27 +718,18 @@ impl PipelineRunner {
 
     unsafe fn egress_packet(
         egress: &mut Vec<Box<dyn Egress>>,
-        pkt: *mut AVPacket,
+        pkt: &AvPacketRef,
         variant: &Uuid,
     ) -> Result<Vec<EgressResult>> {
         unsafe {
             let mut ret = vec![];
             for eg in egress.iter_mut() {
-                // packet needs to be cloned because AVFormat output context always consumes the packet
-                // if we have more than 1 egress it should be cloned
-                let mut pkt_clone = av_packet_clone(pkt);
-                av_packet_copy_props(pkt_clone, pkt);
                 trace!(
                     "EGRESS PKT: var={}, idx={}, pts={}, dts={}, dur={}",
-                    variant,
-                    (*pkt_clone).stream_index,
-                    (*pkt_clone).pts,
-                    (*pkt_clone).dts,
-                    (*pkt_clone).duration
+                    variant, pkt.stream_index, pkt.pts, pkt.dts, pkt.duration
                 );
-                let er = eg.process_pkt(pkt_clone, variant)?;
+                let er = eg.process_pkt(pkt.clone(), variant)?;
                 ret.push(er);
-                av_packet_free(&mut pkt_clone);
             }
             Ok(ret)
         }
@@ -790,11 +739,10 @@ impl PipelineRunner {
     unsafe fn flush(&mut self) -> Result<()> {
         unsafe {
             for (var, enc) in &mut self.encoders {
-                for mut pkt in enc.encode_frame(ptr::null_mut())? {
+                for pkt in enc.encode_frame(None)? {
                     for eg in self.egress.iter_mut() {
-                        eg.process_pkt(pkt, var)?;
+                        eg.process_pkt(pkt.clone(), var)?;
                     }
-                    av_packet_free(&mut pkt);
                 }
             }
 

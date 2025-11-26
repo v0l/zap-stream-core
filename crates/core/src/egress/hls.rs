@@ -1,5 +1,5 @@
 use anyhow::Result;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPacket;
+use ffmpeg_rs_raw::AvPacketRef;
 use std::path::PathBuf;
 use uuid::Uuid;
 
@@ -33,26 +33,20 @@ impl HlsEgress {
 }
 
 impl Egress for HlsEgress {
-    unsafe fn process_pkt(
-        &mut self,
-        packet: *mut AVPacket,
-        variant: &Uuid,
-    ) -> Result<EgressResult> {
-        unsafe { self.mux.mux_packet(packet, variant) }
+    fn process_pkt(&mut self, packet: AvPacketRef, variant: &Uuid) -> Result<EgressResult> {
+        self.mux.mux_packet(packet, variant)
     }
 
-    unsafe fn reset(&mut self) -> Result<EgressResult> {
-        unsafe {
-            let remaining_segments = self.mux.collect_remaining_segments();
+    fn reset(&mut self) -> Result<EgressResult> {
+        let remaining_segments = self.mux.collect_remaining_segments();
 
-            for var in &mut self.mux.variants {
-                var.reset()?
-            }
-
-            Ok(EgressResult::Segments {
-                created: vec![],
-                deleted: remaining_segments,
-            })
+        for var in &mut self.mux.variants {
+            var.reset()?
         }
+
+        Ok(EgressResult::Segments {
+            created: vec![],
+            deleted: remaining_segments,
+        })
     }
 }

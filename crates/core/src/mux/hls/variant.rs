@@ -8,10 +8,10 @@ use chrono::Utc;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_H264;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVMediaType::AVMEDIA_TYPE_VIDEO;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVIO_FLAG_WRITE, AVPacket, av_free, av_get_bits_per_pixel,
+    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVIO_FLAG_WRITE, av_free, av_get_bits_per_pixel,
     av_pix_fmt_desc_get, av_q2d, av_write_frame, avio_close, avio_flush, avio_open, avio_size,
 };
-use ffmpeg_rs_raw::{Muxer, cstr};
+use ffmpeg_rs_raw::{AvPacketRef, Muxer, cstr};
 use m3u8_rs::Playlist::MediaPlaylist;
 use m3u8_rs::{ExtTag, MediaSegmentType, PartInf, Playlist, PreloadHint};
 use std::cmp::Ordering;
@@ -343,76 +343,74 @@ impl HlsVariant {
     }
 
     /// Process a single packet through the muxer
-    pub(crate) unsafe fn process_packet(&mut self, pkt: *mut AVPacket) -> Result<EgressResult> {
-        unsafe {
-            let stream_index = (*pkt).stream_index;
-            let pkt_stream = *(*self.mux.context()).streams.add(stream_index as _);
+    pub(crate) fn process_packet(&mut self, pkt: &AvPacketRef) -> Result<EgressResult> {
+        let stream_index = pkt.stream_index;
+        let pkt_stream = unsafe { *(*self.mux.context()).streams.add(stream_index as _) };
 
-            let pkt_q = av_q2d((*pkt).time_base);
-            let mut result = EgressResult::None;
-            let stream_type = (*(*pkt_stream).codecpar).codec_type;
-            let mut can_split = stream_type == AVMEDIA_TYPE_VIDEO
-                && ((*pkt).flags & AV_PKT_FLAG_KEY == AV_PKT_FLAG_KEY);
-            let mut is_ref_pkt = stream_index == self.ref_stream_index;
+        let pkt_q = unsafe { av_q2d(pkt.time_base) };
+        let mut result = EgressResult::None;
+        let stream_type = unsafe { (*(*pkt_stream).codecpar).codec_type };
+        let mut can_split =
+            stream_type == AVMEDIA_TYPE_VIDEO && (pkt.flags & AV_PKT_FLAG_KEY == AV_PKT_FLAG_KEY);
+        let mut is_ref_pkt = stream_index == self.ref_stream_index;
 
-            if (*pkt).pts == AV_NOPTS_VALUE {
-                can_split = false;
-                is_ref_pkt = false;
-            }
-
-            if is_ref_pkt {
-                let pkt_duration = (*pkt).duration as f64 * pkt_q;
-                trace!(
-                    "REF PKT index={}, pts={:.3}s, dur={:.3}s, flags={}",
-                    stream_index,
-                    (*pkt).pts as f64 * pkt_q,
-                    pkt_duration,
-                    (*pkt).flags
-                );
-            }
-            if is_ref_pkt && self.packets_written > 0 {
-                let pkt_pts = (*pkt).pts as f64 * pkt_q;
-                let cur_duration = pkt_pts - self.current_segment_start;
-                let cur_part_duration = pkt_pts - self.current_partial_start;
-
-                let should_end_this_segment = cur_duration >= self.segment_length() as f64;
-                let split_seg = can_split && should_end_this_segment;
-                let split_partial = stream_type == AVMEDIA_TYPE_VIDEO
-                    && self.low_latency
-                    && (cur_part_duration >= self.partial_target_duration as f64 || split_seg);
-
-                if split_partial {
-                    self.split_partial_segment(pkt_pts, true)?;
-                    self.next_partial_independent = can_split;
-                }
-                if split_seg {
-                    result = self.split_next_seg(pkt_pts, !split_partial)?;
-                }
-            }
-
-            // write to current segment
-            match self.mux.write_packet(pkt) {
-                Ok(r) => r,
-                Err(e) => {
-                    let dst_stream = self.streams.iter().find(|s| s.index() == stream_index as _);
-                    error!(
-                        "Error muxing HLS packet: name={}, var={}: {}",
-                        self.name,
-                        dst_stream
-                            .map(|v| v.id().to_string())
-                            .unwrap_or("<NO-VAR>".to_string()),
-                        e
-                    );
-                    return Err(e);
-                }
-            }
-            self.packets_written += 1;
-
-            Ok(result)
+        if pkt.pts == AV_NOPTS_VALUE {
+            can_split = false;
+            is_ref_pkt = false;
         }
+
+        if is_ref_pkt {
+            let pkt_duration = pkt.duration as f64 * pkt_q;
+            trace!(
+                "REF PKT index={}, pts={:.3}s, dur={:.3}s, flags={}",
+                stream_index,
+                pkt.pts as f64 * pkt_q,
+                pkt_duration,
+                pkt.flags
+            );
+        }
+        if is_ref_pkt && self.packets_written > 0 {
+            let pkt_pts = pkt.pts as f64 * pkt_q;
+            let cur_duration = pkt_pts - self.current_segment_start;
+            let cur_part_duration = pkt_pts - self.current_partial_start;
+
+            let should_end_this_segment = cur_duration >= self.segment_length() as f64;
+            let split_seg = can_split && should_end_this_segment;
+            let split_partial = stream_type == AVMEDIA_TYPE_VIDEO
+                && self.low_latency
+                && (cur_part_duration >= self.partial_target_duration as f64 || split_seg);
+
+            if split_partial {
+                self.split_partial_segment(pkt_pts, true)?;
+                self.next_partial_independent = can_split;
+            }
+            if split_seg {
+                result = self.split_next_seg(pkt_pts, !split_partial)?;
+            }
+        }
+
+        // write to current segment
+        match self.mux.write_packet(pkt) {
+            Ok(r) => r,
+            Err(e) => {
+                let dst_stream = self.streams.iter().find(|s| s.index() == stream_index as _);
+                error!(
+                    "Error muxing HLS packet: name={}, var={}: {}",
+                    self.name,
+                    dst_stream
+                        .map(|v| v.id().to_string())
+                        .unwrap_or("<NO-VAR>".to_string()),
+                    e
+                );
+                return Err(e);
+            }
+        }
+        self.packets_written += 1;
+
+        Ok(result)
     }
 
-    pub unsafe fn reset(&mut self) -> Result<()> {
+    pub fn reset(&mut self) -> Result<()> {
         unsafe { self.mux.close() }
     }
 
@@ -468,22 +466,22 @@ impl HlsVariant {
     }
 
     /// Create initialization segment for fMP4
-    unsafe fn create_init_segment(&mut self) -> Result<()> {
+    fn create_init_segment(&mut self) -> Result<()> {
+        if self.segment_type != SegmentType::FMP4 || self.init_segment_path.is_some() {
+            return Ok(());
+        }
+
+        let init_path = self.out_dir.join("init.mp4").to_string_lossy().to_string();
+
+        // Create a temporary muxer for initialization segment
+        // Use +write_colr to write colr atom with explicit color/pixel format info
+        let mut init_opts = HashMap::new();
+        init_opts.insert(
+            "movflags".to_string(),
+            "+frag_custom+dash+delay_moov+default_base_moof+write_colr".to_string(),
+        );
+
         unsafe {
-            if self.segment_type != SegmentType::FMP4 || self.init_segment_path.is_some() {
-                return Ok(());
-            }
-
-            let init_path = self.out_dir.join("init.mp4").to_string_lossy().to_string();
-
-            // Create a temporary muxer for initialization segment
-            // Use +write_colr to write colr atom with explicit color/pixel format info
-            let mut init_opts = HashMap::new();
-            init_opts.insert(
-                "movflags".to_string(),
-                "+frag_custom+dash+delay_moov+default_base_moof+write_colr".to_string(),
-            );
-
             let mut init_mux = Muxer::builder()
                 .with_output_path(init_path.as_str(), Some("mp4"))?
                 .build()?;
@@ -499,27 +497,26 @@ impl HlsVariant {
             init_mux.open(Some(init_opts))?;
             av_write_frame(init_mux.context(), ptr::null_mut());
             init_mux.close()?;
-
-            self.init_segment_path = Some("init.mp4".to_string());
-            info!("Created fMP4 initialization segment: {}", init_path);
-
-            Ok(())
         }
+        self.init_segment_path = Some("init.mp4".to_string());
+        info!("Created fMP4 initialization segment: {}", init_path);
+
+        Ok(())
     }
 
     /// Reset the muxer state and start the next segment
-    unsafe fn split_next_seg(&mut self, next_pkt_start: f64, flush: bool) -> Result<EgressResult> {
+    fn split_next_seg(&mut self, next_pkt_start: f64, flush: bool) -> Result<EgressResult> {
+        let completed_segment_idx = self.idx;
+        self.idx += 1;
+        self.current_partial_index = 0;
+
+        // Create initialization segment after first segment completion
+        // This ensures the init segment has the correct timebase from the encoder
+        if self.segment_type == SegmentType::FMP4 && self.init_segment_path.is_none() {
+            self.create_init_segment()?;
+        }
+
         unsafe {
-            let completed_segment_idx = self.idx;
-            self.idx += 1;
-            self.current_partial_index = 0;
-
-            // Create initialization segment after first segment completion
-            // This ensures the init segment has the correct timebase from the encoder
-            if self.segment_type == SegmentType::FMP4 && self.init_segment_path.is_none() {
-                self.create_init_segment()?;
-            }
-
             // Manually reset muxer avio
             let ctx = self.mux.context();
             if flush {
@@ -539,75 +536,74 @@ impl HlsVariant {
             if ret < 0 {
                 bail!("Failed to re-init avio");
             }
-
-            // Log the completed segment (previous index), not the next one
-            let completed_seg_path =
-                self.map_segment_path(completed_segment_idx, self.segment_type);
-            let segment_size = completed_seg_path.metadata().map(|m| m.len()).unwrap_or(0);
-
-            let cur_duration = next_pkt_start - self.current_segment_start;
-            debug!(
-                "Finished segment {} [{:.3}s, {:.2} kB, {} pkts]",
-                completed_seg_path
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy(),
-                cur_duration,
-                segment_size as f32 / 1024f32,
-                self.packets_written
-            );
-
-            let video_var_id = self
-                .video_stream()
-                .unwrap_or(self.streams.first().unwrap())
-                .id();
-
-            // cleanup old segments
-            let deleted = self
-                .clean_segments()?
-                .into_iter()
-                .map(|seg| EgressSegment {
-                    variant: video_var_id,
-                    idx: seg.index,
-                    duration: seg.duration,
-                    path: self.map_segment_path(seg.index, self.segment_type),
-                    sha256: seg.sha256,
-                })
-                .collect();
-
-            let hash = {
-                let mut f = File::open(&completed_seg_path)?;
-                hash_file_sync(&mut f)
-            }?;
-            // emit result of the previously completed segment,
-            let created = EgressSegment {
-                variant: video_var_id,
-                idx: completed_segment_idx,
-                duration: cur_duration as f32,
-                path: completed_seg_path,
-                sha256: hash,
-            };
-
-            self.segments.push(HlsSegment::Full(SegmentInfo {
-                index: completed_segment_idx,
-                duration: cur_duration as f32,
-                kind: self.segment_type,
-                discontinuity: false,
-                sha256: hash,
-                timestamp: Utc::now(),
-            }));
-
-            self.write_playlist()?;
-
-            // Reset counters for next segment
-            self.packets_written = 0;
-            self.current_segment_start = next_pkt_start;
-
-            Ok(EgressResult::Segments {
-                created: vec![created],
-                deleted,
-            })
         }
+
+        // Log the completed segment (previous index), not the next one
+        let completed_seg_path = self.map_segment_path(completed_segment_idx, self.segment_type);
+        let segment_size = completed_seg_path.metadata().map(|m| m.len()).unwrap_or(0);
+
+        let cur_duration = next_pkt_start - self.current_segment_start;
+        debug!(
+            "Finished segment {} [{:.3}s, {:.2} kB, {} pkts]",
+            completed_seg_path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy(),
+            cur_duration,
+            segment_size as f32 / 1024f32,
+            self.packets_written
+        );
+
+        let video_var_id = self
+            .video_stream()
+            .unwrap_or(self.streams.first().unwrap())
+            .id();
+
+        // cleanup old segments
+        let deleted = self
+            .clean_segments()?
+            .into_iter()
+            .map(|seg| EgressSegment {
+                variant: video_var_id,
+                idx: seg.index,
+                duration: seg.duration,
+                path: self.map_segment_path(seg.index, self.segment_type),
+                sha256: seg.sha256,
+            })
+            .collect();
+
+        let hash = {
+            let mut f = File::open(&completed_seg_path)?;
+            hash_file_sync(&mut f)
+        }?;
+        // emit result of the previously completed segment,
+        let created = EgressSegment {
+            variant: video_var_id,
+            idx: completed_segment_idx,
+            duration: cur_duration as f32,
+            path: completed_seg_path,
+            sha256: hash,
+        };
+
+        self.segments.push(HlsSegment::Full(SegmentInfo {
+            index: completed_segment_idx,
+            duration: cur_duration as f32,
+            kind: self.segment_type,
+            discontinuity: false,
+            sha256: hash,
+            timestamp: Utc::now(),
+        }));
+
+        self.write_playlist()?;
+
+        // Reset counters for next segment
+        self.packets_written = 0;
+        self.current_segment_start = next_pkt_start;
+
+        Ok(EgressResult::Segments {
+            created: vec![created],
+            deleted,
+        })
     }
 
     pub fn video_stream(&self) -> Option<&HlsVariantStream> {

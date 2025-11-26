@@ -48,6 +48,12 @@ pub struct FrameReorderBuffer<T> {
     next_pts: Option<i64>,
 }
 
+impl<T> Default for FrameReorderBuffer<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T> FrameReorderBuffer<T> {
     pub fn new() -> Self {
         Self {

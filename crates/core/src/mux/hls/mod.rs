@@ -2,7 +2,7 @@ use crate::egress::{EgressResult, EncoderOrSourceStream};
 use crate::mux::hls::variant::HlsVariant;
 use crate::variant::{StreamMapping, VariantStream};
 use anyhow::Result;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPacket;
+use ffmpeg_rs_raw::AvPacketRef;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
@@ -133,33 +133,25 @@ impl HlsMuxer {
     }
 
     /// Mux an encoded packet from [Encoder]
-    pub unsafe fn mux_packet(
-        &mut self,
-        pkt: *mut AVPacket,
-        variant: &Uuid,
-    ) -> Result<EgressResult> {
-        unsafe {
-            if Instant::now().sub(self.last_master_write).as_secs_f32()
-                > Self::MASTER_WRITE_INTERVAL
-            {
-                self.write_master_playlist()?;
-            }
-            for var in self.variants.iter_mut() {
-                if let Some(vs) = var.streams.iter().find(|s| s.id() == *variant) {
-                    // very important for muxer to know which stream this pkt belongs to
-                    (*pkt).stream_index = vs.index() as _;
-                    return var.process_packet(pkt);
-                }
-            }
-
-            // This HLS muxer doesn't handle this variant, return None instead of failing
-            // This can happen when multiple egress handlers are configured with different variant sets
-            trace!(
-                "HLS muxer received packet for variant {} which it doesn't handle",
-                variant
-            );
-            Ok(EgressResult::None)
+    pub fn mux_packet(&mut self, mut pkt: AvPacketRef, variant: &Uuid) -> Result<EgressResult> {
+        if Instant::now().sub(self.last_master_write).as_secs_f32() > Self::MASTER_WRITE_INTERVAL {
+            self.write_master_playlist()?;
         }
+        for var in self.variants.iter_mut() {
+            if let Some(vs) = var.streams.iter().find(|s| s.id() == *variant) {
+                // very important for muxer to know which stream this pkt belongs to
+                pkt.stream_index = vs.index() as _;
+                return var.process_packet(&pkt);
+            }
+        }
+
+        // This HLS muxer doesn't handle this variant, return None instead of failing
+        // This can happen when multiple egress handlers are configured with different variant sets
+        trace!(
+            "HLS muxer received packet for variant {} which it doesn't handle",
+            variant
+        );
+        Ok(EgressResult::None)
     }
 
     /// Collect all remaining segments that will be deleted during cleanup

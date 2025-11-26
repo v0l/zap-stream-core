@@ -3,11 +3,10 @@ use crate::ingress::{ConnectionInfo, EndpointStats, setup_term_handler, spawn_pi
 use crate::overseer::Overseer;
 use crate::pipeline::runner::PipelineCommand;
 use anyhow::Result;
+use chrono::Utc;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVSampleFormat::AV_SAMPLE_FMT_FLTP;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    AV_PROFILE_H264_MAIN, AVRational, av_frame_free, av_packet_free,
-};
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::{AV_PROFILE_H264_MAIN, AVRational};
 use ffmpeg_rs_raw::{Encoder, Muxer};
 use ringbuf::traits::{Observer, Split};
 use ringbuf::{HeapCons, HeapRb};
@@ -169,35 +168,29 @@ impl TestPatternSrc {
         unsafe {
             self.frame_gen.begin()?;
             self.frame_gen.copy_frame_data(self.background.data())?;
-            self.frame_gen.write_text(
-                &format!("frame={}", self.frame_gen.frame_no()),
-                40.0,
-                5.0,
+            self.frame_gen.write_text_with_background(
+                &format!("{}\nframe={}", Utc::now(), self.frame_gen.frame_no()),
+                30.0,
+                10.0,
+                10.0,
                 5.0,
             )?;
 
-            let mut frame = self.frame_gen.next()?;
-            if frame.is_null() {
-                return Ok(());
-            }
+            let frame = self.frame_gen.next()?;
+            let Some(frame) = frame else { return Ok(()) };
 
             // if sample_rate is set this frame is audio
-            if (*frame).sample_rate > 0 {
-                for mut pkt in self.audio_encoder.encode_frame(frame)? {
-                    self.data_sent += (*pkt).size as u64;
-                    self.muxer.write_packet(pkt)?;
-                    av_packet_free(&mut pkt);
+            if frame.sample_rate > 0 {
+                for pkt in self.audio_encoder.encode_frame(Some(&frame))? {
+                    self.data_sent += pkt.size as u64;
+                    self.muxer.write_packet(&pkt)?;
                 }
             } else {
-                for mut pkt in self.video_encoder.encode_frame(frame)? {
-                    self.data_sent += (*pkt).size as u64;
-                    self.muxer.write_packet(pkt)?;
-                    av_packet_free(&mut pkt);
+                for pkt in self.video_encoder.encode_frame(Some(&frame))? {
+                    self.data_sent += pkt.size as u64;
+                    self.muxer.write_packet(&pkt)?;
                 }
             }
-
-            av_frame_free(&mut frame);
-
             let metric_duration = Instant::now().duration_since(self.last_metrics);
             if metric_duration > Duration::from_secs(5) {
                 if let Err(e) = self.tx.send(PipelineCommand::IngressMetrics(EndpointStats {

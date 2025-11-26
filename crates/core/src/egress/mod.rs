@@ -1,6 +1,6 @@
 use anyhow::Result;
-use ffmpeg_rs_raw::Encoder;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::{AVPacket, AVStream};
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVStream;
+use ffmpeg_rs_raw::{AvPacketRef, Encoder};
 use std::path::PathBuf;
 use uuid::Uuid;
 
@@ -10,9 +10,8 @@ pub mod recorder;
 pub mod rtmp;
 
 pub trait Egress {
-    unsafe fn process_pkt(&mut self, packet: *mut AVPacket, variant: &Uuid)
-    -> Result<EgressResult>;
-    unsafe fn reset(&mut self) -> Result<EgressResult>;
+    fn process_pkt(&mut self, packet: AvPacketRef, variant: &Uuid) -> Result<EgressResult>;
+    fn reset(&mut self) -> Result<EgressResult>;
 }
 
 #[derive(Debug, Clone)]

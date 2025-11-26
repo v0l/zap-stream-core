@@ -301,17 +301,17 @@ impl HlsTimingTester {
                     100.0,
                 )?;
 
-                let mut frame = frame_gen.next()?;
-                if frame.is_null() {
+                let frame = frame_gen.next()?;
+                let Some(frame) = frame else {
                     tracing::warn!("FrameGenerator returned null frame unexpectedly");
                     break;
-                }
+                };
 
                 // Determine if this is audio or video frame and encode accordingly
-                if (*frame).sample_rate > 0 {
+                if frame.sample_rate > 0 {
                     // Audio frame - don't increment video counter
-                    tracing::debug!("Generated audio frame, PTS: {}", (*frame).pts);
-                    for mut pkt in audio_encoder.encode_frame(frame)? {
+                    tracing::debug!("Generated audio frame, PTS: {}", frame.pts);
+                    for pkt in audio_encoder.encode_frame(Some(&frame))? {
                         let result = hls_muxer.mux_packet(pkt, &audio_stream.id())?;
                         if let crate::egress::EgressResult::Segments {
                             created,
@@ -322,7 +322,6 @@ impl HlsTimingTester {
                                 tracing::debug!("Created audio segment: {:?}", segment.path);
                             }
                         }
-                        ffmpeg_rs_raw::ffmpeg_sys_the_third::av_packet_free(&mut pkt);
                     }
                 } else {
                     // Video frame - increment video counter
@@ -331,7 +330,7 @@ impl HlsTimingTester {
                         video_frames_generated,
                         (*frame).pts
                     );
-                    for mut pkt in video_encoder.encode_frame(frame)? {
+                    for pkt in video_encoder.encode_frame(Some(&frame))? {
                         let result = hls_muxer.mux_packet(pkt, &video_stream.id())?;
                         if let crate::egress::EgressResult::Segments {
                             created,
@@ -342,27 +341,22 @@ impl HlsTimingTester {
                                 tracing::debug!("Created video segment: {:?}", segment.path);
                             }
                         }
-                        ffmpeg_rs_raw::ffmpeg_sys_the_third::av_packet_free(&mut pkt);
                     }
                     video_frames_generated += 1;
                 }
-
-                ffmpeg_rs_raw::ffmpeg_sys_the_third::av_frame_free(&mut frame);
             }
         }
 
         // Flush encoders to ensure all packets are written
         unsafe {
             // Flush video encoder
-            for mut pkt in video_encoder.encode_frame(std::ptr::null_mut())? {
+            for pkt in video_encoder.encode_frame(None)? {
                 hls_muxer.mux_packet(pkt, &video_stream.id())?;
-                ffmpeg_rs_raw::ffmpeg_sys_the_third::av_packet_free(&mut pkt);
             }
 
             // Flush audio encoder
-            for mut pkt in audio_encoder.encode_frame(std::ptr::null_mut())? {
+            for pkt in audio_encoder.encode_frame(None)? {
                 hls_muxer.mux_packet(pkt, &audio_stream.id())?;
-                ffmpeg_rs_raw::ffmpeg_sys_the_third::av_packet_free(&mut pkt);
             }
         }
 
@@ -651,14 +645,14 @@ impl HlsTimingTester {
             let packet_result = unsafe { demuxer.get_packet() };
             match packet_result {
                 Ok((pkt, stream)) => {
-                    if pkt.is_null() {
+                    let Some(pkt) = pkt else {
                         break;
-                    }
+                    };
 
                     unsafe {
                         let codec_type = (*(*stream).codecpar).codec_type;
-                        let pts = (*pkt).pts;
-                        let duration = (*pkt).duration;
+                        let pts = pkt.pts;
+                        let duration = pkt.duration;
                         let current_stream_idx = (*stream).index as usize;
 
                         match codec_type {
