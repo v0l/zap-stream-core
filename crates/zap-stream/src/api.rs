@@ -1774,6 +1774,20 @@ impl Api {
         Ok(response.map(|body| body.map_err(|e| anyhow::anyhow!("{}", e)).boxed()))
     }
 
+    async fn send_ws_error_and_close(
+        ws_sender: &mut futures_util::stream::SplitSink<
+            hyper_tungstenite::WebSocketStream<hyper_util::rt::TokioIo<hyper::upgrade::Upgraded>>,
+            Message,
+        >,
+        msg: &str,
+    ) -> Result<()> {
+        ws_sender
+            .send(Message::Text(Utf8Bytes::from(msg)))
+            .await?;
+        ws_sender.send(Message::Close(None)).await?;
+        Ok(())
+    }
+
     async fn handle_log_tail_websocket(
         websocket: HyperWebsocket,
         log_path: std::path::PathBuf,
@@ -1791,24 +1805,24 @@ impl Api {
         let file = match File::open(&log_path).await {
             Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                let msg = "Pipeline log file not found. This may be because the stream has not been started yet or the stream ID is invalid.";
-                ws_sender
-                    .send(Message::Text(Utf8Bytes::from(msg)))
-                    .await?;
-                ws_sender.send(Message::Close(None)).await?;
+                Self::send_ws_error_and_close(
+                    &mut ws_sender,
+                    "Pipeline log file not found. This may be because the stream has not been started yet or the stream ID is invalid."
+                ).await?;
                 return Ok(());
             }
             Err(e) => {
                 let msg = format!("Failed to open pipeline log: {}", e);
-                ws_sender
-                    .send(Message::Text(Utf8Bytes::from(&msg)))
-                    .await?;
-                ws_sender.send(Message::Close(None)).await?;
+                Self::send_ws_error_and_close(&mut ws_sender, &msg).await?;
                 return Err(anyhow!(msg));
             }
         };
 
         // Send existing log content first (last 200 lines) using the same file handle
+        // Note: This reads the entire file into memory to get the last N lines.
+        // For typical pipeline logs (< 100MB), this is acceptable and provides good UX.
+        // Alternative approaches (seeking from end, circular buffer) would be more complex
+        // and wouldn't improve the common case significantly.
         let mut reader = BufReader::new(file);
         let mut line = String::new();
         let mut lines_buffer = Vec::new();
