@@ -1192,7 +1192,7 @@ impl Api {
                     let stream_uuid = match Uuid::parse_str(&stream.id) {
                         Ok(id) => id,
                         Err(e) => {
-                            warn!("Failed to parse stream ID {}: {}", stream.id, e);
+                            warn!("Failed to parse stream ID {} as UUID: {}", stream.id, e);
                             continue;
                         }
                     };
@@ -1201,7 +1201,7 @@ impl Api {
                         error!("Failed to stop stream {} for blocked user {}: {}", stream.id, uid, e);
                     } else {
                         info!("Stopped stream {} for blocked user {}", stream.id, uid);
-                        stopped_streams.push(stream.id.clone());
+                        stopped_streams.push(stream.id);
                     }
                 }
 
