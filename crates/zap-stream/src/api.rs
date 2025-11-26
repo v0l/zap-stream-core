@@ -568,7 +568,20 @@ impl Api {
                 (&Method::GET, Route::AdminPipelineLog) => {
                     // Check if this is a WebSocket upgrade request
                     if hyper_tungstenite::is_upgrade_request(&req) {
-                        let auth = check_nip98_auth(&req, &self.settings, &self.db).await?;
+                        // For WebSocket, extract auth token from query parameter
+                        // since browsers can't add Authorization headers to WebSocket connections
+                        let full_url = format!(
+                            "{}{}",
+                            self.settings.public_url.trim_end_matches('/'),
+                            req.uri()
+                        );
+                        let url: url::Url = full_url.parse()?;
+                        let auth_token = url
+                            .query_pairs()
+                            .find_map(|(k, v)| if k == "auth" { Some(v.to_string()) } else { None })
+                            .ok_or_else(|| anyhow!("Missing auth query parameter for WebSocket"))?;
+                        
+                        let auth = self.check_nip98_auth_from_token(&auth_token, &url).await?;
                         let admin_uid = self.check_admin_access(&auth.pubkey).await?;
                         let stream_id = params
                             .get("stream_id")
@@ -1093,6 +1106,26 @@ impl Api {
             bail!("Access denied: Admin privileges required");
         }
         Ok(uid)
+    }
+
+    /// Authenticate using a base64 NIP-98 token from query parameter
+    /// Used for WebSocket connections where Authorization header cannot be set
+    async fn check_nip98_auth_from_token(
+        &self,
+        token: &str,
+        expected_url: &url::Url,
+    ) -> Result<crate::auth::AuthResult> {
+        use crate::auth::{AuthRequest, TokenSource, authenticate_nip98};
+        
+        let auth_request = AuthRequest {
+            token_source: TokenSource::WebSocketToken(token.to_string()),
+            expected_url: expected_url.clone(),
+            expected_method: "GET".to_string(),
+            skip_url_check: self.settings.ignore_auth_url.unwrap_or(false),
+            admin_pubkey: self.settings.admin_pubkey.clone(),
+        };
+
+        authenticate_nip98(auth_request, &self.db).await
     }
 
     async fn delete_stream(&self, pubkey: &PublicKey, stream_id: &str) -> Result<()> {
