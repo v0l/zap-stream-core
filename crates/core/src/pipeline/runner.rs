@@ -16,15 +16,15 @@ use crate::generator::FrameGenerator;
 use crate::ingress::{ConnectionInfo, EndpointStats};
 use crate::overseer::{IngressInfo, IngressStream, IngressStreamType, Overseer, StatsType};
 use crate::pipeline::{EgressType, PipelineConfig};
+use crate::reorder::FrameReorderBuffer;
 use crate::variant::{StreamMapping, VariantStream};
 use anyhow::{Context, Result, anyhow, bail};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_WEBP;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPictureType::AV_PICTURE_TYPE_NONE;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVFrame, AVPacket, av_dump_format, av_frame_clone,
-    av_frame_free, av_get_sample_fmt, av_packet_clone, av_packet_copy_props, av_packet_free,
-    av_rescale_q,
+    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVFrame, AVPacket, av_frame_clone, av_frame_free,
+    av_get_sample_fmt, av_packet_clone, av_packet_copy_props, av_packet_free, av_rescale_q,
 };
 use ffmpeg_rs_raw::{
     AudioFifo, Decoder, Demuxer, Encoder, Resample, Scaler, StreamType, cstr, get_frame_from_hw,
@@ -155,6 +155,10 @@ pub struct PipelineRunner {
 
     /// Command receiver for external process control
     cmd_channel: Option<UnboundedReceiver<PipelineCommand>>,
+
+    /// Frame reorder buffers for video source streams (to ensure frames go to encoder in PTS order)
+    /// Key is the source stream index
+    frame_reorder_buffers: HashMap<usize, FrameReorderBuffer<AVFrame>>,
 }
 
 unsafe impl Send for PipelineRunner {}
@@ -193,6 +197,7 @@ impl PipelineRunner {
             last_video_pts: 0,
             last_audio_pts: 0,
             cmd_channel: command,
+            frame_reorder_buffers: Default::default(),
         })
     }
 
@@ -441,6 +446,14 @@ impl PipelineRunner {
 
             // only process via decoder if we have encoders and (need transcoding OR thumbnail generation)
             if !self.encoders.is_empty() && (needs_transcode || needs_thumb_decode) {
+                trace!(
+                    "PKT->DECODER: stream={}, pts={}, dts={}, duration={}, flags={}",
+                    (*packet).stream_index,
+                    (*packet).pts,
+                    (*packet).dts,
+                    (*packet).duration,
+                    (*packet).flags
+                );
                 let frames = match self.decoder.decode_pkt(packet) {
                     Ok(f) => {
                         // Reset failure counter on successful decode
@@ -476,12 +489,27 @@ impl PipelineRunner {
                 };
 
                 for (frame, stream_idx) in frames {
+                    trace!(
+                        "DECODER->FRAME: stream={}, pts={}, pkt_dts={}, duration={}, tb={}/{}",
+                        stream_idx,
+                        (*frame).pts,
+                        (*frame).pkt_dts,
+                        (*frame).duration,
+                        (*frame).time_base.num,
+                        (*frame).time_base.den
+                    );
                     let stream = self.demuxer.get_stream(stream_idx as usize)?;
                     // Adjust frame pts time without start_offset
                     // Egress streams don't have a start time offset
                     if !stream.is_null() {
-                        if (*stream).start_time != AV_NOPTS_VALUE {
-                            (*frame).pts -= (*stream).start_time;
+                        let start_time = (*stream).start_time;
+                        if start_time != AV_NOPTS_VALUE && start_time != 0 {
+                            (*frame).pts -= start_time;
+                            trace!(
+                                "FRAME PTS ADJUST: pts now={}, subtracted start_time={}",
+                                (*frame).pts,
+                                start_time
+                            );
                         }
                         (*frame).time_base = (*stream).time_base;
                     }
@@ -509,10 +537,6 @@ impl PipelineRunner {
                         )?);
                     }
                     VariantStream::CopyVideo(v) if v.src_index() == (*packet).stream_index as _ => {
-                        // count frames for copy only pipelines
-                        if self.encoders.is_empty() {
-                            self.frame_ctr += 1;
-                        }
                         egress_results.extend(Self::egress_packet(
                             &mut self.egress,
                             packet,
@@ -537,75 +561,149 @@ impl PipelineRunner {
     ) -> Result<Vec<EgressResult>> {
         unsafe {
             let mut egress_results = Vec::new();
-            // Get the variants which want this pkt
-            let pkt_vars = config
+
+            // Get the variants which want this frame
+            let pkt_vars: Vec<_> = config
                 .variants
                 .iter()
-                .filter(|v| v.src_index() == stream_index);
-            for var in pkt_vars {
-                let enc = if let Some(enc) = self.encoders.get_mut(&var.id()) {
-                    enc
-                } else {
-                    continue;
-                };
+                .filter(|v| v.src_index() == stream_index)
+                .cloned()
+                .collect();
 
-                // scaling / resampling
-                let mut new_frame = false;
-                match var {
-                    VariantStream::Video(v) => {
-                        let mut frame = if let Some(s) = self.scalers.get_mut(&v.id()) {
-                            new_frame = true;
-                            s.process_frame(frame, v.width, v.height, transmute(v.pixel_format))?
-                        } else {
-                            frame
-                        };
-                        trace!(
-                            "Video frame to encoder: var={}, pts={}, dts={}, duration={}",
-                            var.id(),
-                            (*frame).pts,
-                            (*frame).pkt_dts,
-                            (*frame).duration
-                        );
+            // Check if this is a video source stream (has video variants)
+            let has_video_variants = pkt_vars
+                .iter()
+                .any(|v| matches!(v, VariantStream::Video(_)));
+
+            if has_video_variants {
+                trace!(
+                    "FRAME->REORDER: src={}, pts={}, pkt_dts={}, duration={}, tb={}/{}",
+                    stream_index,
+                    (*frame).pts,
+                    (*frame).pkt_dts,
+                    (*frame).duration,
+                    (*frame).time_base.num,
+                    (*frame).time_base.den
+                );
+
+                // Get or create reorder buffer for this source stream
+                let reorder_buffer = self
+                    .frame_reorder_buffers
+                    .entry(stream_index)
+                    .or_insert_with(FrameReorderBuffer::new);
+
+                // Clone frame for the reorder buffer (it takes ownership)
+                let cloned_frame = av_frame_clone(frame);
+
+                // Push frame into reorder buffer and get any frames ready to encode
+                let frames_to_encode =
+                    reorder_buffer.push((*cloned_frame).pts, (*cloned_frame).duration, cloned_frame);
+
+                // Process each reordered frame through all video variants
+                for mut reordered_frame in frames_to_encode {
+                    trace!(
+                        "REORDER->VARIANTS: src={}, pts={}, pkt_dts={}, duration={}, tb={}/{}",
+                        stream_index,
+                        (*reordered_frame).pts,
+                        (*reordered_frame).pkt_dts,
+                        (*reordered_frame).duration,
+                        (*reordered_frame).time_base.num,
+                        (*reordered_frame).time_base.den
+                    );
+
+                    // Process this reordered frame through all video variants
+                    for var in &pkt_vars {
+                        if let VariantStream::Video(v) = var {
+                            let var_id = var.id();
+
+                            trace!(
+                                "FRAME->SCALER: var={}, pts={}, pkt_dts={}, duration={}, tb={}/{}",
+                                var_id,
+                                (*reordered_frame).pts,
+                                (*reordered_frame).pkt_dts,
+                                (*reordered_frame).duration,
+                                (*reordered_frame).time_base.num,
+                                (*reordered_frame).time_base.den
+                            );
+
+                            // Scale the frame (creates a new frame)
+                            let scaled_frame = if let Some(s) = self.scalers.get_mut(&v.id()) {
+                                let cloned = av_frame_clone(reordered_frame);
+                                s.process_frame(
+                                    cloned,
+                                    v.width,
+                                    v.height,
+                                    transmute(v.pixel_format),
+                                )?
+                            } else {
+                                av_frame_clone(reordered_frame)
+                            };
+
+                            trace!(
+                                "SCALER->ENCODER: var={}, pts={}, pkt_dts={}, duration={}, tb={}/{}",
+                                var_id,
+                                (*scaled_frame).pts,
+                                (*scaled_frame).pkt_dts,
+                                (*scaled_frame).duration,
+                                (*scaled_frame).time_base.num,
+                                (*scaled_frame).time_base.den
+                            );
+
+                            let enc = self.encoders.get_mut(&var_id).unwrap();
+                            let mut scaled_frame_mut = scaled_frame;
+                            egress_results.extend(Self::encode_mux_frame(
+                                &mut self.egress,
+                                var,
+                                enc,
+                                scaled_frame_mut,
+                            )?);
+                            av_frame_free(&mut scaled_frame_mut);
+                        }
+                    }
+
+                    av_frame_free(&mut reordered_frame);
+                }
+            }
+
+            // Process audio variants (no reordering needed)
+            for var in &pkt_vars {
+                if let VariantStream::Audio(a) = var {
+                    let var_id = var.id();
+                    let enc = if let Some(enc) = self.encoders.get_mut(&var_id) {
+                        enc
+                    } else {
+                        continue;
+                    };
+
+                    if let Some((r, f)) = self.resampler.get_mut(&a.id()) {
+                        let frame_size = (*enc.codec_context()).frame_size;
+                        let mut resampled_frame = r.process_frame(frame)?;
+                        f.buffer_frame(resampled_frame)?;
+                        av_frame_free(&mut resampled_frame);
+                        // drain FIFO
+                        while let Some(mut audio_frame) = f.get_frame(frame_size as usize)? {
+                            // Set correct timebase for audio (1/sample_rate)
+                            (*audio_frame).time_base.num = 1;
+                            (*audio_frame).time_base.den = a.sample_rate as i32;
+
+                            // Need to re-borrow encoder after resampler borrow
+                            let enc = self.encoders.get_mut(&var_id).unwrap();
+                            egress_results.extend(Self::encode_mux_frame(
+                                &mut self.egress,
+                                var,
+                                enc,
+                                audio_frame,
+                            )?);
+                            av_frame_free(&mut audio_frame);
+                        }
+                    } else {
                         egress_results.extend(Self::encode_mux_frame(
                             &mut self.egress,
                             var,
                             enc,
                             frame,
                         )?);
-                        if new_frame {
-                            av_frame_free(&mut frame);
-                        }
                     }
-                    VariantStream::Audio(a) => {
-                        if let Some((r, f)) = self.resampler.get_mut(&a.id()) {
-                            let frame_size = (*enc.codec_context()).frame_size;
-                            let mut resampled_frame = r.process_frame(frame)?;
-                            f.buffer_frame(resampled_frame)?;
-                            av_frame_free(&mut resampled_frame);
-                            // drain FIFO
-                            while let Some(mut frame) = f.get_frame(frame_size as usize)? {
-                                // Set correct timebase for audio (1/sample_rate)
-                                (*frame).time_base.num = 1;
-                                (*frame).time_base.den = a.sample_rate as i32;
-
-                                egress_results.extend(Self::encode_mux_frame(
-                                    &mut self.egress,
-                                    var,
-                                    enc,
-                                    frame,
-                                )?);
-                                av_frame_free(&mut frame);
-                            }
-                        } else {
-                            egress_results.extend(Self::encode_mux_frame(
-                                &mut self.egress,
-                                var,
-                                enc,
-                                frame,
-                            )?);
-                        }
-                    }
-                    _ => {}
                 }
             }
 
@@ -624,13 +722,26 @@ impl PipelineRunner {
             // before encoding frame, rescale timestamps
             if !frame.is_null() {
                 let enc_ctx = encoder.codec_context();
+                let old_pts = (*frame).pts;
+                let old_tb = (*frame).time_base;
                 (*frame).pict_type = AV_PICTURE_TYPE_NONE;
                 (*frame).pts = av_rescale_q((*frame).pts, (*frame).time_base, (*enc_ctx).time_base);
-                (*frame).pkt_dts =
-                    av_rescale_q((*frame).pkt_dts, (*frame).time_base, (*enc_ctx).time_base);
+                // Clear pkt_dts - it's stale from the decoder and meaningless for re-encoding.
+                // The encoder will generate proper DTS based on the frame order it receives.
+                (*frame).pkt_dts = AV_NOPTS_VALUE;
                 (*frame).duration =
                     av_rescale_q((*frame).duration, (*frame).time_base, (*enc_ctx).time_base);
                 (*frame).time_base = (*enc_ctx).time_base;
+                trace!(
+                    "ENCODE RESCALE: var={}, pts {}@{}/{} -> {}@{}/{}",
+                    var.id(),
+                    old_pts,
+                    old_tb.num,
+                    old_tb.den,
+                    (*frame).pts,
+                    (*frame).time_base.num,
+                    (*frame).time_base.den
+                );
             }
 
             let packets = match encoder.encode_frame(frame) {
@@ -648,6 +759,14 @@ impl PipelineRunner {
             };
             let mut ret = vec![];
             for mut pkt in packets {
+                trace!(
+                    "ENCODER->PKT: var={}, pts={}, dts={}, duration={}, flags={}",
+                    var.id(),
+                    (*pkt).pts,
+                    (*pkt).dts,
+                    (*pkt).duration,
+                    (*pkt).flags
+                );
                 ret.extend(Self::egress_packet(egress, pkt, &var.id())?);
                 av_packet_free(&mut pkt);
             }
@@ -668,10 +787,11 @@ impl PipelineRunner {
                 let mut pkt_clone = av_packet_clone(pkt);
                 av_packet_copy_props(pkt_clone, pkt);
                 trace!(
-                    "EGRESS PKT: var={}, idx={}, pts={}, dur={}",
+                    "EGRESS PKT: var={}, idx={}, pts={}, dts={}, dur={}",
                     variant,
                     (*pkt_clone).stream_index,
                     (*pkt_clone).pts,
+                    (*pkt_clone).dts,
                     (*pkt_clone).duration
                 );
                 let er = eg.process_pkt(pkt_clone, variant)?;
@@ -741,7 +861,7 @@ impl PipelineRunner {
                     .with_ansi(false)
                     .with_thread_ids(true)
                     .with_filter(EnvFilter::new(
-                        "zap_stream_core=debug,zap_stream=debug,ffmpeg=warn",
+                        "zap_stream_core=debug,zap_stream=debug,ffmpeg=info,ffmpeg-rs-raw=info",
                     )),
             );
 
@@ -867,6 +987,7 @@ impl PipelineRunner {
             return Ok(());
         }
 
+        //self.demuxer.enable_dts_monotonicity(0);
         let info = unsafe {
             self.demuxer
                 .probe_input()

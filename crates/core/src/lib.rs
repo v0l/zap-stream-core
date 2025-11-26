@@ -12,6 +12,7 @@ pub mod metrics;
 pub mod mux;
 pub mod overseer;
 pub mod pipeline;
+pub mod reorder;
 #[cfg(test)]
 pub mod test_hls_timing;
 pub mod variant;

@@ -35,19 +35,19 @@ pub enum HlsVariantStream {
 }
 
 impl HlsVariantStream {
-    pub fn id(&self) -> &Uuid {
+    pub fn id(&self) -> Uuid {
         match self {
-            HlsVariantStream::Video { id, .. } => id,
-            HlsVariantStream::Audio { id, .. } => id,
-            HlsVariantStream::Subtitle { id, .. } => id,
+            HlsVariantStream::Video { id, .. } => *id,
+            HlsVariantStream::Audio { id, .. } => *id,
+            HlsVariantStream::Subtitle { id, .. } => *id,
         }
     }
 
-    pub fn index(&self) -> &usize {
+    pub fn index(&self) -> usize {
         match self {
-            HlsVariantStream::Video { index, .. } => index,
-            HlsVariantStream::Audio { index, .. } => index,
-            HlsVariantStream::Subtitle { index, .. } => index,
+            HlsVariantStream::Video { index, .. } => *index,
+            HlsVariantStream::Audio { index, .. } => *index,
+            HlsVariantStream::Subtitle { index, .. } => *index,
         }
     }
 }
@@ -145,9 +145,9 @@ impl HlsMuxer {
                 self.write_master_playlist()?;
             }
             for var in self.variants.iter_mut() {
-                if let Some(vs) = var.streams.iter().find(|s| s.id() == variant) {
+                if let Some(vs) = var.streams.iter().find(|s| s.id() == *variant) {
                     // very important for muxer to know which stream this pkt belongs to
-                    (*pkt).stream_index = *vs.index() as _;
+                    (*pkt).stream_index = vs.index() as _;
                     return var.process_packet(pkt);
                 }
             }
@@ -167,7 +167,7 @@ impl HlsMuxer {
         let mut remaining_segments = Vec::new();
 
         for variant in &self.variants {
-            let video_var_id = *variant
+            let video_var_id = variant
                 .video_stream()
                 .unwrap_or(variant.streams.first().unwrap())
                 .id();

@@ -8,9 +8,8 @@ use chrono::Utc;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_H264;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVMediaType::AVMEDIA_TYPE_VIDEO;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVIO_FLAG_WRITE, AVPacket, av_free,
-    av_get_bits_per_pixel, av_pix_fmt_desc_get, av_q2d, av_write_frame,
-    avio_close, avio_flush, avio_open, avio_size,
+    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVIO_FLAG_WRITE, AVPacket, av_free, av_get_bits_per_pixel,
+    av_pix_fmt_desc_get, av_q2d, av_write_frame, avio_close, avio_flush, avio_open, avio_size,
 };
 use ffmpeg_rs_raw::{Muxer, cstr};
 use m3u8_rs::Playlist::MediaPlaylist;
@@ -22,6 +21,7 @@ use std::mem::transmute;
 use std::path::PathBuf;
 use std::ptr;
 use tracing::{debug, error, info, trace, warn};
+use uuid::Uuid;
 
 pub struct HlsVariant {
     /// Name of this variant (720p)
@@ -346,16 +346,15 @@ impl HlsVariant {
     /// Process a single packet through the muxer
     pub(crate) unsafe fn process_packet(&mut self, pkt: *mut AVPacket) -> Result<EgressResult> {
         unsafe {
-            let pkt_stream = *(*self.mux.context())
-                .streams
-                .add((*pkt).stream_index as usize);
+            let stream_index = (*pkt).stream_index;
+            let pkt_stream = *(*self.mux.context()).streams.add(stream_index as _);
 
             let pkt_q = av_q2d((*pkt).time_base);
             let mut result = EgressResult::None;
             let stream_type = (*(*pkt_stream).codecpar).codec_type;
             let mut can_split = stream_type == AVMEDIA_TYPE_VIDEO
                 && ((*pkt).flags & AV_PKT_FLAG_KEY == AV_PKT_FLAG_KEY);
-            let mut is_ref_pkt = (*pkt).stream_index == self.ref_stream_index;
+            let mut is_ref_pkt = stream_index == self.ref_stream_index;
 
             if (*pkt).pts == AV_NOPTS_VALUE {
                 can_split = false;
@@ -366,7 +365,7 @@ impl HlsVariant {
                 let pkt_duration = (*pkt).duration as f64 * pkt_q;
                 trace!(
                     "REF PKT index={}, pts={:.3}s, dur={:.3}s, flags={}",
-                    (*pkt).stream_index,
+                    stream_index,
                     (*pkt).pts as f64 * pkt_q,
                     pkt_duration,
                     (*pkt).flags
@@ -396,7 +395,15 @@ impl HlsVariant {
             match self.mux.write_packet(pkt) {
                 Ok(r) => r,
                 Err(e) => {
-                    error!("Error muxing HLS packet: var={} {}", self.name, e);
+                    let dst_stream = self.streams.iter().find(|s| s.index() == stream_index as _);
+                    error!(
+                        "Error muxing HLS packet: name={}, var={}: {}",
+                        self.name,
+                        dst_stream
+                            .map(|v| v.id().to_string())
+                            .unwrap_or("<NO-VAR>".to_string()),
+                        e
+                    );
                     return Err(e);
                 }
             }
@@ -551,7 +558,7 @@ impl HlsVariant {
                 self.packets_written
             );
 
-            let video_var_id = *self
+            let video_var_id = self
                 .video_stream()
                 .unwrap_or(self.streams.first().unwrap())
                 .id();
@@ -727,7 +734,7 @@ impl HlsVariant {
 
             // Find video and audio streams and build codec string
             for stream in &self.streams {
-                let av_stream = *(*self.mux.context()).streams.add(*stream.index());
+                let av_stream = *(*self.mux.context()).streams.add(stream.index());
                 let p = (*av_stream).codecpar;
 
                 match stream {
@@ -770,7 +777,7 @@ impl HlsVariant {
     pub fn to_playlist_variant(&self) -> m3u8_rs::VariantStream {
         unsafe {
             let pes = self.video_stream().unwrap_or(self.streams.first().unwrap());
-            let av_stream = *(*self.mux.context()).streams.add(*pes.index());
+            let av_stream = *(*self.mux.context()).streams.add(pes.index());
             let codec_par = (*av_stream).codecpar;
             let bitrate = (*codec_par).bit_rate as u64;
             let fps = av_q2d((*codec_par).framerate);
