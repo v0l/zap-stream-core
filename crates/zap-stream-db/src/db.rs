@@ -669,6 +669,16 @@ impl ZapStreamDb {
         .await?)
     }
 
+    /// Get live streams for a user
+    pub async fn get_user_live_streams(&self, user_id: u64) -> Result<Vec<UserStream>> {
+        Ok(sqlx::query_as(
+            "select * from user_stream where user_id = ? and state = 2",
+        )
+        .bind(user_id)
+        .fetch_all(&self.db)
+        .await?)
+    }
+
     /// Get unified user history combining payments and completed streams with proper pagination
     pub async fn get_unified_user_history(
         &self,

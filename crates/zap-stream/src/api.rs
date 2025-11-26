@@ -1183,31 +1183,69 @@ impl Api {
         if let Some(is_blocked) = req.set_blocked {
             self.db.set_blocked(uid, is_blocked).await?;
 
-            // Log admin action
-            let action = if is_blocked {
-                "block_user"
+            // If blocking the user, stop all their current streams
+            if is_blocked {
+                let live_streams = self.db.get_user_live_streams(uid).await?;
+                let mut stopped_streams = Vec::new();
+                
+                for stream in live_streams {
+                    let stream_uuid = match Uuid::parse_str(&stream.id) {
+                        Ok(id) => id,
+                        Err(e) => {
+                            warn!("Failed to parse stream ID {}: {}", stream.id, e);
+                            continue;
+                        }
+                    };
+                    
+                    if let Err(e) = self.overseer.on_end(&stream_uuid).await {
+                        error!("Failed to stop stream {} for blocked user {}: {}", stream.id, uid, e);
+                    } else {
+                        info!("Stopped stream {} for blocked user {}", stream.id, uid);
+                        stopped_streams.push(stream.id.clone());
+                    }
+                }
+
+                // Log admin action with stopped streams information
+                let action = "block_user";
+                let message = format!(
+                    "User {} blocked, {} stream(s) stopped",
+                    uid,
+                    stopped_streams.len()
+                );
+                let metadata = serde_json::json!({
+                    "target_user_id": uid,
+                    "blocked_status": true,
+                    "stopped_streams": stopped_streams
+                });
+                self.db
+                    .log_admin_action(
+                        admin_uid,
+                        action,
+                        Some("user"),
+                        Some(&uid.to_string()),
+                        &message,
+                        Some(&metadata.to_string()),
+                    )
+                    .await?;
             } else {
-                "unblock_user"
-            };
-            let message = format!(
-                "User {} {}",
-                uid,
-                if is_blocked { "blocked" } else { "unblocked" }
-            );
-            let metadata = serde_json::json!({
-                "target_user_id": uid,
-                "blocked_status": is_blocked
-            });
-            self.db
-                .log_admin_action(
-                    admin_uid,
-                    action,
-                    Some("user"),
-                    Some(&uid.to_string()),
-                    &message,
-                    Some(&metadata.to_string()),
-                )
-                .await?;
+                // Just log unblock action
+                let action = "unblock_user";
+                let message = format!("User {} unblocked", uid);
+                let metadata = serde_json::json!({
+                    "target_user_id": uid,
+                    "blocked_status": false
+                });
+                self.db
+                    .log_admin_action(
+                        admin_uid,
+                        action,
+                        Some("user"),
+                        Some(&uid.to_string()),
+                        &message,
+                        Some(&metadata.to_string()),
+                    )
+                    .await?;
+            }
         }
 
         if let Some(enable_stream_dump_recording) = req.set_stream_dump_recording {
