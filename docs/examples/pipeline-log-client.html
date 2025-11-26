@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pipeline Log Viewer</title>
+    <style>
+        body {
+            font-family: 'Courier New', monospace;
+            margin: 0;
+            padding: 20px;
+            background-color: #1e1e1e;
+            color: #d4d4d4;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        h1 {
+            color: #569cd6;
+        }
+        .controls {
+            margin-bottom: 20px;
+            padding: 15px;
+            background-color: #252526;
+            border-radius: 5px;
+        }
+        .log-container {
+            background-color: #1e1e1e;
+            border: 1px solid #3c3c3c;
+            border-radius: 5px;
+            padding: 15px;
+            height: 600px;
+            overflow-y: auto;
+            font-size: 12px;
+            line-height: 1.4;
+        }
+        .log-line {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        .log-line.error {
+            color: #f48771;
+        }
+        .log-line.warning {
+            color: #dcdcaa;
+        }
+        .log-line.info {
+            color: #4ec9b0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Pipeline Log Viewer</h1>
+        <div class="controls">
+            <p>Example client for testing pipeline log API</p>
+        </div>
+        <div class="log-container" id="logContainer"></div>
+    </div>
+</body>
+</html>
