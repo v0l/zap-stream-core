@@ -1808,24 +1808,35 @@ impl Api {
             }
         };
 
+        // Send existing log content first (last 200 lines) using the same file handle
         let mut reader = BufReader::new(file);
         let mut line = String::new();
+        let mut lines_buffer = Vec::new();
 
-        // Send existing log content first (last 200 lines)
-        let existing_content = match tokio::fs::read_to_string(&log_path).await {
-            Ok(content) => {
-                let lines: Vec<&str> = content.lines().collect();
-                let start_index = if lines.len() > 200 {
-                    lines.len() - 200
-                } else {
-                    0
-                };
-                lines[start_index..].join("\n") + "\n"
+        // Read all lines into a buffer
+        loop {
+            line.clear();
+            match reader.read_line(&mut line).await {
+                Ok(0) => break, // EOF
+                Ok(_) => {
+                    lines_buffer.push(line.clone());
+                }
+                Err(e) => {
+                    warn!("Error reading log file during initial load: {}", e);
+                    break;
+                }
             }
-            Err(_) => String::new(),
+        }
+
+        // Send last 200 lines
+        let start_index = if lines_buffer.len() > 200 {
+            lines_buffer.len() - 200
+        } else {
+            0
         };
 
-        if !existing_content.is_empty() {
+        if !lines_buffer.is_empty() {
+            let existing_content = lines_buffer[start_index..].join("");
             ws_sender
                 .send(Message::Text(Utf8Bytes::from(&existing_content)))
                 .await?;
