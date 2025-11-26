@@ -144,7 +144,7 @@ impl FrameGenerator {
             // Extract video stream properties
             let width = (*video_codec_par).width as u16;
             let height = (*video_codec_par).height as u16;
-            let pix_fmt = unsafe { transmute((*video_codec_par).format) };
+            let pix_fmt = transmute((*video_codec_par).format);
 
             // Calculate FPS from timebase
             let fps = av_q2d((*video_stream).r_frame_rate) as f32;

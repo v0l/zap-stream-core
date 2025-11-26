@@ -5,6 +5,7 @@ use std::io::SeekFrom;
 
 pub mod egress;
 pub mod endpoint;
+pub mod frame;
 mod generator;
 pub mod ingress;
 pub mod listen;

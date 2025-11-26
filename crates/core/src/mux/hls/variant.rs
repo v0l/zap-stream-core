@@ -21,7 +21,6 @@ use std::mem::transmute;
 use std::path::PathBuf;
 use std::ptr;
 use tracing::{debug, error, info, trace, warn};
-use uuid::Uuid;
 
 pub struct HlsVariant {
     /// Name of this variant (720p)

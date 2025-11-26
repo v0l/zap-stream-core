@@ -13,7 +13,7 @@ const MIN_BUFFER_DEPTH: usize = 4;
 struct PtsOrderable<T> {
     pts: i64,
     duration: i64,
-    value: *mut T,
+    value: T,
 }
 
 impl<T> Ord for PtsOrderable<T> {
@@ -58,9 +58,9 @@ impl<T> FrameReorderBuffer<T> {
         }
     }
 
-    /// Push a frame into the buffer.
+    /// Push a frame into the buffer, taking ownership.
     /// Returns frames that should be processed (in PTS order) when they form a contiguous sequence.
-    pub fn push(&mut self, pts: i64, duration: i64, value: *mut T) -> Vec<*mut T> {
+    pub fn push(&mut self, pts: i64, duration: i64, value: T) -> Vec<T> {
         self.heap.push(PtsOrderable {
             pts,
             duration,
@@ -113,7 +113,7 @@ impl<T> FrameReorderBuffer<T> {
 
     /// Flush all remaining frames from the buffer in PTS order.
     #[allow(dead_code)]
-    pub fn flush(&mut self) -> Vec<*mut T> {
+    pub fn flush(&mut self) -> Vec<T> {
         let mut output = Vec::with_capacity(self.heap.len());
         while let Some(ordered) = self.heap.pop() {
             output.push(ordered.value);
