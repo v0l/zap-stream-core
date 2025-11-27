@@ -22,8 +22,7 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_WEBP;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPictureType::AV_PICTURE_TYPE_NONE;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, av_get_sample_fmt,
-    av_rescale_q,
+    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, av_get_sample_fmt, av_rescale_q,
 };
 use ffmpeg_rs_raw::{
     AudioFifo, AvFrameRef, AvPacketRef, Decoder, Demuxer, Encoder, Resample, Scaler, StreamType,
@@ -721,18 +720,16 @@ impl PipelineRunner {
         pkt: &AvPacketRef,
         variant: &Uuid,
     ) -> Result<Vec<EgressResult>> {
-        unsafe {
-            let mut ret = vec![];
-            for eg in egress.iter_mut() {
-                trace!(
-                    "EGRESS PKT: var={}, idx={}, pts={}, dts={}, dur={}",
-                    variant, pkt.stream_index, pkt.pts, pkt.dts, pkt.duration
-                );
-                let er = eg.process_pkt(pkt.clone(), variant)?;
-                ret.push(er);
-            }
-            Ok(ret)
+        let mut ret = vec![];
+        for eg in egress.iter_mut() {
+            trace!(
+                "EGRESS PKT: var={}, idx={}, pts={}, dts={}, dur={}",
+                variant, pkt.stream_index, pkt.pts, pkt.dts, pkt.duration
+            );
+            let er = eg.process_pkt(pkt.clone(), variant)?;
+            ret.push(er);
         }
+        Ok(ret)
     }
 
     /// EOF, cleanup
@@ -805,13 +802,13 @@ impl PipelineRunner {
                         Ok(c) => {
                             if !c {
                                 // let drop handle flush
-                                info!("Pipeline run ending normally");
+                                info!("Pipeline {} ending normally", self.connection.id);
                                 break;
                             }
                         }
                         Err(e) => {
                             // let drop handle flush
-                            error!(error = %e, "Pipeline run failed");
+                            error!(error = %e, "Pipeline {} run failed", self.connection.id);
                             break;
                         }
                     }

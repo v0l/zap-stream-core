@@ -8,10 +8,10 @@ use chrono::Utc;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_H264;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVMediaType::AVMEDIA_TYPE_VIDEO;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVIO_FLAG_WRITE, av_free, av_get_bits_per_pixel,
-    av_pix_fmt_desc_get, av_q2d, av_write_frame, avio_close, avio_flush, avio_open, avio_size,
+    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVIO_FLAG_WRITE, av_freep, av_get_bits_per_pixel,
+    av_pix_fmt_desc_get, av_q2d, av_write_frame, avio_closep, avio_flush, avio_open, avio_size,
 };
-use ffmpeg_rs_raw::{AvPacketRef, Muxer, cstr};
+use ffmpeg_rs_raw::{AvPacketRef, Muxer, bail_ffmpeg, cstr};
 use m3u8_rs::Playlist::MediaPlaylist;
 use m3u8_rs::{ExtTag, MediaSegmentType, PartInf, Playlist, PreloadHint};
 use std::cmp::Ordering;
@@ -526,16 +526,20 @@ impl HlsVariant {
                 }
             }
             avio_flush((*ctx).pb);
-            avio_close((*ctx).pb);
-            av_free((*ctx).url as *mut _);
+            avio_closep(&mut (*ctx).pb);
+            av_freep((*ctx).url as *mut _);
 
             let next_seg_url = self.map_segment_path(self.idx, self.segment_type);
             (*ctx).url = cstr!(next_seg_url.to_str().unwrap());
 
-            let ret = avio_open(&mut (*ctx).pb, (*ctx).url, AVIO_FLAG_WRITE);
+            let mut next_io = ptr::null_mut();
+            let ret = avio_open(&mut next_io, (*ctx).url, AVIO_FLAG_WRITE);
             if ret < 0 {
-                bail!("Failed to re-init avio");
+                av_freep((*ctx).url as *mut _);
+                error!("Failed to split segment during avio_open!");
+                bail_ffmpeg!(ret);
             }
+            (*ctx).pb = next_io;
         }
 
         // Log the completed segment (previous index), not the next one
