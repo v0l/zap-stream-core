@@ -481,7 +481,7 @@ impl HlsVariant {
         let mut init_opts = HashMap::new();
         init_opts.insert(
             "movflags".to_string(),
-            "+frag_custom+dash+delay_moov+default_base_moof+write_colr".to_string(),
+            "+frag_custom+dash+delay_moov+default_base_moof".to_string(),
         );
 
         unsafe {

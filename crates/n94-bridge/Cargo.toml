@@ -8,7 +8,7 @@ rust-version.workspace = true
 [dependencies]
 tracing.workspace = true
 tokio.workspace = true
-pretty_env_logger.workspace = true
+tracing-subscriber.workspace = true
 nostr-sdk.workspace = true
 m3u8-rs.workspace = true
 anyhow.workspace = true

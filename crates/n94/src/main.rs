@@ -87,13 +87,13 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> Result<()> {
     if std::env::var("RUST_LOG").is_err() {
         unsafe {
             std::env::set_var("RUST_LOG", "info");
         }
     }
-    pretty_env_logger::init();
+    tracing_subscriber::fmt::init();
 
     info!("Starting N94 Broadcaster!");
     let mut args = Args::parse();

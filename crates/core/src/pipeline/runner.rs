@@ -13,13 +13,12 @@ use crate::egress::recorder::RecorderEgress;
 #[cfg(feature = "egress-rtmp")]
 use crate::egress::rtmp::RtmpEgress;
 use crate::egress::{Egress, EgressResult, EncoderOrSourceStream};
-use crate::generator::FrameGenerator;
 use crate::ingress::{ConnectionInfo, EndpointStats};
 use crate::overseer::{IngressInfo, IngressStream, IngressStreamType, Overseer, StatsType};
 use crate::pipeline::{EgressType, PipelineConfig};
 use crate::reorder::FrameReorderBuffer;
 use crate::variant::{StreamMapping, VariantStream};
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_WEBP;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPictureType::AV_PICTURE_TYPE_NONE;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
@@ -37,38 +36,12 @@ use tracing_appender::{non_blocking, rolling};
 use tracing_subscriber::{EnvFilter, Layer, fmt, layer::SubscriberExt};
 use uuid::Uuid;
 
-/// Idle mode timeout in seconds
-const IDLE_TIMEOUT_SECS: u64 = 60;
-
-/// Circuit breaker threshold for consecutive decode failures
-const DEFAULT_MAX_CONSECUTIVE_FAILURES: u32 = 50;
-
 /// Runner state for handling normal vs idle modes
 pub enum RunnerState {
     /// Normal operation - processing live stream
     Normal,
-    /// Idle mode - generating placeholder content after disconnection
-    Idle {
-        start_time: Instant,
-        frame_gen: FrameGenerator,
-    },
     /// Pipeline should shut down and do any cleanup
     Shutdown,
-}
-
-impl RunnerState {
-    /// Check if currently in idle mode
-    pub fn is_idle(&self) -> bool {
-        matches!(self, RunnerState::Idle { .. })
-    }
-
-    /// Get idle duration, returns None if not in idle mode
-    pub fn idle_duration(&self) -> Option<Duration> {
-        match self {
-            RunnerState::Idle { start_time, .. } => Some(start_time.elapsed()),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -142,12 +115,6 @@ pub struct PipelineRunner {
     /// Current runner state (normal or idle)
     state: RunnerState,
 
-    /// Counter for consecutive decode failures
-    consecutive_decode_failures: u32,
-
-    /// Maximum consecutive failures before triggering circuit breaker
-    max_consecutive_failures: u32,
-
     /// Last video PTS for continuity in idle mode
     last_video_pts: i64,
 
@@ -193,8 +160,6 @@ impl PipelineRunner {
             thumb_interval: DEFAULT_THUMB_INTERVAL,
             last_thumb: Instant::now().sub(Duration::from_millis(DEFAULT_THUMB_INTERVAL)),
             state: RunnerState::Normal,
-            consecutive_decode_failures: 0,
-            max_consecutive_failures: DEFAULT_MAX_CONSECUTIVE_FAILURES,
             last_video_pts: 0,
             last_audio_pts: 0,
             cmd_channel: command,
@@ -273,136 +238,25 @@ impl PipelineRunner {
         Ok(())
     }
 
-    /// Switch to idle mode with placeholder content generation
-    unsafe fn switch_to_idle_mode(&mut self, config: &PipelineConfig) -> Result<()> {
-        unsafe {
-            if self.state.is_idle() {
-                return Ok(()); // Already in idle mode
-            }
-
-            // Get streams directly from demuxer for correct timebase and properties
-            let video_stream = self.demuxer.get_stream(config.video_src)?;
-            let audio_stream = if let Some(audio_src) = config.audio_src {
-                Some(self.demuxer.get_stream(audio_src)?)
-            } else {
-                None
-            };
-
-            let mut frame_gen = FrameGenerator::from_av_streams(
-                video_stream as *const _,
-                audio_stream.map(|s| s as *const _),
-            )?;
-
-            // Set starting PTS to continue from last frame
-            frame_gen.set_starting_pts(self.last_video_pts, self.last_audio_pts);
-            self.state = RunnerState::Idle {
-                start_time: Instant::now(),
-                frame_gen,
-            };
-
-            self.consecutive_decode_failures = 0; // Reset counter when entering idle mode
-            info!("Switched to idle mode - generating placeholder content");
-            Ok(())
-        }
-    }
-
-    /// Check if circuit breaker should trigger due to consecutive failures
-    fn should_trigger_circuit_breaker(&self) -> bool {
-        self.consecutive_decode_failures >= self.max_consecutive_failures
-    }
-
-    /// Handle decode failure with circuit breaker logic
-    unsafe fn handle_decode_failure(
-        &mut self,
-        config: &PipelineConfig,
-    ) -> Result<Vec<EgressResult>> {
-        unsafe {
-            if self.should_trigger_circuit_breaker() {
-                error!(
-                    "Circuit breaker triggered: {} consecutive decode failures exceeded threshold of {}. Switching to idle mode.",
-                    self.consecutive_decode_failures, self.max_consecutive_failures
-                );
-
-                self.switch_to_idle_mode(config)
-                    .context("Circuit breaker triggered but unable to switch to idle mode")?;
-            }
-
-            // Return empty result to skip this packet
-            Ok(vec![])
-        }
-    }
-
     /// Process frame in normal mode (live stream)
-    unsafe fn process_normal_mode(&mut self, config: &PipelineConfig) -> Result<Vec<EgressResult>> {
+    unsafe fn process_normal_mode(&mut self) -> Result<Vec<EgressResult>> {
         unsafe {
             let (pkt, _stream) = self.demuxer.get_packet()?;
+
+            //TODO: implement PTS fix
+
             if let Some(pkt) = pkt {
                 self.process_packet(pkt)
             } else {
-                warn!("Demuxer get_packet failed, entering idle mode");
-                self.switch_to_idle_mode(config)
-                    .context("Failed to switch to idle mode after demuxer failure")?;
-                Ok(vec![])
-            }
-        }
-    }
-
-    /// Process frame in idle mode (placeholder content)
-    unsafe fn process_idle_mode(&mut self, config: &PipelineConfig) -> Result<Vec<EgressResult>> {
-        unsafe {
-            // Check if idle timeout has been reached
-            if let Some(duration) = self.state.idle_duration()
-                && duration > Duration::from_secs(IDLE_TIMEOUT_SECS)
-            {
-                info!(
-                    "Idle timeout reached ({} seconds), ending stream",
-                    IDLE_TIMEOUT_SECS
-                );
-                return Err(anyhow!("Idle timeout reached"));
-            }
-
-            // Generate next frame from idle mode generator
-            if let RunnerState::Idle {
-                frame_gen,
-                start_time,
-                ..
-            } = &mut self.state
-            {
-                frame_gen.begin()?;
-
-                frame_gen.fill_color([0, 0, 0, 255])?;
-                let message = format!(
-                    "Stream Offline - {} seconds",
-                    start_time.elapsed().as_secs()
-                );
-                frame_gen.write_text(&message, 48.0, 50.0, 50.0)?;
-                frame_gen.write_text("Please reconnect to resume streaming", 24.0, 50.0, 120.0)?;
-
-                if let Some(frame) = frame_gen.next()? {
-                    let stream = if frame.sample_rate > 0 {
-                        // Audio frame
-                        config
-                            .audio_src
-                            .context("got audio frame with no audio src?")?
-                    } else {
-                        // Video frame
-                        config.video_src
-                    };
-                    self.process_frame(config, stream, frame)
-                } else {
-                    Ok(vec![])
-                }
-            } else {
-                bail!("process_idle_mode called but not in idle state")
+                // EOF, exit
+                self.flush()
             }
         }
     }
 
     unsafe fn process_packet(&mut self, packet: AvPacketRef) -> Result<Vec<EgressResult>> {
         unsafe {
-            let config = if let Some(config) = &self.config {
-                config.clone()
-            } else {
+            let Some(config) = self.config.as_ref().map(|c| c.clone()) else {
                 bail!("Pipeline not configured, cant process packet")
             };
 
@@ -440,64 +294,7 @@ impl PipelineRunner {
                     "PKT->DECODER: stream={}, pts={}, dts={}, duration={}, flags={}",
                     stream_index, packet.pts, packet.dts, packet.duration, packet.flags
                 );
-                let frames = match self.decoder.decode_pkt(Some(&packet)) {
-                    Ok(f) => {
-                        // Reset failure counter on successful decode
-                        self.consecutive_decode_failures = 0;
-                        f
-                    }
-                    Err(e) => {
-                        self.consecutive_decode_failures += 1;
-                        warn!(
-                            "Error decoding packet ({}): {}. Consecutive failures: {}/{}. Skipping packet.",
-                            format!(
-                                "stream_idx={}, size={}, pts={}, dts={}",
-                                stream_index, packet.size, packet.pts, packet.dts
-                            ),
-                            e,
-                            self.consecutive_decode_failures,
-                            self.max_consecutive_failures
-                        );
-
-                        return self.handle_decode_failure(&config);
-                    }
-                };
-
-                for (mut frame, stream_idx) in frames {
-                    trace!(
-                        "DECODER->FRAME: stream={}, pts={}, pkt_dts={}, duration={}, tb={}/{}",
-                        stream_idx,
-                        frame.pts,
-                        frame.pkt_dts,
-                        frame.duration,
-                        frame.time_base.num,
-                        frame.time_base.den
-                    );
-                    let stream = self.demuxer.get_stream(stream_idx as usize)?;
-                    // Adjust frame pts time without start_offset
-                    // Egress streams don't have a start time offset
-                    if !stream.is_null() {
-                        let start_time = (*stream).start_time;
-                        if start_time != AV_NOPTS_VALUE && start_time != 0 {
-                            frame.pts -= start_time;
-                            trace!(
-                                "FRAME PTS ADJUST: pts now={}, subtracted start_time={}",
-                                frame.pts, start_time
-                            );
-                        }
-                        frame.time_base = (*stream).time_base;
-                    }
-
-                    // Copy frame from GPU if using hwaccel decoding
-                    let frame = get_frame_from_hw(frame)?;
-
-                    if stream_index == config.video_src {
-                        self.generate_thumb_from_frame(&frame)?;
-                    }
-
-                    let results = self.process_frame(&config, stream_idx as usize, frame)?;
-                    egress_results.extend(results);
-                }
+                egress_results.extend(self.transcode_pkt(Some(&packet))?);
             }
 
             // egress (mux) copy variants
@@ -524,15 +321,66 @@ impl PipelineRunner {
         }
     }
 
+    fn transcode_pkt(&mut self, pkt: Option<&AvPacketRef>) -> Result<Vec<EgressResult>> {
+        unsafe {
+            let mut egress_results = vec![];
+            let video_src = if let Some(ref config) = self.config {
+                config.video_src as i32
+            } else {
+                bail!("Pipeline not configured, cant process packet")
+            };
+            let frames = self.decoder.decode_pkt(pkt)?;
+            for (mut frame, stream_idx) in frames {
+                trace!(
+                    "DECODER->FRAME: stream={}, pts={}, pkt_dts={}, duration={}, tb={}/{}",
+                    stream_idx,
+                    frame.pts,
+                    frame.pkt_dts,
+                    frame.duration,
+                    frame.time_base.num,
+                    frame.time_base.den
+                );
+                let stream = self.demuxer.get_stream(stream_idx as usize)?;
+                // Adjust frame pts time without start_offset
+                // Egress streams don't have a start time offset
+                if !stream.is_null() {
+                    let start_time = (*stream).start_time;
+                    if start_time != AV_NOPTS_VALUE && start_time != 0 {
+                        frame.pts -= start_time;
+                        trace!(
+                            "FRAME PTS ADJUST: pts now={}, subtracted start_time={}",
+                            frame.pts, start_time
+                        );
+                    }
+                    frame.time_base = (*stream).time_base;
+                }
+
+                // Copy frame from GPU if using hwaccel decoding
+                let frame = get_frame_from_hw(frame)?;
+
+                if stream_idx == video_src {
+                    self.generate_thumb_from_frame(&frame)?;
+                }
+
+                let results = self.process_frame(stream_idx as usize, frame)?;
+                egress_results.extend(results);
+            }
+            Ok(egress_results)
+        }
+    }
+
     /// process the frame in the pipeline
     unsafe fn process_frame(
         &mut self,
-        config: &PipelineConfig,
         stream_index: usize,
         frame: AvFrameRef,
     ) -> Result<Vec<EgressResult>> {
         unsafe {
             let mut egress_results = Vec::new();
+
+            let Some(ref config) = self.config else {
+                bail!("Pipeline not configured, cant process frame")
+            };
 
             // Get the variants which want this frame
             let pkt_vars: Vec<_> = config
@@ -735,44 +583,56 @@ impl PipelineRunner {
     }
 
     /// EOF, cleanup
-    unsafe fn flush(&mut self) -> Result<()> {
-        unsafe {
-            for (var, enc) in &mut self.encoders {
-                for pkt in enc.encode_frame(None)? {
-                    for eg in self.egress.iter_mut() {
-                        eg.process_pkt(pkt.clone(), var)?;
-                    }
+    unsafe fn flush(&mut self) -> Result<Vec<EgressResult>> {
+        self.state = RunnerState::Shutdown;
+        let mut reset_results = Vec::new();
+
+        // flush decoder
+        reset_results.extend(self.transcode_pkt(None)?);
+
+        // flush encoders
+        for (var, enc) in &mut self.encoders {
+            for pkt in enc.encode_frame(None)? {
+                for eg in self.egress.iter_mut() {
+                    reset_results.push(eg.process_pkt(pkt.clone(), var)?);
                 }
             }
+        }
 
-            // Reset egress handlers and collect deleted segments
-            let mut reset_results = Vec::new();
-            for eg in self.egress.iter_mut() {
-                let result = eg.reset()?;
-                reset_results.push(result);
-            }
+        // Reset egress handlers and collect deleted segments
+        for eg in self.egress.iter_mut() {
+            let result = eg.reset()?;
+            reset_results.push(result);
+        }
 
-            // Process reset results and notify overseer of deleted segments
-            if self.config.is_some() {
-                self.handle.block_on(async {
-                    for result in reset_results {
-                        if let EgressResult::Segments { created, deleted } = result
-                            && !deleted.is_empty()
-                            && let Err(e) = self
+        reset_results.push(EgressResult::Flush);
+        Ok(reset_results)
+    }
+
+    fn handle_egress_results(&self, results: Vec<EgressResult>) {
+        // Process reset results and notify overseer of deleted segments
+        if self.config.is_some() && !results.is_empty() {
+            self.handle.block_on(async {
+                for result in results {
+                    match result {
+                        EgressResult::Flush => {
+                            if let Err(e) = self.overseer.on_end(&self.connection.id).await {
+                                error!("Failed to end stream: {e}");
+                            }
+                        }
+                        EgressResult::Segments { created, deleted } => {
+                            if let Err(e) = self
                                 .overseer
                                 .on_segments(&self.connection.id, &created, &deleted)
                                 .await
-                        {
-                            error!("Failed to notify overseer of deleted segments: {e}");
+                            {
+                                error!("Failed to notify overseer of deleted segments: {e}");
+                            }
                         }
+                        _ => {}
                     }
-                    if let Err(e) = self.overseer.on_end(&self.connection.id).await {
-                        error!("Failed to end stream: {e}");
-                    }
-                });
-            }
-
-            Ok(())
+                }
+            });
         }
     }
 
@@ -851,6 +711,7 @@ impl PipelineRunner {
         Ok(None)
     }
 
+    /// Run pipeline ones, false=exit
     unsafe fn once(&mut self) -> Result<bool> {
         unsafe {
             if let Some(r) = self.handle_command()? {
@@ -858,34 +719,15 @@ impl PipelineRunner {
             }
             self.setup()?;
 
-            let config = if let Some(config) = &self.config {
-                config.clone()
-            } else {
-                bail!("Pipeline not configured, cannot run")
-            };
-
             // run transcoder pipeline
             let results = match &mut self.state {
-                RunnerState::Normal => self.process_normal_mode(&config)?,
-                RunnerState::Idle { .. } => self.process_idle_mode(&config)?,
-                RunnerState::Shutdown => return Ok(true), // Shutdown requested
+                RunnerState::Normal => self.process_normal_mode()?,
+                RunnerState::Shutdown => return Ok(false), // Shutdown requested
             };
 
             // egress results - process async operations without blocking if possible
             if !results.is_empty() {
-                self.handle.block_on(async {
-                    for er in results {
-                        if let EgressResult::Segments { created, deleted } = er
-                            && let Err(e) = self
-                                .overseer
-                                .on_segments(&self.connection.id, &created, &deleted)
-                                .await
-                        {
-                            bail!("Failed to process segment {}", e);
-                        }
-                    }
-                    Ok(())
-                })?;
+                self.handle_egress_results(results);
             }
             let elapsed = Instant::now().sub(self.stats_start).as_secs_f32();
             if elapsed >= 2f32 {
@@ -1061,8 +903,9 @@ impl Drop for PipelineRunner {
     fn drop(&mut self) {
         unsafe {
             // First try to flush properly
-            if let Err(e) = self.flush() {
-                error!("Failed to flush pipeline during drop: {}", e);
+            match self.flush() {
+                Ok(r) => self.handle_egress_results(r),
+                Err(e) => error!("Failed to flush pipeline during drop: {}", e),
             }
 
             // Clear all collections to ensure proper Drop cleanup

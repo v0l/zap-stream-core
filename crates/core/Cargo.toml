@@ -52,5 +52,4 @@ hang = { git = "https://github.com/kixelated/moq.git", rev = "b2abf685647f125486
 
 [dev-dependencies]
 tempfile = "3.8.1"
-pretty_env_logger.workspace = true
 

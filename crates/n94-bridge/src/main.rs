@@ -472,7 +472,7 @@ async fn main() -> Result<()> {
             std::env::set_var("RUST_LOG", "info");
         }
     }
-    pretty_env_logger::init();
+    tracing_subscriber::fmt::init();
 
     let args: Args = Args::parse();
 

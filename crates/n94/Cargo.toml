@@ -12,9 +12,9 @@ zap-stream-core-nostr = { path = "../core-nostr", default-features = false }
 uuid.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
+tracing-subscriber.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
-pretty_env_logger.workspace = true
 async-trait.workspace = true
 nostr-sdk.workspace = true
 chrono.workspace = true

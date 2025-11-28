@@ -20,6 +20,8 @@ pub trait Egress {
 pub enum EgressResult {
     /// Nothing to report
     None,
+    /// Stream has ended
+    Flush,
     /// Egress created/deleted some segments
     Segments {
         created: Vec<EgressSegment>,

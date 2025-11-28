@@ -306,18 +306,16 @@ impl Read for RtmpClient {
         // Block until we have enough data to fill the buffer
         while self.buffer.buf.len() < buf.len() {
             match self.read_data() {
-                Ok(Some(r_len)) if r_len == 0 => {
-                    let r = self.buffer.read_buffered(buf);
-                    if r == 0 {
-                        return Err(std::io::Error::other(anyhow!("EOF")));
-                    }
-                    return Ok(r);
-                }
+                Ok(Some(r_len)) if r_len == 0 => return Ok(self.buffer.read_buffered(buf)),
                 Ok(Some(r_len)) => {
                     if let Err(e) = self.process_socket_buf(r_len) {
                         error!("Error processing bytes: {}", e);
                         return Ok(0);
                     }
+                }
+                Ok(None) if self.buffer.buf.len() > 0 => {
+                    // allow reading some data when there is no more data available
+                    break;
                 }
                 Err(e) => {
                     error!("Error reading data: {}", e);
@@ -421,13 +419,17 @@ fn socket_handler(
         bail!("Error waiting for publish request: {}", e)
     }
 
-    let id = *id.lock().map_err(|e| anyhow!("Failed to obtain lock: {}", e))?;
+    let id = *id
+        .lock()
+        .map_err(|e| anyhow!("Failed to obtain lock: {}", e))?;
     let out_dir = out_dir.join(id.to_string());
     if !out_dir.exists() {
         std::fs::create_dir_all(&out_dir)?;
     }
 
-    if *dump_stream.lock().map_err(|e| anyhow!("Failed to obtain lock: {}", e))?
+    if *dump_stream
+        .lock()
+        .map_err(|e| anyhow!("Failed to obtain lock: {}", e))?
         && let Ok(f) = File::create(out_dir.join("stream.dump"))
     {
         cc.set_stream_dump_handle(f);

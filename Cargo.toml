@@ -15,23 +15,22 @@ codegen-units = 1
 panic = "unwind"
 
 [workspace.dependencies]
-ffmpeg-rs-raw = { git = "https://git.v0l.io/Kieran/ffmpeg-rs-raw.git", rev = "0cb01f2e0a0f0955fe4a249fac34b96f3836dde5" }
-tokio = { version = "1.36.0", features = ["rt", "rt-multi-thread", "macros"] }
-tokio-util = "0.7.13"
-anyhow = { version = "^1.0.99", features = ["backtrace"] }
-async-trait = "0.1.77"
-tracing = "0.1.41"
-tracing-subscriber = { version = "0.3.20", features = ["env-filter", "fmt"] }
-uuid = { version = "1.8.0", features = ["v4", "serde"] }
-serde = { version = "1.0.197", features = ["derive"] }
-url = "2.5.0"
-itertools = "0.14.0"
-chrono = { version = "^0.4.38", features = ["serde"] }
-hex = "0.4.3"
+ffmpeg-rs-raw = { git = "https://git.v0l.io/Kieran/ffmpeg-rs-raw.git", rev = "377c877dc553fcb432304226253e279561c8d890" }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
+tokio-util = "0.7"
+anyhow = { version = "1", features = ["backtrace"] }
+async-trait = "0.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "tracing-log", "fmt"], default-features = false }
+uuid = { version = "1", features = ["v4", "serde"] }
+serde = { version = "1", features = ["derive"] }
+url = "2"
+itertools = "0.14"
+chrono = { version = "0.4", features = ["serde"] }
+hex = "0.4"
 m3u8-rs = { git = "https://git.v0l.io/Kieran/m3u8-rs.git", rev = "6803eefca2838a8bfae9e19fd516ef36d7d89997" }
-sha2 = "0.10.8"
-data-encoding = "2.9.0"
-rand = "0.9.1"
-pretty_env_logger = "0.5.0"
+sha2 = "0.10"
+data-encoding = "2.9"
+rand = "0.9"
 nostr-sdk = { git = "https://github.com/rust-nostr/nostr.git", pacakge = "nostr-sdk", rev = "75345c65c645d33d15f6a5ec10fa6ffd0d8f4cac", features = ["nip57", "nip47"] }
-ctrlc = { version = "3.4.7", features = ["termination"] }
+ctrlc = { version = "3.4", features = ["termination"] }
