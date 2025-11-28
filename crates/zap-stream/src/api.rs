@@ -62,7 +62,7 @@ pub struct Api {
     settings: Settings,
     payments: Arc<dyn LightningNode>,
     router: Router<Route>,
-    overseer: Arc<dyn Overseer>,
+    overseer: Arc<ZapStreamOverseer>,
     stream_manager: StreamManager,
     nostr_client: Client,
 }
@@ -612,40 +612,24 @@ impl Api {
         // Get ingest endpoints from database
         let db_ingest_endpoints = self.db.get_ingest_endpoints().await?;
 
-        // Create 2D array: settings endpoints × database ingest endpoints
-        let mut endpoints = Vec::new();
-
-        for setting_endpoint in &self.settings.endpoints {
-            if let Ok(listener_endpoint) = ListenerEndpoint::from_str(setting_endpoint) {
-                for ingest in &db_ingest_endpoints {
-                    if let Some(url) = listener_endpoint
-                        .to_public_url(&self.settings.endpoints_public_hostname, &ingest.name)
-                    {
-                        let protocol = match listener_endpoint {
-                            ListenerEndpoint::SRT { .. } => "SRT",
-                            ListenerEndpoint::RTMP { .. } => "RTMP",
-                            ListenerEndpoint::TCP { .. } => "TCP",
-                            _ => continue,
-                        };
-
-                        endpoints.push(Endpoint {
-                            name: format!("{}-{}", protocol, ingest.name),
-                            url,
-                            key: user.stream_key.clone(),
-                            capabilities: ingest
-                                .capabilities
-                                .as_ref()
-                                .map(|c| c.split(',').map(|s| s.trim().to_string()).collect())
-                                .unwrap_or_else(Vec::new),
-                            cost: EndpointCost {
-                                unit: "min".to_string(),
-                                rate: ingest.cost as f32 / 1000.0,
-                            },
-                        });
-                    }
-                }
-            }
-        }
+        // Use streaming backend to generate endpoint URLs
+        let backend = self.overseer.streaming_backend();
+        let backend_endpoints = backend.get_ingest_endpoints(&user, &db_ingest_endpoints).await?;
+        
+        // Convert backend endpoints to API endpoints
+        let endpoints: Vec<Endpoint> = backend_endpoints
+            .into_iter()
+            .map(|e| Endpoint {
+                name: e.name,
+                url: e.url,
+                key: e.key,
+                capabilities: e.capabilities,
+                cost: EndpointCost {
+                    unit: e.cost.unit,
+                    rate: e.cost.rate,
+                },
+            })
+            .collect();
 
         Ok(AccountInfo {
             endpoints,

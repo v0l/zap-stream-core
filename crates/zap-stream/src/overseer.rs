@@ -1,6 +1,7 @@
 use crate::payments::create_lightning;
 use crate::settings::{AdvertiseConfig, PaymentBackend, RedisConfig, Settings};
 use crate::stream_manager::StreamManager;
+use crate::streaming_backend::{RmlRtmpBackend, StreamingBackend};
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -66,6 +67,8 @@ pub struct ZapStreamOverseer {
     nwc_topup_requests: Arc<RwLock<HashMap<u64, JoinHandle<()>>>>,
     /// Primary output directory for media
     out_dir: PathBuf,
+    /// Streaming backend for URL generation
+    streaming_backend: Arc<dyn StreamingBackend>,
 }
 
 impl ZapStreamOverseer {
@@ -73,6 +76,13 @@ impl ZapStreamOverseer {
     const RECONNECT_WINDOW_SECONDS: u64 = 120;
 
     pub async fn from_settings(settings: &Settings, shutdown: CancellationToken) -> Result<Self> {
+        // Create streaming backend
+        let streaming_backend: Arc<dyn StreamingBackend> = Arc::new(RmlRtmpBackend::new(
+            settings.public_url.clone(),
+            settings.endpoints_public_hostname.clone(),
+            settings.endpoints.clone(),
+        ));
+        
         ZapStreamOverseer::new(
             &settings.public_url,
             &settings.overseer.nsec,
@@ -85,6 +95,7 @@ impl ZapStreamOverseer {
             &settings.overseer.advertise,
             &settings.redis,
             PathBuf::from(&settings.output_dir),
+            streaming_backend,
             shutdown,
         )
         .await
@@ -102,6 +113,7 @@ impl ZapStreamOverseer {
         advertise: &Option<AdvertiseConfig>,
         redis: &Option<RedisConfig>,
         out_dir: PathBuf,
+        streaming_backend: Arc<dyn StreamingBackend>,
         shutdown: CancellationToken,
     ) -> Result<Self> {
         let db = ZapStreamDb::new(db).await?;
@@ -159,6 +171,7 @@ impl ZapStreamOverseer {
             node_name,
             nwc_topup_requests: Arc::new(RwLock::new(HashMap::new())),
             out_dir,
+            streaming_backend,
         };
 
         // Enable Redis stats distribution if available
@@ -323,6 +336,10 @@ impl ZapStreamOverseer {
 
     pub fn nostr_client(&self) -> Client {
         self.client.clone()
+    }
+    
+    pub fn streaming_backend(&self) -> Arc<dyn StreamingBackend> {
+        self.streaming_backend.clone()
     }
 
     async fn stream_to_event_builder(&self, stream: &UserStream) -> Result<EventBuilder> {

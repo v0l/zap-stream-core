@@ -34,6 +34,7 @@ mod overseer;
 mod payments;
 mod settings;
 mod stream_manager;
+mod streaming_backend;
 mod viewer;
 mod websocket_metrics;
 
