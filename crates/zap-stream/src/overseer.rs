@@ -28,7 +28,6 @@ use url::Url;
 use uuid::Uuid;
 use zap_stream_core::egress::EgressSegment;
 use zap_stream_core::egress::hls::HlsEgress;
-use zap_stream_core::egress::recorder::RecorderEgress;
 use zap_stream_core::endpoint::{
     EndpointCapability, get_variants_from_endpoint, parse_capabilities,
 };
@@ -443,23 +442,16 @@ impl ZapStreamOverseer {
         stream: &UserStream,
         pubkey: &Vec<u8>,
     ) -> Result<Event> {
-        let pipeline_dir = PathBuf::from(stream.id.to_string());
         let mut extra_tags = vec![
             Tag::parse(["p", hex::encode(pubkey).as_str(), "", "host"])?,
             Tag::parse(["service", self.map_to_public_url("api/v1")?.as_str()])?,
         ];
         match stream.state {
             UserStreamState::Live => {
+                let hls_url = self.streaming_backend.get_hls_url(&stream.id).await?;
                 extra_tags.push(Tag::parse([
                     "streaming",
-                    self.map_to_public_url(
-                        pipeline_dir
-                            .join(HlsEgress::PATH)
-                            .join("live.m3u8")
-                            .to_str()
-                            .unwrap(),
-                    )?
-                    .as_str(),
+                    hls_url.as_str(),
                 ])?);
             }
             UserStreamState::Ended => {
@@ -470,16 +462,12 @@ impl ZapStreamOverseer {
                         .iter()
                         .any(|c| matches!(c, EndpointCapability::DVR { .. }));
                     if has_recording {
-                        extra_tags.push(Tag::parse([
-                            "recording",
-                            self.map_to_public_url(
-                                pipeline_dir
-                                    .join(RecorderEgress::FILENAME)
-                                    .to_str()
-                                    .unwrap(),
-                            )?
-                            .as_str(),
-                        ])?);
+                        if let Some(recording_url) = self.streaming_backend.get_recording_url(&stream.id).await? {
+                            extra_tags.push(Tag::parse([
+                                "recording",
+                                recording_url.as_str(),
+                            ])?);
+                        }
                     }
                 }
             }
@@ -1019,17 +1007,10 @@ impl Overseer for ZapStreamOverseer {
         _height: usize,
         _pixels: &PathBuf,
     ) -> Result<()> {
-        let pipeline_dir = PathBuf::from(pipeline_id.to_string());
-
         let mut stream = self.db.get_stream(pipeline_id).await?;
 
-        let thumb_url = self.map_to_public_url(
-            pipeline_dir
-                .join(format!("thumb.webp?n={}", Utc::now().timestamp()))
-                .to_str()
-                .unwrap(),
-        )?;
-        stream.thumb = Some(thumb_url.to_string());
+        let thumb_url = self.streaming_backend.get_thumbnail_url(&pipeline_id.to_string()).await?;
+        stream.thumb = Some(thumb_url);
         self.db.update_stream(&stream).await?;
 
         Ok(())
