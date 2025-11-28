@@ -1,3 +1,11 @@
 **/target
 .idea/
 **/out/
+docs/deploy/data/
+
+# local configuration
+docs/deploy/compose-config.yaml
+docs/deploy/docker-compose.override.yaml
+docs/deploy/docker-compose.override.yml
+*.local.yaml
+*.local.yml
