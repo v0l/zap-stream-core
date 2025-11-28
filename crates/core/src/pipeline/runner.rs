@@ -7,6 +7,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::egress::hls::HlsEgress;
+#[cfg(feature = "egress-moq")]
+use crate::egress::moq::MoqEgress;
 use crate::egress::recorder::RecorderEgress;
 #[cfg(feature = "egress-rtmp")]
 use crate::egress::rtmp::RtmpEgress;
@@ -22,7 +24,7 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_WEBP;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPictureType::AV_PICTURE_TYPE_NONE;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, av_get_sample_fmt, av_rescale_q,
+    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVPixelFormat, av_get_sample_fmt, av_rescale_q,
 };
 use ffmpeg_rs_raw::{
     AudioFifo, AvFrameRef, AvPacketRef, Decoder, Demuxer, Encoder, Resample, Scaler, StreamType,
@@ -218,7 +220,7 @@ impl PipelineRunner {
                 .open(None)?;
 
             // use scaler to convert pixel format if not YUV420P
-            if frame.format != transmute(AV_PIX_FMT_YUV420P) {
+            if frame.format != transmute::<AVPixelFormat, i32>(AV_PIX_FMT_YUV420P) {
                 let mut sw = Scaler::new();
                 let new_frame = sw.process_frame(
                     frame,
@@ -971,14 +973,9 @@ impl PipelineRunner {
 
         for egress in &cfg.egress {
             let needs_global_header = match egress {
-                // HLS fMP4 mode needs GLOBAL_HEADER
                 EgressType::HLS(_, _, crate::mux::SegmentType::FMP4) => true,
-                // HLS MPEGTS mode doesn't need GLOBAL_HEADER
-                EgressType::HLS(_, _, crate::mux::SegmentType::MPEGTS) => false,
-                // Recorder (MP4) needs GLOBAL_HEADER
                 EgressType::Recorder(_) => true,
-                // RTMP forwarder typically doesn't need GLOBAL_HEADER
-                EgressType::RTMPForwarder(_, _) => false,
+                _ => false,
             };
 
             if needs_global_header {
@@ -1044,6 +1041,14 @@ impl PipelineRunner {
                     } else {
                         self.egress.push(Box::new(fwd));
                     }
+                }
+                #[cfg(feature = "egress-moq")]
+                EgressType::Moq(_) => {
+                    let origin = self
+                        .handle
+                        .block_on(async { self.overseer.get_moq_origin().await })?;
+                    let moq = MoqEgress::new(origin, variant_mapping)?;
+                    self.egress.push(Box::new(moq));
                 }
                 _ => bail!("Unhandled egress type: {:?}", e),
             }

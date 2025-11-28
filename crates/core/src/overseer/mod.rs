@@ -102,4 +102,8 @@ pub trait Overseer: Send + Sync {
 
     /// Stats emitted by the pipeline periodically
     async fn on_stats(&self, pipeline_id: &Uuid, stats: StatsType) -> Result<()>;
+
+    /// Get the MoQ origin for publishing streams
+    #[cfg(feature = "egress-moq")]
+    async fn get_moq_origin(&self) -> Result<hang::moq_lite::OriginProducer>;
 }

@@ -6,8 +6,8 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-zap-stream-core = { path = "../core" }
-zap-stream-core-nostr = { path = "../core-nostr" }
+zap-stream-core = { path = "../core", default-features = false }
+zap-stream-core-nostr = { path = "../core-nostr", default-features = false }
 
 uuid.workspace = true
 anyhow.workspace = true

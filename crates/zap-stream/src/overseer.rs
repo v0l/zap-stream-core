@@ -41,6 +41,9 @@ use zap_stream_db::{
     IngestEndpoint, Payment, StreamKeyType, User, UserStream, UserStreamState, ZapStreamDb,
 };
 
+#[cfg(feature = "moq")]
+use zap_stream_core::hang::moq_lite::{OriginConsumer, OriginProducer, Produce};
+
 /// zap.stream NIP-53 overseer
 #[derive(Clone)]
 pub struct ZapStreamOverseer {
@@ -66,6 +69,8 @@ pub struct ZapStreamOverseer {
     nwc_topup_requests: Arc<RwLock<HashMap<u64, JoinHandle<()>>>>,
     /// Primary output directory for media
     out_dir: PathBuf,
+    #[cfg(feature = "moq")]
+    moq_origin: Option<Arc<Produce<OriginProducer, OriginConsumer>>>,
 }
 
 impl ZapStreamOverseer {
@@ -159,6 +164,8 @@ impl ZapStreamOverseer {
             node_name,
             nwc_topup_requests: Arc::new(RwLock::new(HashMap::new())),
             out_dir,
+            #[cfg(feature = "moq")]
+            moq_origin: None,
         };
 
         // Enable Redis stats distribution if available
@@ -200,6 +207,11 @@ impl ZapStreamOverseer {
 
     pub fn lightning(&self) -> Arc<dyn LightningNode + Send + Sync> {
         self.lightning.clone()
+    }
+
+    #[cfg(feature = "moq")]
+    pub fn set_moq_origin(&mut self, origin: Arc<Produce<OriginProducer, OriginConsumer>>) {
+        self.moq_origin = Some(origin);
     }
 
     pub fn start_payment_handler(&self, token: CancellationToken) -> JoinHandle<Result<()>> {
@@ -1058,6 +1070,14 @@ impl Overseer for ZapStreamOverseer {
         }
 
         Ok(())
+    }
+
+    #[cfg(feature = "moq")]
+    async fn get_moq_origin(&self) -> Result<OriginProducer> {
+        let Some(prod) = &self.moq_origin else {
+            bail!("MoQ not configured")
+        };
+        Ok(prod.producer.clone())
     }
 }
 

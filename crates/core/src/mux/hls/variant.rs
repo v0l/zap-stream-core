@@ -393,7 +393,10 @@ impl HlsVariant {
         match self.mux.write_packet(pkt) {
             Ok(r) => r,
             Err(e) => {
-                let dst_stream = self.streams.iter().find(|s| s.index() == stream_index as _);
+                let dst_stream = self
+                    .streams
+                    .iter()
+                    .find(|s| s.index() == stream_index as usize);
                 error!(
                     "Error muxing HLS packet: name={}, var={}: {}",
                     self.name,
@@ -527,18 +530,16 @@ impl HlsVariant {
             }
             avio_flush((*ctx).pb);
             avio_closep(&mut (*ctx).pb);
-            av_freep((*ctx).url as *mut _);
+            av_freep(ptr::addr_of_mut!((*ctx).url) as _);
 
             let next_seg_url = self.map_segment_path(self.idx, self.segment_type);
             (*ctx).url = cstr!(next_seg_url.to_str().unwrap());
 
             let mut next_io = ptr::null_mut();
             let ret = avio_open(&mut next_io, (*ctx).url, AVIO_FLAG_WRITE);
-            if ret < 0 {
-                av_freep((*ctx).url as *mut _);
-                error!("Failed to split segment during avio_open!");
-                bail_ffmpeg!(ret);
-            }
+            bail_ffmpeg!(ret, "Failed to split segment during avio_open!", {
+                av_freep(ptr::addr_of_mut!((*ctx).url) as _);
+            });
             (*ctx).pb = next_io;
         }
 

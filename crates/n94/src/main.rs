@@ -402,6 +402,11 @@ impl Overseer for N94Overseer {
         info!("Received stats: {:?}", stats);
         Ok(())
     }
+
+    #[cfg(false)]
+    async fn get_moq_origin(&self) -> Result<zap_stream_core::hang::moq_lite::OriginProducer> {
+        todo!()
+    }
 }
 
 fn into_n94_segment(seg: &EgressSegment) -> N94Segment {

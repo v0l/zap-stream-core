@@ -156,7 +156,7 @@ pub fn get_variants_from_endpoint<'a>(
                     }
 
                     // Skip variant if source resolution matches and source variant is enabled
-                    if video_src.height == output_height as _
+                    if video_src.height == output_height as usize
                         && capabilities
                             .iter()
                             .any(|cap| matches!(cap, EndpointCapability::SourceVariant))

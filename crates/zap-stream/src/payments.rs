@@ -6,7 +6,6 @@ use hex::ToHex;
 use lnurl::lightning_address::LightningAddress;
 use lnurl::pay::PayResponse;
 use lnurl::{AsyncClient, LnUrlResponse};
-use log::error;
 use nwc::NWC;
 use nwc::prelude::{MakeInvoiceRequest, NostrWalletConnectURI, NotificationResult};
 use payments_rs::lightning::{
@@ -17,7 +16,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use zap_stream_db::ZapStreamDb;
 
 pub struct NWCNode {
@@ -73,12 +72,7 @@ impl LightningNode for LNURLNode {
     async fn add_invoice(&self, req: AddInvoiceRequest) -> Result<AddInvoiceResponse> {
         let invoice = self
             .client
-            .get_invoice(
-                &self.pay_response,
-                req.amount,
-                None,
-                req.memo.as_deref(),
-            )
+            .get_invoice(&self.pay_response, req.amount, None, req.memo.as_deref())
             .await?;
 
         Ok(AddInvoiceResponse::from_invoice(
@@ -174,9 +168,9 @@ impl LightningNode for NWCNode {
                             external_id: None,
                         })
                         .await
-                    {
-                        warn!("Failed to send payment update: {}", e);
-                    }
+                {
+                    warn!("Failed to send payment update: {}", e);
+                }
                 Ok(false)
             })
             .await

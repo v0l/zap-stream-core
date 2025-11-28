@@ -54,40 +54,40 @@ pub unsafe extern "C" fn av_log_redirect(
     level: libc::c_int,
     fmt: *const libc::c_char,
     args: VaList,
-) { unsafe {
-    use ffmpeg_sys_the_third::*;
-    let mut buf: [u8; 1024] = [0; 1024];
-    let mut prefix: libc::c_int = 1;
-    av_log_format_line(
-        av_class,
-        level,
-        fmt,
-        args,
-        buf.as_mut_ptr() as *mut libc::c_char,
-        1024,
-        ptr::addr_of_mut!(prefix),
-    );
-    // Find the null terminator to avoid logging trailing null bytes
-    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-    let msg = String::from_utf8_lossy(&buf[..len])
-        .trim_end()
-        .to_string();
-    match level {
-        AV_LOG_DEBUG => {
-            tracing::debug!(target: "ffmpeg", "{}", msg)
+) {
+    unsafe {
+        use ffmpeg_sys_the_third::*;
+        let mut buf: [u8; 1024] = [0; 1024];
+        let mut prefix: libc::c_int = 1;
+        av_log_format_line(
+            av_class,
+            level,
+            fmt,
+            args,
+            buf.as_mut_ptr() as *mut libc::c_char,
+            1024,
+            ptr::addr_of_mut!(prefix),
+        );
+        // Find the null terminator to avoid logging trailing null bytes
+        let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        let msg = String::from_utf8_lossy(&buf[..len]).trim_end().to_string();
+        match level {
+            AV_LOG_DEBUG => {
+                tracing::debug!(target: "ffmpeg", "{}", msg)
+            }
+            AV_LOG_WARNING => {
+                tracing::warn!(target: "ffmpeg", "{}", msg)
+            }
+            AV_LOG_INFO => {
+                tracing::info!(target: "ffmpeg", "{}", msg)
+            }
+            AV_LOG_ERROR | AV_LOG_PANIC | AV_LOG_FATAL => {
+                tracing::error!(target: "ffmpeg", "{}", msg)
+            }
+            _ => tracing::trace!(target: "ffmpeg", "{}", msg),
         }
-        AV_LOG_WARNING => {
-            tracing::warn!(target: "ffmpeg", "{}", msg)
-        }
-        AV_LOG_INFO => {
-            tracing::info!(target: "ffmpeg", "{}", msg)
-        }
-        AV_LOG_ERROR | AV_LOG_PANIC | AV_LOG_FATAL => {
-            tracing::error!(target: "ffmpeg", "{}", msg)
-        }
-        _ => tracing::trace!(target: "ffmpeg", "{}", msg),
     }
-}}
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -136,9 +136,15 @@ async fn main() -> Result<()> {
     // setup termination handler
     let shutdown = CancellationToken::new();
 
+    #[cfg(feature = "moq")]
+    let moq_origin = Arc::new(zap_stream_core::hang::moq_lite::Origin::produce());
+
     let settings: Settings = builder.try_deserialize()?;
     let (overseer, api) = {
-        let overseer = ZapStreamOverseer::from_settings(&settings, shutdown.clone()).await?;
+        let mut overseer = ZapStreamOverseer::from_settings(&settings, shutdown.clone()).await?;
+        #[cfg(feature = "moq")]
+        overseer.set_moq_origin(moq_origin.clone());
+
         let arc = Arc::new(overseer);
         let api = Api::new(arc.clone(), settings.clone());
         (arc, api)
@@ -193,6 +199,45 @@ async fn main() -> Result<()> {
         info!("HTTP server shutdown.");
         Ok(())
     }));
+
+    // QUIC server
+    #[cfg(feature = "moq")]
+    if let Some(cfg) = settings.moq_server_config {
+        let mut server = cfg.init()?;
+        tasks.push(tokio::spawn(async move {
+            info!("MoQ server started..");
+
+            while let Some(req) = server.accept().await {
+                let session = match req.ok().await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        error!("Failed to accept QUIC/WebTransport session {}", e);
+                        continue;
+                    }
+                };
+
+                match zap_stream_core::hang::moq_lite::Session::accept(
+                    session,
+                    None,
+                    moq_origin.producer.clone(),
+                )
+                .await
+                {
+                    Ok(session) => {
+                        tokio::spawn(async move {
+                            if let Err(e) = session.closed().await {
+                                error!("MoQ session closed with error {}", e);
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        error!("Failed to create MoQ session {}", e);
+                    }
+                }
+            }
+            Ok(())
+        }));
+    }
 
     // Background worker to check streams
     let bg = overseer.clone();

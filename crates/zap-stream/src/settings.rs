@@ -33,6 +33,10 @@ pub struct Settings {
 
     /// Redis config for horizonal-scaling
     pub redis: Option<RedisConfig>,
+
+    #[cfg(feature = "moq")]
+    /// MoQ server config
+    pub moq_server_config: Option<moq_native::ServerConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

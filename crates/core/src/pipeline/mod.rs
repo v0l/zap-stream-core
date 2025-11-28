@@ -19,6 +19,9 @@ pub enum EgressType {
 
     /// Forward streams to another RTMP server
     RTMPForwarder(HashSet<Uuid>, String),
+
+    /// Media over Quic egress
+    Moq(HashSet<Uuid>),
 }
 
 impl EgressType {
@@ -27,6 +30,7 @@ impl EgressType {
             EgressType::HLS(a, _, _) => a,
             EgressType::Recorder(a) => a,
             EgressType::RTMPForwarder(a, _) => a,
+            EgressType::Moq(a) => a,
         }
     }
 }
@@ -37,6 +41,7 @@ impl Display for EgressType {
             EgressType::HLS(_, d, t) => write!(f, "HLS ({},{})", d, t),
             EgressType::Recorder(_) => write!(f, "Recorder"),
             EgressType::RTMPForwarder(_, d) => write!(f, "RTMPForwarder => {}", d),
+            EgressType::Moq(_) => write!(f, "MoQ"),
         }
     }
 }

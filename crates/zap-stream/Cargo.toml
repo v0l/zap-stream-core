@@ -5,16 +5,20 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
-default = ["srt", "rtmp", "test-pattern"]
+default = ["srt", "rtmp", "test-pattern", "moq", "tls-ring"]
 srt = ["zap-stream-core/ingress-srt"]
 rtmp = ["zap-stream-core/ingress-rtmp"]
 test-pattern = ["zap-stream-db/test-pattern", "zap-stream-core/ingress-test"]
+moq = ["zap-stream-core/egress-moq", "dep:moq-native"]
 withdrawal = []
 
+tls-ring = ["payments-rs/tls-ring", "redis/tokio-rustls-comp", "moq-native/ring"]
+tls-aws-lc-rs = ["payments-rs/tls-aws", "redis/tokio-rustls-comp", "moq-native/aws-lc-rs"]
+
 [dependencies]
-zap-stream-db = { path = "../zap-stream-db" }
-zap-stream-core = { path = "../core" }
-zap-stream-core-nostr = { path = "../core-nostr" }
+zap-stream-db = { path = "../zap-stream-db", default-features = false }
+zap-stream-core = { path = "../core", default-features = false }
+zap-stream-core-nostr = { path = "../core-nostr", default-features = false }
 
 uuid.workspace = true
 ffmpeg-rs-raw.workspace = true
@@ -35,32 +39,31 @@ nostr-sdk.workspace = true
 ctrlc.workspace = true
 
 # http stuff
-hyper = { version = "1.5.1", features = ["server", "http1", "http2"] }
-bytes = "1.8.0"
+hyper = { version = "1.8", features = ["server", "http1", "http2"] }
+bytes = "1"
 http-body-util = "0.1.2"
 hyper-util = "0.1.10"
 
 # websocket stuff
-tungstenite = "0.27.0"
-hyper-tungstenite = "0.18.0"
+tungstenite = "0.28"
+hyper-tungstenite = "0.19"
+
+#moq
+moq-native = { git = "https://github.com/kixelated/moq.git", rev = "b2abf685647f125486cbb40b44e1134f947c6583", optional = true, default-features = false }
 
 # direct deps
 config = { version = "0.15.6", features = ["yaml"] }
-payments-rs = { git = "https://github.com/v0l/payments-rs", rev = "414adc2186a163e6684f9451d95377dd5d07a015", default-features = false, features = ["method-lnd", "method-bitvora"] }
+payments-rs = { git = "https://github.com/v0l/payments-rs.git", rev = "a981b615990bdfbe37e80348824f85dbfef8a907", default-features = false, features = ["method-lnd", "method-bitvora"] }
 base64 = { version = "0.22.1" }
 clap = { version = "4.5.16", features = ["derive"] }
 futures-util = "0.3.31"
-matchit = "0.8.4"
+matchit = "0.8"
 mustache = "0.9.0"
 http-range-header = "0.4.2"
-sysinfo = "0.36.1"
+sysinfo = "0.36"
 lnurl-rs = { git = "https://github.com/benthecarman/lnurl-rs", default-features = false, rev = "745aea89c404f14d8adc18b594ac002d9cab9b49", features = ["async"] }
-redis = { version = "0.32.5", features = ["cluster", "tokio-comp", "tokio-native-tls-comp"] }
+redis = { version = "0.32.5", features = ["cluster", "tokio-comp"] }
 libc = "0.2.175"
 nwc = { git = "https://github.com/rust-nostr/nostr.git", pacakge = "nwc", rev = "75345c65c645d33d15f6a5ec10fa6ffd0d8f4cac" }
 tokio-stream = "0.1.17"
 
-# Migration dependencies
-tiberius = "0.12.3"
-sqlx = { version = "0.8.0", features = ["runtime-tokio-rustls", "mysql", "chrono", "uuid"] }
-log = "0.4.28"

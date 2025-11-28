@@ -421,13 +421,13 @@ fn socket_handler(
         bail!("Error waiting for publish request: {}", e)
     }
 
-    let id = *id.lock().unwrap();
+    let id = *id.lock().map_err(|e| anyhow!("Failed to obtain lock: {}", e))?;
     let out_dir = out_dir.join(id.to_string());
     if !out_dir.exists() {
         std::fs::create_dir_all(&out_dir)?;
     }
 
-    if *dump_stream.lock().unwrap()
+    if *dump_stream.lock().map_err(|e| anyhow!("Failed to obtain lock: {}", e))?
         && let Ok(f) = File::create(out_dir.join("stream.dump"))
     {
         cc.set_stream_dump_handle(f);

@@ -5,12 +5,13 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
-default = ["ingress-srt", "ingress-rtmp", "ingress-test"]
+default = []
 ingress-srt = ["dep:srt-tokio"]
 ingress-rtmp = ["dep:rml_rtmp", "dep:xflv", "dep:bytes"]
 ingress-test = []
 ingress-tcp = []
 egress-rtmp = ["dep:rml_rtmp", "dep:xflv", "dep:bytes"]
+egress-moq = ["dep:hang"]
 
 [dependencies]
 ffmpeg-rs-raw.workspace = true
@@ -45,6 +46,9 @@ srt-tokio = { version = "0.4.4", optional = true }
 rml_rtmp = { version = "0.8.0", optional = true }
 bytes = { version = "1.9.0", optional = true }
 xflv = { version = "0.4.4", optional = true }
+
+# moq
+hang = { git = "https://github.com/kixelated/moq.git", rev = "b2abf685647f125486cbb40b44e1134f947c6583", optional = true }
 
 [dev-dependencies]
 tempfile = "3.8.1"

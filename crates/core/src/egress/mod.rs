@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 pub mod hls;
+#[cfg(feature = "egress-moq")]
+pub mod moq;
 pub mod recorder;
 #[cfg(feature = "egress-rtmp")]
 pub mod rtmp;

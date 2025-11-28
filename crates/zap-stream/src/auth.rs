@@ -1,8 +1,8 @@
 use anyhow::{Result, bail};
 use base64::Engine;
 use chrono::{DateTime, Utc};
-use log::info;
 use nostr_sdk::{Alphabet, Event, Kind, PublicKey, SingleLetterTag, TagKind, serde_json};
+use tracing::info;
 use url::Url;
 use zap_stream_db::ZapStreamDb;
 

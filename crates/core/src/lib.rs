@@ -32,3 +32,6 @@ pub fn hash_file_sync(f: &mut std::fs::File) -> anyhow::Result<[u8; 32]> {
     f.seek(SeekFrom::Start(0))?;
     Ok(hash.into())
 }
+
+#[cfg(feature = "egress-moq")]
+pub use hang;
