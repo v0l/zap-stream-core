@@ -51,6 +51,8 @@ impl Display for LocalOverseerVariant {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct OverseerConfig {
+    /// Streaming backend type: "rml_rtmp" or "cloudflare"
+    pub backend: Option<String>,
     /// MySQL connection string
     pub database: String,
     /// Backend payment target
@@ -67,6 +69,8 @@ pub struct OverseerConfig {
     pub low_balance_threshold: Option<u64>,
     /// Advertise this server on nostr for others to use (NIP-89)
     pub advertise: Option<AdvertiseConfig>,
+    /// Cloudflare Stream configuration
+    pub cloudflare: Option<CloudflareSettings>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,6 +83,15 @@ pub struct AdvertiseConfig {
     pub picture: Option<String>,
     /// Optional override for the 'd' tag
     pub id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct CloudflareSettings {
+    /// Cloudflare API token
+    pub api_token: String,
+    /// Cloudflare account ID
+    pub account_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

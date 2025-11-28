@@ -2,7 +2,7 @@ use crate::api::Api;
 use crate::http::HttpServer;
 use crate::overseer::ZapStreamOverseer;
 use crate::settings::Settings;
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::Parser;
 use config::Config;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::{AV_CODEC_ID_H264, AV_CODEC_ID_HEVC};
@@ -137,11 +137,16 @@ async fn main() -> Result<()> {
     let shutdown = CancellationToken::new();
 
     let settings: Settings = builder.try_deserialize()?;
-    let (overseer, api) = {
-        let overseer = ZapStreamOverseer::from_settings(&settings, shutdown.clone()).await?;
-        let arc = Arc::new(overseer);
-        let api = Api::new(arc.clone(), settings.clone());
-        (arc, api)
+    let backend_type = settings.overseer.backend.as_deref().unwrap_or("rml_rtmp");
+    let (overseer, api) = match backend_type {
+        "rml_rtmp" | "cloudflare" => {
+            // Both point to same implementation for now
+            let overseer = ZapStreamOverseer::from_settings(&settings, shutdown.clone()).await?;
+            let arc = Arc::new(overseer);
+            let api = Api::new(arc.clone(), settings.clone());
+            (arc, api)
+        }
+        _ => bail!("Unknown backend: {}", backend_type)
     };
     let mut tasks = vec![];
 
