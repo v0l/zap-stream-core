@@ -9,7 +9,7 @@
    ```
    **Required outcome:**
    - ✅ ALL tests MUST pass (no failures)
-   - ✅ NO new compilation warnings allowed (compare with `git checkout HEAD~1 && cargo test 2>&1 | grep warning`)
+   - ✅ NO new compilation warnings allowed (see "How to Check Warnings" section below)
    - ❌ If ANY test fails or new warnings appear: FIX BEFORE PROCEEDING
 
 2. ✅ **Start Docker integration test (WITH `-d` FLAG!):**
@@ -46,7 +46,7 @@
 - ❌ **Running `docker-compose up --build` WITHOUT the `-d` flag** (WILL CRASH YOUR CONTEXT)
 - ❌ **Assuming tests pass without explicit user confirmation**
 - ❌ **Skipping the ask_followup_question step**
-- ❌ **Proceeding without checking baseline warnings** (use: `git checkout HEAD~1 && cargo test 2>&1 | grep warning`)
+- ❌ **Proceeding without checking baseline warnings** (see "How to Check Warnings" section below)
 
 **⚠️ COMMIT CRITERIA (ALL must be true):**
 1. ✅ Rust unit tests: ALL PASS, NO new warnings
@@ -476,6 +476,89 @@ This strategy gives you:
 - ✅ Isolated feature development
 - ✅ Clean deployment path
 - ✅ Option to contribute back
+
+## 📊 How to Check Warnings (DEFINITIVE METHOD)
+
+**⚠️ WARNING CONFUSION ALERT:** Multiple AIs have gotten confused about warning counts. Use this ONE method only.
+
+### The ONE Correct Method:
+
+**Step 1: Get baseline warning count:**
+```bash
+cd /Users/visitor/Projects/shosho/zap-stream-core
+git stash  # Save your changes temporarily
+git checkout HEAD~1  # Go to previous commit
+cargo test 2>&1 | grep "generated.*warning"
+```
+
+**You'll see output like:**
+```
+warning: `zap-stream-core` (lib) generated 1 warning
+warning: `zap-stream-core` (lib test) generated 3 warnings (1 duplicate)
+warning: `zap-stream` (bin "hls_debug" test) generated 2 warnings
+warning: `zap-stream` (bin "zap-stream" test) generated 7 warnings
+```
+
+**Step 2: Remember the baseline numbers:**
+- zap-stream-core (lib): 1
+- zap-stream-core (lib test): 3 (1 duplicate)
+- zap-stream (hls_debug): 2
+- zap-stream (zap-stream): 7
+
+**Step 3: Return to your branch:**
+```bash
+git checkout -  # Return to your branch
+git stash pop  # Restore your changes
+```
+
+**Step 4: Check your branch's warning count:**
+```bash
+cargo test 2>&1 | grep "generated.*warning"
+```
+
+**Step 5: Compare the numbers:**
+- ✅ **PASS**: All numbers are the same or lower
+- ❌ **FAIL**: ANY number is higher (you introduced new warnings)
+
+### Example of PASS:
+```
+Baseline: zap-stream (zap-stream) generated 7 warnings
+Your code: zap-stream (zap-stream) generated 7 warnings
+✅ SAME - No new warnings introduced
+```
+
+### Example of FAIL:
+```
+Baseline: zap-stream (zap-stream) generated 7 warnings
+Your code: zap-stream (zap-stream) generated 8 warnings
+❌ NEW WARNING - Must fix before committing
+```
+
+### ⚠️ Common Mistakes to Avoid:
+
+1. ❌ **WRONG**: Counting with `grep "^warning:" | wc -l` → gives wrong numbers (18 vs 7)
+2. ❌ **WRONG**: Only looking at ONE package's warnings → misses warnings in other packages
+3. ❌ **WRONG**: Comparing with `main` instead of `HEAD~1` → doesn't show YOUR changes
+4. ✅ **CORRECT**: Use `grep "generated.*warning"` and compare ALL packages
+
+### Why This Method Works:
+
+- **Per-package breakdown**: Shows exactly which package has warnings
+- **Handles duplicates**: Rust compiler tells you when warnings are duplicates
+- **Consistent**: Same command always gives same format
+- **Clear pass/fail**: Easy to see if numbers changed
+
+### If You Introduced New Warnings:
+
+1. Read the detailed warning messages in the test output
+2. Fix the code to eliminate the warnings
+3. Re-run `cargo test 2>&1 | grep "generated.*warning"`
+4. Verify the warning count matches baseline
+5. Only then proceed with commit
+
+Alternatively, explain to your user why an exception should be permitted.
+
+---
 
 ## ⚠️ CRITICAL: Testing Requirements (Required Before Every Commit)
 
