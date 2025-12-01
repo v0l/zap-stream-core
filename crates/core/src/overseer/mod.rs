@@ -21,7 +21,9 @@ pub struct IngressInfo {
 pub struct IngressStream {
     pub index: usize,
     pub stream_type: IngressStreamType,
+    /// FFMPEG codec ID
     pub codec: isize,
+    /// FFMPEG sample/pixel format ID
     pub format: isize,
     pub width: usize,
     pub height: usize,

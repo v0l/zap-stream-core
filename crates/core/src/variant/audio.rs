@@ -1,10 +1,13 @@
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::{AV_CODEC_FLAG_GLOBAL_HEADER, av_get_sample_fmt};
+use crate::map_codec_id;
+use crate::variant::{StreamMapping, VariantMapping};
+use anyhow::bail;
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
+    AV_CODEC_FLAG_GLOBAL_HEADER, av_get_sample_fmt, avcodec_find_encoder,
+};
 use ffmpeg_rs_raw::{Encoder, cstr};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 use uuid::Uuid;
-
-use crate::variant::{StreamMapping, VariantMapping};
 
 /// Information related to variant streams for a given egress
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -66,7 +69,15 @@ impl AudioVariant {
     /// Create encoder with conditional GLOBAL_HEADER flag
     pub fn create_encoder(&self, need_global_header: bool) -> Result<Encoder, anyhow::Error> {
         unsafe {
-            let enc = Encoder::new_with_name(&self.codec)?
+            let Some(codec_id) = map_codec_id(&self.codec) else {
+                bail!("Could not find codec id for {}", &self.codec);
+            };
+
+            let encoder = avcodec_find_encoder(codec_id);
+            if encoder.is_null() {
+                bail!("No available encoder for codec {}", &self.codec);
+            }
+            let enc = Encoder::new_with_codec(encoder)?
                 .with_sample_rate(self.sample_rate as _)?
                 .with_bitrate(self.bitrate as _)
                 .with_default_channel_layout(self.channels as _)
@@ -81,14 +92,5 @@ impl AudioVariant {
 
             Ok(enc)
         }
-    }
-}
-
-impl TryInto<Encoder> for &AudioVariant {
-    type Error = anyhow::Error;
-
-    fn try_into(self) -> Result<Encoder, Self::Error> {
-        // Default behavior - no GLOBAL_HEADER for backward compatibility
-        self.create_encoder(false)
     }
 }

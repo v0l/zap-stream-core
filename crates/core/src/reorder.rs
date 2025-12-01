@@ -92,7 +92,7 @@ impl<T> FrameReorderBuffer<T> {
 
             // If this is the first frame, or the frame's PTS matches our expected next PTS
             let should_emit = match self.next_pts {
-                None => true, // First frame, emit it
+                None => true,                           // First frame, emit it
                 Some(expected) => next.pts <= expected, // Frame is at or before expected PTS
             };
 

@@ -30,6 +30,7 @@ use zap_stream_core::overseer::Overseer;
 mod api;
 mod auth;
 mod http;
+mod multitrack;
 mod overseer;
 mod payments;
 mod settings;

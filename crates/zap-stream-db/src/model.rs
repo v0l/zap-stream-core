@@ -149,6 +149,15 @@ pub enum StreamKeyType {
     FixedEventKey { id: u64, stream_id: String },
 }
 
+impl StreamKeyType {
+    pub fn user_id(&self) -> u64 {
+        match self {
+            StreamKeyType::Primary(id) => *id,
+            StreamKeyType::FixedEventKey { id, .. } => *id,
+        }
+    }
+}
+
 #[derive(Debug, Clone, FromRow)]
 pub struct Payment {
     pub payment_hash: Vec<u8>,

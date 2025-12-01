@@ -5,16 +5,16 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPictureType::AV_PICTURE_TYPE_NONE;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_RGBA;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVSampleFormat::AV_SAMPLE_FMT_FLTP;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    AVPixelFormat, AVRational, AVStream, av_channel_layout_default, av_frame_alloc,
-    av_frame_free, av_frame_get_buffer, av_q2d, av_rescale_q,
+    AVPixelFormat, AVRational, AVStream, av_channel_layout_default, av_frame_alloc, av_frame_free,
+    av_frame_get_buffer, av_q2d, av_rescale_q,
 };
 use ffmpeg_rs_raw::{AvFrameRef, Scaler};
 use fontdue::Font;
 use fontdue::layout::{CoordinateSystem, Layout, TextStyle};
 use std::mem::transmute;
 use std::ops::Sub;
-use std::time::{Duration, Instant};
 use std::slice;
+use std::time::{Duration, Instant};
 
 /// Frame generator
 pub struct FrameGenerator {
@@ -295,8 +295,7 @@ impl FrameGenerator {
                         let Some(next_frame) = &self.next_frame else {
                             bail!("Next frame must not be null");
                         };
-                        let offset_dst =
-                            4 * dst_x + dst_y * next_frame.linesize[0] as usize;
+                        let offset_dst = 4 * dst_x + dst_y * next_frame.linesize[0] as usize;
                         let pixel_dst = next_frame.data[0].add(offset_dst);
                         *pixel_dst.offset(0) = bitmap[offset_src];
                         *pixel_dst.offset(1) = bitmap[offset_src + 1];

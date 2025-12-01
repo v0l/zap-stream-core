@@ -131,7 +131,9 @@ pub fn get_variants_from_endpoint<'a>(
                         bitrate: 192_000, // High quality AAC for source variant
                         codec: "aac".to_string(),
                         channels: audio_src.channels as _,
-                        sample_rate: if audio_src.sample_rate == 44100 || audio_src.sample_rate == 48000 {
+                        sample_rate: if audio_src.sample_rate == 44100
+                            || audio_src.sample_rate == 48000
+                        {
                             audio_src.sample_rate as _
                         } else {
                             48_000 // Default to 48kHz if non-standard sample rate
@@ -198,7 +200,7 @@ pub fn get_variants_from_endpoint<'a>(
                         height: output_height as _,
                         fps: video_src.fps,
                         bitrate: *bitrate as _,
-                        codec: "libx264".to_string(),
+                        codec: "h264".to_string(),
                         profile: 77, // AV_PROFILE_H264_MAIN
                         level: 51,   // High 5.1 (4K)
                         keyframe_interval: video_src.fps as u16,
@@ -218,7 +220,9 @@ pub fn get_variants_from_endpoint<'a>(
                             bitrate: 192_000,
                             codec: "aac".to_string(),
                             channels: audio_src.channels as _,
-                            sample_rate: if audio_src.sample_rate == 44100 || audio_src.sample_rate == 48000 {
+                            sample_rate: if audio_src.sample_rate == 44100
+                                || audio_src.sample_rate == 48000
+                            {
                                 audio_src.sample_rate as _
                             } else {
                                 48_000 // Default to 48kHz if non-standard sample rate

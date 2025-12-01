@@ -1,4 +1,5 @@
 use crate::http::{HttpFuture, HttpServerPlugin, StreamData, check_nip98_auth};
+use crate::multitrack::{MultiTrackConfigRequest, MultiTrackEngine};
 use crate::overseer::ZapStreamOverseer;
 use crate::settings::Settings;
 use crate::stream_manager::StreamManager;
@@ -27,7 +28,7 @@ use uuid::Uuid;
 use zap_stream_core::egress::hls::HlsEgress;
 use zap_stream_core::listen::ListenerEndpoint;
 use zap_stream_core::overseer::Overseer;
-use zap_stream_db::ZapStreamDb;
+use zap_stream_db::{IngestEndpoint, ZapStreamDb};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Route {
@@ -54,6 +55,7 @@ enum Route {
     AdminPipelineLog,
     DeleteStream,
     WebhookBitvora,
+    MultiTrackConfig,
 }
 
 #[derive(Clone)]
@@ -156,6 +158,9 @@ impl Api {
             .unwrap();
         router
             .insert("/api/v1/webhook/bitvora", Route::WebhookBitvora)
+            .unwrap();
+        router
+            .insert("/api/v1/multi-track-config", Route::MultiTrackConfig)
             .unwrap();
 
         Self {
@@ -589,6 +594,13 @@ impl Api {
                     self.delete_stream(&auth.pubkey, stream_id).await?;
                     Ok(base.body(Self::body_json(&())?)?)
                 }
+                (&Method::POST, Route::MultiTrackConfig) => {
+                    let body = req.collect().await?.to_bytes();
+                    let mtr_req: MultiTrackConfigRequest = serde_json::from_slice(&body)?;
+                    let engine = MultiTrackEngine::new(self.db.clone(), self.settings.clone());
+                    let rsp = engine.get_multi_track_config(mtr_req).await?;
+                    Ok(base.body(Self::body_json(&rsp)?)?)
+                }
                 _ => Ok(base.status(405).body(Default::default())?), // Method not allowed
             }
         } else {
@@ -602,25 +614,15 @@ impl Api {
             .boxed())
     }
 
-    async fn get_account(&self, pubkey: &PublicKey) -> Result<AccountInfo> {
-        let uid = self.db.upsert_user(&pubkey.to_bytes()).await?;
-        let user = self.db.get_user(uid).await?;
-
-        // Get user forwards
-        let forwards = self.db.get_user_forwards(uid).await?;
-
-        // Get ingest endpoints from database
-        let db_ingest_endpoints = self.db.get_ingest_endpoints().await?;
-
-        // Create 2D array: settings endpoints × database ingest endpoints
-        let mut endpoints = Vec::new();
-
+    fn create_endpoints(&self, endpoints: &Vec<IngestEndpoint>, stream_key: &str) -> Vec<Endpoint> {
+        let mut res = Vec::new();
         for setting_endpoint in &self.settings.endpoints {
             if let Ok(listener_endpoint) = ListenerEndpoint::from_str(setting_endpoint) {
-                for ingest in &db_ingest_endpoints {
-                    if let Some(url) = listener_endpoint
-                        .to_public_url(&self.settings.endpoints_public_hostname, &ingest.name)
-                    {
+                for ingest in endpoints {
+                    if let Some(url) = listener_endpoint.to_public_url(
+                        &self.settings.endpoints_public_hostname,
+                        &ingest.name.to_lowercase(),
+                    ) {
                         let protocol = match listener_endpoint {
                             ListenerEndpoint::SRT { .. } => "SRT",
                             ListenerEndpoint::RTMP { .. } => "RTMP",
@@ -628,10 +630,10 @@ impl Api {
                             _ => continue,
                         };
 
-                        endpoints.push(Endpoint {
+                        res.push(Endpoint {
                             name: format!("{}-{}", protocol, ingest.name),
                             url,
-                            key: user.stream_key.clone(),
+                            key: stream_key.to_string(),
                             capabilities: ingest
                                 .capabilities
                                 .as_ref()
@@ -646,9 +648,19 @@ impl Api {
                 }
             }
         }
+        res
+    }
+
+    async fn get_account(&self, pubkey: &PublicKey) -> Result<AccountInfo> {
+        let uid = self.db.upsert_user(&pubkey.to_bytes()).await?;
+        let user = self.db.get_user(uid).await?;
+
+        // Get user forwards
+        let forwards = self.db.get_user_forwards(uid).await?;
+        let ingest_endpoints = self.db.get_ingest_endpoints().await?;
 
         Ok(AccountInfo {
-            endpoints,
+            endpoints: self.create_endpoints(&ingest_endpoints, &user.stream_key),
             balance: user.balance / 1000,
             tos: AccountTos {
                 accepted: user.tos_accepted.is_some(),
@@ -1189,7 +1201,7 @@ impl Api {
             if is_blocked {
                 let live_streams = self.db.get_user_live_streams(uid).await?;
                 let mut stopped_streams = Vec::new();
-                
+
                 for stream in live_streams {
                     let stream_uuid = match Uuid::parse_str(&stream.id) {
                         Ok(id) => id,
@@ -1198,9 +1210,12 @@ impl Api {
                             continue;
                         }
                     };
-                    
+
                     if let Err(e) = self.overseer.on_end(&stream_uuid).await {
-                        error!("Failed to stop stream {} for blocked user {}: {}", stream.id, uid, e);
+                        error!(
+                            "Failed to stop stream {} for blocked user {}: {}",
+                            stream.id, uid, e
+                        );
                     } else {
                         info!("Stopped stream {} for blocked user {}", stream.id, uid);
                         stopped_streams.push(stream.id);

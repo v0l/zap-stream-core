@@ -1,9 +1,9 @@
 use crate::egress::EgressSegment;
 use crate::mux::SegmentType;
 use crate::mux::hls::variant::HlsVariant;
+use chrono::{DateTime, Utc};
 use m3u8_rs::{ByteRange, MediaSegment, MediaSegmentType, Part};
 use std::path::PathBuf;
-use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 #[derive(PartialEq)]

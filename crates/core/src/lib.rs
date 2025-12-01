@@ -1,3 +1,4 @@
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID;
 use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::io::Seek;
@@ -35,3 +36,18 @@ pub fn hash_file_sync(f: &mut std::fs::File) -> anyhow::Result<[u8; 32]> {
 
 #[cfg(feature = "egress-moq")]
 pub use hang;
+
+/// Maps a common codec name to a codec id in FFMPEG
+pub fn map_codec_id(codec: &str) -> Option<AVCodecID> {
+    match codec {
+        "h264" => Some(AVCodecID::AV_CODEC_ID_H264),
+        "h265" | "hevc" => Some(AVCodecID::AV_CODEC_ID_HEVC),
+        "av1" => Some(AVCodecID::AV_CODEC_ID_AV1),
+        "vp9" => Some(AVCodecID::AV_CODEC_ID_VP9),
+        "vp8" => Some(AVCodecID::AV_CODEC_ID_VP8),
+        "aac" => Some(AVCodecID::AV_CODEC_ID_AAC),
+        "opus" => Some(AVCodecID::AV_CODEC_ID_OPUS),
+        "webp" => Some(AVCodecID::AV_CODEC_ID_WEBP),
+        _ => None,
+    }
+}

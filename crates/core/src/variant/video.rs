@@ -1,13 +1,16 @@
-use ffmpeg_rs_raw::Encoder;
+use crate::map_codec_id;
+use crate::variant::{StreamMapping, VariantMapping};
+use anyhow::{Result, bail};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVColorSpace::AVCOL_SPC_BT709;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::{AV_CODEC_FLAG_GLOBAL_HEADER, AVRational};
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
+    AV_CODEC_FLAG_GLOBAL_HEADER, AVRational, avcodec_find_encoder,
+};
+use ffmpeg_rs_raw::{Encoder, rstr};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::mem::transmute;
 use uuid::Uuid;
-
-use crate::variant::{StreamMapping, VariantMapping};
 
 /// Information related to variant streams for a given egress
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -83,14 +86,25 @@ impl StreamMapping for VideoVariant {
 
 impl VideoVariant {
     /// Create encoder with conditional GLOBAL_HEADER flag
-    pub fn create_encoder(&self, need_global_header: bool) -> Result<Encoder, anyhow::Error> {
+    pub fn create_encoder(&self, need_global_header: bool) -> Result<Encoder> {
         unsafe {
             let mut opt = HashMap::new();
-            if self.codec == "x264" || self.codec == "libx264" {
-                opt.insert("preset".to_string(), "fast".to_string());
-                //opt.insert("tune".to_string(), "zerolatency".to_string());
+            let Some(codec_id) = map_codec_id(&self.codec) else {
+                bail!("Could not find codec id for {}", &self.codec);
+            };
+
+            let encoder = avcodec_find_encoder(codec_id);
+            if encoder.is_null() {
+                bail!("No available encoder for codec {}", &self.codec);
             }
-            let enc = Encoder::new_with_name(&self.codec)?
+
+            let encoder_name = rstr!((*encoder).name);
+            if encoder_name == "libx264" {
+                opt.insert("preset".to_string(), "fast".to_string());
+                opt.insert("tune".to_string(), "zerolatency".to_string());
+            }
+
+            let enc = Encoder::new_with_codec(encoder)?
                 .with_bitrate(self.bitrate as _)
                 .with_width(self.width as _)
                 .with_height(self.height as _)
@@ -116,14 +130,5 @@ impl VideoVariant {
                 .open(Some(opt))?;
             Ok(enc)
         }
-    }
-}
-
-impl TryInto<Encoder> for &VideoVariant {
-    type Error = anyhow::Error;
-
-    fn try_into(self) -> Result<Encoder, Self::Error> {
-        // Default behavior - no GLOBAL_HEADER for backward compatibility
-        self.create_encoder(false)
     }
 }
