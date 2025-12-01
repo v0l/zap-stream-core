@@ -851,3 +851,128 @@ url: stringOptional
 The URL an output uses to restream.
 
 }
+
+---
+
+# VALIDATED: Actual API Test Results (2025-12-01)
+
+**Source:** Direct testing with Cloudflare Stream API using real credentials
+
+---
+
+## ❌ Critical Finding: NO HLS URL in Live Input Response
+
+**Testing revealed that Live Input responses DO NOT contain HLS playback URLs.**
+
+### Actual Live Input Response Structure:
+
+```json
+{
+  "result": {
+    "uid": "9de18434b0ef65a93cac83ac4e76febb",
+    "rtmps": {
+      "url": "rtmps://live.cloudflare.com:443/live/",
+      "streamKey": "3e15b77e0b7d357de912be38cd2de97dk9de18434b0ef65a93cac83ac4e76febb"
+    },
+    "rtmpsPlayback": {
+      "url": "rtmps://live.cloudflare.com:443/live/",
+      "streamKey": "6cca6c988ebab2f61559aa748baed7d6k9de18434b0ef65a93cac83ac4e76febb"
+    },
+    "srt": {
+      "url": "srt://live.cloudflare.com:778",
+      "streamId": "9de18434b0ef65a93cac83ac4e76febb",
+      "passphrase": "37e0d5e5b83179d478b3f516e95be81ck9de18434b0ef65a93cac83ac4e76febb"
+    },
+    "srtPlayback": {
+      "url": "srt://live.cloudflare.com:778",
+      "streamId": "play9de18434b0ef65a93cac83ac4e76febb",
+      "passphrase": "9bca869426be8e9e9cd67fb295b53a9ak9de18434b0ef65a93cac83ac4e76febb"
+    },
+    "webRTC": {
+      "url": "https://customer-51tzzrmdygiq19h7.cloudflarestream.com/4fdfce3b81d41eedc5e0fce9d08bab39k9de18434b0ef65a93cac83ac4e76febb/webRTC/publish"
+    },
+    "webRTCPlayback": {
+      "url": "https://customer-51tzzrmdygiq19h7.cloudflarestream.com/9de18434b0ef65a93cac83ac4e76febb/webRTC/play"
+    },
+    "created": "2025-12-01T01:08:50.72217Z",
+    "modified": "2025-12-01T01:08:50.72217Z",
+    "meta": {
+      "name": "API Discovery Test - 20251201_120849"
+    },
+    "status": null,
+    "recording": {
+      "mode": "automatic",
+      "timeoutSeconds": 30,
+      "requireSignedURLs": false,
+      "allowedOrigins": null,
+      "hideLiveViewerCount": false
+    },
+    "deleteRecordingAfterDays": null
+  },
+  "success": true,
+  "errors": [],
+  "messages": []
+}
+```
+
+### Key Findings:
+
+1. ❌ **NO `playback.hls` field exists**
+2. ❌ **NO `hls` field at any level**
+3. ❌ **NO `created.uid` field** - `created` is just a timestamp string, not an object
+4. ✅ **WebRTC playback URL EXISTS**: `webRTCPlayback.url`
+5. ✅ **RTMPS playback URL EXISTS**: `rtmpsPlayback.url`
+6. ✅ **SRT playback URL EXISTS**: `srtPlayback.url`
+7. ⚠️ **Status is `null`** before streaming starts
+
+### Implications for Implementation:
+
+**The "unvalidated" documentation was WRONG.** There is NO:
+- `created.uid` field with Video asset reference
+- HLS playback URL in Live Input response
+- Need to query separate Video API endpoint
+
+**Available Playback Options:**
+1. **WebRTC** (lowest latency: <1 second)
+   - URL: `result.webRTCPlayback.url`
+   - Best for real-time interaction
+   
+2. **RTMPS** (low latency: ~2-5 seconds)
+   - URL: `result.rtmpsPlayback.url`
+   - Stream Key: `result.rtmpsPlayback.streamKey`
+   
+3. **SRT** (low latency: ~2-5 seconds)
+   - URL: `result.srtPlayback.url`
+   - Stream ID: `result.srtPlayback.streamId`
+   - Passphrase: `result.srtPlayback.passphrase`
+
+### 🚨 Critical Question for Step 3A:
+
+**Where does HLS playback come from?**
+
+Possible answers:
+1. HLS might only be available for **recorded** videos (after stream ends)
+2. HLS might require querying a **separate Videos API** endpoint
+3. HLS might appear in Live Input response only **after streaming starts**
+4. Cloudflare Stream might primarily use **WebRTC for live playback**, not HLS
+
+**Next Steps:**
+- Test with active streaming to see if HLS appears
+- Query Cloudflare Videos API to check for HLS URLs
+- Consider using WebRTC playback URL instead of HLS for live streams
+- Check Cloudflare docs for HLS + Live Inputs relationship
+
+---
+
+## Webhook Endpoints
+
+**From documentation above:**
+- View: `GET /accounts/{account_id}/stream/webhook`
+- Create: `PUT /accounts/{account_id}/stream/webhook`
+- Delete: `DELETE /accounts/{account_id}/stream/webhook`
+
+Request/response formats and event schemas not documented in API reference above.
+
+---
+
+**END OF VALIDATED DOCUMENTATION**
