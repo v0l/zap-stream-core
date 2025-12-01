@@ -1,4 +1,4 @@
-use crate::backends::RmlRtmpBackend;
+use crate::backends::{CloudflareBackend, RmlRtmpBackend};
 use crate::payments::create_lightning;
 use crate::settings::{AdvertiseConfig, PaymentBackend, RedisConfig, Settings};
 use crate::stream_manager::StreamManager;
@@ -76,12 +76,26 @@ impl ZapStreamOverseer {
     const RECONNECT_WINDOW_SECONDS: u64 = 120;
 
     pub async fn from_settings(settings: &Settings, shutdown: CancellationToken) -> Result<Self> {
-        // Create streaming backend
-        let streaming_backend: Arc<dyn StreamingBackend> = Arc::new(RmlRtmpBackend::new(
-            settings.public_url.clone(),
-            settings.endpoints_public_hostname.clone(),
-            settings.endpoints.clone(),
-        ));
+        // Create streaming backend based on configuration
+        let backend_type = settings.overseer.backend.as_deref().unwrap_or("rml_rtmp");
+        let streaming_backend: Arc<dyn StreamingBackend> = match backend_type {
+            "rml_rtmp" => {
+                Arc::new(RmlRtmpBackend::new(
+                    settings.public_url.clone(),
+                    settings.endpoints_public_hostname.clone(),
+                    settings.endpoints.clone(),
+                ))
+            }
+            "cloudflare" => {
+                let cf_settings = settings.overseer.cloudflare.as_ref()
+                    .ok_or_else(|| anyhow!("Cloudflare settings required when backend is 'cloudflare'"))?;
+                Arc::new(CloudflareBackend::new(
+                    cf_settings.api_token.clone(),
+                    cf_settings.account_id.clone(),
+                ))
+            }
+            _ => bail!("Unknown backend type: {}", backend_type),
+        };
         
         ZapStreamOverseer::new(
             &settings.public_url,

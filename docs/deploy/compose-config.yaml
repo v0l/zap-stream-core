@@ -21,6 +21,17 @@ listen_http: "0.0.0.0:8080"
 
 # Overseer is the main control structure which controls access to the service
 overseer:
+  # Streaming backend type (optional, defaults to "rml_rtmp")
+  # Options:
+  #   - "rml_rtmp" (default): Local RTMP processing with HLS output to filesystem
+  #   - "cloudflare": Cloudflare Stream (requires cloudflare section below)
+  #backend: "rml_rtmp"
+
+  # Cloudflare Stream configuration (only needed when backend is "cloudflare")
+  #cloudflare:
+  #  api-token: "your_cloudflare_api_token_here"
+  #  account-id: "your_cloudflare_account_id_here"
+
   # At what balance we should alert the streamer to topup
   low_balance_threshold: 500
   # Primary nsec key for publishing stream events

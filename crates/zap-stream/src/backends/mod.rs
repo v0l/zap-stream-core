@@ -1,7 +1,5 @@
 mod rml_rtmp;
+mod cloudflare;
 
 pub use rml_rtmp::RmlRtmpBackend;
-
-// Future backends will be added here:
-// mod cloudflare;
-// pub use cloudflare::CloudflareBackend;
+pub use cloudflare::CloudflareBackend;
