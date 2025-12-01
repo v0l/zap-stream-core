@@ -29,6 +29,7 @@ use zap_stream_core::overseer::Overseer;
 
 mod api;
 mod auth;
+mod backends;
 mod http;
 mod overseer;
 mod payments;

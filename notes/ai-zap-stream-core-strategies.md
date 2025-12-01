@@ -1,3 +1,27 @@
+# ⛔ STOP: Git Workflow Check Required ⛔
+
+**Before ANY git operations, you MUST ask the user:**
+
+```bash
+# ❌ NEVER DO THIS:
+git checkout -b some-branch-name
+
+# ✅ ALWAYS DO THIS FIRST:
+# Use ask_followup_question tool with:
+# "Which git branch should I work from for this task?"
+# Options: ["main", "safe-working-baseline", "issue-235-cloudflare-backend", "Other (please specify)"]
+```
+
+**Why this matters:**
+- zap-stream-core has multiple active branches
+- User knows the correct branching strategy
+- Creating wrong branch creates merge conflicts
+- The "Github branches" section below lists known branches but user decides which to use
+
+**Rule:** No `git checkout -b`, `git branch`, or `git push` without explicit user approval of the branch name.
+
+---
+
 # ⛔ MANDATORY PRE-COMMIT CHECKLIST ⛔
 
 **🚨 STOP! Before ANY commit, you MUST complete ALL these steps IN ORDER:**
@@ -25,14 +49,52 @@
    Options: ["Build completed successfully", "Build failed - show me error"]
    ```
 
-4. ✅ **Test streaming with ffmpeg - MUST SUCCEED** (see Testing Strategy section below)
+4. ✅ **Test streaming START with ffmpeg - START TEST MUST PASS:**
+   ```bash
+   ffmpeg -re -f lavfi -i testsrc=size=1280x720:rate=30 \
+     -f lavfi -i sine=frequency=1000:sample_rate=44100 \
+     -c:v libx264 -preset veryfast -tune zerolatency \
+     -c:a aac -ar 44100 \
+     -f flv rtmp://localhost:1935/Basic/81b97dd0-b959-11f0-b22c-d690ca11bae8 \
+     </dev/null >/dev/null 2>&1 &
+   
+   # Wait for stream to start
+   sleep 10
+   
+   # Check logs for START success
+   docker logs --tail 50 zap-stream-core-core-1
+   ```
+   
+   **Required logs (MUST see ALL):**
+   - ✅ "Published stream request: Basic/81b97dd0-b959-11f0-b22c-d690ca11bae8 [Live]"
+   - ✅ "Pipeline run starting"
+   - ✅ "Published stream event"
+   - ✅ "Created fMP4 initialization segment"
+   - ❌ If ANY missing: FIX BEFORE PROCEEDING
 
-5. ✅ **Verify success in Docker logs - ALL MUST MATCH EXPECTED LOGS** (see expected logs in Testing Strategy section)
-   **Required outcome:**
-   - ✅ Stream MUST start successfully
-   - ✅ Logs MUST show "Published stream event"
-   - ✅ Logs MUST show "Created fMP4 initialization segment"
-   - ❌ If stream fails to start: FIX BEFORE PROCEEDING
+5. ✅ **Test streaming END - DO NOT SKIP THIS – END TEST MUST PASS:**
+   ```bash
+   # Stop the stream
+   pkill -9 -f "ffmpeg.*testsrc"
+   
+   # ⛔ MANDATORY: Wait for shutdown to complete
+   sleep 5
+   
+   # ⛔ MANDATORY: Check logs for END success
+   docker logs --tail 50 zap-stream-core-core-1
+   ```
+   
+   **Required logs (MUST see ALL):**
+   - ✅ "read_data EOF"
+   - ✅ "WARN: Demuxer get_packet failed, entering idle mode"
+   - ✅ "Stream ended [stream_id]"
+   - ✅ "PipelineRunner cleaned up resources"
+   - ❌ If ANY missing: FIX BEFORE PROCEEDING
+   
+   **⛔ FORBIDDEN:**
+   - ❌ Declaring tests passed after only checking START logs
+   - ❌ Skipping the `docker logs` check after `pkill`
+   - ❌ Assuming shutdown worked without verification
 
 6. ✅ **ONLY THEN commit your changes - IF AND ONLY IF ALL ABOVE PASS**
 
@@ -75,6 +137,8 @@
 | **Context overflow from Docker output** | Tried to monitor build logs directly | ALWAYS use `-d` flag + ask_followup_question pattern |
 | **Ignoring new warnings** | Didn't compare with baseline | Always check: `git checkout HEAD~1 && cargo test 2>&1 \| grep warning` |
 | **Not using ask_followup_question** | Tried to verify build completion programmatically | Docker requires HUMAN verification, use ask_followup_question |
+| **Declaring tests passed without checking stream END logs** | Saw stream start, assumed end works | ALWAYS check logs after `pkill` - stream end must be verified - See step 5 in checklist |
+| **Creating git branches without asking user** | Assumed branch name from issue number | ALWAYS ask user which branch to use with ask_followup_question - never assume |
 
 ---
 

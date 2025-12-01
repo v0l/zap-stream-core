@@ -1,7 +1,8 @@
+use crate::backends::RmlRtmpBackend;
 use crate::payments::create_lightning;
 use crate::settings::{AdvertiseConfig, PaymentBackend, RedisConfig, Settings};
 use crate::stream_manager::StreamManager;
-use crate::streaming_backend::{RmlRtmpBackend, StreamingBackend};
+use crate::streaming_backend::StreamingBackend;
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
