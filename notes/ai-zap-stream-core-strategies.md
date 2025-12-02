@@ -813,3 +813,73 @@ INFO zap_stream_core::pipeline::runner: PipelineRunner cleaned up resources for 
 **Error: "User not found or invalid stream key"**
 - **Cause**: Stream key doesn't exist in database
 - **Solution**: Query database to verify correct stream key
+
+
+## New Cloudflare Backend Integration SHOULD be testable with end to end integration test 
+
+But AI sessions have been trying and failing to test it successfully
+
+AI failures included
+
+- testing webhooks only, but not testing streaming (faled e2e)
+- testing streaming only, but not testing webhooks (faled e2e)
+- making up fake cryptography rather than using actual Nostr NIP-98 header auth (failed to run)
+
+They often blamed incomplete architecture, but then changed their mind and said it was complete
+
+They often used attempt_completion tool to try to say that tests that did not work were proof of successful implementaiton, which is braindead.
+
+There are at least two potentially junk, legacy cruft e2e test implementations in the /scripts folder
+
+The most recent failed AI session wrote this as its explainer, and it may actually be true, but until tests pass is invalid.
+
+```markdown
+## Cloudflare Integration Testing - Critical Requirements
+
+### What Must Be Proven
+A working integration test MUST demonstrate the COMPLETE lifecycle:
+1. API call with NIP-98 auth creates Live Inputs
+2. FFmpeg streams to Cloudflare RTMP endpoint
+3. **Cloudflare sends webhook to our server** (stream connected)
+4. **Webhook triggers database updates and Nostr publishing**
+5. Stream ends
+6. **Cloudflare sends disconnect webhook**
+7. **Webhook triggers cleanup**
+
+### Why Previous Attempts Failed
+- Streaming to Cloudflare works, but webhooks require Cloudflare Tunnel
+- The `cloudflared` service in docker-compose has profile "cloudflared" (not running by default)
+- Without the tunnel, Cloudflare cannot reach the local server
+- Testing showed NO webhooks arriving = NO lifecycle proven
+
+### Prerequisites for Testing
+1. Start cloudflared tunnel: `docker-compose --profile cloudflared up -d`
+2. Verify tunnel is accessible from internet
+3. Configure webhook URL in config to point to tunnel
+4. THEN run integration tests
+5. Confirm webhooks arrive in Docker logs
+
+### The NIP-98 Signer
+- Located at `scripts/sign_nip98.js`
+- Uses nostr-tools library (proper cryptography, not handrolled)
+- Usage: `node sign_nip98.js <nsec> <url> <method>`
+- This component works correctly
+```
+
+That's what a future AI needs to know: __The tunnel is the missing piece__.
+
+### Things that I expect to see in a working end to end test
+
+1. a user can successfully get their stream key
+2. they can successfully stream to that key
+3. cloudflare successfully receives their stream
+4. cloudflare successfully notifies the webhook of stream start
+5. the webhook successfully triggers the stream start workflow
+6. this is evidenced in the logs
+7. the hls can be played back for example at localhost
+8. a user can successfully end their stream
+9. cloudflare successfully stops receiving their stream
+10. cloudflare successfully notifies the webhook of stream stop
+11. the webhook successfully triggers the stream stop workflow
+12. this is evidenced in the logs
+13. the hls can no longer be played back for example at localhost

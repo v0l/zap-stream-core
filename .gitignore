@@ -2,6 +2,7 @@
 .idea/
 **/out/
 docs/deploy/data/
+node_modules/
 
 # local configuration
 docs/deploy/compose-config.yaml

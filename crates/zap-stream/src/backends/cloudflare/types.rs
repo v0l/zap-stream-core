@@ -94,18 +94,23 @@ pub struct Playback {
 }
 
 /// Cloudflare Stream Live webhook payload
+/// Based on: https://developers.cloudflare.com/stream/stream-live/webhooks/
 #[derive(Debug, Deserialize)]
 pub struct CloudflareWebhookPayload {
+    pub name: String,
+    pub text: String,
     pub data: CloudflareWebhookData,
+    pub ts: i64,
 }
 
 /// Webhook data containing event information
 #[derive(Debug, Deserialize)]
 pub struct CloudflareWebhookData {
-    #[serde(rename = "event_type")]
-    pub event_type: String,
+    pub notification_name: String,
     #[serde(rename = "input_id")]
     pub input_id: String,
+    #[serde(rename = "event_type")]
+    pub event_type: String,
     #[serde(rename = "updated_at")]
     pub updated_at: String,
 }

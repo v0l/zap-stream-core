@@ -151,11 +151,16 @@ impl StreamingBackend for CloudflareBackend {
     }
     
     fn parse_external_event(&self, payload: &[u8]) -> Result<Option<ExternalStreamEvent>> {
+        // Log raw webhook payload for debugging
+        let payload_str = String::from_utf8_lossy(payload);
+        info!("Raw Cloudflare webhook payload: {}", payload_str);
+        
         // Parse webhook payload
         let webhook: CloudflareWebhookPayload = match serde_json::from_slice(payload) {
             Ok(w) => w,
             Err(e) => {
                 warn!("Failed to parse Cloudflare webhook payload: {}", e);
+                warn!("Payload was: {}", payload_str);
                 return Ok(None);
             }
         };
