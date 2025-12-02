@@ -5,20 +5,28 @@ pub use client::CloudflareClient;
 
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
+use serde_json;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
+use uuid::Uuid;
+use zap_stream_core::ingress::ConnectionInfo;
 use zap_stream_db::{IngestEndpoint, User};
 
-use crate::streaming_backend::{Endpoint, EndpointCost, StreamingBackend};
+use crate::streaming_backend::{Endpoint, EndpointCost, ExternalStreamEvent, StreamingBackend};
+use types::CloudflareWebhookPayload;
 
 /// Cloudflare Stream backend implementation
 pub struct CloudflareBackend {
     client: CloudflareClient,
     /// Cache mapping stream_id to live_input_uid for HLS URL lookup
     live_input_cache: Arc<RwLock<HashMap<String, String>>>,
+    /// Reverse mapping: live_input_uid to stream_id for webhook handling
+    reverse_mapping: Arc<RwLock<HashMap<String, String>>>,
+    /// Webhook secret for signature verification (stored after setup)
+    webhook_secret: Arc<RwLock<Option<String>>>,
 }
 
 impl CloudflareBackend {
@@ -27,6 +35,8 @@ impl CloudflareBackend {
         Self {
             client: CloudflareClient::new(api_token, account_id),
             live_input_cache: Arc::new(RwLock::new(HashMap::new())),
+            reverse_mapping: Arc::new(RwLock::new(HashMap::new())),
+            webhook_secret: Arc::new(RwLock::new(None)),
         }
     }
 }
@@ -48,10 +58,16 @@ impl StreamingBackend for CloudflareBackend {
             
             info!("Created Live Input UID: {}", response.result.uid);
             
-            // Store mapping for later use (stream_id -> live_input_uid)
+            // Store mappings for later use
             self.live_input_cache.write().await.insert(
                 stream_id.clone(),
                 response.result.uid.clone(),
+            );
+            
+            // Store reverse mapping (live_input_uid -> stream_id) for webhook handling
+            self.reverse_mapping.write().await.insert(
+                response.result.uid.clone(),
+                stream_id.clone(),
             );
             
             // Return endpoint with Cloudflare RTMP URL
@@ -122,8 +138,89 @@ impl StreamingBackend for CloudflareBackend {
     }
 
     async fn setup_webhooks(&self, webhook_url: &str) -> Result<()> {
-        // Deferred to Step 3B - no-op for now
-        warn!("setup_webhooks called with URL '{}' but webhooks not yet implemented (Step 3B)", webhook_url);
+        info!("Setting up Cloudflare webhook at: {}", webhook_url);
+        
+        let response = self.client.setup_webhook(webhook_url).await?;
+        
+        info!("Webhook configured successfully, secret received");
+        
+        // Store the webhook secret for signature verification
+        *self.webhook_secret.write().await = Some(response.result.secret);
+        
         Ok(())
+    }
+    
+    fn parse_external_event(&self, payload: &[u8]) -> Result<Option<ExternalStreamEvent>> {
+        // Parse webhook payload
+        let webhook: CloudflareWebhookPayload = match serde_json::from_slice(payload) {
+            Ok(w) => w,
+            Err(e) => {
+                warn!("Failed to parse Cloudflare webhook payload: {}", e);
+                return Ok(None);
+            }
+        };
+        
+        info!("Received Cloudflare webhook event: {} for input_id: {}", 
+            webhook.data.event_type, webhook.data.input_id);
+        
+        // Look up stream_id from live_input_uid (blocking is OK here since we're not in async context)
+        let stream_id = {
+            let reverse_map = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(self.reverse_mapping.read())
+            });
+            match reverse_map.get(&webhook.data.input_id) {
+                Some(id) => id.clone(),
+                None => {
+                    warn!("Received webhook for unknown live_input_uid: {}", webhook.data.input_id);
+                    return Ok(None);
+                }
+            }
+        };
+        
+        // Parse stream_id as UUID
+        let stream_uuid = match Uuid::parse_str(&stream_id) {
+            Ok(u) => u,
+            Err(e) => {
+                warn!("Invalid stream_id '{}' in reverse mapping: {}", stream_id, e);
+                return Ok(None);
+            }
+        };
+        
+        // Map Cloudflare event types to our generic events
+        match webhook.data.event_type.as_str() {
+            "live_input.connected" => {
+                info!("Stream connected: {}", stream_uuid);
+                
+                // Create ConnectionInfo for this stream
+                // Note: We use dummy values since Cloudflare doesn't provide this info
+                let conn_info = ConnectionInfo {
+                    id: stream_uuid,
+                    endpoint: "cloudflare", // Cloudflare RTMPS
+                    app_name: "cloudflare".to_string(),
+                    key: stream_id.clone(),
+                    ip_addr: "cloudflare".to_string(), // No IP provided by webhook
+                };
+                
+                Ok(Some(ExternalStreamEvent::Connected {
+                    connection_info: conn_info,
+                }))
+            }
+            "live_input.disconnected" => {
+                info!("Stream disconnected: {}", stream_uuid);
+                Ok(Some(ExternalStreamEvent::Disconnected {
+                    stream_id: stream_uuid,
+                }))
+            }
+            "live_input.errored" => {
+                warn!("Stream error for {}, treating as disconnection", stream_uuid);
+                Ok(Some(ExternalStreamEvent::Disconnected {
+                    stream_id: stream_uuid,
+                }))
+            }
+            _ => {
+                warn!("Unknown Cloudflare event type: {}", webhook.data.event_type);
+                Ok(None)
+            }
+        }
     }
 }

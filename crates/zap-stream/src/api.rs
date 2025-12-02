@@ -1741,6 +1741,53 @@ impl HttpServerPlugin for Api {
             }
         })
     }
+
+    fn handle_webhook(
+        &self,
+        payload: Vec<u8>,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
+        let backend = self.overseer.streaming_backend();
+        let overseer = self.overseer.clone();
+        
+        Box::pin(async move {
+            // Parse the webhook payload using the backend
+            let event = backend.parse_external_event(&payload)?;
+            
+            if let Some(event) = event {
+                use crate::streaming_backend::ExternalStreamEvent;
+                
+                match event {
+                    ExternalStreamEvent::Connected { connection_info } => {
+                        info!("Webhook: Stream connected - {}", connection_info.id);
+                        
+                        // For Cloudflare, we don't have IngressInfo from webhook
+                        // Create dummy IngressInfo since pipeline won't be used
+                        let dummy_ingress = zap_stream_core::overseer::IngressInfo {
+                            bitrate: 0,
+                            streams: vec![],
+                        };
+                        
+                        // Trigger the overseer's stream start logic
+                        match overseer.start_stream(&connection_info, &dummy_ingress).await {
+                            Ok(_) => info!("Stream started successfully via webhook: {}", connection_info.id),
+                            Err(e) => error!("Failed to start stream via webhook: {}", e),
+                        }
+                    }
+                    ExternalStreamEvent::Disconnected { stream_id } => {
+                        info!("Webhook: Stream disconnected - {}", stream_id);
+                        
+                        // Trigger the overseer's stream end logic
+                        match overseer.on_end(&stream_id).await {
+                            Ok(_) => info!("Stream ended successfully via webhook: {}", stream_id),
+                            Err(e) => error!("Failed to end stream via webhook: {}", e),
+                        }
+                    }
+                }
+            }
+            
+            Ok(())
+        })
+    }
 }
 
 #[derive(Deserialize, Serialize)]

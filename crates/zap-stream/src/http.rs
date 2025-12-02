@@ -26,7 +26,7 @@ use std::task::Poll;
 use tokio::fs::File;
 use tokio::io::{AsyncRead, AsyncSeek, ReadBuf};
 use tokio_util::io::ReaderStream;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 use zap_stream_core::egress::hls::HlsEgress;
 
@@ -40,6 +40,10 @@ pub trait HttpServerPlugin: Clone {
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>;
     fn handler(self, request: Request<Incoming>) -> HttpFuture;
     fn handle_websocket_metrics(self, request: Request<Incoming>) -> HttpFuture;
+    fn handle_webhook(
+        &self,
+        payload: Vec<u8>,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>;
 }
 
 #[derive(Serialize, Clone)]
@@ -66,6 +70,7 @@ pub enum HttpServerPath {
     HlsVariantPlaylist,
     HlsSegmentFile,
     WebSocketMetrics,
+    Webhook,
 }
 
 #[derive(Clone)]
@@ -107,6 +112,9 @@ where
             .expect("invalid route");
         router
             .insert("/api/v1/ws", HttpServerPath::WebSocketMetrics)
+            .expect("invalid route");
+        router
+            .insert("/webhooks/{backend}", HttpServerPath::Webhook)
             .expect("invalid route");
 
         Self {
@@ -397,6 +405,37 @@ where
                 HttpServerPath::WebSocketMetrics => {
                     let plugin = self.plugin.clone();
                     plugin.handle_websocket_metrics(req)
+                }
+                HttpServerPath::Webhook => {
+                    let plugin = self.plugin.clone();
+                    let backend_name = m.params.get("backend").map(|s| s.to_string());
+                    Box::pin(async move {
+                        // Log which backend this webhook is for
+                        if let Some(backend) = &backend_name {
+                            info!("Received webhook for backend: {}", backend);
+                        }
+                        
+                        // Read the webhook payload
+                        let body_bytes = req.collect().await?.to_bytes();
+                        
+                        // Call plugin to handle webhook with payload
+                        // The backend's parse_external_event() will validate it's for the right backend
+                        match plugin.handle_webhook(body_bytes.to_vec()).await {
+                            Ok(_) => Ok(Self::base_response()
+                                .status(200)
+                                .body(BoxBody::new(
+                                    Full::new(Bytes::from("OK")).map_err(|e| match e {})
+                                ))?),
+                            Err(e) => {
+                                error!("Webhook handling error: {}", e);
+                                Ok(Self::base_response()
+                                    .status(500)
+                                    .body(BoxBody::new(
+                                        Full::new(Bytes::from(format!("Error: {}", e))).map_err(|e| match e {})
+                                    ))?)
+                            }
+                        }
+                    })
                 }
             };
         }

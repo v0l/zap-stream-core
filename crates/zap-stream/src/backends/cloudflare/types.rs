@@ -92,3 +92,36 @@ pub struct Playback {
     pub hls: String,
     pub dash: String,
 }
+
+/// Cloudflare Stream Live webhook payload
+#[derive(Debug, Deserialize)]
+pub struct CloudflareWebhookPayload {
+    pub data: CloudflareWebhookData,
+}
+
+/// Webhook data containing event information
+#[derive(Debug, Deserialize)]
+pub struct CloudflareWebhookData {
+    #[serde(rename = "event_type")]
+    pub event_type: String,
+    #[serde(rename = "input_id")]
+    pub input_id: String,
+    #[serde(rename = "updated_at")]
+    pub updated_at: String,
+}
+
+/// Response from webhook registration API
+#[derive(Debug, Deserialize)]
+pub struct WebhookResponse {
+    pub result: WebhookResult,
+    pub success: bool,
+}
+
+/// Webhook configuration result
+#[derive(Debug, Deserialize)]
+pub struct WebhookResult {
+    #[serde(rename = "notificationUrl")]
+    pub notification_url: String,
+    pub modified: String,
+    pub secret: String,
+}

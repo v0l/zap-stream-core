@@ -116,4 +116,9 @@ impl StreamingBackend for RmlRtmpBackend {
         // RTMP backend doesn't use webhooks
         Ok(())
     }
+    
+    fn parse_external_event(&self, _payload: &[u8]) -> Result<Option<crate::streaming_backend::ExternalStreamEvent>> {
+        // RTMP backend uses listeners, not webhooks
+        Ok(None)
+    }
 }

@@ -97,6 +97,11 @@ impl ZapStreamOverseer {
             _ => bail!("Unknown backend type: {}", backend_type),
         };
         
+        // Setup webhooks for backends that support them (backend decides if it's a no-op)
+        let webhook_url = format!("{}/webhooks/{}", settings.public_url, backend_type);
+        info!("Configuring webhook URL for {} backend: {}", backend_type, webhook_url);
+        streaming_backend.setup_webhooks(&webhook_url).await?;
+        
         ZapStreamOverseer::new(
             &settings.public_url,
             &settings.overseer.nsec,

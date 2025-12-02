@@ -109,6 +109,32 @@ impl CloudflareClient {
         Ok(())
     }
 
+    /// Setup webhook for Stream Live events
+    pub async fn setup_webhook(&self, webhook_url: &str) -> Result<WebhookResponse> {
+        let url = format!("{}/accounts/{}/stream/webhook", 
+            self.base_url, self.account_id);
+        
+        let body = serde_json::json!({
+            "notificationUrl": webhook_url
+        });
+
+        let response = self.http_client
+            .put(&url)
+            .header("Authorization", format!("Bearer {}", self.api_token))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            return Err(anyhow!("Cloudflare API error {}: {}", status, error_text));
+        }
+
+        Ok(response.json().await?)
+    }
+
     #[cfg(test)]
     pub fn with_base_url(mut self, base_url: String) -> Self {
         self.base_url = base_url;
