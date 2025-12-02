@@ -359,15 +359,21 @@ impl ZapStreamOverseer {
         {
             tags.push(Tag::parse(&["summary".to_string(), summary.to_string()])?);
         }
+        let mut has_image = false;
         if let Some(ref image) = stream.image
             && !image.trim().is_empty()
         {
+            has_image = true;
             tags.push(Tag::parse(&["image".to_string(), image.to_string()])?);
         }
         if let Some(ref thumb) = stream.thumb
             && !thumb.trim().is_empty()
         {
-            tags.push(Tag::parse(&["thumb".to_string(), thumb.to_string()])?);
+            if !has_image {
+                tags.push(Tag::parse(&["image".to_string(), thumb.to_string()])?);
+            } else {
+                tags.push(Tag::parse(&["thumb".to_string(), thumb.to_string()])?);
+            }
         }
         if let Some(ref content_warning) = stream.content_warning
             && !content_warning.trim().is_empty()
