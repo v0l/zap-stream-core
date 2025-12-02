@@ -68,10 +68,13 @@ pub trait Overseer: Send + Sync {
     async fn connect(&self, connection_info: &ConnectionInfo) -> Result<ConnectResult>;
 
     /// Set up a new streaming pipeline
+    /// 
+    /// For local backends (e.g. RML RTMP), stream_info contains actual stream data.
+    /// For cloud backends (e.g. Cloudflare), stream_info is None as the stream is processed remotely.
     async fn start_stream(
         &self,
         connection: &ConnectionInfo,
-        stream_info: &IngressInfo,
+        stream_info: Option<&IngressInfo>,
     ) -> Result<PipelineConfig>;
 
     /// A new segment(s) (HLS etc.) was generated for a stream variant

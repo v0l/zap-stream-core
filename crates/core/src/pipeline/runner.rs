@@ -1004,7 +1004,7 @@ impl PipelineRunner {
         };
         let cfg = self.handle.block_on(async {
             self.overseer
-                .start_stream(&mut self.connection, &i_info)
+                .start_stream(&mut self.connection, Some(&i_info))
                 .await
         })?;
 

@@ -47,8 +47,8 @@ pub struct PipelineConfig {
     pub variants: Vec<VariantStream>,
     /// Output muxers
     pub egress: Vec<EgressType>,
-    /// Source stream information for placeholder generation
-    pub ingress_info: IngressInfo,
+    /// Source stream information for placeholder generation (None for cloud backends)
+    pub ingress_info: Option<IngressInfo>,
     /// Primary source video stream
     pub video_src: usize,
     /// Primary audio source stream

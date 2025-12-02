@@ -302,8 +302,9 @@ impl Overseer for N94Overseer {
     async fn start_stream(
         &self,
         _connection: &ConnectionInfo,
-        stream_info: &IngressInfo,
+        stream_info: Option<&IngressInfo>,
     ) -> Result<PipelineConfig> {
+        let stream_info = stream_info.ok_or_else(|| anyhow::anyhow!("N94 requires stream info"))?;
         let cfg = get_variants_from_endpoint(stream_info, &self.capabilities)?;
 
         if cfg.video_src.is_none() || cfg.variants.is_empty() {
@@ -349,7 +350,7 @@ impl Overseer for N94Overseer {
                 SegmentType::MPEGTS,
             )],
             variants: cfg.variants,
-            ingress_info: stream_info.clone(),
+            ingress_info: Some(stream_info.clone()),
             video_src: cfg.video_src.unwrap().index,
             audio_src: cfg.audio_src.map(|s| s.index),
         })

@@ -1760,15 +1760,9 @@ impl HttpServerPlugin for Api {
                     ExternalStreamEvent::Connected { connection_info } => {
                         info!("Webhook: Stream connected - {}", connection_info.id);
                         
-                        // For Cloudflare, we don't have IngressInfo from webhook
-                        // Create dummy IngressInfo since pipeline won't be used
-                        let dummy_ingress = zap_stream_core::overseer::IngressInfo {
-                            bitrate: 0,
-                            streams: vec![],
-                        };
-                        
-                        // Trigger the overseer's stream start logic
-                        match overseer.start_stream(&connection_info, &dummy_ingress).await {
+                        // For cloud backends, we don't have IngressInfo from webhooks
+                        // Pass None to indicate no local pipeline should be created
+                        match overseer.start_stream(&connection_info, None).await {
                             Ok(_) => info!("Stream started successfully via webhook: {}", connection_info.id),
                             Err(e) => error!("Failed to start stream via webhook: {}", e),
                         }

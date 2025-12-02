@@ -621,7 +621,114 @@ impl Overseer for ZapStreamOverseer {
                     error!("Failed to end dead stream {}: {}", &id, e);
                 }
             } else {
-                // Stream is active, check if we should update viewer count in nostr event
+                // Stream is active - handle billing for this check cycle
+                if let Some(endpoint_id) = stream.endpoint_id {
+                    let endpoint = self.db.get_ingest_endpoint(endpoint_id).await?;
+                    
+                    // Calculate uncharged time since stream start
+                    let total_elapsed = Utc::now().signed_duration_since(stream.starts);
+                    let total_elapsed_secs = total_elapsed.num_seconds() as f32;
+                    let uncharged_duration = total_elapsed_secs - stream.duration;
+                    
+                    if uncharged_duration > 0.0 {
+                        // Calculate cost for uncharged duration
+                        let cost_per_minute = endpoint.cost;
+                        let duration_minutes = uncharged_duration / 60.0;
+                        let cost = (cost_per_minute as f32 * duration_minutes).round().max(0.0);
+                        let cost = if cost.is_normal() { cost as i64 } else { 0 };
+                        
+                        // Update stream duration and deduct cost from balance
+                        let bal = self
+                            .db
+                            .tick_stream(&id, stream.user_id, uncharged_duration, cost)
+                            .await?;
+                        
+                        if cost > 0 {
+                            let user = self.db.get_user(stream.user_id).await?;
+                            
+                            // Try to auto-topup with NWC when balance is below 1000 sats
+                            const NWC_TOPUP_AMOUNT: u64 = 1000_000;
+                            if user.balance < NWC_TOPUP_AMOUNT as _ && user.nwc.is_some() {
+                                let has_task = { self.nwc_topup_requests.read().await.contains_key(&user.id) };
+                                if !has_task {
+                                    let user = user.clone();
+                                    let overseer = self.clone();
+                                    let jh = tokio::spawn(async move {
+                                        let nwc_url = match NostrWalletConnectURI::parse(user.nwc.unwrap()) {
+                                            Ok(u) => u,
+                                            Err(e) => {
+                                                error!("Failed to parse NWC url for user {}: {}", user.id, e);
+                                                overseer.nwc_topup_requests.write().await.remove(&user.id);
+                                                return;
+                                            }
+                                        };
+                                        let nwc = NWC::new(nwc_url);
+
+                                        let pubkey = user.pubkey.as_slice().try_into().unwrap();
+                                        let topup = match overseer.topup(pubkey, NWC_TOPUP_AMOUNT, None).await {
+                                            Ok(v) => v,
+                                            Err(e) => {
+                                                error!("Failed to get topup for user {}: {}", user.id, e);
+                                                overseer.nwc_topup_requests.write().await.remove(&user.id);
+                                                return;
+                                            }
+                                        };
+
+                                        let pr = if let Some(pr) = topup.invoice {
+                                            pr
+                                        } else {
+                                            error!("Cannot make payment, invoice was null");
+                                            overseer.nwc_topup_requests.write().await.remove(&user.id);
+                                            return;
+                                        };
+                                        match nwc
+                                            .pay_invoice(PayInvoiceRequest {
+                                                id: None,
+                                                invoice: pr,
+                                                amount: None,
+                                            })
+                                            .await
+                                        {
+                                            Ok(p) => {
+                                                info!(
+                                                    "NWC auto-topup complete for user {} preimage={}, fees={}",
+                                                    user.id,
+                                                    p.preimage,
+                                                    p.fees_paid.unwrap_or(0)
+                                                );
+                                            }
+                                            Err(e) => error!("Failed to pay invoice for user {}: {}", user.id, e),
+                                        }
+                                        overseer.nwc_topup_requests.write().await.remove(&user.id);
+                                    });
+                                    self.nwc_topup_requests.write().await.insert(user.id, jh);
+                                    info!("Starting NWC topup for {}", user.id);
+                                }
+                            }
+
+                            // Check for low balance and send notification if needed
+                            if let Some(threshold) = self.low_balance_threshold {
+                                let threshold = threshold as i64 * 1000; // convert to msats
+                                let balance_before = bal + cost;
+                                if balance_before > threshold && bal <= threshold {
+                                    if let Err(e) = self.send_low_balance_notification(&user, &stream).await {
+                                        warn!("Failed to send low balance notification: {}", e);
+                                    }
+                                }
+                            }
+
+                            if bal <= 0 {
+                                warn!("Stream {} balance exhausted, ending stream", stream.id);
+                                if let Err(e) = self.on_end(&id).await {
+                                    error!("Failed to end stream {} due to exhausted balance: {}", stream.id, e);
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                }
+                
+                // Check if we should update viewer count in nostr event
                 if let Ok(user) = self.db.get_user(stream.user_id).await
                     && self
                         .stream_manager
@@ -729,7 +836,7 @@ impl Overseer for ZapStreamOverseer {
     async fn start_stream(
         &self,
         connection: &ConnectionInfo,
-        stream_info: &IngressInfo,
+        stream_info: Option<&IngressInfo>,
     ) -> Result<PipelineConfig> {
         let (user_key, user) = self.get_user_key(connection).await?;
         let hex_pubkey = hex::encode(&user.pubkey);
@@ -739,51 +846,76 @@ impl Overseer for ZapStreamOverseer {
         let endpoint = self.detect_endpoint(connection).await?;
 
         let caps = parse_capabilities(&endpoint.capabilities);
-        let cfg = get_variants_from_endpoint(stream_info, &caps)?;
+        
+        // Get variant configuration - will be empty for cloud backends (None)
+        let cfg = if let Some(info) = stream_info {
+            get_variants_from_endpoint(info, &caps)?
+        } else {
+            // Cloud backend - no stream info available
+            zap_stream_core::endpoint::EndpointConfig {
+                video_src: None,
+                audio_src: None,
+                variants: vec![],
+            }
+        };
 
-        if cfg.video_src.is_none() || cfg.variants.is_empty() {
-            bail!("No video src found");
-        }
-
-        let mut egress = vec![];
-        let all_var_ids: HashSet<Uuid> = cfg.variants.iter().map(|v| v.id()).collect();
-        egress.push(EgressType::HLS(
-            all_var_ids.clone(),
-            self.segment_length,
-            SegmentType::FMP4,
-        ));
-        if let Some(EndpointCapability::DVR { height }) = caps
-            .iter()
-            .find(|c| matches!(c, EndpointCapability::DVR { .. }))
-        {
-            let var = cfg.variants.iter().find(|v| match v {
-                VariantStream::Video(v) => v.height == *height,
-                _ => false,
-            });
-            match var {
-                Some(var) => {
-                    // take all streams in the same group as the matching video resolution (video+audio)
-                    let vars_in_group = cfg
-                        .variants
-                        .iter()
-                        .filter(|v| v.group_id() == var.group_id());
-                    egress.push(EgressType::Recorder(
-                        vars_in_group.map(|v| v.id()).collect(),
-                    ))
-                }
-                None => {
-                    warn!(
-                        "Invalid DVR config, no variant found with height {}",
-                        height
-                    );
+        // Check if we have actual stream data (e.g. local backend) or empty data (e.g. cloud backend)
+        let has_pipeline = cfg.video_src.is_some() && !cfg.variants.is_empty();
+        
+        // Only create pipeline configuration for local backends (e.g. local RML RTMP)
+        // Cloud backends (e.g. Cloudflare) skip pipeline creation
+        let (egress, variants, video_src, audio_src) = if has_pipeline {
+            let mut egress = vec![];
+            let all_var_ids: HashSet<Uuid> = cfg.variants.iter().map(|v| v.id()).collect();
+            egress.push(EgressType::HLS(
+                all_var_ids.clone(),
+                self.segment_length,
+                SegmentType::FMP4,
+            ));
+            if let Some(EndpointCapability::DVR { height }) = caps
+                .iter()
+                .find(|c| matches!(c, EndpointCapability::DVR { .. }))
+            {
+                let var = cfg.variants.iter().find(|v| match v {
+                    VariantStream::Video(v) => v.height == *height,
+                    _ => false,
+                });
+                match var {
+                    Some(var) => {
+                        // take all streams in the same group as the matching video resolution (video+audio)
+                        let vars_in_group = cfg
+                            .variants
+                            .iter()
+                            .filter(|v| v.group_id() == var.group_id());
+                        egress.push(EgressType::Recorder(
+                            vars_in_group.map(|v| v.id()).collect(),
+                        ))
+                    }
+                    None => {
+                        warn!(
+                            "Invalid DVR config, no variant found with height {}",
+                            height
+                        );
+                    }
                 }
             }
-        }
 
-        // let forward_dest = self.db.get_user_forwards(user.id).await?;
-        // for fwd in forward_dest {
-        //     egress.push(EgressType::RTMPForwarder(all_var_ids.clone(), fwd.target));
-        // }
+            // let forward_dest = self.db.get_user_forwards(user.id).await?;
+            // for fwd in forward_dest {
+            //     egress.push(EgressType::RTMPForwarder(all_var_ids.clone(), fwd.target));
+            // }
+            
+            (
+                egress,
+                cfg.variants,
+                cfg.video_src.unwrap().index,
+                cfg.audio_src.map(|s| s.index),
+            )
+        } else {
+            // Cloud backend path - no pipeline needed
+            info!("Skipping pipeline creation for cloud backend stream {}", connection.id);
+            (vec![], vec![], 0, None)
+        };
 
         // in cases where the previous stream should be resumed, the pipeline ID will match a previous
         // stream so we should first try to find the current pipeline id as if it already exists
@@ -834,17 +966,20 @@ impl Overseer for ZapStreamOverseer {
             }
         };
 
+        // Add stream to manager (works for both local and cloud backends)
+        let fps = cfg.video_src.map(|s| s.fps).unwrap_or(0.0);
+        let resolution = cfg.video_src
+            .map(|s| format!("{}x{}", s.width, s.height))
+            .unwrap_or_else(|| "cloud".to_string());
+        
         self.stream_manager
             .add_active_stream(
                 &hex_pubkey,
                 user.id,
                 &new_stream.id,
-                cfg.video_src.map(|s| s.fps).unwrap(),
+                fps,
                 &endpoint.name,
-                cfg.video_src
-                    .map(|s| format!("{}x{}", s.width, s.height))
-                    .unwrap()
-                    .as_str(),
+                &resolution,
                 connection.endpoint,
                 &connection.ip_addr,
             )
@@ -854,8 +989,8 @@ impl Overseer for ZapStreamOverseer {
         new_stream.event = Some(stream_event.as_json());
         self.db.update_stream(&new_stream).await?;
 
-        // publish N94 stream
-        if let Some(n94) = &self.n94 {
+        // publish N94 stream (only for local backends with variants)
+        if let Some(n94) = &self.n94 && has_pipeline {
             n94.on_start(N94StreamInfo {
                 id: new_stream.id.clone(),
                 title: new_stream.title.clone(),
@@ -865,8 +1000,7 @@ impl Overseer for ZapStreamOverseer {
                 starts: new_stream.starts.timestamp() as _,
                 ends: None,
                 relays: vec![],
-                variants: cfg
-                    .variants
+                variants: variants
                     .chunk_by(|a, b| a.group_id() == b.group_id())
                     .map_while(|v| {
                         let video = v.iter().find_map(|a| match a {
@@ -890,11 +1024,11 @@ impl Overseer for ZapStreamOverseer {
             .await?;
         }
         Ok(PipelineConfig {
-            variants: cfg.variants,
+            variants,
             egress,
-            ingress_info: stream_info.clone(),
-            video_src: cfg.video_src.unwrap().index,
-            audio_src: cfg.audio_src.map(|s| s.index),
+            ingress_info: stream_info.cloned(),
+            video_src,
+            audio_src,
         })
     }
 
@@ -910,107 +1044,15 @@ impl Overseer for ZapStreamOverseer {
             .await
             .context("Failed to find stream")?;
 
-        // Get the cost per minute from the ingest endpoint, or use default
-        let endpoint = if let Some(endpoint_id) = stream.endpoint_id {
-            self.db.get_ingest_endpoint(endpoint_id).await?
-        } else {
-            bail!("Endpoint id not set on stream");
-        };
-
-        let (duration, cost) = get_cost(&endpoint, added);
-        let bal = self
-            .db
-            .tick_stream(pipeline_id, stream.user_id, duration, cost)
-            .await?;
-
-        if cost > 0 {
-            let user = self
-                .db
-                .get_user(stream.user_id)
-                .await
-                .context("Failed to get user")?;
-            // try to auto-topup with NWC when balance is below 1000 sats
-            const NWC_TOPUP_AMOUNT: u64 = 1000_000;
-            if user.balance < NWC_TOPUP_AMOUNT as _ && user.nwc.is_some() {
-                let has_task = { self.nwc_topup_requests.read().await.contains_key(&user.id) };
-                if !has_task {
-                    let user = user.clone();
-                    let overseer = self.clone();
-                    let jh = tokio::spawn(async move {
-                        let nwc_url = match NostrWalletConnectURI::parse(user.nwc.unwrap()) {
-                            Ok(u) => u,
-                            Err(e) => {
-                                error!("Failed to parse NWC url for user {}: {}", user.id, e);
-                                overseer.nwc_topup_requests.write().await.remove(&user.id);
-                                return;
-                            }
-                        };
-                        let nwc = NWC::new(nwc_url);
-
-                        let pubkey = user.pubkey.as_slice().try_into().unwrap();
-                        let topup = match overseer.topup(pubkey, NWC_TOPUP_AMOUNT, None).await {
-                            Ok(v) => v,
-                            Err(e) => {
-                                error!("Failed to get topup for user {}: {}", user.id, e);
-                                overseer.nwc_topup_requests.write().await.remove(&user.id);
-                                return;
-                            }
-                        };
-
-                        let pr = if let Some(pr) = topup.invoice {
-                            pr
-                        } else {
-                            error!("Cannot make payment, invoice was null");
-                            overseer.nwc_topup_requests.write().await.remove(&user.id);
-                            return;
-                        };
-                        match nwc
-                            .pay_invoice(PayInvoiceRequest {
-                                id: None,
-                                invoice: pr,
-                                amount: None,
-                            })
-                            .await
-                        {
-                            Ok(p) => {
-                                info!(
-                                    "NWC auto-topup complete for user {} preimage={}, fees={}",
-                                    user.id,
-                                    p.preimage,
-                                    p.fees_paid.unwrap_or(0)
-                                );
-                            }
-                            Err(e) => error!("Failed to pay invoice for user {}: {}", user.id, e),
-                        }
-                        overseer.nwc_topup_requests.write().await.remove(&user.id);
-                    });
-                    self.nwc_topup_requests.write().await.insert(user.id, jh);
-                    info!("Starting NWC topup for {}", user.id);
-                }
-            }
-
-            // Check for low balance and send notification if needed
-            if let Some(threshold) = self.low_balance_threshold {
-                let threshold = threshold as i64 * 1000; // convert to msats
-                let balance_before = bal + cost; // Calculate balance before this deduction
-                if balance_before > threshold && bal <= threshold {
-                    // Balance just crossed the threshold, send notification
-                    if let Err(e) = self.send_low_balance_notification(&user, &stream).await {
-                        warn!("Failed to send low balance notification: {}", e);
-                    }
-                }
-            }
-
-            if bal <= 0 {
-                bail!("Balance has run out");
-            }
-        }
-
-        // Update last segment time for this stream
+        // Move billing from on_segments to check_streams
+        // Because cloud back ends do not have segments but still need billing
+        
+        // Update last segment time for this stream (RML RTMP liveness tracking)
         self.stream_manager
             .update_stream_segment_time(&stream.id)
             .await;
 
+        // Publish N94 segment metadata (optional Nostr feature for RML RTMP)
         if let Some(n94) = &self.n94 {
             n94.on_new_segment(added.iter().map(into_n94_segment).collect())
                 .await?;
