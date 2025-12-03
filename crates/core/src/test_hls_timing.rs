@@ -1,10 +1,8 @@
+#![cfg(feature = "debug-hls")]
 use crate::egress::EncoderOrSourceStream;
 use crate::generator::FrameGenerator;
 use crate::mux::{HlsMuxer, SegmentType};
-use crate::variant::audio::AudioVariant;
-use crate::variant::mapping::VariantMapping;
-use crate::variant::video::VideoVariant;
-use crate::variant::{StreamMapping, VariantStream};
+use crate::variant::{AudioVariant, VariantStream, VideoVariant};
 use anyhow::{Context, Result};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
     AV_CODEC_FLAG_GLOBAL_HEADER, AV_NOPTS_VALUE, AV_PROFILE_H264_MAIN,
@@ -208,35 +206,30 @@ impl HlsTimingTester {
 
         // Create variant streams
         let video_stream = VideoVariant {
-            mapping: VariantMapping {
-                id: Uuid::new_v4(),
-                src_index: 0,
-                dst_index: 0,
-                group_id: 0,
-            },
+            id: Uuid::new_v4(),
+            src_index: 0,
             width: VIDEO_WIDTH,
             height: VIDEO_HEIGHT,
             fps: VIDEO_FPS,
             bitrate: 1_000_000,
             codec: "libx264".to_string(),
-            profile: AV_PROFILE_H264_MAIN as usize,
+            preset: Some("fast".to_string()),
+            profile: Some("main".to_string()),
             level: 51,
-            keyframe_interval: (VIDEO_FPS * 2.0) as _,
-            pixel_format: AV_PIX_FMT_YUV420P as u32,
+            gop: (VIDEO_FPS * 2.0) as _,
+            pixel_format: "yuv420p".to_string(),
+            tune: None,
+            max_b_frames: 0,
         };
 
         let audio_stream = AudioVariant {
-            mapping: VariantMapping {
-                id: Uuid::new_v4(),
-                src_index: 1,
-                dst_index: 1,
-                group_id: 0,
-            },
+            id: Uuid::new_v4(),
+            src_index: 1,
             bitrate: 128_000,
             codec: "aac".to_string(),
             channels: 1,
-            sample_rate: SAMPLE_RATE as usize,
-            sample_fmt: "fltp".to_string(),
+            sample_rate: SAMPLE_RATE as _,
+            sample_format: "fltp".to_string(),
         };
 
         let video_variant = VariantStream::Video(video_stream.clone());
@@ -312,7 +305,7 @@ impl HlsTimingTester {
                     // Audio frame - don't increment video counter
                     tracing::debug!("Generated audio frame, PTS: {}", frame.pts);
                     for pkt in audio_encoder.encode_frame(Some(&frame))? {
-                        let result = hls_muxer.mux_packet(pkt, &audio_stream.id())?;
+                        let result = hls_muxer.mux_packet(pkt, &audio_stream.id)?;
                         if let crate::egress::EgressResult::Segments {
                             created,
                             deleted: _,
@@ -331,7 +324,7 @@ impl HlsTimingTester {
                         (*frame).pts
                     );
                     for pkt in video_encoder.encode_frame(Some(&frame))? {
-                        let result = hls_muxer.mux_packet(pkt, &video_stream.id())?;
+                        let result = hls_muxer.mux_packet(pkt, &video_stream.id)?;
                         if let crate::egress::EgressResult::Segments {
                             created,
                             deleted: _,
@@ -351,12 +344,12 @@ impl HlsTimingTester {
         unsafe {
             // Flush video encoder
             for pkt in video_encoder.encode_frame(None)? {
-                hls_muxer.mux_packet(pkt, &video_stream.id())?;
+                hls_muxer.mux_packet(pkt, &video_stream.id)?;
             }
 
             // Flush audio encoder
             for pkt in audio_encoder.encode_frame(None)? {
-                hls_muxer.mux_packet(pkt, &audio_stream.id())?;
+                hls_muxer.mux_packet(pkt, &audio_stream.id)?;
             }
         }
 
@@ -831,7 +824,7 @@ mod tests {
     #[ignore]
     #[test]
     fn test_generated_hls_stream_mpegts() {
-        pretty_env_logger::try_init().ok();
+        tracing_subscriber::fmt::try_init().ok();
 
         let temp_dir = tempdir().unwrap();
         let tester = HlsTimingTester::new(0.2, 1.0, 0.5); // More lenient thresholds for test
@@ -869,7 +862,7 @@ mod tests {
     #[ignore]
     #[test]
     fn test_generated_hls_stream_fmp4() {
-        pretty_env_logger::try_init().ok();
+        tracing_subscriber::fmt::try_init().ok();
 
         let temp_dir = tempdir().unwrap();
         let tester = HlsTimingTester::new(0.2, 1.0, 0.5); // More lenient thresholds for test
@@ -907,7 +900,7 @@ mod tests {
     #[ignore]
     #[test]
     fn test_30_second_stream() {
-        pretty_env_logger::try_init().ok();
+        tracing_subscriber::fmt::try_init().ok();
 
         let temp_dir = tempdir().unwrap();
         let tester = HlsTimingTester::default();

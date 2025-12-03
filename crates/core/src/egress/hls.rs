@@ -3,9 +3,8 @@ use ffmpeg_rs_raw::AvPacketRef;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-use crate::egress::{Egress, EgressResult, EncoderOrSourceStream};
+use crate::egress::{Egress, EgressResult, EncoderVariantGroup};
 use crate::mux::{HlsMuxer, SegmentType};
-use crate::variant::VariantStream;
 
 /// Alias the muxer directly
 pub struct HlsEgress {
@@ -15,9 +14,9 @@ pub struct HlsEgress {
 impl HlsEgress {
     pub const PATH: &'static str = "hls";
 
-    pub fn new<'a>(
+    pub fn new(
         out_dir: PathBuf,
-        encoders: impl Iterator<Item = (&'a VariantStream, EncoderOrSourceStream<'a>)>,
+        encoders: &Vec<EncoderVariantGroup>,
         segment_type: SegmentType,
         segment_length: f32,
     ) -> Result<Self> {

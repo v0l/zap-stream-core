@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::fmt::{Display, Formatter};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
@@ -37,19 +36,6 @@ pub struct Settings {
     #[cfg(feature = "moq")]
     /// MoQ server config
     pub moq_server_config: Option<moq_native::ServerConfig>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub struct LocalOverseerVariant {
-    height: u16,
-    bitrate: u32,
-}
-
-impl Display for LocalOverseerVariant {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "variant:{}:{}", self.height, self.bitrate)
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

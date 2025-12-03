@@ -1,5 +1,5 @@
-use crate::egress::{Egress, EgressResult, EncoderOrSourceStream};
-use crate::variant::{StreamMapping, VariantStream};
+use crate::egress::{Egress, EgressResult, EncoderVariantGroup};
+use crate::variant::VariantStream;
 use anyhow::{Result, bail};
 use bytes::Bytes;
 use ffmpeg_rs_raw::AvPacketRef;
@@ -21,7 +21,7 @@ impl MoqEgress {
 
     pub fn new<'a>(
         origin: OriginProducer,
-        variants: impl Iterator<Item = (&'a VariantStream, EncoderOrSourceStream<'a>)>,
+        groups: &Vec<EncoderVariantGroup>,
     ) -> Result<Self> {
         // create a Catalog which contains all the video / audio tracks
         let mut catalog = Catalog::default();
@@ -30,80 +30,82 @@ impl MoqEgress {
         let mut track_handles = Vec::new();
         let mut video_priority = 100;
         let mut audio_priority = 1;
-        for (var, enc) in variants {
-            match var {
-                VariantStream::Video(var) | VariantStream::CopyVideo(var) => {
-                    let cfg = catalog::VideoConfig {
-                        codec: match var.codec.as_str() {
-                            "libx264" | "h264" => H264 {
-                                //TODO: take from encoder
-                                profile: var.profile as _,
-                                constraints: 0,
-                                level: var.level as _,
-                            }
-                            .into(),
-                            "libx265" | "h265" => H265 {
-                                //TODO: take from encoder
-                                in_band: false,
-                                profile_space: 0,
-                                profile_idc: 0,
-                                profile_compatibility_flags: [0, 0, 0, 0],
-                                tier_flag: false,
-                                level_idc: 0,
-                                constraint_flags: [0, 0, 0, 0, 0, 0],
-                            }
-                            .into(),
-                            "vp8" => VideoCodec::VP8,
-                            "vp9" => VP9 {
-                                //TODO: take from encoder
-                                profile: 0,
-                                level: 0,
-                                bit_depth: 0,
-                                chroma_subsampling: 0,
-                                color_primaries: 0,
-                                transfer_characteristics: 0,
-                                matrix_coefficients: 0,
-                                full_range: false,
-                            }
-                            .into(),
-                            _ => bail!("Unsupported video codec {}", &var.codec),
-                        },
-                        description: None,
-                        coded_width: Some(var.width as _),
-                        coded_height: Some(var.height as _),
-                        display_ratio_width: None,
-                        display_ratio_height: None,
-                        bitrate: Some(var.bitrate as _),
-                        framerate: Some(var.fps as _),
-                        optimize_for_latency: Some(true),
-                    };
-                    video_tracks.insert(var.id().to_string(), cfg);
-                    track_handles.push(hang::moq_lite::Track {
-                        name: var.id().to_string(),
-                        priority: video_priority,
-                    });
-                    video_priority += 1;
+        for group in groups {
+            for stream in &group.streams {
+                match stream.variant {
+                    VariantStream::Video(var) | VariantStream::CopyVideo(var) => {
+                        let cfg = catalog::VideoConfig {
+                            codec: match var.codec.as_str() {
+                                "h264" => H264 {
+                                    //TODO: take from encoder
+                                    profile: 0,
+                                    constraints: 0,
+                                    level: 0,
+                                }
+                                    .into(),
+                                "h265" | "hevc" => H265 {
+                                    //TODO: take from encoder
+                                    in_band: false,
+                                    profile_space: 0,
+                                    profile_idc: 0,
+                                    profile_compatibility_flags: [0, 0, 0, 0],
+                                    tier_flag: false,
+                                    level_idc: 0,
+                                    constraint_flags: [0, 0, 0, 0, 0, 0],
+                                }
+                                    .into(),
+                                "vp8" => VideoCodec::VP8,
+                                "vp9" => VP9 {
+                                    //TODO: take from encoder
+                                    profile: 0,
+                                    level: 0,
+                                    bit_depth: 0,
+                                    chroma_subsampling: 0,
+                                    color_primaries: 0,
+                                    transfer_characteristics: 0,
+                                    matrix_coefficients: 0,
+                                    full_range: false,
+                                }
+                                    .into(),
+                                _ => bail!("Unsupported video codec {}", &var.codec),
+                            },
+                            description: None,
+                            coded_width: Some(var.width as _),
+                            coded_height: Some(var.height as _),
+                            display_ratio_width: None,
+                            display_ratio_height: None,
+                            bitrate: Some(var.bitrate as _),
+                            framerate: Some(var.fps as _),
+                            optimize_for_latency: Some(true),
+                        };
+                        video_tracks.insert(var.id.to_string(), cfg);
+                        track_handles.push(hang::moq_lite::Track {
+                            name: var.id.to_string(),
+                            priority: video_priority,
+                        });
+                        video_priority += 1;
+                    }
+                    VariantStream::Audio(var) | VariantStream::CopyAudio(var) => {
+                        let cfg = catalog::AudioConfig {
+                            codec: match var.codec.as_str() {
+                                "aac" | "libfdk_aac" => AAC { profile: 0 }.into(),
+                                "opus" => AudioCodec::Opus,
+                                _ => bail!("Unsupported audio codec {}", &var.codec),
+                            },
+                            sample_rate: 0,
+                            channel_count: 0,
+                            bitrate: Some(var.bitrate as _),
+                            description: None,
+                        };
+                        audio_tracks.insert(var.id.to_string(), cfg);
+                        track_handles.push(hang::moq_lite::Track {
+                            name: var.id.to_string(),
+                            priority: audio_priority,
+                        });
+                        audio_priority += 1;
+                    }
+                    VariantStream::Subtitle { .. } => {}
                 }
-                VariantStream::Audio(var) | VariantStream::CopyAudio(var) => {
-                    let cfg = catalog::AudioConfig {
-                        codec: match var.codec.as_str() {
-                            "aac" | "libfdk_aac" => AAC { profile: 0 }.into(),
-                            "opus" => AudioCodec::Opus,
-                            _ => bail!("Unsupported audio codec {}", &var.codec),
-                        },
-                        sample_rate: var.sample_rate as _,
-                        channel_count: var.channels as _,
-                        bitrate: Some(var.bitrate as _),
-                        description: None,
-                    };
-                    audio_tracks.insert(var.id().to_string(), cfg);
-                    track_handles.push(hang::moq_lite::Track {
-                        name: var.id().to_string(),
-                        priority: audio_priority,
-                    });
-                    audio_priority += 1;
-                }
-                VariantStream::Subtitle(_) => {}
             }
         }
 

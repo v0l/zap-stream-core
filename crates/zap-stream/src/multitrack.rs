@@ -8,22 +8,30 @@ use nostr_sdk::serde_json;
 use serde::{Deserialize, Serialize};
 use std::convert::TryFrom;
 use std::str::FromStr;
+use std::sync::Arc;
 use tracing::{info, warn};
-use zap_stream_core::endpoint::{get_variants_from_endpoint, parse_capabilities};
+use uuid::Uuid;
+use zap_stream_core::endpoint::{EndpointConfigEngine, parse_capabilities};
+use zap_stream_core::ingress::ConnectionInfo;
 use zap_stream_core::listen::ListenerEndpoint;
 use zap_stream_core::map_codec_id;
-use zap_stream_core::overseer::{IngressInfo, IngressStream, IngressStreamType};
+use zap_stream_core::overseer::{IngressInfo, IngressStream, IngressStreamType, Overseer};
 use zap_stream_core::variant::VariantStream;
 use zap_stream_db::ZapStreamDb;
 
 pub struct MultiTrackEngine {
     db: ZapStreamDb,
     settings: Settings,
+    overseer: Arc<dyn Overseer>,
 }
 
 impl MultiTrackEngine {
-    pub fn new(db: ZapStreamDb, settings: Settings) -> Self {
-        Self { db, settings }
+    pub fn new(db: ZapStreamDb, settings: Settings, overseer: Arc<dyn Overseer>) -> Self {
+        Self {
+            db,
+            settings,
+            overseer,
+        }
     }
 
     pub async fn get_multi_track_config(
@@ -107,6 +115,7 @@ impl MultiTrackEngine {
                     height: canvas.height as _,
                     fps: canvas.framerate.numerator as f32 / canvas.framerate.denominator as f32,
                     sample_rate: 0,
+                    bitrate: 0,
                     channels: 0,
                     language: "".to_string(),
                 },
@@ -130,21 +139,32 @@ impl MultiTrackEngine {
                     height: 0,
                     fps: 0.0,
                     sample_rate: req.preferences.audio_samples_per_sec as _,
+                    bitrate: 0,
                     channels: req.preferences.audio_channels as _,
                     language: "".to_string(),
                 },
             ],
         };
-        let caps = parse_capabilities(&ingest_pick.capabilities);
-        let encoder_config = match get_variants_from_endpoint(&pseudo_ingress, &caps) {
-            Ok(c) => c,
-            Err(e) => {
-                return Ok(MultiTrackConfigResponse::status_error(format!(
-                    "Failed to configure stream <pre>{}</pre>",
-                    e
-                )));
-            }
+        let conn = ConnectionInfo {
+            id: Uuid::new_v4(),
+            endpoint: "multi-track-config",
+            ip_addr: "".to_string(),
+            app_name: ingest_pick.name.clone(),
+            key: req.authentication.clone(),
         };
+        let egress = self.overseer.get_egress(&conn).await?;
+        let caps = parse_capabilities(&ingest_pick.capabilities);
+        let encoder_config =
+            match EndpointConfigEngine::get_variants_from_endpoint(&pseudo_ingress, &caps, &egress)
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    return Ok(MultiTrackConfigResponse::status_error(format!(
+                        "Failed to configure stream <pre>{}</pre>",
+                        e
+                    )));
+                }
+            };
         let max_audio = encoder_config
             .variants
             .iter()

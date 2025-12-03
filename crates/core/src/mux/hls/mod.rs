@@ -1,15 +1,13 @@
-use crate::egress::{EgressResult, EncoderOrSourceStream};
+use crate::egress::{EgressResult, EncoderVariantGroup};
+use crate::mux::SegmentType;
 use crate::mux::hls::variant::HlsVariant;
-use crate::variant::{StreamMapping, VariantStream};
 use anyhow::Result;
 use ffmpeg_rs_raw::AvPacketRef;
-use itertools::Itertools;
-use serde::{Deserialize, Serialize};
-use std::fmt::{Display, Formatter};
+use std::fmt::Display;
 use std::fs::File;
 use std::ops::Sub;
 use std::path::PathBuf;
-use tokio::time::Instant;
+use std::time::Instant;
 use tracing::trace;
 use uuid::Uuid;
 
@@ -17,21 +15,9 @@ mod segment;
 mod variant;
 
 pub enum HlsVariantStream {
-    Video {
-        group: usize,
-        index: usize,
-        id: Uuid,
-    },
-    Audio {
-        group: usize,
-        index: usize,
-        id: Uuid,
-    },
-    Subtitle {
-        group: usize,
-        index: usize,
-        id: Uuid,
-    },
+    Video { index: usize, id: Uuid },
+    Audio { index: usize, id: Uuid },
+    Subtitle { index: usize, id: Uuid },
 }
 
 impl HlsVariantStream {
@@ -62,21 +48,6 @@ impl Display for HlsVariantStream {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
-pub enum SegmentType {
-    MPEGTS,
-    FMP4,
-}
-
-impl Display for SegmentType {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SegmentType::MPEGTS => write!(f, "MPEGTS"),
-            SegmentType::FMP4 => write!(f, "fMP4"),
-        }
-    }
-}
-
 pub struct HlsMuxer {
     pub out_dir: PathBuf,
     pub variants: Vec<HlsVariant>,
@@ -89,9 +60,9 @@ impl HlsMuxer {
 
     const MASTER_WRITE_INTERVAL: f32 = 60.0;
 
-    pub fn new<'a>(
+    pub fn new(
         out_dir: PathBuf,
-        encoders: impl Iterator<Item = (&'a VariantStream, EncoderOrSourceStream<'a>)>,
+        encoders: &Vec<EncoderVariantGroup>,
         segment_type: SegmentType,
         segment_length: f32,
     ) -> Result<Self> {
@@ -99,11 +70,8 @@ impl HlsMuxer {
             std::fs::create_dir_all(&out_dir)?;
         }
         let mut vars = Vec::new();
-        for (k, group) in &encoders
-            .sorted_by(|a, b| a.0.group_id().cmp(&b.0.group_id()))
-            .chunk_by(|a| a.0.group_id())
-        {
-            let var = HlsVariant::new(out_dir.clone(), k, group, segment_type, segment_length)?;
+        for g in encoders {
+            let var = HlsVariant::new(out_dir.clone(), g, segment_type, segment_length)?;
             //var.enable_low_latency(segment_length / 4.0);
             vars.push(var);
         }

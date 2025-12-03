@@ -96,7 +96,7 @@ impl N94Publisher {
     /// Converts a blob from blossom into a NIP-94 event (1063)
     fn blob_to_event_builder(&self, blob: &BlobDescriptor) -> Result<EventBuilder> {
         let mut tags = if let Some(tags) = blob.nip94.as_ref() {
-            tags.iter().map_while(|v| Tag::parse(v).ok()).collect()
+            tags.iter().filter_map(|v| Tag::parse(v).ok()).collect()
         } else {
             let mut tags = vec![
                 Tag::parse(["x", &blob.sha256])?,

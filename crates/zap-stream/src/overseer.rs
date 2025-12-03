@@ -13,7 +13,7 @@ use nostr_sdk::{
 use nwc::NWC;
 use nwc::prelude::{NostrWalletConnectURI, PayInvoiceRequest};
 use payments_rs::lightning::{AddInvoiceRequest, InvoiceUpdate, LightningNode};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ops::Add;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -28,15 +28,12 @@ use uuid::Uuid;
 use zap_stream_core::egress::EgressSegment;
 use zap_stream_core::egress::hls::HlsEgress;
 use zap_stream_core::egress::recorder::RecorderEgress;
-use zap_stream_core::endpoint::{
-    EndpointCapability, get_variants_from_endpoint, parse_capabilities,
-};
+use zap_stream_core::endpoint::{EndpointCapability, EndpointConfigEngine, parse_capabilities};
 use zap_stream_core::ingress::ConnectionInfo;
 use zap_stream_core::mux::SegmentType;
 use zap_stream_core::overseer::{ConnectResult, IngressInfo, Overseer, StatsType};
-use zap_stream_core::pipeline::{EgressType, PipelineConfig};
-use zap_stream_core::variant::{StreamMapping, VariantStream};
-use zap_stream_core_nostr::n94::{N94Publisher, N94Segment, N94StreamInfo, N94Variant};
+use zap_stream_core::pipeline::{EgressConfig, EgressType, PipelineConfig};
+use zap_stream_core_nostr::n94::{N94Publisher, N94Segment, N94StreamInfo};
 use zap_stream_db::{
     IngestEndpoint, Payment, StreamKeyType, User, UserStream, UserStreamState, ZapStreamDb,
 };
@@ -259,10 +256,7 @@ impl ZapStreamOverseer {
                         }
                     }
                 }
-
-                info!("Payment handler exiting, resetting...");
             }
-            Ok(())
         })
     }
 
@@ -730,53 +724,15 @@ impl Overseer for ZapStreamOverseer {
 
         // Get ingest endpoint configuration based on connection type
         let endpoint = self.detect_endpoint(connection).await?;
-
         let caps = parse_capabilities(&endpoint.capabilities);
-        let cfg = get_variants_from_endpoint(stream_info, &caps)?;
 
-        if cfg.video_src.is_none() || cfg.variants.is_empty() {
-            bail!("No video src found");
+        // configure list of egress' we're going to use
+        let egress = self.get_egress(connection).await?;
+
+        let cfg = EndpointConfigEngine::get_variants_from_endpoint(stream_info, &caps, &egress)?;
+        if cfg.variants.is_empty() {
+            bail!("No variants configured");
         }
-
-        let mut egress = vec![];
-        let all_var_ids: HashSet<Uuid> = cfg.variants.iter().map(|v| v.id()).collect();
-        egress.push(EgressType::HLS(
-            all_var_ids.clone(),
-            self.segment_length,
-            SegmentType::FMP4,
-        ));
-        if let Some(EndpointCapability::DVR { height }) = caps
-            .iter()
-            .find(|c| matches!(c, EndpointCapability::DVR { .. }))
-        {
-            let var = cfg.variants.iter().find(|v| match v {
-                VariantStream::Video(v) => v.height == *height,
-                _ => false,
-            });
-            match var {
-                Some(var) => {
-                    // take all streams in the same group as the matching video resolution (video+audio)
-                    let vars_in_group = cfg
-                        .variants
-                        .iter()
-                        .filter(|v| v.group_id() == var.group_id());
-                    egress.push(EgressType::Recorder(
-                        vars_in_group.map(|v| v.id()).collect(),
-                    ))
-                }
-                None => {
-                    warn!(
-                        "Invalid DVR config, no variant found with height {}",
-                        height
-                    );
-                }
-            }
-        }
-
-        // let forward_dest = self.db.get_user_forwards(user.id).await?;
-        // for fwd in forward_dest {
-        //     egress.push(EgressType::RTMPForwarder(all_var_ids.clone(), fwd.target));
-        // }
 
         // in cases where the previous stream should be resumed, the pipeline ID will match a previous
         // stream so we should first try to find the current pipeline id as if it already exists
@@ -858,24 +814,7 @@ impl Overseer for ZapStreamOverseer {
                 starts: new_stream.starts.timestamp() as _,
                 ends: None,
                 relays: vec![],
-                variants: cfg
-                    .variants
-                    .chunk_by(|a, b| a.group_id() == b.group_id())
-                    .map_while(|v| {
-                        let video = v.iter().find_map(|a| match a {
-                            VariantStream::Video(v) | VariantStream::CopyVideo(v) => Some(v),
-                            _ => None,
-                        });
-                        let video = video?;
-                        Some(N94Variant {
-                            id: video.id().to_string(),
-                            width: video.width as _,
-                            height: video.height as _,
-                            bitrate: video.bitrate as _,
-                            mime_type: Some("video/mp2t".to_string()),
-                        })
-                    })
-                    .collect(),
+                variants: vec![], // TODO: fix this
                 goal: new_stream.goal.clone(),
                 pinned: new_stream.pinned.clone(),
                 status: "live".to_string(),
@@ -884,7 +823,17 @@ impl Overseer for ZapStreamOverseer {
         }
         Ok(PipelineConfig {
             variants: cfg.variants,
-            egress,
+            egress: cfg
+                .egress_map
+                .into_iter()
+                .filter_map(|e| {
+                    let kind = egress.iter().find(|c| c.id() == e.0)?;
+                    Some(EgressConfig {
+                        kind: kind.clone(),
+                        variants: e.1,
+                    })
+                })
+                .collect(),
             ingress_info: stream_info.clone(),
             video_src: cfg.video_src.unwrap().index,
             audio_src: cfg.audio_src.map(|s| s.index),
@@ -1078,6 +1027,39 @@ impl Overseer for ZapStreamOverseer {
         Ok(())
     }
 
+    async fn get_egress(&self, conn: &ConnectionInfo) -> Result<Vec<EgressType>> {
+        // Get ingest endpoint configuration based on connection type
+        let endpoint = self.detect_endpoint(conn).await?;
+        let caps = parse_capabilities(&endpoint.capabilities);
+
+        // configure list of egress' we're going to use
+        let mut egress = vec![];
+        egress.push(EgressType::HLS {
+            id: Uuid::new_v4(),
+            segment_length: self.segment_length,
+            segment_type: SegmentType::FMP4,
+        });
+        if let Some(h) = caps.iter().find_map(|c| {
+            if let EndpointCapability::DVR { height } = c {
+                Some(*height)
+            } else {
+                None
+            }
+        }) {
+            egress.push(EgressType::Recorder {
+                id: Uuid::new_v4(),
+                height: h,
+            })
+        }
+
+        // let forward_dest = self.db.get_user_forwards(user.id).await?;
+        // for fwd in forward_dest {
+        //     egress.push(EgressType::RTMPForwarder(all_var_ids.clone(), fwd.target));
+        // }
+
+        Ok(egress)
+    }
+
     #[cfg(feature = "moq")]
     async fn get_moq_origin(&self) -> Result<OriginProducer> {
         let Some(prod) = &self.moq_origin else {
@@ -1090,6 +1072,8 @@ impl Overseer for ZapStreamOverseer {
 impl ZapStreamOverseer {
     /// Detect which ingest endpoint should be used based on connection info
     async fn detect_endpoint(&self, connection: &ConnectionInfo) -> Result<IngestEndpoint> {
+        // TODO: allow user to select their default endpoint
+
         let endpoints = self.db.get_ingest_endpoints().await?;
 
         if endpoints.is_empty() {

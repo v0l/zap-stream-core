@@ -6,28 +6,31 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "egress-hls")]
 use crate::egress::hls::HlsEgress;
 #[cfg(feature = "egress-moq")]
 use crate::egress::moq::MoqEgress;
 use crate::egress::recorder::RecorderEgress;
 #[cfg(feature = "egress-rtmp")]
 use crate::egress::rtmp::RtmpEgress;
-use crate::egress::{Egress, EgressResult, EncoderOrSourceStream};
+use crate::egress::{
+    Egress, EgressResult, EncoderOrSourceStream, EncoderVariant, EncoderVariantGroup,
+};
 use crate::ingress::{ConnectionInfo, EndpointStats};
 use crate::overseer::{IngressInfo, IngressStream, IngressStreamType, Overseer, StatsType};
 use crate::pipeline::{EgressType, PipelineConfig};
 use crate::reorder::FrameReorderBuffer;
-use crate::variant::{StreamMapping, VariantStream};
+use crate::variant::VariantStream;
 use anyhow::{Result, anyhow, bail};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_WEBP;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPictureType::AV_PICTURE_TYPE_NONE;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVPixelFormat, av_get_sample_fmt, av_rescale_q,
+    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVPixelFormat, av_rescale_q,
 };
 use ffmpeg_rs_raw::{
     AudioFifo, AvFrameRef, AvPacketRef, Decoder, Demuxer, Encoder, Resample, Scaler, StreamType,
-    cstr, get_frame_from_hw,
+    get_frame_from_hw,
 };
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -274,8 +277,8 @@ impl PipelineRunner {
 
             // Check if this packet needs transcoding (not just copying)
             let needs_transcode = config.variants.iter().any(|var| match var {
-                VariantStream::Video(v) if v.src_index() == stream_index => true,
-                VariantStream::Audio(v) if v.src_index() == stream_index => true,
+                VariantStream::Video(v) if v.src_index == stream_index => true,
+                VariantStream::Audio(v) if v.src_index == stream_index => true,
                 _ => false,
             });
 
@@ -300,18 +303,18 @@ impl PipelineRunner {
             // egress (mux) copy variants
             for var in config.variants {
                 match var {
-                    VariantStream::CopyAudio(v) if v.src_index() == stream_index => {
+                    VariantStream::CopyAudio(v) if v.src_index == stream_index => {
                         egress_results.extend(Self::egress_packet(
                             &mut self.egress,
                             &packet,
-                            &v.id(),
+                            &v.id,
                         )?);
                     }
-                    VariantStream::CopyVideo(v) if v.src_index() == stream_index => {
+                    VariantStream::CopyVideo(v) if v.src_index == stream_index => {
                         egress_results.extend(Self::egress_packet(
                             &mut self.egress,
                             &packet,
-                            &v.id(),
+                            &v.id,
                         )?);
                     }
                     _ => {}
@@ -427,13 +430,11 @@ impl PipelineRunner {
                     // Process this reordered frame through all video variants
                     for var in &pkt_vars {
                         if let VariantStream::Video(v) = var {
-                            let var_id = var.id();
-
-                            let enc = self.encoders.get_mut(&var_id).unwrap();
-                            if let Some(s) = self.scalers.get_mut(&v.id()) {
+                            let enc = self.encoders.get_mut(&v.id).unwrap();
+                            if let Some(s) = self.scalers.get_mut(&v.id) {
                                 trace!(
                                     "FRAME->SCALER: var={}, pts={}, pkt_dts={}, duration={}, tb={}/{}",
-                                    var_id,
+                                    v.id,
                                     frame_ref.pts,
                                     frame_ref.pkt_dts,
                                     frame_ref.duration,
@@ -441,11 +442,18 @@ impl PipelineRunner {
                                     frame_ref.time_base.den
                                 );
 
+                                let Ok(pix_fmt) = v.pixel_format_id() else {
+                                    warn!(
+                                        "Could not scale frame without pixel_format for {}",
+                                        v.id
+                                    );
+                                    continue;
+                                };
                                 let new_frame = s.process_frame(
                                     &frame_ref,
                                     v.width,
                                     v.height,
-                                    transmute(v.pixel_format),
+                                    transmute(pix_fmt),
                                 )?;
 
                                 egress_results.extend(Self::encode_mux_frame(
@@ -476,7 +484,7 @@ impl PipelineRunner {
                             continue;
                         };
 
-                        if let Some((r, f)) = self.resampler.get_mut(&a.id()) {
+                        if let Some((r, f)) = self.resampler.get_mut(&a.id) {
                             let frame_size = (*enc.codec_context()).frame_size;
                             let resampled_frame = r.process_frame(&frame)?;
                             f.buffer_frame(&resampled_frame)?;
@@ -766,7 +774,6 @@ impl PipelineRunner {
                 .probe_input()
                 .map_err(|e| anyhow!("Demuxer probe failed: {}", e))?
         };
-        info!("{}", info);
         // convert to internal type
         let i_info = IngressInfo {
             bitrate: info.bitrate,
@@ -782,6 +789,7 @@ impl PipelineRunner {
                     },
                     codec: s.codec,
                     format: s.format,
+                    bitrate: 0, // TODO: get bitrate of stream
                     width: s.width,
                     height: s.height,
                     fps: if s.fps.is_normal() { s.fps } else { 30.0 },
@@ -810,35 +818,17 @@ impl PipelineRunner {
     }
 
     fn setup_encoders(&mut self, cfg: &PipelineConfig) -> Result<()> {
-        // Analyze egress types to determine which encoders need GLOBAL_HEADER
-        let mut encoders_need_global_header = HashSet::new();
-
-        for egress in &cfg.egress {
-            let needs_global_header = match egress {
-                EgressType::HLS(_, _, crate::mux::SegmentType::FMP4) => true,
-                EgressType::Recorder(_) => true,
-                _ => false,
-            };
-
-            if needs_global_header {
-                for variant_id in egress.variants() {
-                    encoders_need_global_header.insert(*variant_id);
-                }
-            }
-        }
-
         // setup scaler/encoders
         for out_stream in &cfg.variants {
-            let need_global_header = encoders_need_global_header.contains(&out_stream.id());
             match out_stream {
                 VariantStream::Video(v) => {
-                    let encoder = v.create_encoder(need_global_header)?;
+                    let encoder = v.create_encoder(true)?;
                     self.encoders.insert(out_stream.id(), encoder);
                     self.scalers.insert(out_stream.id(), Scaler::new());
                 }
                 VariantStream::Audio(a) => {
-                    let enc = a.create_encoder(need_global_header)?;
-                    let fmt = unsafe { av_get_sample_fmt(cstr!(a.sample_fmt.as_str())) };
+                    let enc = a.create_encoder(true)?;
+                    let fmt = unsafe { transmute(a.sample_format_id()?) };
                     let rs = Resample::new(fmt, a.sample_rate as _, a.channels as _);
                     let f = AudioFifo::new(fmt, a.channels as _)?;
                     self.resampler.insert(out_stream.id(), (rs, f));
@@ -850,30 +840,74 @@ impl PipelineRunner {
 
         // Setup egress
         for e in &cfg.egress {
-            let c = e.variants();
-            let vars = c
+            let variant_mapping: Vec<_> = e
+                .variants
                 .iter()
-                .map_while(|x| cfg.variants.iter().find(|z| z.id() == *x));
-            let variant_mapping = vars.map_while(|v| {
-                if let Some(e) = self.encoders.get(&v.id()) {
-                    Some((v, EncoderOrSourceStream::Encoder(e)))
-                } else {
-                    Some((
-                        v,
-                        EncoderOrSourceStream::SourceStream(unsafe {
-                            self.demuxer.get_stream(v.src_index()).ok()?
-                        }),
-                    ))
-                }
-            });
-            match e {
-                EgressType::HLS(_, len, seg) => {
-                    let hls = HlsEgress::new(self.out_dir.clone(), variant_mapping, *seg, *len)?;
+                .filter_map(|v| {
+                    let mut ret = EncoderVariantGroup {
+                        id: v.id,
+                        streams: vec![],
+                    };
+                    if let Some(v) = v.video {
+                        let var = cfg.variants.iter().find(|x| x.id() == v)?;
+                        let stream = self.get_source_stream(var)?;
+                        ret.streams.push(EncoderVariant {
+                            variant: var,
+                            stream,
+                        });
+                    }
+                    if let Some(a) = v.audio {
+                        let var = cfg.variants.iter().find(|x| x.id() == a)?;
+                        let stream = self.get_source_stream(var)?;
+                        ret.streams.push(EncoderVariant {
+                            variant: var,
+                            stream,
+                        });
+                    }
+                    if let Some(s) = v.subtitle {
+                        let var = cfg.variants.iter().find(|x| x.id() == s)?;
+                        let stream = self.get_source_stream(var)?;
+                        ret.streams.push(EncoderVariant {
+                            variant: var,
+                            stream,
+                        });
+                    }
+                    Some(ret)
+                })
+                .collect();
+            match e.kind {
+                #[cfg(feature = "egress-hls")]
+                EgressType::HLS {
+                    segment_type,
+                    segment_length,
+                    ..
+                } => {
+                    let hls = HlsEgress::new(
+                        self.out_dir.clone(),
+                        &variant_mapping,
+                        segment_type,
+                        segment_length,
+                    )?;
                     self.egress.push(Box::new(hls));
                 }
-                EgressType::Recorder(_) => {
-                    let rec = RecorderEgress::new(self.out_dir.clone(), variant_mapping)?;
-                    self.egress.push(Box::new(rec));
+                EgressType::Recorder { height, .. } => {
+                    let match_var = variant_mapping.iter().find(|a| {
+                        a.streams.iter().any(|b| match b.variant {
+                            VariantStream::CopyVideo(v) | VariantStream::Video(v) => {
+                                v.height == height
+                            }
+                            _ => false,
+                        })
+                    });
+                    if let Some(a) = match_var {
+                        let rec = RecorderEgress::new(self.out_dir.clone(), a)?;
+                        self.egress.push(Box::new(rec));
+                    } else {
+                        warn!(
+                            "Could not find matching variant {}p, recording disabled!",
+                            height
+                        );
+                    }
                 }
                 #[cfg(feature = "egress-rtmp")]
                 EgressType::RTMPForwarder(_, dst) => {
@@ -885,17 +919,27 @@ impl PipelineRunner {
                     }
                 }
                 #[cfg(feature = "egress-moq")]
-                EgressType::Moq(_) => {
+                EgressType::Moq { .. } => {
                     let origin = self
                         .handle
                         .block_on(async { self.overseer.get_moq_origin().await })?;
-                    let moq = MoqEgress::new(origin, variant_mapping)?;
+                    let moq = MoqEgress::new(origin, &variant_mapping)?;
                     self.egress.push(Box::new(moq));
                 }
                 _ => bail!("Unhandled egress type: {:?}", e),
             }
         }
         Ok(())
+    }
+
+    fn get_source_stream(&self, v: &VariantStream) -> Option<EncoderOrSourceStream<'_>> {
+        if let Some(e) = self.encoders.get(&v.id()) {
+            Some(EncoderOrSourceStream::Encoder(e))
+        } else {
+            Some(EncoderOrSourceStream::SourceStream(unsafe {
+                self.demuxer.get_stream(v.src_index()).ok()?
+            }))
+        }
     }
 }
 

@@ -34,6 +34,7 @@ use zap_stream_db::{IngestEndpoint, ZapStreamDb};
 enum Route {
     Account,
     Topup,
+    #[cfg(feature = "withdrawal")]
     Withdraw,
     Zap,
     ZapCallback,
@@ -597,7 +598,11 @@ impl Api {
                 (&Method::POST, Route::MultiTrackConfig) => {
                     let body = req.collect().await?.to_bytes();
                     let mtr_req: MultiTrackConfigRequest = serde_json::from_slice(&body)?;
-                    let engine = MultiTrackEngine::new(self.db.clone(), self.settings.clone());
+                    let engine = MultiTrackEngine::new(
+                        self.db.clone(),
+                        self.settings.clone(),
+                        self.overseer.clone(),
+                    );
                     let rsp = engine.get_multi_track_config(mtr_req).await?;
                     Ok(base.body(Self::body_json(&rsp)?)?)
                 }
@@ -1820,12 +1825,14 @@ struct TopupResponse {
     pub pr: String,
 }
 
+#[cfg(feature = "withdrawal")]
 #[derive(Deserialize, Serialize)]
 struct WithdrawRequest {
     pub payment_request: String,
     pub amount: u64,
 }
 
+#[cfg(feature = "withdrawal")]
 #[derive(Deserialize, Serialize)]
 struct WithdrawResponse {
     pub fee: i64,

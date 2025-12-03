@@ -1,8 +1,10 @@
-use crate::egress::{EgressResult, EgressSegment, EncoderOrSourceStream};
+use crate::egress::{
+    EgressResult, EgressSegment, EncoderOrSourceStream, EncoderVariantGroup,
+};
 use crate::hash_file_sync;
 use crate::mux::hls::segment::{HlsSegment, PartialSegmentInfo, SegmentInfo};
 use crate::mux::{HlsVariantStream, SegmentType};
-use crate::variant::{StreamMapping, VariantStream};
+use crate::variant::VariantStream;
 use anyhow::{Result, bail, ensure};
 use chrono::Utc;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_H264;
@@ -64,14 +66,13 @@ pub struct HlsVariant {
 impl HlsVariant {
     pub const PLAYLIST_NAME: &'static str = "live.m3u8";
 
-    pub fn new<'a>(
+    pub fn new(
         out_dir: PathBuf,
-        group: usize,
-        encoded_vars: impl Iterator<Item = (&'a VariantStream, EncoderOrSourceStream<'a>)>,
+        group: &EncoderVariantGroup,
         segment_type: SegmentType,
         mut segment_length: f32,
     ) -> Result<Self> {
-        let name = format!("stream_{}", group);
+        let name = group.id.to_string();
 
         let mut segments = Vec::new();
         let var_dir = out_dir.join(&name);
@@ -118,20 +119,19 @@ impl HlsVariant {
         let mut ref_stream_index = -1;
         let mut has_video = false;
 
-        for (var, enc) in encoded_vars {
-            match enc {
-                EncoderOrSourceStream::Encoder(enc) => match var {
+        for g in &group.streams {
+            match g.stream {
+                EncoderOrSourceStream::Encoder(enc) => match g.variant {
                     VariantStream::Video(v) => unsafe {
                         let stream = mux.add_stream_encoder(enc)?;
                         let stream_idx = (*stream).index as usize;
                         streams.push(HlsVariantStream::Video {
-                            group,
                             index: stream_idx,
-                            id: v.id(),
+                            id: v.id,
                         });
                         has_video = true;
                         ref_stream_index = stream_idx as _;
-                        let sg = v.keyframe_interval as f32 / v.fps;
+                        let sg = v.gop as f32 / v.fps;
                         if sg > segment_length {
                             segment_length = sg;
                         }
@@ -140,33 +140,30 @@ impl HlsVariant {
                         let stream = mux.add_stream_encoder(enc)?;
                         let stream_idx = (*stream).index as usize;
                         streams.push(HlsVariantStream::Audio {
-                            group,
                             index: stream_idx,
-                            id: a.id(),
+                            id: a.id,
                         });
                         if !has_video && ref_stream_index == -1 {
                             ref_stream_index = stream_idx as _;
                         }
                     },
-                    VariantStream::Subtitle(s) => unsafe {
+                    VariantStream::Subtitle { id, .. } => unsafe {
                         let stream = mux.add_stream_encoder(enc)?;
                         streams.push(HlsVariantStream::Subtitle {
-                            group,
                             index: (*stream).index as usize,
-                            id: s.id(),
+                            id: *id,
                         })
                     },
                     _ => bail!("unsupported variant stream"),
                 },
-                EncoderOrSourceStream::SourceStream(stream) => match var {
+                EncoderOrSourceStream::SourceStream(stream) => match g.variant {
                     VariantStream::CopyVideo(v) => unsafe {
                         let stream = mux.add_copy_stream(stream)?;
                         (*(*stream).codecpar).codec_tag = 0; // fix copy tag
                         let stream_idx = (*stream).index as usize;
                         streams.push(HlsVariantStream::Video {
-                            group,
                             index: stream_idx,
-                            id: v.id(),
+                            id: v.id,
                         });
                         has_video = true;
                         ref_stream_index = stream_idx as _;
@@ -176,9 +173,8 @@ impl HlsVariant {
                         (*(*stream).codecpar).codec_tag = 0; // fix copy tag
                         let stream_idx = (*stream).index as usize;
                         streams.push(HlsVariantStream::Audio {
-                            group,
                             index: stream_idx,
-                            id: a.id(),
+                            id: a.id,
                         });
                         if !has_video && ref_stream_index == -1 {
                             ref_stream_index = stream_idx as _;

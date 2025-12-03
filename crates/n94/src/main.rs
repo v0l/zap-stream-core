@@ -9,16 +9,12 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 use zap_stream_core::egress::EgressSegment;
-use zap_stream_core::endpoint::{
-    EndpointCapability, get_variants_from_endpoint, parse_capabilities,
-};
+use zap_stream_core::endpoint::{EndpointCapability, EndpointConfigEngine, parse_capabilities};
 use zap_stream_core::ingress::ConnectionInfo;
 use zap_stream_core::listen::try_create_listener;
-use zap_stream_core::mux::SegmentType;
 use zap_stream_core::overseer::{ConnectResult, IngressInfo, Overseer, StatsType};
 use zap_stream_core::pipeline::{EgressType, PipelineConfig};
-use zap_stream_core::variant::{StreamMapping, VariantStream};
-use zap_stream_core_nostr::n94::{N94Publisher, N94Segment, N94StreamInfo, N94Variant};
+use zap_stream_core_nostr::n94::{N94Publisher, N94Segment, N94StreamInfo};
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -128,7 +124,7 @@ async fn main() -> Result<()> {
             let blossom_list: Vec<String> = server_list
                 .tags
                 .filter(TagKind::Server)
-                .map_while(|t| Url::parse(&t.as_slice()[1]).ok())
+                .filter_map(|t| Url::parse(&t.as_slice()[1]).ok())
                 .map(|t| t.to_string())
                 .collect();
             args.blossom = blossom_list;
@@ -304,7 +300,12 @@ impl Overseer for N94Overseer {
         _connection: &ConnectionInfo,
         stream_info: &IngressInfo,
     ) -> Result<PipelineConfig> {
-        let cfg = get_variants_from_endpoint(stream_info, &self.capabilities)?;
+        let egress = vec![];
+        let cfg = EndpointConfigEngine::get_variants_from_endpoint(
+            stream_info,
+            &self.capabilities,
+            &egress,
+        )?;
 
         if cfg.video_src.is_none() || cfg.variants.is_empty() {
             bail!("No video src found");
@@ -315,24 +316,7 @@ impl Overseer for N94Overseer {
             let mut info = self.stream_info.write().await;
             info.starts = Utc::now().timestamp() as _;
             info.status = "live".to_string();
-            info.variants = cfg
-                .variants
-                .chunk_by(|a, b| a.group_id() == b.group_id())
-                .map_while(|v| {
-                    let video = v.iter().find_map(|a| match a {
-                        VariantStream::Video(v) | VariantStream::CopyVideo(v) => Some(v),
-                        _ => None,
-                    });
-                    let video = video?;
-                    Some(N94Variant {
-                        id: video.id().to_string(),
-                        width: video.width as _,
-                        height: video.height as _,
-                        bitrate: video.bitrate as _,
-                        mime_type: Some("video/mp2t".to_string()),
-                    })
-                })
-                .collect();
+            info.variants = vec![]; // TODO: fix this
             info.clone()
         };
 
@@ -343,11 +327,7 @@ impl Overseer for N94Overseer {
         self.publisher.on_start(n94_stream_info).await?;
 
         Ok(PipelineConfig {
-            egress: vec![EgressType::HLS(
-                cfg.variants.iter().map(|v| v.id()).collect(),
-                self.segment_length,
-                SegmentType::MPEGTS,
-            )],
+            egress: cfg.get_egress_configs(),
             variants: cfg.variants,
             ingress_info: stream_info.clone(),
             video_src: cfg.video_src.unwrap().index,
@@ -403,7 +383,10 @@ impl Overseer for N94Overseer {
         Ok(())
     }
 
-    #[cfg(false)]
+    async fn get_egress(&self, conn: &ConnectionInfo) -> Result<Vec<EgressType>> {
+        todo!()
+    }
+
     async fn get_moq_origin(&self) -> Result<zap_stream_core::hang::moq_lite::OriginProducer> {
         todo!()
     }

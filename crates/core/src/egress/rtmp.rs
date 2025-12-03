@@ -1,5 +1,6 @@
-use crate::egress::{Egress, EgressResult, EncoderOrSourceStream};
+use crate::egress::{Egress, EgressEncoderConfig, EgressResult, EncoderOrSourceStream};
 use crate::metrics::PacketMetrics;
+use crate::overseer::IngressStream;
 use crate::variant::{StreamMapping, VariantStream};
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::{BufMut, Bytes, BytesMut};

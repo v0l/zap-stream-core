@@ -4,9 +4,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-use crate::egress::{Egress, EgressResult, EncoderOrSourceStream};
+use crate::egress::{Egress, EgressResult, EncoderOrSourceStream, EncoderVariantGroup};
 use crate::metrics::PacketMetrics;
-use crate::variant::{StreamMapping, VariantStream};
 
 pub struct RecorderEgress {
     /// Internal muxer writing the output packets
@@ -20,25 +19,22 @@ pub struct RecorderEgress {
 impl RecorderEgress {
     pub const FILENAME: &'static str = "recording.mp4";
 
-    pub fn new<'a>(
-        out_dir: PathBuf,
-        variants: impl Iterator<Item = (&'a VariantStream, EncoderOrSourceStream<'a>)>,
-    ) -> Result<Self> {
+    pub fn new<'a>(out_dir: PathBuf, group: &EncoderVariantGroup) -> Result<Self> {
         let out_file = out_dir.join(Self::FILENAME);
         let mut var_map = HashMap::new();
         let muxer = unsafe {
             let mut m = Muxer::builder()
                 .with_output_path(out_file.to_str().unwrap(), None)?
                 .build()?;
-            for (var, enc) in variants {
-                match enc {
+            for g in &group.streams {
+                match g.stream {
                     EncoderOrSourceStream::Encoder(enc) => {
                         let stream = m.add_stream_encoder(enc)?;
-                        var_map.insert(var.id(), (*stream).index);
+                        var_map.insert(g.variant.id(), (*stream).index);
                     }
                     EncoderOrSourceStream::SourceStream(stream) => {
                         let stream = m.add_copy_stream(stream)?;
-                        var_map.insert(var.id(), (*stream).index);
+                        var_map.insert(g.variant.id(), (*stream).index);
                     }
                 }
             }

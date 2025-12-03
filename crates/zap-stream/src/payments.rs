@@ -81,7 +81,7 @@ impl LightningNode for LNURLNode {
         )?)
     }
 
-    async fn cancel_invoice(&self, id: &Vec<u8>) -> Result<()> {
+    async fn cancel_invoice(&self, _id: &Vec<u8>) -> Result<()> {
         // not supported, ignore
         Ok(())
     }

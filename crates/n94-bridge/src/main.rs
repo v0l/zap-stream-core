@@ -345,7 +345,7 @@ async fn process_event(event: Event, client: Client, streams: StreamList) -> Res
                             .as_slice()
                             .iter()
                             .skip(1)
-                            .map_while(|s| s.split_once(" "))
+                            .filter_map(|s| s.split_once(" "))
                         {
                             match k {
                                 "d" => var.id = v.to_string(),

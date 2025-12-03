@@ -1,11 +1,17 @@
 use crate::ingress::{ConnectionInfo, EndpointStats};
 
 use crate::egress::EgressSegment;
-use crate::pipeline::PipelineConfig;
 use crate::pipeline::runner::PipelineStats;
-use anyhow::Result;
+use crate::pipeline::{EgressType, PipelineConfig};
+use anyhow::{Result, bail};
 use async_trait::async_trait;
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
+    av_get_pix_fmt_name, av_get_sample_fmt_name, avcodec_get_name,
+};
+use ffmpeg_rs_raw::rstr;
 use std::cmp::PartialEq;
+use std::fmt::{Display, Formatter};
+use std::mem::transmute;
 use std::path::PathBuf;
 use uuid::Uuid;
 
@@ -17,7 +23,7 @@ pub struct IngressInfo {
 }
 
 /// A copy of [ffmpeg_rs_raw::StreamInfo] without ptr
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, Debug)]
 pub struct IngressStream {
     pub index: usize,
     pub stream_type: IngressStreamType,
@@ -29,11 +35,101 @@ pub struct IngressStream {
     pub height: usize,
     pub fps: f32,
     pub sample_rate: usize,
+    pub bitrate: usize,
     pub channels: u8,
     pub language: String,
 }
 
-#[derive(PartialEq, Eq, Clone)]
+impl IngressStream {
+    /// Get the name of the codec from the FFMPEG codec ID
+    pub fn codec_name(&self) -> Result<String> {
+        unsafe {
+            let codec = avcodec_get_name(transmute(self.codec as i32));
+            if codec.is_null() {
+                bail!("Codec not found {}", self.codec);
+            }
+            Ok(rstr!(codec).to_string())
+        }
+    }
+
+    pub fn pixel_format_name(&self) -> Result<String> {
+        if self.stream_type != IngressStreamType::Video {
+            bail!("Ingress stream type not Video");
+        }
+        unsafe {
+            let name = av_get_pix_fmt_name(transmute(self.format as i32));
+            if name.is_null() {
+                bail!("Pixel format not found {}", self.format);
+            }
+            Ok(rstr!(name).to_string())
+        }
+    }
+
+    pub fn sample_format_name(&self) -> Result<String> {
+        if self.stream_type != IngressStreamType::Audio {
+            bail!("Ingress stream type not Audio");
+        }
+        unsafe {
+            let name = av_get_sample_fmt_name(transmute(self.format as i32));
+            if name.is_null() {
+                bail!("Sample format not found {}", self.format);
+            }
+            Ok(rstr!(name).to_string())
+        }
+    }
+}
+
+impl Display for IngressStream {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let codec_name = self.codec_name().unwrap_or_else(|_| "unknown".to_string());
+        match self.stream_type {
+            IngressStreamType::Video => {
+                let pix_fmt = self
+                    .pixel_format_name()
+                    .unwrap_or_else(|_| "unknown".to_string());
+                write!(
+                    f,
+                    "#{} Video: {}x{} @ {:.2}fps, {} ({}), {}kbps",
+                    self.index,
+                    self.width,
+                    self.height,
+                    self.fps,
+                    codec_name,
+                    pix_fmt,
+                    self.bitrate / 1000
+                )
+            }
+            IngressStreamType::Audio => {
+                let sample_fmt = self
+                    .sample_format_name()
+                    .unwrap_or_else(|_| "unknown".to_string());
+                write!(
+                    f,
+                    "#{} Audio: {}ch @ {}Hz, {} ({}), {}kbps",
+                    self.index,
+                    self.channels,
+                    self.sample_rate,
+                    codec_name,
+                    sample_fmt,
+                    self.bitrate / 1000
+                )?;
+                if !self.language.is_empty() {
+                    write!(f, ", lang={}", self.language)?;
+                }
+                Ok(())
+            }
+            IngressStreamType::Subtitle => {
+                write!(f, "#{} Subtitle: {}", self.index, codec_name)?;
+                if !self.language.is_empty() {
+                    write!(f, ", lang={}", self.language)?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Hash)]
 pub enum IngressStreamType {
     Video,
     Audio,
@@ -104,6 +200,9 @@ pub trait Overseer: Send + Sync {
 
     /// Stats emitted by the pipeline periodically
     async fn on_stats(&self, pipeline_id: &Uuid, stats: StatsType) -> Result<()>;
+
+    /// Get egress configurations for a connection
+    async fn get_egress(&self, conn: &ConnectionInfo) -> Result<Vec<EgressType>>;
 
     /// Get the MoQ origin for publishing streams
     #[cfg(feature = "egress-moq")]

@@ -5,11 +5,13 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
-default = ["srt", "rtmp", "test-pattern", "moq", "tls-ring"]
+default = ["srt", "rtmp", "test-pattern", "moq", "hls", "tls-ring"]
 srt = ["zap-stream-core/ingress-srt"]
 rtmp = ["zap-stream-core/ingress-rtmp"]
-test-pattern = ["zap-stream-db/test-pattern", "zap-stream-core/ingress-test"]
+hls = ["zap-stream-core/egress-hls"]
 moq = ["zap-stream-core/egress-moq", "dep:moq-native"]
+
+test-pattern = ["zap-stream-db/test-pattern", "zap-stream-core/ingress-test"]
 withdrawal = []
 
 tls-ring = ["payments-rs/tls-ring", "redis/tokio-rustls-comp", "moq-native/ring"]

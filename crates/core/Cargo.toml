@@ -12,6 +12,8 @@ ingress-test = []
 ingress-tcp = []
 egress-rtmp = ["dep:rml_rtmp", "dep:xflv", "dep:bytes"]
 egress-moq = ["dep:hang"]
+egress-hls = ["dep:m3u8-rs"]
+debug-hls = ["egress-hls"]
 
 [dependencies]
 ffmpeg-rs-raw.workspace = true
@@ -25,7 +27,6 @@ uuid.workspace = true
 serde.workspace = true
 hex.workspace = true
 itertools.workspace = true
-m3u8-rs.workspace = true
 sha2.workspace = true
 url.workspace = true
 
@@ -38,6 +39,9 @@ ringbuf = "0.4.7"
 libc = "0.2.175"
 tracing-appender = "0.2.3"
 chrono = "0.4.42"
+
+# hls
+m3u8-rs = { workspace = true, optional = true }
 
 # srt
 srt-tokio = { version = "0.4.4", optional = true }
