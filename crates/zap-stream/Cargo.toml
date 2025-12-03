@@ -55,7 +55,7 @@ moq-native = { git = "https://github.com/kixelated/moq.git", rev = "b2abf685647f
 
 # direct deps
 config = { version = "0.15.6", features = ["yaml"] }
-payments-rs = { git = "https://github.com/v0l/payments-rs.git", rev = "a981b615990bdfbe37e80348824f85dbfef8a907", default-features = false, features = ["method-lnd", "method-bitvora"] }
+payments-rs = { git = "https://github.com/v0l/payments-rs.git", rev = "da7c7f5c4f2566b2a33d6c0c40db5cbeed7517ee", default-features = false, features = ["method-lnd", "method-bitvora"] }
 base64 = { version = "0.22.1" }
 clap = { version = "4.5.16", features = ["derive"] }
 futures-util = "0.3.31"

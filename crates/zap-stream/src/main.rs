@@ -12,6 +12,7 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
 use ffmpeg_rs_raw::{Decoder, ffmpeg_sys_the_third, rstr};
 use hyper::server::conn::http1;
 use hyper_util::rt::TokioIo;
+use payments_rs::lightning::setup_crypto_provider;
 use std::io::stdout;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -102,6 +103,8 @@ async fn main() -> Result<()> {
     tracing::subscriber::set_global_default(logger)?;
 
     info!("Starting zap-stream");
+
+    setup_crypto_provider();
 
     unsafe {
         av_log_set_callback(Some(av_log_redirect));

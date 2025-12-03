@@ -1309,7 +1309,7 @@ dependencies = [
 [[package]]
 name = "fedimint-tonic-lnd"
 version = "0.2.0"
-source = "git+https://github.com/v0l/tonic_lnd.git?rev=34751076c5797eb5b48b59d048ab3fa74e0410aa#34751076c5797eb5b48b59d048ab3fa74e0410aa"
+source = "git+https://github.com/v0l/tonic_lnd.git?rev=57fcd1ac2e8834c6f93cfa3c84ba67420a9dd3ed#57fcd1ac2e8834c6f93cfa3c84ba67420a9dd3ed"
 dependencies = [
  "hex",
  "hyper-rustls",
@@ -3216,7 +3216,7 @@ checksum = "df94ce210e5bc13cb6651479fa48d14f601d9858cfe0467f43ae157023b938d3"
 [[package]]
 name = "payments-rs"
 version = "0.2.0"
-source = "git+https://github.com/v0l/payments-rs.git?rev=a981b615990bdfbe37e80348824f85dbfef8a907#a981b615990bdfbe37e80348824f85dbfef8a907"
+source = "git+https://github.com/v0l/payments-rs.git?rev=da7c7f5c4f2566b2a33d6c0c40db5cbeed7517ee#da7c7f5c4f2566b2a33d6c0c40db5cbeed7517ee"
 dependencies = [
  "anyhow",
  "async-trait",
