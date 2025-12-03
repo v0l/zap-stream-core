@@ -165,6 +165,7 @@ impl MultiTrackEngine {
                     )));
                 }
             };
+        info!("{}", encoder_config);
         let max_audio = encoder_config
             .variants
             .iter()
@@ -201,24 +202,41 @@ impl MultiTrackEngine {
                 .iter()
                 .filter_map(|c| match c {
                     VariantStream::Video(v) | VariantStream::CopyVideo(v) => {
+                        // https://docs.aws.amazon.com/ivs/latest/BroadcastSWIntegAPIReference/structures-VideoTrackSettings.html
                         let mut settings_obj = serde_json::Map::new();
                         let fps_frac = unsafe { av_d2q(v.fps as _, 90_000) };
-                        unsafe {
-                            let codec_id = map_codec_id(&v.codec)?;
-                            let codec = avcodec_find_encoder(codec_id);
-                            if codec.is_null() {
-                                warn!("Could not find codec {}, skipping", v.codec);
-                                return None;
+                        if v.profile != 0
+                            && let Some(codec_id) = map_codec_id(&v.codec)
+                        {
+                            let profile_name = unsafe {
+                                let np = avcodec_profile_name(codec_id, v.profile as _);
+                                if np.is_null() {
+                                    None
+                                } else {
+                                    Some(rstr!(np).to_string())
+                                }
+                            };
+                            if let Some(pp) = profile_name {
+                                settings_obj.insert("profile".to_owned(), pp.into());
                             }
-                            let name = avcodec_profile_name((*codec).id, v.profile as _);
-                            if !name.is_null() {
-                                settings_obj
-                                    .insert("profile".to_owned(), rstr!(name).to_string().into());
-                            }
-                        };
-                        if v.bitrate != 0 {
-                            settings_obj.insert("bitrate".to_owned(), v.bitrate.to_string().into());
                         }
+                        if let Some(t) = &v.tune {
+                            settings_obj.insert("tune".to_owned(), t.to_string().into());
+                        }
+                        if v.level != 0 {
+                            settings_obj.insert("level".to_owned(), v.level.into());
+                        }
+                        if v.bitrate != 0 {
+                            settings_obj.insert("bitrate".to_owned(), (v.bitrate / 1000).into());
+                        }
+                        if v.gop != 0 {
+                            settings_obj
+                                .insert("keyint_sec".to_owned(), (v.gop as f32 / v.fps).into());
+                        }
+                        if v.max_b_frames != 0 {
+                            settings_obj.insert("bf".to_owned(), v.max_b_frames.into());
+                        }
+                        settings_obj.insert("rate_control".to_string(), "CBR".to_string().into());
                         let Some(encoder) = req.find_best_encoder_for_codec(&v.codec) else {
                             warn!("Could not find encoder for codec {}", v.codec);
                             return None;
@@ -257,7 +275,7 @@ impl MultiTrackEngine {
                         track_id: 0,
                         channels: audio.channels as _,
                         settings: serde_json::json!({
-                            "bitrate": audio.bitrate
+                            "bitrate": audio.bitrate / 1000
                         }),
                     }]
                 } else {
