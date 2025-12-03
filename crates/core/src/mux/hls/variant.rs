@@ -32,7 +32,7 @@ pub struct HlsVariant {
     /// List of streams ids in this variant
     pub(crate) streams: Vec<HlsVariantStream>,
     /// Segment length in seconds
-    segment_length_target: f32,
+    pub(crate) segment_length_target: f32,
     /// Total number of seconds of video to store
     segment_window: f32,
     /// Current segment index

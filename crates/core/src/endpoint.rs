@@ -341,6 +341,7 @@ impl EndpointConfigEngine {
                         IngressStreamType::Subtitle => {
                             e_map.subtitle.replace(v.get().clone());
                         }
+                        _ => {}
                     },
                     Entry::Vacant(dup) => match &param.stream_type {
                         IngressStreamType::Video => {
@@ -375,6 +376,7 @@ impl EndpointConfigEngine {
                         IngressStreamType::Subtitle => {
                             todo!()
                         }
+                        _ => {}
                     },
                 }
             }
@@ -741,6 +743,7 @@ fn ingress_stream_to_params(stream: &IngressStream) -> EncoderParams {
         IngressStreamType::Subtitle => {
             todo!()
         }
+        _ => {}
     }
     ret.into()
 }
@@ -769,9 +772,7 @@ mod tests {
                     height: 1080,
                     bitrate: 8_000_000,
                     fps: 30.0,
-                    sample_rate: 0,
-                    channels: 0,
-                    language: "".to_string(),
+                    ..Default::default()
                 },
                 IngressStream {
                     index: 1,
@@ -782,22 +783,18 @@ mod tests {
                     height: 720,
                     bitrate: 6_000_000,
                     fps: 30.0,
-                    sample_rate: 0,
-                    channels: 0,
-                    language: "".to_string(),
+                    ..Default::default()
                 },
                 IngressStream {
                     index: 2,
                     stream_type: IngressStreamType::Audio,
                     codec: AVCodecID::AV_CODEC_ID_AAC as _,
                     format: AV_SAMPLE_FMT_FLTP as _,
-                    width: 0,
-                    height: 0,
                     bitrate: 320_000,
-                    fps: 0.0,
                     sample_rate: 44_100,
                     channels: 2,
                     language: "en".to_string(),
+                    ..Default::default()
                 },
             ],
         };

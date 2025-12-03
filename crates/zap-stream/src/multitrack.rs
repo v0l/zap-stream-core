@@ -111,6 +111,10 @@ impl MultiTrackEngine {
                         free_cstr!(str);
                         ret
                     } as _,
+                    profile: 0,
+                    level: 0,
+                    color_space: 0,
+                    color_range: 0,
                     width: canvas.width as _,
                     height: canvas.height as _,
                     fps: canvas.framerate.numerator as f32 / canvas.framerate.denominator as f32,
@@ -135,6 +139,10 @@ impl MultiTrackEngine {
                         }
                         ret
                     } as _,
+                    profile: 0,
+                    level: 0,
+                    color_space: 0,
+                    color_range: 0,
                     width: 0,
                     height: 0,
                     fps: 0.0,

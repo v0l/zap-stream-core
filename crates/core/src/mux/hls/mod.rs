@@ -3,11 +3,13 @@ use crate::mux::SegmentType;
 use crate::mux::hls::variant::HlsVariant;
 use anyhow::Result;
 use ffmpeg_rs_raw::AvPacketRef;
+use itertools::Itertools;
 use std::fmt::Display;
 use std::fs::File;
 use std::ops::Sub;
 use std::path::PathBuf;
 use std::time::Instant;
+use tracing::log::warn;
 use tracing::trace;
 use uuid::Uuid;
 
@@ -74,6 +76,22 @@ impl HlsMuxer {
             let var = HlsVariant::new(out_dir.clone(), g, segment_type, segment_length)?;
             //var.enable_low_latency(segment_length / 4.0);
             vars.push(var);
+        }
+
+        // force all variants to have the same segment length
+        if let Some(max_seg_duration) = vars
+            .iter()
+            .map(|s| s.segment_length_target)
+            .sorted_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .last()
+            && max_seg_duration != segment_length
+        {
+            warn!(
+                "Forcing segment length to {:.2}s from {:.2}s",
+                max_seg_duration, segment_length
+            );
+            vars.iter_mut()
+                .for_each(|s| s.segment_length_target = max_seg_duration);
         }
 
         let mut ret = Self {

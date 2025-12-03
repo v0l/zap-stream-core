@@ -780,22 +780,29 @@ impl PipelineRunner {
             streams: info
                 .streams
                 .iter()
-                .map(|s| IngressStream {
-                    index: s.index,
-                    stream_type: match s.stream_type {
-                        StreamType::Video => IngressStreamType::Video,
-                        StreamType::Audio => IngressStreamType::Audio,
-                        StreamType::Subtitle => IngressStreamType::Subtitle,
-                    },
-                    codec: s.codec,
-                    format: s.format,
-                    bitrate: 0, // TODO: get bitrate of stream
-                    width: s.width,
-                    height: s.height,
-                    fps: if s.fps.is_normal() { s.fps } else { 30.0 },
-                    sample_rate: s.sample_rate,
-                    channels: s.channels,
-                    language: s.language.clone(),
+                .filter_map(|s| {
+                    Some(IngressStream {
+                        index: s.index,
+                        stream_type: match s.stream_type {
+                            StreamType::Video => IngressStreamType::Video,
+                            StreamType::Audio => IngressStreamType::Audio,
+                            StreamType::Subtitle => IngressStreamType::Subtitle,
+                            StreamType::Unknown => IngressStreamType::Unknown,
+                        },
+                        codec: s.codec,
+                        format: s.format,
+                        bitrate: s.bitrate,
+                        profile: s.profile,
+                        level: s.level,
+                        color_range: s.color_range,
+                        color_space: s.color_space,
+                        width: s.width,
+                        height: s.height,
+                        fps: if s.fps.is_normal() { s.fps } else { 30.0 },
+                        sample_rate: s.sample_rate,
+                        channels: s.channels,
+                        language: s.language.clone(),
+                    })
                 })
                 .collect(),
         };
@@ -932,7 +939,7 @@ impl PipelineRunner {
         Ok(())
     }
 
-    fn get_source_stream(&self, v: &VariantStream) -> Option<EncoderOrSourceStream<'_>> {
+    fn get_source_stream(&self, v: &VariantStream) -> Option<EncoderOrSourceStream> {
         if let Some(e) = self.encoders.get(&v.id()) {
             Some(EncoderOrSourceStream::Encoder(e))
         } else {

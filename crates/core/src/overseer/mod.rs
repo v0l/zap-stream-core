@@ -23,7 +23,7 @@ pub struct IngressInfo {
 }
 
 /// A copy of [ffmpeg_rs_raw::StreamInfo] without ptr
-#[derive(PartialEq, Clone, Debug)]
+#[derive(PartialEq, Clone, Debug, Default)]
 pub struct IngressStream {
     pub index: usize,
     pub stream_type: IngressStreamType,
@@ -31,6 +31,10 @@ pub struct IngressStream {
     pub codec: isize,
     /// FFMPEG sample/pixel format ID
     pub format: isize,
+    pub profile: isize,
+    pub level: isize,
+    pub color_space: isize,
+    pub color_range: isize,
     pub width: usize,
     pub height: usize,
     pub fps: f32,
@@ -125,12 +129,15 @@ impl Display for IngressStream {
                 }
                 Ok(())
             }
+            IngressStreamType::Unknown => write!(f, "#{} Unknown", self.index),
         }
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Hash)]
+#[derive(Debug, PartialEq, Eq, Clone, Hash, Default)]
 pub enum IngressStreamType {
+    #[default]
+    Unknown,
     Video,
     Audio,
     Subtitle,
