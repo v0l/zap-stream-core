@@ -66,6 +66,6 @@ sysinfo = "0.36"
 lnurl-rs = { git = "https://github.com/benthecarman/lnurl-rs", default-features = false, rev = "745aea89c404f14d8adc18b594ac002d9cab9b49", features = ["async"] }
 redis = { version = "0.32.5", features = ["cluster", "tokio-comp"] }
 libc = "0.2.175"
-nwc = { git = "https://github.com/rust-nostr/nostr.git", pacakge = "nwc", rev = "75345c65c645d33d15f6a5ec10fa6ffd0d8f4cac" }
+nwc = "0.44"
 tokio-stream = "0.1.17"
 

@@ -711,8 +711,7 @@ impl Api {
             let parsed = NostrWalletConnectURI::parse(&url)?;
             let nwc = NWC::new(parsed);
             let info = nwc.get_info().await?;
-            let perm = "pay_invoice".to_string();
-            if !info.methods.contains(&perm) {
+            if !info.methods.contains(&nwc::prelude::Method::PayInvoice) {
                 bail!("NWC connection does not allow paying invoices!");
             }
             self.db.update_user_nwc(uid, Some(&url)).await?;
