@@ -939,7 +939,7 @@ impl PipelineRunner {
         Ok(())
     }
 
-    fn get_source_stream(&self, v: &VariantStream) -> Option<EncoderOrSourceStream> {
+    fn get_source_stream(&self, v: &VariantStream) -> Option<EncoderOrSourceStream<'_>> {
         if let Some(e) = self.encoders.get(&v.id()) {
             Some(EncoderOrSourceStream::Encoder(e))
         } else {

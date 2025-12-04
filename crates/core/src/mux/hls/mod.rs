@@ -6,7 +6,6 @@ use ffmpeg_rs_raw::AvPacketRef;
 use itertools::Itertools;
 use std::fmt::Display;
 use std::fs::File;
-use std::ops::Sub;
 use std::path::PathBuf;
 use std::time::Instant;
 use tracing::log::warn;
@@ -16,6 +15,7 @@ use uuid::Uuid;
 mod segment;
 mod variant;
 
+#[derive(Clone)]
 pub enum HlsVariantStream {
     Video { index: usize, id: Uuid },
     Audio { index: usize, id: Uuid },
@@ -59,8 +59,6 @@ pub struct HlsMuxer {
 
 impl HlsMuxer {
     pub const MASTER_PLAYLIST: &'static str = "live.m3u8";
-
-    const MASTER_WRITE_INTERVAL: f32 = 60.0;
 
     pub fn new(
         out_dir: PathBuf,
@@ -119,25 +117,44 @@ impl HlsMuxer {
     }
 
     /// Mux an encoded packet from [Encoder]
-    pub fn mux_packet(&mut self, mut pkt: AvPacketRef, variant: &Uuid) -> Result<EgressResult> {
-        if Instant::now().sub(self.last_master_write).as_secs_f32() > Self::MASTER_WRITE_INTERVAL {
-            self.write_master_playlist()?;
-        }
+    pub fn mux_packet(&mut self, pkt: AvPacketRef, variant: &Uuid) -> Result<EgressResult> {
+        // Process packet for ALL variants that contain this stream
+        // (same audio stream can be shared across multiple HLS variant groups)
+        let mut created = Vec::new();
+        let mut deleted = Vec::new();
+        let mut found = false;
+
         for var in self.variants.iter_mut() {
             if let Some(vs) = var.streams.iter().find(|s| s.id() == *variant) {
-                // very important for muxer to know which stream this pkt belongs to
-                pkt.stream_index = vs.index() as _;
-                return var.process_packet(&pkt);
+                found = true;
+                match var.process_packet(&pkt, vs.clone())? {
+                    EgressResult::Segments {
+                        created: c,
+                        deleted: d,
+                    } => {
+                        created.extend(c);
+                        deleted.extend(d);
+                    }
+                    _ => {}
+                }
             }
         }
 
-        // This HLS muxer doesn't handle this variant, return None instead of failing
-        // This can happen when multiple egress handlers are configured with different variant sets
-        trace!(
-            "HLS muxer received packet for variant {} which it doesn't handle",
-            variant
-        );
-        Ok(EgressResult::None)
+        if !found {
+            // This HLS muxer doesn't handle this variant, return None instead of failing
+            // This can happen when multiple egress handlers are configured with different variant sets
+            trace!(
+                "HLS muxer received packet for variant {} which it doesn't handle",
+                variant
+            );
+            return Ok(EgressResult::None);
+        }
+
+        if created.is_empty() && deleted.is_empty() {
+            Ok(EgressResult::None)
+        } else {
+            Ok(EgressResult::Segments { created, deleted })
+        }
     }
 
     /// Collect all remaining segments that will be deleted during cleanup

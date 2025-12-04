@@ -1,7 +1,7 @@
 use crate::settings::Settings;
 use anyhow::{Context, anyhow};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    av_d2q, av_get_pix_fmt, av_get_sample_fmt, avcodec_find_encoder, avcodec_profile_name,
+    av_d2q, av_get_pix_fmt, av_get_sample_fmt, avcodec_profile_name,
 };
 use ffmpeg_rs_raw::{cstr, free_cstr, rstr};
 use nostr_sdk::serde_json;

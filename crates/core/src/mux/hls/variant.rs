@@ -1,6 +1,4 @@
-use crate::egress::{
-    EgressResult, EgressSegment, EncoderOrSourceStream, EncoderVariantGroup,
-};
+use crate::egress::{EgressResult, EgressSegment, EncoderOrSourceStream, EncoderVariantGroup};
 use crate::hash_file_sync;
 use crate::mux::hls::segment::{HlsSegment, PartialSegmentInfo, SegmentInfo};
 use crate::mux::{HlsVariantStream, SegmentType};
@@ -11,7 +9,8 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_H264;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVMediaType::AVMEDIA_TYPE_VIDEO;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
     AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVIO_FLAG_WRITE, av_freep, av_get_bits_per_pixel,
-    av_pix_fmt_desc_get, av_q2d, av_write_frame, avio_closep, avio_flush, avio_open, avio_size,
+    av_interleaved_write_frame, av_pix_fmt_desc_get, av_q2d, av_write_frame, avio_closep,
+    avio_flush, avio_open, avio_size,
 };
 use ffmpeg_rs_raw::{AvPacketRef, Muxer, bail_ffmpeg, cstr};
 use m3u8_rs::Playlist::MediaPlaylist;
@@ -339,8 +338,14 @@ impl HlsVariant {
     }
 
     /// Process a single packet through the muxer
-    pub(crate) fn process_packet(&mut self, pkt: &AvPacketRef) -> Result<EgressResult> {
-        let stream_index = pkt.stream_index;
+    pub(crate) fn process_packet(
+        &mut self,
+        pkt: &AvPacketRef,
+        var: HlsVariantStream,
+    ) -> Result<EgressResult> {
+        let mut pkt = pkt.clone();
+        let stream_index = var.index() as i32;
+        (*pkt).stream_index = stream_index;
         let pkt_stream = unsafe { *(*self.mux.context()).streams.add(stream_index as _) };
 
         let pkt_q = unsafe { av_q2d(pkt.time_base) };
@@ -386,7 +391,7 @@ impl HlsVariant {
         }
 
         // write to current segment
-        match self.mux.write_packet(pkt) {
+        match self.mux.write_packet(&pkt) {
             Ok(r) => r,
             Err(e) => {
                 let dst_stream = self
@@ -418,6 +423,9 @@ impl HlsVariant {
         let ctx = self.mux.context();
         let end_pos = unsafe {
             if flush {
+                // First flush the interleave queue (since we use av_interleaved_write_frame for packets)
+                av_interleaved_write_frame(ctx, ptr::null_mut());
+                // Then flush the muxer's internal buffer to create the fragment (for frag_custom)
                 av_write_frame(ctx, ptr::null_mut());
             }
             avio_flush((*ctx).pb);
@@ -473,7 +481,6 @@ impl HlsVariant {
         let init_path = self.out_dir.join("init.mp4").to_string_lossy().to_string();
 
         // Create a temporary muxer for initialization segment
-        // Use +write_colr to write colr atom with explicit color/pixel format info
         let mut init_opts = HashMap::new();
         init_opts.insert(
             "movflags".to_string(),
@@ -519,10 +526,12 @@ impl HlsVariant {
             // Manually reset muxer avio
             let ctx = self.mux.context();
             if flush {
+                // First flush the interleave queue (since we use av_interleaved_write_frame for packets)
+                let ret = av_interleaved_write_frame(ctx, ptr::null_mut());
+                bail_ffmpeg!(ret, "Failed to flush interleave queue");
+                // Then flush the muxer's internal buffer to create the fragment (for frag_custom)
                 let ret = av_write_frame(ctx, ptr::null_mut());
-                if ret < 0 {
-                    bail!("Failed to split segment {}", ret);
-                }
+                bail_ffmpeg!(ret, "Failed to write flush frame");
             }
             avio_flush((*ctx).pb);
             avio_closep(&mut (*ctx).pb);
@@ -544,15 +553,17 @@ impl HlsVariant {
         let segment_size = completed_seg_path.metadata().map(|m| m.len()).unwrap_or(0);
 
         let cur_duration = next_pkt_start - self.current_segment_start;
-        debug!(
-            "Finished segment {} [{:.3}s, {:.2} kB, {} pkts]",
+        info!(
+            "Finished segment {}/{} [{:.3}s, {:.2} kB, {} pkts, flush={}]",
+            self.name,
             completed_seg_path
                 .file_name()
                 .unwrap_or_default()
                 .to_string_lossy(),
             cur_duration,
             segment_size as f32 / 1024f32,
-            self.packets_written
+            self.packets_written,
+            flush
         );
 
         let video_var_id = self
