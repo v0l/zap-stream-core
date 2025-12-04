@@ -5,7 +5,9 @@ use crate::mux::{HlsVariantStream, SegmentType};
 use crate::variant::VariantStream;
 use anyhow::{Result, bail, ensure};
 use chrono::Utc;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_H264;
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::{
+    AV_CODEC_ID_AAC, AV_CODEC_ID_H264, AV_CODEC_ID_HEVC,
+};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVMediaType::AVMEDIA_TYPE_VIDEO;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
     AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVIO_FLAG_WRITE, av_freep, av_get_bits_per_pixel,
@@ -18,6 +20,7 @@ use m3u8_rs::{ExtTag, MediaSegmentType, PartInf, Playlist, PreloadHint};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs::{File, create_dir_all};
+use std::io::BufWriter;
 use std::mem::transmute;
 use std::path::PathBuf;
 use std::ptr;
@@ -221,7 +224,7 @@ impl HlsVariant {
             })
             .unwrap_or(1);
 
-        let variant = Self {
+        let mut variant = Self {
             name: name.clone(),
             segment_window: 30.0,
             mux,
@@ -241,6 +244,8 @@ impl HlsVariant {
             segment_length_target: segment_length,
             init_segment_path: None,
         };
+
+        variant.create_init_segment()?;
 
         Ok(variant)
     }
@@ -501,6 +506,7 @@ impl HlsVariant {
             }
 
             init_mux.open(Some(init_opts))?;
+            av_interleaved_write_frame(main_ctx, ptr::null_mut());
             av_write_frame(init_mux.context(), ptr::null_mut());
             init_mux.close()?;
         }
@@ -515,12 +521,6 @@ impl HlsVariant {
         let completed_segment_idx = self.idx;
         self.idx += 1;
         self.current_partial_index = 0;
-
-        // Create initialization segment after first segment completion
-        // This ensures the init segment has the correct timebase from the encoder
-        if self.segment_type == SegmentType::FMP4 && self.init_segment_path.is_none() {
-            self.create_init_segment()?;
-        }
 
         unsafe {
             // Manually reset muxer avio
