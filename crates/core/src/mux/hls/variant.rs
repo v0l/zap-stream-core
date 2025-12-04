@@ -5,9 +5,7 @@ use crate::mux::{HlsVariantStream, SegmentType};
 use crate::variant::VariantStream;
 use anyhow::{Result, bail, ensure};
 use chrono::Utc;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::{
-    AV_CODEC_ID_AAC, AV_CODEC_ID_H264, AV_CODEC_ID_HEVC,
-};
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_H264;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVMediaType::AVMEDIA_TYPE_VIDEO;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
     AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVIO_FLAG_WRITE, av_freep, av_get_bits_per_pixel,
@@ -20,7 +18,6 @@ use m3u8_rs::{ExtTag, MediaSegmentType, PartInf, Playlist, PreloadHint};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs::{File, create_dir_all};
-use std::io::BufWriter;
 use std::mem::transmute;
 use std::path::PathBuf;
 use std::ptr;

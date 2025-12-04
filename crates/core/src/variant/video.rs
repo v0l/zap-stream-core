@@ -1,7 +1,6 @@
 use crate::egress::EncoderParam;
 use crate::map_codec_id;
 use anyhow::{Result, bail};
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVColorRange::AVCOL_RANGE_NB;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVColorSpace::AVCOL_SPC_BT709;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_NONE;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{

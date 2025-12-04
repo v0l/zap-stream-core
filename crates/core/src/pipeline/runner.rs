@@ -252,41 +252,44 @@ impl PipelineRunner {
             let (pkt, _stream) = self.demuxer.get_packet()?;
 
             if let Some(mut pkt) = pkt {
-                // Fix duplicate/backwards PTS values by tracking offset per stream
-                let stream_idx = pkt.stream_index as usize;
-                let (last_pts, offset) = self.pts_offsets.entry(stream_idx).or_insert((i64::MIN, 0));
-
-                if pkt.pts != AV_NOPTS_VALUE {
-                    // Apply existing offset first
-                    let adjusted_pts = pkt.pts + *offset;
-
-                    // If adjusted PTS is still <= last PTS, we have a discontinuity
-                    // This means the source jumped backwards or has duplicates
-                    if *last_pts != i64::MIN && adjusted_pts <= *last_pts {
-                        // Calculate additional offset needed: jump past last_pts
-                        let additional_offset = *last_pts + 1 - adjusted_pts;
-                        *offset += additional_offset;
-                        warn!(
-                            "PTS fix: stream={}, original_pts={}, last_pts={}, new_offset={}, delta={}",
-                            stream_idx, pkt.pts, *last_pts, *offset, additional_offset
-                        );
-                    }
-
-                    // Apply total offset to PTS and DTS
-                    pkt.pts += *offset;
-                    if pkt.dts != AV_NOPTS_VALUE {
-                        pkt.dts += *offset;
-                    }
-
-                    // Update last_pts for this stream (with offset applied)
-                    *last_pts = pkt.pts;
-                }
-
+                self.mangle_pts(&mut pkt);
                 self.process_packet(pkt)
             } else {
                 // EOF, exit
                 self.flush()
             }
+        }
+    }
+
+    unsafe fn mangle_pts(&mut self, pkt: &mut AvPacketRef) {
+        // Fix duplicate/backwards PTS values by tracking offset per stream
+        let stream_idx = pkt.stream_index as usize;
+        let (last_pts, offset) = self.pts_offsets.entry(stream_idx).or_insert((i64::MIN, 0));
+
+        if pkt.pts != AV_NOPTS_VALUE {
+            // Apply existing offset first
+            let adjusted_pts = pkt.pts + *offset;
+
+            // If adjusted PTS is still <= last PTS, we have a discontinuity
+            // This means the source jumped backwards or has duplicates
+            if *last_pts != i64::MIN && adjusted_pts <= *last_pts {
+                // Calculate additional offset needed: jump past last_pts
+                let additional_offset = *last_pts + 1 - adjusted_pts;
+                *offset += additional_offset;
+                warn!(
+                    "PTS fix: stream={}, original_pts={}, last_pts={}, new_offset={}, delta={}",
+                    stream_idx, pkt.pts, *last_pts, *offset, additional_offset
+                );
+            }
+
+            // Apply total offset to PTS and DTS
+            pkt.pts += *offset;
+            if pkt.dts != AV_NOPTS_VALUE {
+                pkt.dts += *offset;
+            }
+
+            // Update last_pts for this stream (with offset applied)
+            *last_pts = pkt.pts;
         }
     }
 
