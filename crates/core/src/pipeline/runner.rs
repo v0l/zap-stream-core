@@ -130,6 +130,10 @@ pub struct PipelineRunner {
     /// Frame reorder buffers for video source streams (to ensure frames go to encoder in PTS order)
     /// Key is the source stream index
     frame_reorder_buffers: HashMap<usize, FrameReorderBuffer<AvFrameRef>>,
+
+    /// PTS offset per source stream to fix duplicate PTS values
+    /// Key is the stream index, value is (last_pts, offset)
+    pts_offsets: HashMap<usize, (i64, i64)>,
 }
 
 unsafe impl Send for PipelineRunner {}
@@ -167,6 +171,7 @@ impl PipelineRunner {
             last_audio_pts: 0,
             cmd_channel: command,
             frame_reorder_buffers: Default::default(),
+            pts_offsets: Default::default(),
         })
     }
 
@@ -246,9 +251,37 @@ impl PipelineRunner {
         unsafe {
             let (pkt, _stream) = self.demuxer.get_packet()?;
 
-            //TODO: implement PTS fix
+            if let Some(mut pkt) = pkt {
+                // Fix duplicate/backwards PTS values by tracking offset per stream
+                let stream_idx = pkt.stream_index as usize;
+                let (last_pts, offset) = self.pts_offsets.entry(stream_idx).or_insert((i64::MIN, 0));
 
-            if let Some(pkt) = pkt {
+                if pkt.pts != AV_NOPTS_VALUE {
+                    // Apply existing offset first
+                    let adjusted_pts = pkt.pts + *offset;
+
+                    // If adjusted PTS is still <= last PTS, we have a discontinuity
+                    // This means the source jumped backwards or has duplicates
+                    if *last_pts != i64::MIN && adjusted_pts <= *last_pts {
+                        // Calculate additional offset needed: jump past last_pts
+                        let additional_offset = *last_pts + 1 - adjusted_pts;
+                        *offset += additional_offset;
+                        warn!(
+                            "PTS fix: stream={}, original_pts={}, last_pts={}, new_offset={}, delta={}",
+                            stream_idx, pkt.pts, *last_pts, *offset, additional_offset
+                        );
+                    }
+
+                    // Apply total offset to PTS and DTS
+                    pkt.pts += *offset;
+                    if pkt.dts != AV_NOPTS_VALUE {
+                        pkt.dts += *offset;
+                    }
+
+                    // Update last_pts for this stream (with offset applied)
+                    *last_pts = pkt.pts;
+                }
+
                 self.process_packet(pkt)
             } else {
                 // EOF, exit
