@@ -251,8 +251,7 @@ impl PipelineRunner {
         unsafe {
             let (pkt, _stream) = self.demuxer.get_packet()?;
 
-            if let Some(mut pkt) = pkt {
-                self.mangle_pts(&mut pkt);
+            if let Some(pkt) = pkt {
                 self.process_packet(pkt)
             } else {
                 // EOF, exit
@@ -261,35 +260,31 @@ impl PipelineRunner {
         }
     }
 
-    unsafe fn mangle_pts(&mut self, pkt: &mut AvPacketRef) {
-        // Fix duplicate/backwards PTS values by tracking offset per stream
-        let stream_idx = pkt.stream_index as usize;
+    /// Fix duplicate/backwards PTS values on frames after reorder buffer
+    /// Frames come out of the reorder buffer in PTS order, so we track last_pts
+    fn mangle_frame_pts(&mut self, stream_idx: usize, frame: &mut AvFrameRef) {
         let (last_pts, offset) = self.pts_offsets.entry(stream_idx).or_insert((i64::MIN, 0));
 
-        if pkt.pts != AV_NOPTS_VALUE {
+        if frame.pts != AV_NOPTS_VALUE {
             // Apply existing offset first
-            let adjusted_pts = pkt.pts + *offset;
+            let adjusted_pts = frame.pts + *offset;
 
             // If adjusted PTS is still <= last PTS, we have a discontinuity
-            // This means the source jumped backwards or has duplicates
             if *last_pts != i64::MIN && adjusted_pts <= *last_pts {
                 // Calculate additional offset needed: jump past last_pts
                 let additional_offset = *last_pts + 1 - adjusted_pts;
                 *offset += additional_offset;
                 warn!(
                     "PTS fix: stream={}, original_pts={}, last_pts={}, new_offset={}, delta={}",
-                    stream_idx, pkt.pts, *last_pts, *offset, additional_offset
+                    stream_idx, frame.pts, *last_pts, *offset, additional_offset
                 );
             }
 
-            // Apply total offset to PTS and DTS
-            pkt.pts += *offset;
-            if pkt.dts != AV_NOPTS_VALUE {
-                pkt.dts += *offset;
-            }
+            // Apply total offset to PTS
+            frame.pts += *offset;
 
             // Update last_pts for this stream (with offset applied)
-            *last_pts = pkt.pts;
+            *last_pts = frame.pts;
         }
     }
 
@@ -421,11 +416,12 @@ impl PipelineRunner {
                 bail!("Pipeline not configured, cant process frame")
             };
 
-            // Get the variants which want this frame
+            // Get the variants which want this frame (clone to avoid borrow issues)
             let pkt_vars: Vec<_> = config
                 .variants
                 .iter()
                 .filter(|v| v.src_index() == stream_index)
+                .cloned()
                 .collect();
 
             // Check if this is a video or audio frame
@@ -452,7 +448,10 @@ impl PipelineRunner {
                 let frames_to_encode = reorder_buffer.push(frame.pts, frame.duration, frame);
 
                 // Process each reordered frame through all video variants
-                for frame_ref in frames_to_encode {
+                for mut frame_ref in frames_to_encode {
+                    // Fix PTS discontinuities after reorder (frames now in PTS order)
+                    self.mangle_frame_pts(stream_index, &mut frame_ref);
+
                     trace!(
                         "REORDER->VARIANTS: src={}, pts={}, pkt_dts={}, duration={}, tb={}/{}",
                         stream_index,
