@@ -264,9 +264,21 @@ impl MultiTrackEngine {
                             } else {
                                 Some(MTObsScale::Disable)
                             },
-                            colorspace: Some(MTVideoColorspace::BT709),
-                            range: Some(MTVideoRange::Default),
-                            format: Some(MTVideoFormat::I420),
+                            colorspace: match v.color_space.to_lowercase().as_str() {
+                                "bt709" => Some(MTVideoColorspace::BT709),
+                                "bt2001" => Some(MTVideoColorspace::BT2100PQ),
+                                _ => Some(MTVideoColorspace::BT709),
+                            },
+                            range: match v.color_range.to_lowercase().as_str() {
+                                "full" => Some(MTVideoRange::Full),
+                                "partial" => Some(MTVideoRange::Partial),
+                                _ => Some(MTVideoRange::Default),
+                            },
+                            format: if encoder.implementation.is_gpu() {
+                                Some(MTVideoFormat::NV12)
+                            } else {
+                                Some(MTVideoFormat::I420)
+                            },
                             settings: settings_obj.into(),
                             canvas_index: 0, // TODO: map to canvas from req
                         })
@@ -614,7 +626,7 @@ pub enum MTVideoColorspace {
     #[serde(rename = "VIDEO_CS_SRGB")]
     SRGB,
     #[serde(rename = "VIDEO_CS_2100_PQ")]
-    BB2100PQ,
+    BT2100PQ,
     #[serde(rename = "VIDEO_CS_2100_HLG")]
     BT2100HLG,
 }
@@ -708,7 +720,26 @@ pub enum ObsEncoderImplementation {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+impl ObsEncoderImplementation {
+    pub fn is_gpu(&self) -> bool {
+        match self {
+            ObsEncoderImplementation::QSV => true,
+            ObsEncoderImplementation::VAAPI { transfer_type }
+                if *transfer_type == ObsGpuEncoderMemoryArea::VRAM =>
+            {
+                true
+            }
+            ObsEncoderImplementation::NVENC { transfer_type }
+                if *transfer_type == ObsGpuEncoderMemoryArea::VRAM =>
+            {
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Eq)]
 pub enum ObsGpuEncoderMemoryArea {
     Unknown,
     /// Encoded frames stay in vRAM

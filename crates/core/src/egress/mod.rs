@@ -103,6 +103,12 @@ impl EgressEncoderConfig {
                         EncoderParam::PixelFormat {
                             name: "yuv420p".to_string(),
                         },
+                        EncoderParam::ColorRange {
+                            name: "full".to_string(),
+                        },
+                        EncoderParam::ColorSpace {
+                            name: "bt709".to_string(),
+                        },
                     ]
                     .into(),
                     stream_type: IngressStreamType::Video,
@@ -152,6 +158,10 @@ pub enum EncoderParam {
     Preset { name: String },
     /// Encoder tune param
     Tune { name: String },
+    /// Encoder color space name
+    ColorSpace { name: String },
+    /// Encoder color range name
+    ColorRange { name: String },
     /// Number of frames in a group
     GOPSize { size: u32 },
     /// Max number of B frames

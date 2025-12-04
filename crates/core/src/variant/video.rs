@@ -1,14 +1,20 @@
 use crate::egress::EncoderParam;
 use crate::map_codec_id;
 use anyhow::{Result, bail};
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVColorRange::AVCOL_RANGE_NB;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVColorSpace::AVCOL_SPC_BT709;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_NONE;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::{AV_CODEC_FLAG_GLOBAL_HEADER, AVRational, av_get_pix_fmt, av_q2d, avcodec_find_encoder, AV_CODEC_FLAG_LOW_DELAY};
-use ffmpeg_rs_raw::{Encoder, cstr, free_cstr, rstr};
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
+    AV_CODEC_FLAG_GLOBAL_HEADER, AV_CODEC_FLAG_LOW_DELAY, AVColorRange, AVRational,
+    av_color_range_from_name, av_color_space_from_name, av_get_pix_fmt, av_q2d,
+    avcodec_find_encoder,
+};
+use ffmpeg_rs_raw::{Encoder, cstr, free_cstr, get_ffmpeg_error_msg, rstr};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::mem::transmute;
+use tracing::log::warn;
 use uuid::Uuid;
 
 /// Information related to variant streams
@@ -42,6 +48,10 @@ pub struct VideoVariant {
     pub level: u32,
     /// Video pixel format name
     pub pixel_format: String,
+    /// Video color space
+    pub color_space: String,
+    /// Video color range
+    pub color_range: String,
 }
 
 impl Display for VideoVariant {
@@ -102,6 +112,12 @@ impl VideoVariant {
                 EncoderParam::PixelFormat { name } => {
                     self.pixel_format = name.clone();
                 }
+                EncoderParam::ColorRange { name } => {
+                    self.color_range = name.clone();
+                }
+                EncoderParam::ColorSpace { name } => {
+                    self.color_space = name.clone();
+                }
                 _ => {}
             }
         }
@@ -154,8 +170,41 @@ impl VideoVariant {
                     (*ctx).gop_size = self.gop as _;
                     (*ctx).keyint_min = self.gop as _;
                     (*ctx).max_b_frames = self.max_b_frames as _;
-                    (*ctx).colorspace = AVCOL_SPC_BT709;
                     (*ctx).flags |= AV_CODEC_FLAG_LOW_DELAY as i32;
+
+                    if !self.color_space.is_empty() {
+                        let csn = cstr!(self.color_space.as_str());
+                        let cs = av_color_space_from_name(csn);
+                        free_cstr!(csn);
+                        if cs < 0 {
+                            warn!(
+                                "Color space not found {}, {}",
+                                self.color_space,
+                                get_ffmpeg_error_msg(cs)
+                            );
+                        } else {
+                            (*ctx).colorspace = transmute(cs);
+                        }
+                    } else {
+                        (*ctx).colorspace = AVCOL_SPC_BT709;
+                    }
+
+                    if !self.color_range.is_empty() {
+                        let csn = cstr!(self.color_range.as_str());
+                        let cr = av_color_range_from_name(csn);
+                        free_cstr!(csn);
+                        if cr < 0 {
+                            warn!(
+                                "Color range not found {}, {}",
+                                self.color_space,
+                                get_ffmpeg_error_msg(cr)
+                            );
+                        } else {
+                            (*ctx).color_range = transmute(cr);
+                        }
+                    } else {
+                        (*ctx).color_range = AVColorRange::AVCOL_RANGE_MPEG;
+                    }
 
                     // Set GLOBAL_HEADER flag for fMP4 HLS and recorder contexts
                     if need_global_header {
