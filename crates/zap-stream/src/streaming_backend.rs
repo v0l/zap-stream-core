@@ -36,6 +36,20 @@ pub trait StreamingBackend: Send + Sync {
     /// Parse backend-specific external event (webhook) into generic stream event
     /// Returns None if the payload is not for this backend or cannot be parsed
     fn parse_external_event(&self, payload: &[u8]) -> Result<Option<ExternalStreamEvent>>;
+    
+    /// Register a mapping from input_uid to stream_id
+    /// Used by webhook-based backends to track active streams
+    /// For Cloudflare: input_uid is the Live Input UID
+    fn register_stream_mapping(&self, input_uid: &str, stream_id: Uuid) -> Result<()>;
+    
+    /// Look up stream_id from input_uid
+    /// For Cloudflare: input_uid is the Live Input UID
+    /// Returns None if no mapping exists
+    fn get_stream_id_for_input_uid(&self, input_uid: &str) -> Result<Option<Uuid>>;
+    
+    /// Remove stream mapping when stream ends
+    /// For Cloudflare: input_uid is the Live Input UID
+    fn remove_stream_mapping(&self, input_uid: &str) -> Result<()>;
 }
 
 /// External stream events from backend providers (webhooks, etc.)
@@ -43,11 +57,18 @@ pub trait StreamingBackend: Send + Sync {
 pub enum ExternalStreamEvent {
     /// Stream connection started
     Connected {
-        connection_info: ConnectionInfo,
+        /// Identifier to look up user (e.g., Cloudflare Live Input UID)
+        /// This matches what's stored in DB as user.stream_key
+        input_uid: String,
+        /// App name for endpoint detection (e.g., "Basic", "Good")
+        /// For Cloudflare: defaults to "Basic" since webhook has no tier info
+        /// TODO: Future enhancement - store user's preferred tier in DB
+        app_name: String,
     },
     /// Stream connection ended
     Disconnected {
-        stream_id: Uuid,
+        /// Identifier to look up the stream (e.g., Cloudflare Live Input UID)
+        input_uid: String,
     },
 }
 

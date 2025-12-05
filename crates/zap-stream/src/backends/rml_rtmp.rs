@@ -131,4 +131,19 @@ impl StreamingBackend for RmlRtmpBackend {
         // RTMP backend uses listeners, not webhooks
         Ok(None)
     }
+    
+    fn register_stream_mapping(&self, _input_uid: &str, _stream_id: Uuid) -> Result<()> {
+        // Not used by listener-based backends
+        Ok(())
+    }
+    
+    fn get_stream_id_for_input_uid(&self, _input_uid: &str) -> Result<Option<Uuid>> {
+        // Not used by listener-based backends
+        Ok(None)
+    }
+    
+    fn remove_stream_mapping(&self, _input_uid: &str) -> Result<()> {
+        // Not used by listener-based backends
+        Ok(())
+    }
 }

@@ -3,6 +3,7 @@ use crate::overseer::ZapStreamOverseer;
 use crate::settings::Settings;
 use crate::stream_manager::StreamManager;
 use crate::websocket_metrics::WebSocketMetricsServer;
+use zap_stream_core::ingress::ConnectionInfo;
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
@@ -1766,23 +1767,82 @@ impl HttpServerPlugin for Api {
                 use crate::streaming_backend::ExternalStreamEvent;
                 
                 match event {
-                    ExternalStreamEvent::Connected { connection_info } => {
-                        info!("Webhook: Stream connected - {}", connection_info.id);
+                    ExternalStreamEvent::Connected { input_uid, app_name } => {
+                        info!("Webhook: Stream connected for input_uid: {}, app_name: {}", input_uid, app_name);
                         
-                        // For cloud backends, we don't have IngressInfo from webhooks
-                        // Pass None to indicate no local pipeline should be created
-                        match overseer.start_stream(&connection_info, None).await {
-                            Ok(_) => info!("Stream started successfully via webhook: {}", connection_info.id),
-                            Err(e) => error!("Failed to start stream via webhook: {}", e),
+                        // 1. Generate fresh UUID for this stream session
+                        let stream_id = Uuid::new_v4();
+                        
+                        // 2. Create ConnectionInfo - completely generic, uses backend-provided values
+                        let connection_info = ConnectionInfo {
+                            id: stream_id,
+                            endpoint: "webhook",  // Generic identifier for webhook-based connections
+                            app_name: app_name.clone(),  // Backend provides this (e.g., "Basic")
+                            key: input_uid.clone(),  // Used to look up user in DB
+                            ip_addr: "webhook".to_string(),  // Generic - no real IP from webhooks
+                        };
+                        
+                        // 3. Call overseer.connect() - handles user lookup & reconnection logic
+                        match overseer.connect(&connection_info).await {
+                            Ok(connect_result) => {
+                                use zap_stream_core::overseer::ConnectResult;
+                                match connect_result {
+                                    ConnectResult::Allow { stream_id_override, .. } => {
+                                        // 4. Get final stream_id (respects reconnection window)
+                                        let final_stream_id = stream_id_override.unwrap_or(stream_id);
+                                        
+                                        // 5. Update ConnectionInfo with final stream_id
+                                        let final_connection_info = ConnectionInfo {
+                                            id: final_stream_id,
+                                            ..connection_info
+                                        };
+                                        
+                                        // 6. Register mapping in backend (for disconnect lookup)
+                                        if let Err(e) = backend.register_stream_mapping(&input_uid, final_stream_id) {
+                                            error!("Failed to register stream mapping: {}", e);
+                                            return Ok(());
+                                        }
+                                        
+                                        // 7. Call overseer.start_stream() with None (webhook backends don't have local pipeline)
+                                        match overseer.start_stream(&final_connection_info, None).await {
+                                            Ok(_) => info!("Stream started successfully via webhook: {}", final_stream_id),
+                                            Err(e) => {
+                                                error!("Failed to start stream via webhook: {}", e);
+                                                // Clean up mapping on failure
+                                                let _ = backend.remove_stream_mapping(&input_uid);
+                                            }
+                                        }
+                                    }
+                                    ConnectResult::Deny { reason } => {
+                                        warn!("Stream connection denied: {}", reason);
+                                    }
+                                }
+                            }
+                            Err(e) => error!("Failed to process connection: {}", e),
                         }
                     }
-                    ExternalStreamEvent::Disconnected { stream_id } => {
-                        info!("Webhook: Stream disconnected - {}", stream_id);
+                    ExternalStreamEvent::Disconnected { input_uid } => {
+                        info!("Webhook: Stream disconnected for input_uid: {}", input_uid);
                         
-                        // Trigger the overseer's stream end logic
-                        match overseer.on_end(&stream_id).await {
-                            Ok(_) => info!("Stream ended successfully via webhook: {}", stream_id),
-                            Err(e) => error!("Failed to end stream via webhook: {}", e),
+                        // 1. Look up stream_id from mapping
+                        match backend.get_stream_id_for_input_uid(&input_uid) {
+                            Ok(Some(stream_id)) => {
+                                // 2. Call overseer.on_end()
+                                match overseer.on_end(&stream_id).await {
+                                    Ok(_) => {
+                                        info!("Stream ended successfully via webhook: {}", stream_id);
+                                        // 3. Clean up mapping
+                                        if let Err(e) = backend.remove_stream_mapping(&input_uid) {
+                                            warn!("Failed to remove stream mapping: {}", e);
+                                        }
+                                    }
+                                    Err(e) => error!("Failed to end stream via webhook: {}", e),
+                                }
+                            }
+                            Ok(None) => {
+                                warn!("Received disconnect webhook for unknown input_uid: {}", input_uid);
+                            }
+                            Err(e) => error!("Failed to lookup stream_id: {}", e),
                         }
                     }
                 }

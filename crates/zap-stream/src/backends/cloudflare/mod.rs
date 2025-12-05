@@ -12,7 +12,6 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 use uuid::Uuid;
-use zap_stream_core::ingress::ConnectionInfo;
 use zap_stream_db::{IngestEndpoint, User};
 
 use crate::streaming_backend::{Endpoint, EndpointCost, ExternalStreamEvent, StreamingBackend};
@@ -192,58 +191,22 @@ impl StreamingBackend for CloudflareBackend {
         info!("Received Cloudflare webhook event: {} for input_id: {}", 
             webhook.data.event_type, webhook.data.input_id);
         
-        // Look up stream_id from live_input_uid (blocking is OK here since we're not in async context)
-        let stream_id = {
-            let reverse_map = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(self.reverse_mapping.read())
-            });
-            match reverse_map.get(&webhook.data.input_id) {
-                Some(id) => id.clone(),
-                None => {
-                    warn!("Received webhook for unknown live_input_uid: {}", webhook.data.input_id);
-                    return Ok(None);
-                }
-            }
-        };
-        
-        // Parse stream_id as UUID
-        let stream_uuid = match Uuid::parse_str(&stream_id) {
-            Ok(u) => u,
-            Err(e) => {
-                warn!("Invalid stream_id '{}' in reverse mapping: {}", stream_id, e);
-                return Ok(None);
-            }
-        };
-        
         // Map Cloudflare event types to our generic events
         match webhook.data.event_type.as_str() {
             "live_input.connected" => {
-                info!("Stream connected: {}", stream_uuid);
-                
-                // Create ConnectionInfo for this stream
-                // Note: We use dummy values since Cloudflare doesn't provide this info
-                let conn_info = ConnectionInfo {
-                    id: stream_uuid,
-                    endpoint: "cloudflare", // Cloudflare RTMPS
-                    app_name: "cloudflare".to_string(),
-                    key: stream_id.clone(),
-                    ip_addr: "cloudflare".to_string(), // No IP provided by webhook
-                };
-                
+                info!("Stream connected for input_uid: {}", webhook.data.input_id);
                 Ok(Some(ExternalStreamEvent::Connected {
-                    connection_info: conn_info,
+                    input_uid: webhook.data.input_id,
+                    // Cloudflare webhooks don't include tier info
+                    // Default to "Basic" (free tier) for now
+                    // TODO: Future enhancement - look up user's preferred tier from DB
+                    app_name: "Basic".to_string(),
                 }))
             }
-            "live_input.disconnected" => {
-                info!("Stream disconnected: {}", stream_uuid);
+            "live_input.disconnected" | "live_input.errored" => {
+                info!("Stream disconnected for input_uid: {}", webhook.data.input_id);
                 Ok(Some(ExternalStreamEvent::Disconnected {
-                    stream_id: stream_uuid,
-                }))
-            }
-            "live_input.errored" => {
-                warn!("Stream error for {}, treating as disconnection", stream_uuid);
-                Ok(Some(ExternalStreamEvent::Disconnected {
-                    stream_id: stream_uuid,
+                    input_uid: webhook.data.input_id,
                 }))
             }
             _ => {
@@ -251,5 +214,42 @@ impl StreamingBackend for CloudflareBackend {
                 Ok(None)
             }
         }
+    }
+    
+    fn register_stream_mapping(&self, input_uid: &str, stream_id: Uuid) -> Result<()> {
+        let mut mapping = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(self.reverse_mapping.write())
+        });
+        mapping.insert(input_uid.to_string(), stream_id.to_string());
+        info!("Registered mapping: input_uid {} -> stream_id {}", input_uid, stream_id);
+        Ok(())
+    }
+    
+    fn get_stream_id_for_input_uid(&self, input_uid: &str) -> Result<Option<Uuid>> {
+        let mapping = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(self.reverse_mapping.read())
+        });
+        
+        match mapping.get(input_uid) {
+            Some(stream_id_str) => {
+                match Uuid::parse_str(stream_id_str) {
+                    Ok(uuid) => Ok(Some(uuid)),
+                    Err(e) => {
+                        warn!("Invalid UUID in mapping for input_uid {}: {}", input_uid, e);
+                        Ok(None)
+                    }
+                }
+            }
+            None => Ok(None),
+        }
+    }
+    
+    fn remove_stream_mapping(&self, input_uid: &str) -> Result<()> {
+        let mut mapping = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(self.reverse_mapping.write())
+        });
+        mapping.remove(input_uid);
+        info!("Removed mapping for input_uid {}", input_uid);
+        Ok(())
     }
 }
