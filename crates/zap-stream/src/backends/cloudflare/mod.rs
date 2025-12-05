@@ -3,7 +3,7 @@ mod types;
 
 pub use client::CloudflareClient;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
 use serde_json;
 use std::collections::HashMap;
@@ -43,38 +43,62 @@ impl CloudflareBackend {
 
 #[async_trait]
 impl StreamingBackend for CloudflareBackend {
+    async fn generate_stream_key(&self, pubkey: &[u8; 32]) -> Result<String> {
+        let live_input_name = format!("user_{}", hex::encode(pubkey));
+        info!("Creating Cloudflare Live Input for new user: {}", live_input_name);
+        
+        let response = self.client.create_live_input(&live_input_name).await?;
+        let live_input_uid = response.result.uid.clone();
+        
+        info!("Created Cloudflare Live Input UID: {}", live_input_uid);
+        
+        // Store the mapping for later use
+        self.live_input_cache.write().await.insert(
+            live_input_uid.clone(),
+            live_input_uid.clone(),
+        );
+        
+        Ok(live_input_uid)
+    }
+    
+    fn is_valid_stream_key(&self, key: &str) -> bool {
+        // Cloudflare Live Input UIDs are 32 lowercase hexadecimal characters
+        key.len() == 32 && key.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f'))
+    }
+    
     async fn get_ingest_endpoints(&self, user: &User, db_endpoints: &[IngestEndpoint]) -> Result<Vec<Endpoint>> {
         let mut endpoints = Vec::new();
         
-        // For each database endpoint, create a Cloudflare Live Input
+        // Use the persistent stream_key (which IS the Cloudflare Live Input UID)
+        let live_input_uid = user.stream_key.clone();
+        
+        // Fetch current RTMPS details from Cloudflare (source of truth)
+        // If the Live Input doesn't exist, the UUID is invalid/stale
+        let live_input = match self.client.get_live_input(&live_input_uid).await {
+            Ok(input) => input,
+            Err(e) => {
+                warn!("Failed to fetch Live Input '{}': {}. User may need to regenerate UUID.", live_input_uid, e);
+                bail!("UUID is invalid or expired.");
+            }
+        };
+        
+        // Store base URL and stream key separately (consistent with RML RTMP backend)
+        let rtmps_base_url = live_input.result.rtmps.url.clone();
+        let rtmps_stream_key = live_input.result.rtmps.stream_key.clone();
+        
+        // Store mapping for later HLS lookup
+        self.live_input_cache.write().await.insert(
+            live_input_uid.clone(),
+            live_input_uid.clone(),
+        );
+        
+        // For each database endpoint tier, return base URL and key separately
+        // (matches RML RTMP backend pattern for DX consistency)
         for db_endpoint in db_endpoints {
-            let stream_id = user.stream_key.clone();
-            let live_input_name = format!("user{}_endpoint{}", user.id, db_endpoint.name);
-            
-            info!("Creating Cloudflare Live Input: {}", live_input_name);
-            
-            // Create Live Input via Cloudflare API
-            let response = self.client.create_live_input(&live_input_name).await?;
-            
-            info!("Created Live Input UID: {}", response.result.uid);
-            
-            // Store mappings for later use
-            self.live_input_cache.write().await.insert(
-                stream_id.clone(),
-                response.result.uid.clone(),
-            );
-            
-            // Store reverse mapping (live_input_uid -> stream_id) for webhook handling
-            self.reverse_mapping.write().await.insert(
-                response.result.uid.clone(),
-                stream_id.clone(),
-            );
-            
-            // Return endpoint with Cloudflare RTMP URL
             endpoints.push(Endpoint {
                 name: format!("Cloudflare-{}", db_endpoint.name),
-                url: response.result.rtmps.url,
-                key: response.result.rtmps.stream_key,
+                url: rtmps_base_url.clone(),
+                key: rtmps_stream_key.clone(),
                 capabilities: db_endpoint.capabilities
                     .as_ref()
                     .map(|c| c.split(',').map(|s| s.trim().to_string()).collect())

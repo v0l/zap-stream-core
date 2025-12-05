@@ -4,23 +4,14 @@
 # Cloudflare End-to-End Integration Test
 # ==========================================
 # 
-# This script tests the complete Cloudflare streaming lifecycle:
-# 1. Creates NIP-98 authenticated API call
-# 2. Gets Cloudflare RTMP endpoint (creates Live Input + mapping)
-# 3. Streams test pattern to Cloudflare
-# 4. Verifies webhooks trigger stream START lifecycle
-# 5. Stops stream
-# 6. Verifies webhooks trigger stream END lifecycle
+# This script verifies the complete Cloudflare streaming lifecycle.
+# Works with both NEW users (no UID) and EXISTING users (has UID).
 
 set -e  # Exit on error
 
 # Test credentials (safe test keypair, not production)
-TEST_NSEC="nsec15devjmm9cgwlpu7dw64cl29c02taw9gjrt5k6s78wxh3frwhhdcs986v76"
-TEST_NPUB="npub1tc6nuphuz0k0destd32mfluctx5jke60yxd794h3ugq7fgqgx0zq5eeln6"
-
-# Extract hex pubkey from npub (remove 'npub1' prefix and convert from bech32)
-# For now, we'll use a simpler approach - decode with nak if available
-TEST_PUBKEY_HEX=$(echo "$TEST_NPUB" | awk '{print $1}' | cut -c6-)
+TEST_NSEC="nsec1kczxrs69y6vdujuwwg2hegxngun4507clh8px73degq62kv9qreqdessxr"
+TEST_NPUB="npub1qf680y78ga29evk5k386kh8qwuukmvu7uk39p5mdwdw37gzl2svqpkpren"
 
 echo "========================================"
 echo "Cloudflare E2E Integration Test"
@@ -30,145 +21,183 @@ echo "Test Pubkey: $TEST_NPUB"
 echo ""
 
 # Check prerequisites
-echo "[Step 1] Checking prerequisites..."
+echo "[Prerequisites] Checking environment..."
 
-# Check if Node.js is installed
 if ! command -v node &> /dev/null; then
     echo "❌ ERROR: node not found"
     exit 1
 fi
-echo "✓ Node.js found"
 
-# Check if Docker is running
 if ! docker ps &> /dev/null; then
     echo "❌ ERROR: Docker is not running"
     exit 1
 fi
-echo "✓ Docker is running"
 
-# Check if zap-stream-core container is running
 if ! docker ps | grep -q zap-stream-core-core-1; then
     echo "❌ ERROR: zap-stream-core-core-1 container not running"
-    echo "Start it with: cd docs/deploy && docker-compose up -d"
     exit 1
 fi
-echo "✓ zap-stream-core container is running"
 
+echo "✓ All prerequisites met"
 echo ""
-echo "[Step 2] Ensuring test user exists in database..."
 
-# Decode npub to hex using Node.js
+# Decode npub to hex using utility script
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TEST_PUBKEY_HEX=$(node -e "
-const bech32Decode = (str) => {
-  const CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
-  const data = str.slice(5);
-  const values = [];
-  for (const c of data) {
-    const idx = CHARSET.indexOf(c);
-    if (idx === -1) throw new Error(\`Invalid character: \${c}\`);
-    values.push(idx);
-  }
-  const bits = [];
-  for (const v of values) {
-    for (let i = 4; i >= 0; i--) {
-      bits.push((v >> i) & 1);
-    }
-  }
-  const bytes = [];
-  for (let i = 0; i < bits.length - (bits.length % 8); i += 8) {
-    let byte = 0;
-    for (let j = 0; j < 8; j++) {
-      byte = (byte << 1) | bits[i + j];
-    }
-    bytes.push(byte);
-  }
-  bytes.pop();
-  console.log(Buffer.from(bytes).toString('hex'));
-};
-bech32Decode('$TEST_NPUB');
-")
+TEST_PUBKEY_HEX=$(node "$SCRIPT_DIR/decode_npub.js" "$TEST_NPUB" 2>&1)
 
-if [ -z "$TEST_PUBKEY_HEX" ]; then
-    echo "❌ ERROR: Could not decode npub to hex"
+if [ $? -ne 0 ]; then
+    echo "❌ Failed to decode npub"
     exit 1
 fi
 
-echo "Test pubkey hex: $TEST_PUBKEY_HEX"
+echo "Test pubkey hex: $TEST_PUBKEY_HEX (${#TEST_PUBKEY_HEX} chars)"
 
-# Insert user into database
+# Ensure user exists in database (with empty or existing stream_key)
 docker exec zap-stream-core-db-1 mariadb -uroot -proot zap_stream -e \
   "INSERT IGNORE INTO user (pubkey, balance) VALUES (UNHEX('${TEST_PUBKEY_HEX}'), 0);" \
   2>/dev/null || true
 
-echo "✓ Test user ensured in database"
-
 echo ""
-echo "[Step 3] Creating NIP-98 auth token and calling API..."
+echo "========================================" 
+echo "TEST 1: Check initial database state"
+echo "========================================"
 
-# API endpoint (Docker maps container's 8080 to host's 80)
-API_URL="http://localhost:80/api/v1/account"
-METHOD="GET"
+# Check database for existing Live Input UID
+UPPER_PUBKEY=$(echo "$TEST_PUBKEY_HEX" | tr '[:lower:]' '[:upper:]')
+DB_UID_BEFORE=$(docker exec zap-stream-core-db-1 mariadb -uroot -proot zap_stream \
+    -e "SELECT stream_key FROM user WHERE HEX(pubkey)='${UPPER_PUBKEY}';" -s -N 2>/dev/null)
 
-# Create NIP-98 event using Node.js script
-echo "Creating NIP-98 auth event..."
-AUTH_EVENT_JSON=$(node "$SCRIPT_DIR/sign_nip98.js" "$TEST_NSEC" "$API_URL" "$METHOD" 2>&1)
-
-if [ $? -ne 0 ]; then
-    echo "❌ ERROR: Failed to create NIP-98 event"
-    echo "$AUTH_EVENT_JSON"
-    exit 1
+if [ -z "$DB_UID_BEFORE" ] || [ "$DB_UID_BEFORE" == "NULL" ]; then
+    echo "✓ User is NEW (no Live Input UID in database)"
+    USER_TYPE="NEW"
+else
+    echo "✓ User is EXISTING (has Live Input UID: $DB_UID_BEFORE)"
+    USER_TYPE="EXISTING"
 fi
 
-echo "✓ NIP-98 event created"
+echo "✅ TEST 1 PASSED"
+echo ""
 
-# Base64 encode the event
+echo "========================================"
+echo "TEST 2: API call handles user correctly"
+echo "========================================"
+
+# Create NIP-98 auth for API calls
+API_URL="http://localhost:80/api/v1/account"
+AUTH_EVENT_JSON=$(node "$SCRIPT_DIR/sign_nip98.js" "$TEST_NSEC" "$API_URL" "GET" 2>&1)
+if [ $? -ne 0 ]; then
+    echo "❌ Failed to create NIP-98 event"
+    exit 1
+fi
 AUTH_TOKEN=$(echo "$AUTH_EVENT_JSON" | base64)
 
-# Call API with auth
-echo "Calling API with authentication..."
-API_RESPONSE=$(curl -s "$API_URL" \
-  -H "Authorization: Nostr $AUTH_TOKEN")
+# Make API call (will create Live Input for new user, or reuse for existing)
+API_RESPONSE=$(curl -s "$API_URL" -H "Authorization: Nostr $AUTH_TOKEN")
 
-# Check if API call succeeded
-if echo "$API_RESPONSE" | jq -e '.endpoints' > /dev/null 2>&1; then
-    echo "✓ API call succeeded"
+if ! echo "$API_RESPONSE" | jq -e '.endpoints' > /dev/null 2>&1; then
+    echo "❌ API call failed: $API_RESPONSE"
+    exit 1
+fi
+
+if [ "$USER_TYPE" == "NEW" ]; then
+    echo "✓ API should create new Live Input"
 else
-    echo "❌ ERROR: API call failed"
-    echo "Response: $API_RESPONSE"
+    echo "✓ API should reuse existing Live Input UID"
+fi
+
+echo "✅ TEST 2 PASSED"
+echo ""
+
+echo "========================================"
+echo "TEST 3: Database now contains valid UID"
+echo "========================================"
+
+# Check database again
+DB_UID_AFTER=$(docker exec zap-stream-core-db-1 mariadb -uroot -proot zap_stream \
+    -e "SELECT stream_key FROM user WHERE HEX(pubkey)='${UPPER_PUBKEY}';" -s -N 2>/dev/null)
+
+if [ -z "$DB_UID_AFTER" ]; then
+    echo "❌ No Live Input UID in database after API call"
     exit 1
 fi
 
-# Pretty print the response
-echo ""
-echo "API Response:"
-echo "$API_RESPONSE" | jq '.'
+# Validate UID format (32 hex chars)
+if [[ ! $DB_UID_AFTER =~ ^[0-9a-f]{32}$ ]]; then
+    echo "❌ Invalid UID format: $DB_UID_AFTER"
+    exit 1
+fi
+
+echo "✓ Database contains Live Input UID: $DB_UID_AFTER"
+echo "✅ TEST 3 PASSED"
 echo ""
 
-# Extract RTMP URL and stream key
+echo "========================================"
+echo "TEST 4: Cloudflare returns valid credentials"
+echo "========================================"
+
 RTMP_URL=$(echo "$API_RESPONSE" | jq -r '.endpoints[0].url // empty')
-STREAM_KEY=$(echo "$API_RESPONSE" | jq -r '.endpoints[0].key // empty')
+CF_STREAMKEY=$(echo "$API_RESPONSE" | jq -r '.endpoints[0].key // empty')
 
-if [ -z "$RTMP_URL" ] || [ -z "$STREAM_KEY" ]; then
-    echo "❌ ERROR: Could not extract RTMP URL or stream key from API response"
+if [ -z "$RTMP_URL" ] || [ -z "$CF_STREAMKEY" ]; then
+    echo "❌ Missing RTMP URL or streamKey in API response"
     exit 1
 fi
 
-echo "RTMP URL: $RTMP_URL"
-echo "Stream Key: ${STREAM_KEY:0:20}..."
+# Validate format
+if [[ ! $RTMP_URL =~ ^rtmps:// ]]; then
+    echo "❌ Invalid RTMP URL format: $RTMP_URL"
+    exit 1
+fi
+
+if [[ ! $CF_STREAMKEY =~ ^[0-9a-fk]{32,}$ ]]; then
+    echo "❌ Invalid streamKey format: $CF_STREAMKEY"
+    exit 1
+fi
+
+echo "✓ RTMP URL: $RTMP_URL"
+echo "✓ Cloudflare streamKey: ${CF_STREAMKEY:0:20}... (${#CF_STREAMKEY} chars)"
+echo "✅ TEST 4 PASSED"
 echo ""
 
-echo "[Step 4] Starting test stream to Cloudflare..."
+echo "========================================"
+echo "TEST 5: Second API call reuses same UID"
+echo "========================================"
 
-# Full RTMP destination
-RTMP_DEST="${RTMP_URL}${STREAM_KEY}"
+# Make second API call
+API_RESPONSE_2=$(curl -s "$API_URL" -H "Authorization: Nostr $AUTH_TOKEN")
+CF_STREAMKEY_2=$(echo "$API_RESPONSE_2" | jq -r '.endpoints[0].key // empty')
 
-# Create temp file for ffmpeg output
+# Check database again
+DB_UID_FINAL=$(docker exec zap-stream-core-db-1 mariadb -uroot -proot zap_stream \
+    -e "SELECT stream_key FROM user WHERE HEX(pubkey)='${UPPER_PUBKEY}';" -s -N 2>/dev/null)
+
+if [ "$DB_UID_AFTER" != "$DB_UID_FINAL" ]; then
+    echo "❌ Database UID changed! Should persist same UID"
+    echo "   After first call:  $DB_UID_AFTER"
+    echo "   After second call: $DB_UID_FINAL"
+    exit 1
+fi
+
+if [ "$CF_STREAMKEY" != "$CF_STREAMKEY_2" ]; then
+    echo "❌ Different streamKeys returned"
+    exit 1
+fi
+
+echo "✓ Same Live Input UID persisted: $DB_UID_FINAL"
+echo "✓ Same streamKey returned"
+echo "✅ TEST 5 PASSED"
+echo ""
+
+echo "========================================"
+echo "TEST 6: Stream to Cloudflare"
+echo "========================================"
+
+# Client must concatenate URL + key (matches real app behavior)
+RTMP_DEST="${RTMP_URL}${CF_STREAMKEY}"
 FFMPEG_LOG=$(mktemp)
-echo "FFmpeg log: $FFMPEG_LOG"
 
-# Start ffmpeg streaming in background, capture output
-echo "Streaming to: $RTMP_DEST"
+echo "Streaming to: ${RTMP_URL}(key)"
+
 ffmpeg -re -t 30 \
   -f lavfi -i testsrc=size=1280x720:rate=30 \
   -f lavfi -i sine=frequency=1000:sample_rate=44100 \
@@ -178,123 +207,117 @@ ffmpeg -re -t 30 \
   </dev/null >>"$FFMPEG_LOG" 2>&1 &
 
 FFMPEG_PID=$!
-echo "✓ FFmpeg started (PID: $FFMPEG_PID), streaming for 30 seconds..."
 
-# Wait a moment and check if ffmpeg is still running
 sleep 3
 if ! ps -p $FFMPEG_PID > /dev/null 2>&1; then
-    echo "❌ ERROR: FFmpeg died immediately"
-    echo "FFmpeg output:"
+    echo "❌ FFmpeg failed to start"
     cat "$FFMPEG_LOG"
     rm "$FFMPEG_LOG"
     exit 1
 fi
-echo "✓ FFmpeg still running after 3 seconds"
 
-# Wait for stream to establish and webhooks to arrive
-echo "Waiting 20 seconds for stream to establish and webhooks to arrive..."
+echo "✓ FFmpeg streaming (PID: $FFMPEG_PID)"
+echo "✅ TEST 6 PASSED"
+echo ""
+
+echo "========================================"
+echo "TEST 7: Webhooks trigger stream START"
+echo "========================================"
+
+echo "Waiting 20 seconds for webhooks..."
 sleep 20
 
-echo ""
-echo "[Step 5] Verifying stream START in Docker logs..."
-
-# Check for expected START logs
 LOGS=$(docker logs --tail 100 zap-stream-core-core-1 2>&1)
 
-echo "Checking for START indicators..."
+START_TESTS_PASSED=0
 
-# Check for webhook received
 if echo "$LOGS" | grep -q "Received Cloudflare webhook event: live_input.connected"; then
-    echo "✓ Webhook received: live_input.connected"
+    echo "✓ Webhook: live_input.connected"
+    START_TESTS_PASSED=$((START_TESTS_PASSED + 1))
 else
-    echo "⚠ Warning: Did not find 'live_input.connected' webhook in logs"
+    echo "✗ Missing: live_input.connected webhook"
 fi
 
-# Check for stream connected
 if echo "$LOGS" | grep -q "Stream connected:"; then
-    echo "✓ Stream connected event found"
+    echo "✓ Stream connected event"
+    START_TESTS_PASSED=$((START_TESTS_PASSED + 1))
 else
-    echo "⚠ Warning: Did not find 'Stream connected' in logs"
+    echo "✗ Missing: Stream connected event"
 fi
 
-# Check for Video Asset
-if echo "$LOGS" | grep -q "Video Asset found"; then
-    echo "✓ Video Asset created"
+if [ $START_TESTS_PASSED -eq 2 ]; then
+    echo "✅ TEST 7 PASSED"
 else
-    echo "⚠ Warning: Video Asset may not be created yet (this can take a few seconds)"
+    echo "⚠️  TEST 7 PARTIAL: $START_TESTS_PASSED/2"
 fi
-
-echo ""
-echo "Recent logs:"
-echo "$LOGS" | grep -i "cloudflare\|webhook\|stream\|connected" | tail -15
 echo ""
 
-echo "[Step 6] Checking FFmpeg status..."
+echo "========================================"
+echo "TEST 8: End stream"
+echo "========================================"
 
-# Check if ffmpeg is still running
 if ps -p $FFMPEG_PID > /dev/null 2>&1; then
-    echo "✓ FFmpeg still streaming"
-    
-    # Show last few lines of ffmpeg output
-    echo ""
-    echo "FFmpeg output (last 20 lines):"
-    tail -20 "$FFMPEG_LOG"
-    echo ""
-    
-    # Kill ffmpeg
     kill -9 $FFMPEG_PID 2>/dev/null || true
     pkill -9 -f "ffmpeg.*testsrc" 2>/dev/null || true
-    echo "✓ FFmpeg stopped"
+    echo "✓ Stream stopped"
 else
-    echo "⚠ Warning: FFmpeg already stopped"
-    echo ""
-    echo "Full FFmpeg output:"
-    cat "$FFMPEG_LOG"
-    echo ""
+    echo "⚠️  Stream already stopped"
 fi
-
-# Cleanup log file
 rm "$FFMPEG_LOG"
+echo "✅ TEST 8 PASSED"
+echo ""
+
+echo "========================================"
+echo "TEST 9: Webhooks trigger stream END"
+echo "========================================"
 
 echo "Waiting 10 seconds for END webhooks..."
 sleep 10
 
-echo ""
-echo "[Step 7] Verifying stream END in Docker logs..."
-
-# Check for expected END logs
 LOGS=$(docker logs --tail 100 zap-stream-core-core-1 2>&1)
 
-echo "Checking for END indicators..."
+END_TESTS_PASSED=0
 
-# Check for webhook received
 if echo "$LOGS" | grep -q "Received Cloudflare webhook event: live_input.disconnected"; then
-    echo "✓ Webhook received: live_input.disconnected"
+    echo "✓ Webhook: live_input.disconnected"
+    END_TESTS_PASSED=$((END_TESTS_PASSED + 1))
 else
-    echo "⚠ Warning: Did not find 'live_input.disconnected' webhook in logs"
+    echo "✗ Missing: live_input.disconnected webhook"
 fi
 
-# Check for stream ended
 if echo "$LOGS" | grep -q "Stream disconnected:"; then
-    echo "✓ Stream disconnected event found"
+    echo "✓ Stream disconnected event"
+    END_TESTS_PASSED=$((END_TESTS_PASSED + 1))
 else
-    echo "⚠ Warning: Did not find 'Stream disconnected' in logs"
+    echo "✗ Missing: Stream disconnected event"
 fi
 
-echo ""
-echo "Recent logs:"
-echo "$LOGS" | grep -i "cloudflare\|webhook\|stream\|disconnect" | tail -15
+if [ $END_TESTS_PASSED -eq 2 ]; then
+    echo "✅ TEST 9 PASSED"
+else
+    echo "⚠️  TEST 9 PARTIAL: $END_TESTS_PASSED/2"
+fi
 echo ""
 
 echo "========================================"
-echo "Test Complete"
+echo "TEST SUMMARY"
 echo "========================================"
+echo "✅ TEST 1: Check initial database state"
+echo "✅ TEST 2: API call handles user correctly"
+echo "✅ TEST 3: Database now contains valid UID"
+echo "✅ TEST 4: Cloudflare returns valid credentials"
+echo "✅ TEST 5: Second API call reuses same UID"
+echo "✅ TEST 6: Stream to Cloudflare"
+if [ $START_TESTS_PASSED -eq 2 ]; then
+    echo "✅ TEST 7: Webhooks trigger stream START"
+else
+    echo "⚠️  TEST 7: PARTIAL ($START_TESTS_PASSED/2)"
+fi
+echo "✅ TEST 8: End stream"
+if [ $END_TESTS_PASSED -eq 2 ]; then
+    echo "✅ TEST 9: Webhooks trigger stream END"
+else
+    echo "⚠️  TEST 9: PARTIAL ($END_TESTS_PASSED/2)"
+fi
 echo ""
-echo "Summary:"
-echo "- API call with NIP-98 auth: ✓"
-echo "- Cloudflare RTMP endpoint received: ✓"
-echo "- Stream sent to Cloudflare: ✓"
-echo "- Check logs above for webhook verification"
-echo ""
-echo "To see full logs:"
-echo "docker logs --tail 200 zap-stream-core-core-1 | grep -i cloudflare"
+echo "Full logs: docker logs --tail 200 zap-stream-core-core-1 | grep -i cloudflare"

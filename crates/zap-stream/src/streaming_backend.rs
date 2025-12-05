@@ -8,6 +8,12 @@ use zap_stream_db::{IngestEndpoint, User};
 /// Provides data (URLs, viewer counts) without handling event lifecycle
 #[async_trait]
 pub trait StreamingBackend: Send + Sync {
+    /// Generate a backend-specific stream key for a user
+    async fn generate_stream_key(&self, pubkey: &[u8; 32]) -> Result<String>;
+    
+    /// Check if a stream key is valid for this backend
+    fn is_valid_stream_key(&self, key: &str) -> bool;
+    
     /// Get HLS playback URL for a stream
     async fn get_hls_url(&self, stream_id: &str) -> Result<String>;
     

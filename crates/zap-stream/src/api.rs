@@ -604,7 +604,16 @@ impl Api {
 
     async fn get_account(&self, pubkey: &PublicKey) -> Result<AccountInfo> {
         let uid = self.db.upsert_user(&pubkey.to_bytes()).await?;
-        let user = self.db.get_user(uid).await?;
+        let mut user = self.db.get_user(uid).await?;
+
+        // Generate stream key if not set (new users with empty stream_key)
+        // Generate new key if empty OR if key is not valid for current backend
+        let backend = self.overseer.streaming_backend();
+        if user.stream_key.is_empty() || !backend.is_valid_stream_key(&user.stream_key) {
+            let stream_key = backend.generate_stream_key(&pubkey.to_bytes()).await?;
+            self.db.update_user_stream_key(uid, &stream_key).await?;
+            user.stream_key = stream_key; // Update local copy
+        }
 
         // Get user forwards
         let forwards = self.db.get_user_forwards(uid).await?;

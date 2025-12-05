@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use std::path::PathBuf;
 use std::str::FromStr;
 use url::Url;
+use uuid::Uuid;
 use zap_stream_core::egress::hls::HlsEgress;
 use zap_stream_core::egress::recorder::RecorderEgress;
 use zap_stream_core::listen::ListenerEndpoint;
@@ -34,6 +35,15 @@ impl RmlRtmpBackend {
 
 #[async_trait]
 impl StreamingBackend for RmlRtmpBackend {
+    async fn generate_stream_key(&self, _pubkey: &[u8; 32]) -> Result<String> {
+        Ok(Uuid::new_v4().to_string())
+    }
+    
+    fn is_valid_stream_key(&self, key: &str) -> bool {
+        // RML RTMP generates UUIDs: 36 chars with 4 dashes (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
+        key.len() == 36 && key.matches('-').count() == 4
+    }
+    
     async fn get_hls_url(&self, stream_id: &str) -> Result<String> {
         let pipeline_dir = PathBuf::from(stream_id);
         let url = self.map_to_public_url(
