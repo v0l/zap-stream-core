@@ -7,6 +7,7 @@ members = [
 [workspace.package]
 edition = "2024"
 rust-version = "1.88"
+version = "0.1.0"
 
 [profile.release]
 opt-level = 3
