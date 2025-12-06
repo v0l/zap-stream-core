@@ -217,11 +217,21 @@ impl StreamingBackend for CloudflareBackend {
     }
     
     fn register_stream_mapping(&self, input_uid: &str, stream_id: Uuid) -> Result<()> {
-        let mut mapping = tokio::task::block_in_place(|| {
+        // Populate reverse_mapping: input_uid -> stream_id (for disconnect webhook)
+        let mut reverse = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(self.reverse_mapping.write())
         });
-        mapping.insert(input_uid.to_string(), stream_id.to_string());
-        info!("Registered mapping: input_uid {} -> stream_id {}", input_uid, stream_id);
+        reverse.insert(input_uid.to_string(), stream_id.to_string());
+        drop(reverse);
+        
+        // Populate live_input_cache: stream_id -> input_uid (for HLS URL lookup)
+        let mut cache = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(self.live_input_cache.write())
+        });
+        cache.insert(stream_id.to_string(), input_uid.to_string());
+        drop(cache);
+        
+        info!("Registered mapping: input_uid {} <-> stream_id {}", input_uid, stream_id);
         Ok(())
     }
     

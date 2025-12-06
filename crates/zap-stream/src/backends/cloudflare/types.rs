@@ -21,7 +21,7 @@ pub struct LiveInput {
     pub webrtc: Option<WebRtcEndpoint>,
     #[serde(rename = "webRTCPlayback")]
     pub webrtc_playback: Option<WebRtcEndpoint>,
-    pub status: Option<String>,
+    pub status: Option<serde_json::Value>,
     pub created: String,
     pub modified: Option<String>,
     pub meta: Option<serde_json::Value>,

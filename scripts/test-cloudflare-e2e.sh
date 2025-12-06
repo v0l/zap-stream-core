@@ -10,8 +10,8 @@
 set -e  # Exit on error
 
 # Test credentials (safe test keypair, not production)
-TEST_NSEC="nsec1kczxrs69y6vdujuwwg2hegxngun4507clh8px73degq62kv9qreqdessxr"
-TEST_NPUB="npub1qf680y78ga29evk5k386kh8qwuukmvu7uk39p5mdwdw37gzl2svqpkpren"
+TEST_NSEC="nsec194nzvgze9xn3df5tmyewh3hs4r0qymcym0jvnjpzg99q897mk82se2r30l"
+TEST_NPUB="npub189c0h3jrf8t5z7ngpe8xyl60e25uj4kzw53eu96pf4hg8y7g9crsxer99w"
 
 echo "========================================"
 echo "Cloudflare E2E Integration Test"
@@ -238,11 +238,11 @@ else
     echo "✗ Missing: live_input.connected webhook"
 fi
 
-if echo "$LOGS" | grep -q "Stream connected:"; then
-    echo "✓ Stream connected event"
+if echo "$LOGS" | grep -q "Stream started successfully via webhook:"; then
+    echo "✓ Stream started successfully"
     START_TESTS_PASSED=$((START_TESTS_PASSED + 1))
 else
-    echo "✗ Missing: Stream connected event"
+    echo "✗ Missing: Stream started successfully"
 fi
 
 if [ $START_TESTS_PASSED -eq 2 ]; then
@@ -285,11 +285,11 @@ else
     echo "✗ Missing: live_input.disconnected webhook"
 fi
 
-if echo "$LOGS" | grep -q "Stream disconnected:"; then
-    echo "✓ Stream disconnected event"
+if echo "$LOGS" | grep -q "Stream ended successfully via webhook:"; then
+    echo "✓ Stream ended successfully"
     END_TESTS_PASSED=$((END_TESTS_PASSED + 1))
 else
-    echo "✗ Missing: Stream disconnected event"
+    echo "✗ Missing: Stream ended successfully"
 fi
 
 if [ $END_TESTS_PASSED -eq 2 ]; then
