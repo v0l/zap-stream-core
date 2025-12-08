@@ -18,11 +18,18 @@ use zap_stream_db::{IngestEndpoint, User};
 use crate::streaming_backend::{Endpoint, EndpointCost, ExternalStreamEvent, StreamingBackend};
 use types::CloudflareWebhookPayload;
 
+/// Stream information stored in cache
+#[derive(Clone, Debug)]
+struct StreamInfo {
+    live_input_uid: String,
+    hls_url: Option<String>,
+}
+
 /// Cloudflare Stream backend implementation
 pub struct CloudflareBackend {
     client: CloudflareClient,
-    /// Cache mapping stream_id to live_input_uid for HLS URL lookup
-    live_input_cache: Arc<RwLock<HashMap<String, String>>>,
+    /// Cache mapping stream_id to stream info (live_input_uid + HLS URL)
+    live_input_cache: Arc<RwLock<HashMap<String, StreamInfo>>>,
     /// Reverse mapping: live_input_uid to stream_id for webhook handling
     reverse_mapping: Arc<RwLock<HashMap<String, String>>>,
     /// Webhook secret for signature verification (stored after setup)
@@ -53,10 +60,13 @@ impl StreamingBackend for CloudflareBackend {
         
         info!("Created Cloudflare Live Input UID: {}", live_input_uid);
         
-        // Store the mapping for later use
+        // Store the mapping for later use (HLS URL will be populated when first requested)
         self.live_input_cache.write().await.insert(
             live_input_uid.clone(),
-            live_input_uid.clone(),
+            StreamInfo {
+                live_input_uid: live_input_uid.clone(),
+                hls_url: None,
+            },
         );
         
         Ok(live_input_uid)
@@ -87,10 +97,13 @@ impl StreamingBackend for CloudflareBackend {
         let rtmps_base_url = live_input.result.rtmps.url.clone();
         let rtmps_stream_key = live_input.result.rtmps.stream_key.clone();
         
-        // Store mapping for later HLS lookup
+        // Store mapping for later HLS lookup (HLS URL will be populated when first requested)
         self.live_input_cache.write().await.insert(
             live_input_uid.clone(),
-            live_input_uid.clone(),
+            StreamInfo {
+                live_input_uid: live_input_uid.clone(),
+                hls_url: None,
+            },
         );
         
         // For each database endpoint tier, return base URL and key separately
@@ -115,12 +128,25 @@ impl StreamingBackend for CloudflareBackend {
     }
 
     async fn get_hls_url(&self, stream_id: &str) -> Result<String> {
+        // Check if HLS URL is already cached
+        {
+            let cache = self.live_input_cache.read().await;
+            if let Some(info) = cache.get(stream_id) {
+                if let Some(hls_url) = &info.hls_url {
+                    info!("Using cached HLS URL for stream {}", stream_id);
+                    return Ok(hls_url.clone());
+                }
+            }
+        }
+        
         // Retrieve live_input_uid from cache
-        let cache = self.live_input_cache.read().await;
-        let live_input_uid = cache.get(stream_id)
-            .ok_or_else(|| anyhow!("Stream '{}' not found in cache", stream_id))?
-            .clone();
-        drop(cache);
+        let live_input_uid = {
+            let cache = self.live_input_cache.read().await;
+            cache.get(stream_id)
+                .ok_or_else(|| anyhow!("Stream '{}' not found in cache", stream_id))?
+                .live_input_uid
+                .clone()
+        };
         
         info!("Polling for Video Asset creation for Live Input: {}", live_input_uid);
         
@@ -129,8 +155,18 @@ impl StreamingBackend for CloudflareBackend {
             let response = self.client.get_video_assets(&live_input_uid).await?;
             
             if let Some(asset) = response.result.first() {
-                info!("Video Asset found! UID: {}, HLS URL: {}", asset.uid, asset.playback.hls);
-                return Ok(asset.playback.hls.clone());
+                let hls_url = asset.playback.hls.clone();
+                info!("Video Asset found! UID: {}, HLS URL: {}", asset.uid, hls_url);
+                
+                // Cache the HLS URL for future use
+                {
+                    let mut cache = self.live_input_cache.write().await;
+                    if let Some(info) = cache.get_mut(stream_id) {
+                        info.hls_url = Some(hls_url.clone());
+                    }
+                }
+                
+                return Ok(hls_url);
             }
             
             if attempt < 29 {
@@ -157,9 +193,46 @@ impl StreamingBackend for CloudflareBackend {
     }
 
     async fn get_viewer_count(&self, stream_id: &str) -> Result<u32> {
-        // Deferred to Step 3C - return 0 for now
-        warn!("get_viewer_count called for stream '{}' but analytics not yet implemented (Step 3C)", stream_id);
-        Ok(0)
+        // Get cached HLS URL
+        let hls_url = {
+            let cache = self.live_input_cache.read().await;
+            cache.get(stream_id).and_then(|info| info.hls_url.clone())
+        };
+        
+        let hls_url = match hls_url {
+            Some(url) => url,
+            None => {
+                // Stream not live yet or HLS URL not cached
+                info!("No HLS URL cached for stream {}, returning 0 viewers", stream_id);
+                return Ok(0);
+            }
+        };
+        
+        // Transform HLS URL to viewer count URL
+        // FROM: https://customer-{CODE}.cloudflarestream.com/{UID}/manifest/video.m3u8
+        // TO:   https://customer-{CODE}.cloudflarestream.com/{UID}/views
+        let viewer_url = hls_url.replace("/manifest/video.m3u8", "/views");
+        
+        // Fetch viewer count (no authentication needed for this endpoint)
+        let response = match reqwest::get(&viewer_url).await {
+            Ok(resp) => resp,
+            Err(e) => {
+                warn!("Failed to fetch viewer count from Cloudflare: {}", e);
+                return Ok(0); // Fallback to 0 on network error
+            }
+        };
+        
+        let json: serde_json::Value = match response.json().await {
+            Ok(j) => j,
+            Err(e) => {
+                warn!("Failed to parse viewer count JSON: {}", e);
+                return Ok(0); // Fallback to 0 on parse error
+            }
+        };
+        
+        let count = json["liveViewers"].as_u64().unwrap_or(0) as u32;
+        info!("Cloudflare viewer count for stream {}: {}", stream_id, count);
+        Ok(count)
     }
 
     async fn setup_webhooks(&self, webhook_url: &str) -> Result<()> {
@@ -226,11 +299,17 @@ impl StreamingBackend for CloudflareBackend {
         reverse.insert(input_uid.to_string(), stream_id.to_string());
         drop(reverse);
         
-        // Populate live_input_cache: stream_id -> input_uid (for HLS URL lookup)
+        // Populate live_input_cache: stream_id -> StreamInfo (for HLS URL lookup)
         let mut cache = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(self.live_input_cache.write())
         });
-        cache.insert(stream_id.to_string(), input_uid.to_string());
+        cache.insert(
+            stream_id.to_string(),
+            StreamInfo {
+                live_input_uid: input_uid.to_string(),
+                hls_url: None,
+            },
+        );
         drop(cache);
         
         info!("Registered mapping: input_uid {} <-> stream_id {}", input_uid, stream_id);
