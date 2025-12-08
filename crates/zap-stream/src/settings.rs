@@ -71,6 +71,8 @@ pub struct OverseerConfig {
     pub advertise: Option<AdvertiseConfig>,
     /// Cloudflare Stream configuration
     pub cloudflare: Option<CloudflareSettings>,
+    /// Terms of Service URL (defaults to https://zap.stream/tos)
+    pub tos_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

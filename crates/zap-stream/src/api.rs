@@ -646,7 +646,9 @@ impl Api {
             balance: user.balance / 1000,
             tos: AccountTos {
                 accepted: user.tos_accepted.is_some(),
-                link: "https://zap.stream/tos".to_string(),
+                link: self.settings.overseer.tos_url
+                    .clone()
+                    .unwrap_or_else(|| "https://zap.stream/tos".to_string()),
             },
             forwards: forwards
                 .into_iter()
