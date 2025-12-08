@@ -9,6 +9,7 @@ use zap_stream_core::egress::recorder::RecorderEgress;
 use zap_stream_core::listen::ListenerEndpoint;
 use zap_stream_db::{IngestEndpoint, User};
 
+use crate::stream_manager::StreamManager;
 use crate::streaming_backend::{Endpoint, EndpointCost, StreamingBackend};
 
 /// RML RTMP backend implementation
@@ -16,14 +17,21 @@ pub struct RmlRtmpBackend {
     public_url: String,
     endpoints_public_hostname: String,
     listen_endpoints: Vec<String>,
+    stream_manager: StreamManager,
 }
 
 impl RmlRtmpBackend {
-    pub fn new(public_url: String, endpoints_public_hostname: String, listen_endpoints: Vec<String>) -> Self {
+    pub fn new(
+        public_url: String,
+        endpoints_public_hostname: String,
+        listen_endpoints: Vec<String>,
+        stream_manager: StreamManager,
+    ) -> Self {
         Self {
             public_url,
             endpoints_public_hostname,
             listen_endpoints,
+            stream_manager,
         }
     }
     
@@ -78,10 +86,9 @@ impl StreamingBackend for RmlRtmpBackend {
         Ok(url.to_string())
     }
     
-    async fn get_viewer_count(&self, _stream_id: &str) -> Result<u32> {
-        // For RTMP backend, viewer count is managed by StreamManager
-        // This method is not used - overseer directly accesses StreamManager
-        Ok(0)
+    async fn get_viewer_count(&self, stream_id: &str) -> Result<u32> {
+        // For RTMP backend, viewer count is tracked by StreamManager
+        Ok(self.stream_manager.get_viewer_count(stream_id).await as u32)
     }
     
     async fn get_ingest_endpoints(&self, user: &User, db_endpoints: &[IngestEndpoint]) -> Result<Vec<Endpoint>> {

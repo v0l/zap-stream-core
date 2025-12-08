@@ -76,6 +76,20 @@ impl ZapStreamOverseer {
     const RECONNECT_WINDOW_SECONDS: u64 = 120;
 
     pub async fn from_settings(settings: &Settings, shutdown: CancellationToken) -> Result<Self> {
+        let node_name = sysinfo::System::host_name()
+            .ok_or_else(|| anyhow::anyhow!("Failed to get hostname!"))?;
+
+        // Initialize StreamManager first (needed by RML RTMP backend)
+        let (stream_manager, redis_client) = if let Some(r) = &settings.redis {
+            let r_client = redis::Client::open(r.url.clone())?;
+            (
+                StreamManager::new_with_redis(node_name.clone(), r_client.clone()).await?,
+                Some(r_client),
+            )
+        } else {
+            (StreamManager::new(node_name.clone()), None)
+        };
+
         // Create streaming backend based on configuration
         let backend_type = settings.overseer.backend.as_deref().unwrap_or("rml_rtmp");
         let streaming_backend: Arc<dyn StreamingBackend> = match backend_type {
@@ -84,6 +98,7 @@ impl ZapStreamOverseer {
                     settings.public_url.clone(),
                     settings.endpoints_public_hostname.clone(),
                     settings.endpoints.clone(),
+                    stream_manager.clone(),
                 ))
             }
             "cloudflare" => {
@@ -112,9 +127,11 @@ impl ZapStreamOverseer {
             settings.overseer.segment_length.unwrap_or(2.0),
             settings.overseer.low_balance_threshold,
             &settings.overseer.advertise,
-            &settings.redis,
             PathBuf::from(&settings.output_dir),
             streaming_backend,
+            stream_manager,
+            node_name,
+            redis_client,
             shutdown,
         )
         .await
@@ -130,9 +147,11 @@ impl ZapStreamOverseer {
         segment_length: f32,
         low_balance_threshold: Option<u64>,
         advertise: &Option<AdvertiseConfig>,
-        redis: &Option<RedisConfig>,
         out_dir: PathBuf,
         streaming_backend: Arc<dyn StreamingBackend>,
+        stream_manager: StreamManager,
+        node_name: String,
+        redis_client: Option<redis::Client>,
         shutdown: CancellationToken,
     ) -> Result<Self> {
         let db = ZapStreamDb::new(db).await?;
@@ -161,20 +180,6 @@ impl ZapStreamOverseer {
             client.add_relay(r).await?;
         }
         client.connect().await;
-
-        let node_name = sysinfo::System::host_name()
-            .ok_or_else(|| anyhow::anyhow!("Failed to get hostname!"))?;
-
-        // Initialize StreamManager with Redis if available
-        let (stream_manager, redis_client) = if let Some(r) = redis {
-            let r_client = redis::Client::open(r.url.clone())?;
-            (
-                StreamManager::new_with_redis(node_name.clone(), r_client.clone()).await?,
-                Some(r_client),
-            )
-        } else {
-            (StreamManager::new(node_name.clone()), None)
-        };
 
         let mut overseer = Self {
             db,
@@ -422,7 +427,7 @@ impl ZapStreamOverseer {
 
         // Add current viewer count for live streams
         if stream.state == UserStreamState::Live {
-            let viewer_count = self.stream_manager.get_viewer_count(&stream.id).await;
+            let viewer_count = self.streaming_backend.get_viewer_count(&stream.id).await?;
             tags.push(Tag::parse(&[
                 "current_participants".to_string(),
                 viewer_count.to_string(),
