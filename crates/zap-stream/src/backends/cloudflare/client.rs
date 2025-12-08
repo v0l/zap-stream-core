@@ -235,7 +235,7 @@ mod tests {
         assert!(result.is_ok());
         
         let response = result.unwrap();
-        assert_eq!(response.result.status, Some("connected".to_string()));
+        assert_eq!(response.result.status, Some(serde_json::json!("connected")));
 
         mock.assert_async().await;
     }

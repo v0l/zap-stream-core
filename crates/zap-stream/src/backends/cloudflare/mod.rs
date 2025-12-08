@@ -5,6 +5,7 @@ pub use client::CloudflareClient;
 
 use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
+use nostr_sdk::{PublicKey, ToBech32};
 use serde_json;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -43,7 +44,8 @@ impl CloudflareBackend {
 #[async_trait]
 impl StreamingBackend for CloudflareBackend {
     async fn generate_stream_key(&self, pubkey: &[u8; 32]) -> Result<String> {
-        let live_input_name = format!("user_{}", hex::encode(pubkey));
+        let pk = PublicKey::from_slice(pubkey)?;
+        let live_input_name = pk.to_bech32()?;
         info!("Creating Cloudflare Live Input for new user: {}", live_input_name);
         
         let response = self.client.create_live_input(&live_input_name).await?;

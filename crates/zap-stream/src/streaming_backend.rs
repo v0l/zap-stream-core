@@ -1,7 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use uuid::Uuid;
-use zap_stream_core::ingress::ConnectionInfo;
 use zap_stream_db::{IngestEndpoint, User};
 
 /// Backend abstraction for streaming services

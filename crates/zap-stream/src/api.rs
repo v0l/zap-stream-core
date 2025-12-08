@@ -1689,17 +1689,53 @@ impl Api {
     }
 }
 
+/// Helper function to extract streaming URL from Nostr event JSON
+fn extract_streaming_url(event_json: &str) -> Option<String> {
+    let event: serde_json::Value = serde_json::from_str(event_json).ok()?;
+    let tags = event.get("tags")?.as_array()?;
+    
+    for tag in tags {
+        let tag_array = tag.as_array()?;
+        if tag_array.len() >= 2 
+            && tag_array[0].as_str()? == "streaming" {
+            return tag_array[1].as_str().map(String::from);
+        }
+    }
+    None
+}
+
 impl HttpServerPlugin for Api {
     fn get_active_streams(&self) -> Pin<Box<dyn Future<Output = Result<Vec<StreamData>>> + Send>> {
         let db = self.db.clone();
         let viewers = self.stream_manager.clone();
+        let output_dir = self.settings.output_dir.clone();
+        
         Box::pin(async move {
             let streams = db.list_live_streams().await?;
             let mut ret = Vec::with_capacity(streams.len());
             for stream in streams {
+                // Check if local HLS file exists (unchanged behaviour for local backend)
+                let local_path = format!("{}/{}/live.m3u8", stream.id, HlsEgress::PATH);
+                let local_file_exists = std::path::Path::new(&output_dir)
+                    .join(&stream.id)
+                    .join(HlsEgress::PATH)
+                    .join("live.m3u8")
+                    .exists();
+                
+                let live_url = if local_file_exists {
+                    // LOCAL stream (RTMP) - unchanged behavior
+                    local_path
+                } else if let Some(event_json) = &stream.event {
+                    // NON-LOCAL stream (Cloudflare) - extract from Nostr event
+                    extract_streaming_url(event_json).unwrap_or(local_path)
+                } else {
+                    // No event - fallback to local path
+                    local_path
+                };
+                
                 let viewers = viewers.get_viewer_count(&stream.id).await;
                 ret.push(StreamData {
-                    live_url: format!("{}/{}/live.m3u8", stream.id, HlsEgress::PATH),
+                    live_url,
                     id: stream.id,
                     title: stream.title.unwrap_or_default(),
                     summary: stream.summary,

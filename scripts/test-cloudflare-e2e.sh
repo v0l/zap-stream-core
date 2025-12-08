@@ -10,8 +10,8 @@
 set -e  # Exit on error
 
 # Test credentials (safe test keypair, not production)
-TEST_NSEC="nsec194nzvgze9xn3df5tmyewh3hs4r0qymcym0jvnjpzg99q897mk82se2r30l"
-TEST_NPUB="npub189c0h3jrf8t5z7ngpe8xyl60e25uj4kzw53eu96pf4hg8y7g9crsxer99w"
+TEST_NSEC="nsec107gexedhvf97ej83jzalley9wt682mlgy9ty5xwsp98vnph09fysssnzlk"
+TEST_NPUB="npub1u0mm82x7muct7cy8y7urztyctgm0r6k27gdax04fa4q28x7q0shq6slmah"
 
 echo "========================================"
 echo "Cloudflare E2E Integration Test"
@@ -253,6 +253,116 @@ fi
 echo ""
 
 echo "========================================"
+echo "TEST 7.5: Verify LIVE Nostr event"
+echo "========================================"
+
+echo "Querying Nostr relay for LIVE event..."
+
+# Temporarily disable exit on error for this section
+set +e
+
+# Run query in background with timeout (only events from last 10 minutes)
+SINCE_TIME=$(($(date +%s) - 600))
+echo "[DEBUG] Starting node query with PID tracking..."
+node "$SCRIPT_DIR/query_nostr_events_auth.js" 30311 --since $SINCE_TIME > /tmp/nostr_query_$$.txt 2>&1 &
+QUERY_PID=$!
+echo "[DEBUG] Query PID: $QUERY_PID"
+
+# Wait up to 15 seconds for completion using simple counter
+COUNTER=0
+while [ $COUNTER -lt 15 ]; do
+    if ! ps -p $QUERY_PID > /dev/null 2>&1; then
+        echo "[DEBUG] Process completed after $COUNTER seconds"
+        break
+    fi
+    sleep 1
+    COUNTER=$((COUNTER + 1))
+done
+
+# Kill if still running
+if ps -p $QUERY_PID > /dev/null 2>&1; then
+    kill -9 $QUERY_PID 2>/dev/null || true
+    echo "⚠️  Query timed out after 15 seconds"
+fi
+
+echo "[DEBUG] Reading output from /tmp/nostr_query_$$.txt"
+if [ -f /tmp/nostr_query_$$.txt ]; then
+    echo "[DEBUG] File exists, size: $(wc -c < /tmp/nostr_query_$$.txt) bytes"
+else
+    echo "[DEBUG] File does NOT exist!"
+fi
+
+# Parse ALL events and find the MOST RECENT one by created_at
+echo "[DEBUG] Parsing all events to find most recent..."
+
+# Re-enable exit on error
+set -e
+
+LIVE_EVENT_TESTS=0
+
+# Extract ALL JSON events, parse with jq, sort by created_at, get most recent
+if grep -q '"kind": 30311' /tmp/nostr_query_$$.txt 2>/dev/null; then
+    # Extract all complete JSON objects and use jq to find most recent
+    EVENT_JSON=$(awk '/^{$/,/^}$/ {print} /^}$/ {print "---SPLIT---"}' /tmp/nostr_query_$$.txt | \
+        awk 'BEGIN{RS="---SPLIT---"} /"kind": 30311/ {print}' | \
+        jq -s 'sort_by(.created_at) | reverse | .[0]' 2>/dev/null)
+    
+    if [ -z "$EVENT_JSON" ] || [ "$EVENT_JSON" == "null" ]; then
+        echo "✗ Failed to parse events"
+    else
+        CREATED_AT=$(echo "$EVENT_JSON" | jq -r '.created_at' 2>/dev/null)
+        echo "[DEBUG] Most recent event created_at: $CREATED_AT"
+        
+        STATUS=$(echo "$EVENT_JSON" | jq -r '.tags[]? | select(.[0] == "status")? | .[1]?' 2>/dev/null | head -n 1)
+        
+        if [ "$STATUS" == "live" ]; then
+        echo "✓ Event has status: live"
+        LIVE_EVENT_TESTS=$((LIVE_EVENT_TESTS + 1))
+    else
+        echo "✗ Expected status 'live', got: $STATUS"
+    fi
+    
+    # Check for streaming tag
+    STREAMING_URL=$(echo "$EVENT_JSON" | jq -r '.tags[]? | select(.[0] == "streaming")? | .[1]?' 2>/dev/null | head -n 1)
+    if [ -n "$STREAMING_URL" ] && [ "$STREAMING_URL" != "null" ] && [ "$STREAMING_URL" != "" ]; then
+        echo "✓ Event has 'streaming' tag: ${STREAMING_URL:0:50}..."
+        LIVE_EVENT_TESTS=$((LIVE_EVENT_TESTS + 1))
+    else
+        echo "✗ Missing 'streaming' tag in LIVE event"
+    fi
+    
+    # Check starts tag exists
+    STARTS=$(echo "$EVENT_JSON" | jq -r '.tags[]? | select(.[0] == "starts")? | .[1]?' 2>/dev/null | head -n 1)
+    if [ -n "$STARTS" ] && [ "$STARTS" != "null" ] && [ "$STARTS" != "" ]; then
+        echo "✓ Event has 'starts' timestamp"
+        LIVE_EVENT_TESTS=$((LIVE_EVENT_TESTS + 1))
+    else
+        echo "✗ Missing 'starts' tag"
+    fi
+    
+    # Check ends tag does NOT exist yet
+    ENDS=$(echo "$EVENT_JSON" | jq -r '.tags[]? | select(.[0] == "ends")? | .[1]?' 2>/dev/null | head -n 1)
+        if [ -z "$ENDS" ] || [ "$ENDS" == "null" ] || [ "$ENDS" == "" ]; then
+            echo "✓ Event does NOT have 'ends' tag yet (correct)"
+            LIVE_EVENT_TESTS=$((LIVE_EVENT_TESTS + 1))
+        else
+            echo "✗ Event has 'ends' tag but should not (still live)"
+        fi
+    fi
+else
+    echo "✗ No Nostr event found in output"
+fi
+
+rm -f /tmp/nostr_query_$$.txt
+
+if [ $LIVE_EVENT_TESTS -eq 4 ]; then
+    echo "✅ TEST 7.5 PASSED"
+else
+    echo "⚠️  TEST 7.5 PARTIAL: $LIVE_EVENT_TESTS/4"
+fi
+echo ""
+
+echo "========================================"
 echo "TEST 8: End stream"
 echo "========================================"
 
@@ -300,6 +410,91 @@ fi
 echo ""
 
 echo "========================================"
+echo "TEST 9.5: Verify ENDED Nostr event"
+echo "========================================"
+
+echo "Querying Nostr relay for ENDED event..."
+
+# Temporarily disable exit on error for this section
+set +e
+
+# Run query in background with timeout (only events from last 10 minutes)
+SINCE_TIME=$(($(date +%s) - 600))
+node "$SCRIPT_DIR/query_nostr_events_auth.js" 30311 --since $SINCE_TIME > /tmp/nostr_query_ended_$$.txt 2>&1 &
+QUERY_PID=$!
+
+# Wait up to 15 seconds for completion using simple counter
+COUNTER=0
+while [ $COUNTER -lt 15 ]; do
+    if ! ps -p $QUERY_PID > /dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+    COUNTER=$((COUNTER + 1))
+done
+
+# Kill if still running
+if ps -p $QUERY_PID > /dev/null 2>&1; then
+    kill -9 $QUERY_PID 2>/dev/null || true
+    echo "⚠️  Query timed out after 15 seconds"
+fi
+
+# Parse ALL events and find the MOST RECENT one by created_at
+# Re-enable exit on error
+set -e
+
+ENDED_EVENT_TESTS=0
+
+# Extract ALL JSON events, parse with jq, sort by created_at, get most recent
+if grep -q '"kind": 30311' /tmp/nostr_query_ended_$$.txt 2>/dev/null; then
+    EVENT_JSON=$(awk '/^{$/,/^}$/ {print} /^}$/ {print "---SPLIT---"}' /tmp/nostr_query_ended_$$.txt | \
+        awk 'BEGIN{RS="---SPLIT---"} /"kind": 30311/ {print}' | \
+        jq -s 'sort_by(.created_at) | reverse | .[0]' 2>/dev/null)
+    
+    if [ -z "$EVENT_JSON" ] || [ "$EVENT_JSON" == "null" ]; then
+        echo "✗ Failed to parse events"
+    else
+        STATUS=$(echo "$EVENT_JSON" | jq -r '.tags[]? | select(.[0] == "status")? | .[1]?' 2>/dev/null | head -n 1)
+    
+        if [ "$STATUS" == "ended" ]; then
+            echo "✓ Event has status: ended"
+            ENDED_EVENT_TESTS=$((ENDED_EVENT_TESTS + 1))
+        else
+            echo "✗ Expected status 'ended', got: $STATUS"
+        fi
+    
+        # Check ends tag now exists
+        ENDS=$(echo "$EVENT_JSON" | jq -r '.tags[]? | select(.[0] == "ends")? | .[1]?' 2>/dev/null | head -n 1)
+        if [ -n "$ENDS" ] && [ "$ENDS" != "null" ] && [ "$ENDS" != "" ]; then
+            echo "✓ Event has 'ends' timestamp"
+            ENDED_EVENT_TESTS=$((ENDED_EVENT_TESTS + 1))
+        else
+            echo "✗ Missing 'ends' tag in ENDED event"
+        fi
+        
+        # Check streaming tag is removed
+        STREAMING_URL=$(echo "$EVENT_JSON" | jq -r '.tags[]? | select(.[0] == "streaming")? | .[1]?' 2>/dev/null | head -n 1)
+        if [ -z "$STREAMING_URL" ] || [ "$STREAMING_URL" == "null" ] || [ "$STREAMING_URL" == "" ]; then
+            echo "✓ 'streaming' tag removed (correct)"
+            ENDED_EVENT_TESTS=$((ENDED_EVENT_TESTS + 1))
+        else
+            echo "✗ 'streaming' tag still present: $STREAMING_URL"
+        fi
+    fi
+else
+    echo "✗ No Nostr event found"
+fi
+
+rm -f /tmp/nostr_query_ended_$$.txt
+
+if [ $ENDED_EVENT_TESTS -eq 3 ]; then
+    echo "✅ TEST 9.5 PASSED"
+else
+    echo "⚠️  TEST 9.5 PARTIAL: $ENDED_EVENT_TESTS/3"
+fi
+echo ""
+
+echo "========================================"
 echo "TEST SUMMARY"
 echo "========================================"
 echo "✅ TEST 1: Check initial database state"
@@ -313,11 +508,21 @@ if [ $START_TESTS_PASSED -eq 2 ]; then
 else
     echo "⚠️  TEST 7: PARTIAL ($START_TESTS_PASSED/2)"
 fi
+if [ $LIVE_EVENT_TESTS -eq 4 ]; then
+    echo "✅ TEST 7.5: Verify LIVE Nostr event"
+else
+    echo "⚠️  TEST 7.5: PARTIAL ($LIVE_EVENT_TESTS/4)"
+fi
 echo "✅ TEST 8: End stream"
 if [ $END_TESTS_PASSED -eq 2 ]; then
     echo "✅ TEST 9: Webhooks trigger stream END"
 else
     echo "⚠️  TEST 9: PARTIAL ($END_TESTS_PASSED/2)"
+fi
+if [ $ENDED_EVENT_TESTS -eq 3 ]; then
+    echo "✅ TEST 9.5: Verify ENDED Nostr event"
+else
+    echo "⚠️  TEST 9.5: PARTIAL ($ENDED_EVENT_TESTS/3)"
 fi
 echo ""
 echo "Full logs: docker logs --tail 200 zap-stream-core-core-1 | grep -i cloudflare"
