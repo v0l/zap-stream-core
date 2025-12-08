@@ -25,6 +25,17 @@ pub trait StreamingBackend: Send + Sync {
     /// Get current viewer count for a stream
     async fn get_viewer_count(&self, stream_id: &str) -> Result<u32>;
     
+    /// Check if viewer count has changed since last check
+    /// Returns true if count changed or enough time has passed for a periodic update
+    /// This enables real-time viewer count updates in Nostr events
+    async fn check_and_update_viewer_count(&self, stream_id: &str) -> Result<bool>;
+    
+    /// Check if stream is healthy and active
+    /// Returns (is_active, should_timeout)
+    /// - is_active: Whether stream has recent activity
+    /// - should_timeout: Whether stream should be ended due to timeout
+    async fn check_stream_status(&self, stream_id: &str) -> (bool, bool);
+    
     /// Get ingest endpoints for a user
     async fn get_ingest_endpoints(&self, user: &User, endpoints: &[IngestEndpoint]) -> Result<Vec<Endpoint>>;
     

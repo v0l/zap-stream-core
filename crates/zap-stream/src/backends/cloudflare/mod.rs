@@ -5,11 +5,12 @@ pub use client::CloudflareClient;
 
 use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use nostr_sdk::{PublicKey, ToBech32};
 use serde_json;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -25,6 +26,20 @@ struct StreamInfo {
     hls_url: Option<String>,
 }
 
+/// Viewer count cache entry with timestamp
+#[derive(Clone, Debug)]
+struct ViewerCountCache {
+    count: u32,
+    timestamp: Instant,
+}
+
+/// Viewer count state for change detection
+#[derive(Clone, Debug)]
+struct ViewerCountState {
+    last_published_count: u32,
+    last_update_time: DateTime<Utc>,
+}
+
 /// Cloudflare Stream backend implementation
 pub struct CloudflareBackend {
     client: CloudflareClient,
@@ -34,6 +49,14 @@ pub struct CloudflareBackend {
     reverse_mapping: Arc<RwLock<HashMap<String, String>>>,
     /// Webhook secret for signature verification (stored after setup)
     webhook_secret: Arc<RwLock<Option<String>>>,
+    /// Viewer count cache with 30-second TTL to prevent API spam
+    viewer_count_cache: Arc<RwLock<HashMap<String, ViewerCountCache>>>,
+    /// Track viewer count states for change detection
+    viewer_count_states: Arc<RwLock<HashMap<String, ViewerCountState>>>,
+    /// Minimum update interval in minutes (matches RML RTMP behavior)
+    min_update_minutes: i64,
+    /// Cache duration for viewer counts (30 seconds)
+    cache_duration: Duration,
 }
 
 impl CloudflareBackend {
@@ -44,6 +67,10 @@ impl CloudflareBackend {
             live_input_cache: Arc::new(RwLock::new(HashMap::new())),
             reverse_mapping: Arc::new(RwLock::new(HashMap::new())),
             webhook_secret: Arc::new(RwLock::new(None)),
+            viewer_count_cache: Arc::new(RwLock::new(HashMap::new())),
+            viewer_count_states: Arc::new(RwLock::new(HashMap::new())),
+            min_update_minutes: 10,
+            cache_duration: Duration::from_secs(30),
         }
     }
 }
@@ -193,6 +220,19 @@ impl StreamingBackend for CloudflareBackend {
     }
 
     async fn get_viewer_count(&self, stream_id: &str) -> Result<u32> {
+        // Check cache first (30-second TTL)
+        {
+            let cache = self.viewer_count_cache.read().await;
+            if let Some(cached) = cache.get(stream_id) {
+                if cached.timestamp.elapsed() < self.cache_duration {
+                    info!("Using cached viewer count for stream {} (age: {:?})", 
+                        stream_id, cached.timestamp.elapsed());
+                    return Ok(cached.count);
+                }
+            }
+        }
+        
+        // Cache miss or expired - fetch from API
         // Get cached HLS URL
         let hls_url = {
             let cache = self.live_input_cache.read().await;
@@ -231,8 +271,61 @@ impl StreamingBackend for CloudflareBackend {
         };
         
         let count = json["liveViewers"].as_u64().unwrap_or(0) as u32;
-        info!("Cloudflare viewer count for stream {}: {}", stream_id, count);
+        info!("Cloudflare API call: viewer count for stream {}: {}", stream_id, count);
+        
+        // Update cache
+        {
+            let mut cache = self.viewer_count_cache.write().await;
+            cache.insert(
+                stream_id.to_string(),
+                ViewerCountCache {
+                    count,
+                    timestamp: Instant::now(),
+                },
+            );
+        }
+        
         Ok(count)
+    }
+    
+    async fn check_and_update_viewer_count(&self, stream_id: &str) -> Result<bool> {
+        // Fetch current viewer count from Cloudflare
+        let viewer_count = self.get_viewer_count(stream_id).await?;
+        let now = Utc::now();
+        
+        let should_update = {
+            let viewer_states = self.viewer_count_states.read().await;
+            if let Some(state) = viewer_states.get(stream_id) {
+                // Update if count changed OR if 10 minutes have passed since last update
+                viewer_count != state.last_published_count
+                    || (now - state.last_update_time).num_minutes() >= self.min_update_minutes
+            } else {
+                // First time tracking this stream, always update if viewer count > 0
+                viewer_count > 0
+            }
+        };
+        
+        if should_update && viewer_count > 0 {
+            // Update the tracking state
+            let mut viewer_states = self.viewer_count_states.write().await;
+            viewer_states.insert(
+                stream_id.to_string(),
+                ViewerCountState {
+                    last_published_count: viewer_count,
+                    last_update_time: now,
+                },
+            );
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+    
+    async fn check_stream_status(&self, _stream_id: &str) -> (bool, bool) {
+        // Cloudflare streams are managed via webhooks (connected/disconnected events)
+        // Return always active, never timeout since lifecycle is webhook-driven
+        // TODO: Future enhancement - track active state via webhook events
+        (true, false)
     }
 
     async fn setup_webhooks(&self, webhook_url: &str) -> Result<()> {

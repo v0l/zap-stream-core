@@ -91,6 +91,16 @@ impl StreamingBackend for RmlRtmpBackend {
         Ok(self.stream_manager.get_viewer_count(stream_id).await as u32)
     }
     
+    async fn check_and_update_viewer_count(&self, stream_id: &str) -> Result<bool> {
+        // Delegate to StreamManager which handles change detection and periodic updates
+        self.stream_manager.check_and_update_viewer_count(stream_id).await
+    }
+    
+    async fn check_stream_status(&self, stream_id: &str) -> (bool, bool) {
+        // Delegate to StreamManager which handles segment-based liveness tracking
+        self.stream_manager.check_stream_status(stream_id).await
+    }
+    
     async fn get_ingest_endpoints(&self, user: &User, db_endpoints: &[IngestEndpoint]) -> Result<Vec<Endpoint>> {
         let mut endpoints = Vec::new();
         

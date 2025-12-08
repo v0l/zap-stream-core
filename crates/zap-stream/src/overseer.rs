@@ -616,7 +616,7 @@ impl Overseer for ZapStreamOverseer {
             info!("Checking stream is alive: {}", stream.id);
 
             let (is_active, should_timeout) =
-                self.stream_manager.check_stream_status(&stream.id).await;
+                self.streaming_backend.check_stream_status(&stream.id).await;
 
             if !is_active || should_timeout {
                 if should_timeout {
@@ -736,7 +736,7 @@ impl Overseer for ZapStreamOverseer {
                 // Check if we should update viewer count in nostr event
                 if let Ok(user) = self.db.get_user(stream.user_id).await
                     && self
-                        .stream_manager
+                        .streaming_backend
                         .check_and_update_viewer_count(&stream.id)
                         .await?
                 {
