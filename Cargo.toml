@@ -33,5 +33,5 @@ m3u8-rs = { git = "https://git.v0l.io/Kieran/m3u8-rs.git", rev = "6803eefca2838a
 sha2 = "0.10"
 data-encoding = "2.9"
 rand = "0.9"
-nostr-sdk = { git = "https://github.com/rust-nostr/nostr.git", pacakge = "nostr-sdk", rev = "75345c65c645d33d15f6a5ec10fa6ffd0d8f4cac", features = ["nip57", "nip47"] }
+nostr-sdk = { git = "https://github.com/rust-nostr/nostr.git", pacakge = "nostr-sdk", rev = "f14d869dd85e3355c756cc4fa355fd8c8318c642", features = ["nip57", "nip47"] }
 ctrlc = { version = "3.4", features = ["termination"] }
