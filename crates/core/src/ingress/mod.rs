@@ -24,13 +24,13 @@ pub mod tcp;
 #[cfg(feature = "ingress-test")]
 pub mod test;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct ConnectionInfo {
     /// Unique ID of this connection / pipeline
     pub id: Uuid,
 
     /// Name of the ingest point
-    pub endpoint: &'static str,
+    pub endpoint: String,
 
     /// IP address of the connection
     pub ip_addr: String,

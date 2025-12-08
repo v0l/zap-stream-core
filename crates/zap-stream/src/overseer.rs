@@ -14,6 +14,7 @@ use nwc::NWC;
 use nwc::prelude::{NostrWalletConnectURI, PayInvoiceRequest};
 use payments_rs::lightning::{AddInvoiceRequest, InvoiceUpdate, LightningNode};
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::ops::Add;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -26,7 +27,6 @@ use tracing::{error, info, warn};
 use url::Url;
 use uuid::Uuid;
 use zap_stream_core::egress::EgressSegment;
-use zap_stream_core::egress::hls::HlsEgress;
 use zap_stream_core::egress::recorder::RecorderEgress;
 use zap_stream_core::endpoint::{EndpointCapability, EndpointConfigEngine, parse_capabilities};
 use zap_stream_core::ingress::ConnectionInfo;
@@ -38,8 +38,12 @@ use zap_stream_db::{
     IngestEndpoint, Payment, StreamKeyType, User, UserStream, UserStreamState, ZapStreamDb,
 };
 
+#[cfg(feature = "hls")]
+use zap_stream_core::egress::hls::HlsEgress;
 #[cfg(feature = "moq")]
 use zap_stream_core::hang::moq_lite::{OriginConsumer, OriginProducer, Produce};
+#[cfg(feature = "hls")]
+use zap_stream_core::mux::HlsMuxer;
 
 /// zap.stream NIP-53 overseer
 #[derive(Clone)]
@@ -66,8 +70,12 @@ pub struct ZapStreamOverseer {
     nwc_topup_requests: Arc<RwLock<HashMap<u64, JoinHandle<()>>>>,
     /// Primary output directory for media
     out_dir: PathBuf,
+    /// MoQ origin to push streams to
     #[cfg(feature = "moq")]
     moq_origin: Option<Arc<Produce<OriginProducer, OriginConsumer>>>,
+    /// MoQ socket address
+    #[cfg(feature = "moq")]
+    moq_bind: Option<SocketAddr>,
 }
 
 impl ZapStreamOverseer {
@@ -163,6 +171,8 @@ impl ZapStreamOverseer {
             out_dir,
             #[cfg(feature = "moq")]
             moq_origin: None,
+            #[cfg(feature = "moq")]
+            moq_bind: None,
         };
 
         // Enable Redis stats distribution if available
@@ -207,8 +217,13 @@ impl ZapStreamOverseer {
     }
 
     #[cfg(feature = "moq")]
-    pub fn set_moq_origin(&mut self, origin: Arc<Produce<OriginProducer, OriginConsumer>>) {
+    pub fn set_moq_origin(
+        &mut self,
+        origin: Arc<Produce<OriginProducer, OriginConsumer>>,
+        bind: Option<SocketAddr>,
+    ) {
         self.moq_origin = Some(origin);
+        self.moq_bind = bind;
     }
 
     pub fn start_payment_handler(&self, token: CancellationToken) -> JoinHandle<Result<()>> {
@@ -439,43 +454,48 @@ impl ZapStreamOverseer {
         pubkey: &Vec<u8>,
     ) -> Result<Event> {
         let pipeline_dir = PathBuf::from(stream.id.to_string());
+        let endpoint = if let Some(ref endpoint) = stream.endpoint_id
+            && let Ok(ep) = self.db.get_ingest_endpoint(*endpoint).await
+        {
+            ep
+        } else {
+            bail!("Invalid stream, no endpoint set!")
+        };
+
         let mut extra_tags = vec![
             Tag::parse(["p", hex::encode(pubkey).as_str(), "", "host"])?,
             Tag::parse(["service", self.map_to_public_url("api/v1")?.as_str()])?,
         ];
         match stream.state {
             UserStreamState::Live => {
-                extra_tags.push(Tag::parse([
-                    "streaming",
-                    self.map_to_public_url(
-                        pipeline_dir
-                            .join(HlsEgress::PATH)
-                            .join("live.m3u8")
-                            .to_str()
-                            .unwrap(),
-                    )?
-                    .as_str(),
-                ])?);
+                let stream_info = self
+                    .stream_manager
+                    .get_stream(&stream.id)
+                    .await
+                    .context("Active stream info not found")?;
+                let egress = self.get_egress(&stream_info.connection).await?;
+                for eg in egress {
+                    if let Some(u) = self.get_egress_public_url(&eg, &stream.id)? {
+                        extra_tags.push(Tag::parse(["streaming", u.as_str()])?);
+                    }
+                }
             }
             UserStreamState::Ended => {
-                if let Some(ep) = stream.endpoint_id {
-                    let endpoint = self.db.get_ingest_endpoint(ep).await?;
-                    let caps = parse_capabilities(&endpoint.capabilities);
-                    let has_recording = caps
-                        .iter()
-                        .any(|c| matches!(c, EndpointCapability::DVR { .. }));
-                    if has_recording {
-                        extra_tags.push(Tag::parse([
-                            "recording",
-                            self.map_to_public_url(
-                                pipeline_dir
-                                    .join(RecorderEgress::FILENAME)
-                                    .to_str()
-                                    .unwrap(),
-                            )?
-                            .as_str(),
-                        ])?);
-                    }
+                let caps = parse_capabilities(&endpoint.capabilities);
+                let has_recording = caps
+                    .iter()
+                    .any(|c| matches!(c, EndpointCapability::DVR { .. }));
+                if has_recording {
+                    extra_tags.push(Tag::parse([
+                        "recording",
+                        self.map_to_public_url(
+                            pipeline_dir
+                                .join(RecorderEgress::FILENAME)
+                                .to_str()
+                                .unwrap(),
+                        )?
+                        .as_str(),
+                    ])?);
                 }
             }
             _ => {}
@@ -490,6 +510,43 @@ impl ZapStreamOverseer {
     fn map_to_public_url(&self, path: &str) -> Result<Url> {
         let u: Url = self.public_url.parse()?;
         Ok(u.join(path)?)
+    }
+
+    fn get_egress_public_url(&self, eg: &EgressType, stream_id: &str) -> Result<Option<String>> {
+        let pipeline_dir = PathBuf::from(stream_id);
+        match eg {
+            #[cfg(feature = "hls")]
+            EgressType::HLS { .. } => {
+                return Ok(Some(
+                    self.map_to_public_url(
+                        pipeline_dir
+                            .join(HlsEgress::PATH)
+                            .join(HlsMuxer::MASTER_PLAYLIST)
+                            .to_str()
+                            .unwrap(),
+                    )?
+                    .to_string(),
+                ));
+            }
+            #[cfg(feature = "moq")]
+            EgressType::Moq { .. } => {
+                let mut u: Url = self.public_url.parse()?;
+                let u = format!(
+                    "moq://{}{}/",
+                    u.host_str()
+                        .ok_or(anyhow!("Public url is missing a hostname"))?,
+                    if let Some(ref b) = self.moq_bind {
+                        format!(":{}", b.port())
+                    } else {
+                        "".to_string()
+                    }
+                );
+
+                return Ok(Some(u));
+            }
+            _ => {}
+        }
+        Ok(None)
     }
 
     /// Send low balance notification as live chat message
@@ -639,11 +696,14 @@ impl Overseer for ZapStreamOverseer {
             if !should_cleanup {
                 continue;
             }
-            let out_dir_hls = self.out_dir.join(stream.id).join(HlsEgress::PATH);
-            if out_dir_hls.exists() {
-                info!("Deleting expired HLS stream data {}", out_dir_hls.display());
-                if let Err(e) = remove_dir_all(&out_dir_hls).await {
-                    warn!("Failed to delete expired HLS stream data: {}", e);
+            #[cfg(feature = "hls")]
+            {
+                let out_dir_hls = self.out_dir.join(stream.id).join(HlsEgress::PATH);
+                if out_dir_hls.exists() {
+                    info!("Deleting expired HLS stream data {}", out_dir_hls.display());
+                    if let Err(e) = remove_dir_all(&out_dir_hls).await {
+                        warn!("Failed to delete expired HLS stream data: {}", e);
+                    }
                 }
             }
         }
@@ -718,16 +778,17 @@ impl Overseer for ZapStreamOverseer {
         connection: &ConnectionInfo,
         stream_info: &IngressInfo,
     ) -> Result<PipelineConfig> {
-        let (user_key, user) = self.get_user_key(connection).await?;
+        let connection = connection.clone();
+        let (user_key, user) = self.get_user_key(&connection).await?;
         let hex_pubkey = hex::encode(&user.pubkey);
         let uid = user.id;
 
         // Get ingest endpoint configuration based on connection type
-        let endpoint = self.detect_endpoint(connection).await?;
+        let endpoint = self.detect_endpoint(&connection).await?;
         let caps = parse_capabilities(&endpoint.capabilities);
 
         // configure list of egress' we're going to use
-        let egress = self.get_egress(connection).await?;
+        let egress = self.get_egress(&connection).await?;
 
         let cfg = EndpointConfigEngine::get_variants_from_endpoint(stream_info, &caps, &egress)?;
         if cfg.variants.is_empty() {
@@ -787,15 +848,13 @@ impl Overseer for ZapStreamOverseer {
             .add_active_stream(
                 &hex_pubkey,
                 user.id,
-                &new_stream.id,
+                new_stream.id.as_str(),
                 cfg.video_src.map(|s| s.fps).unwrap(),
-                &endpoint.name,
                 cfg.video_src
                     .map(|s| format!("{}x{}", s.width, s.height))
                     .unwrap()
                     .as_str(),
-                connection.endpoint,
-                &connection.ip_addr,
+                &connection,
             )
             .await;
 
@@ -859,6 +918,7 @@ impl Overseer for ZapStreamOverseer {
             bail!("Endpoint id not set on stream");
         };
 
+        // TODO: duration/cost should be free for copy vars
         let (duration, cost) = get_cost(&endpoint, added);
         let bal = self
             .db
@@ -948,11 +1008,6 @@ impl Overseer for ZapStreamOverseer {
             }
         }
 
-        // Update last segment time for this stream
-        self.stream_manager
-            .update_stream_segment_time(&stream.id)
-            .await;
-
         if let Some(n94) = &self.n94 {
             n94.on_new_segment(added.iter().map(into_n94_segment).collect())
                 .await?;
@@ -1034,6 +1089,7 @@ impl Overseer for ZapStreamOverseer {
 
         // configure list of egress' we're going to use
         let mut egress = vec![];
+        #[cfg(feature = "hls")]
         egress.push(EgressType::HLS {
             id: Uuid::new_v4(),
             segment_length: self.segment_length,
@@ -1057,6 +1113,8 @@ impl Overseer for ZapStreamOverseer {
         //     egress.push(EgressType::RTMPForwarder(all_var_ids.clone(), fwd.target));
         // }
 
+        #[cfg(feature = "moq")]
+        egress.push(EgressType::Moq { id: Uuid::new_v4() });
         Ok(egress)
     }
 

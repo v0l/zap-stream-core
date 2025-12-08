@@ -35,7 +35,7 @@ pub struct Settings {
 
     #[cfg(feature = "moq")]
     /// MoQ server config
-    pub moq_server_config: Option<moq_native::ServerConfig>,
+    pub moq: Option<moq_native::ServerConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

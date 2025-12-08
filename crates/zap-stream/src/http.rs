@@ -28,7 +28,6 @@ use tokio::io::{AsyncRead, AsyncSeek, ReadBuf};
 use tokio_util::io::ReaderStream;
 use tracing::{error, warn};
 use uuid::Uuid;
-use zap_stream_core::egress::hls::HlsEgress;
 
 /// Plugin providing stream information to the http server
 pub trait HttpServerPlugin: Clone {
@@ -87,24 +86,28 @@ where
         router
             .insert("/index.html", HttpServerPath::Index)
             .expect("invalid route");
-        router
-            .insert(
-                format!("/{{stream}}/{}/live.m3u8", HlsEgress::PATH),
-                HttpServerPath::HlsMasterPlaylist,
-            )
-            .expect("invalid route");
-        router
-            .insert(
-                format!("/{{stream}}/{}/{{variant}}/live.m3u8", HlsEgress::PATH),
-                HttpServerPath::HlsVariantPlaylist,
-            )
-            .expect("invalid route");
-        router
-            .insert(
-                format!("/{{stream}}/{}/{{variant}}/{{seg}}", HlsEgress::PATH),
-                HttpServerPath::HlsSegmentFile,
-            )
-            .expect("invalid route");
+        #[cfg(feature = "hls")]
+        {
+            use zap_stream_core::egress::hls::HlsEgress;
+            router
+                .insert(
+                    format!("/{{stream}}/{}/live.m3u8", HlsEgress::PATH),
+                    HttpServerPath::HlsMasterPlaylist,
+                )
+                .expect("invalid route");
+            router
+                .insert(
+                    format!("/{{stream}}/{}/{{variant}}/live.m3u8", HlsEgress::PATH),
+                    HttpServerPath::HlsVariantPlaylist,
+                )
+                .expect("invalid route");
+            router
+                .insert(
+                    format!("/{{stream}}/{}/{{variant}}/{{seg}}", HlsEgress::PATH),
+                    HttpServerPath::HlsSegmentFile,
+                )
+                .expect("invalid route");
+        }
         router
             .insert("/api/v1/ws", HttpServerPath::WebSocketMetrics)
             .expect("invalid route");

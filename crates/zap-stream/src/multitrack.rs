@@ -155,7 +155,7 @@ impl MultiTrackEngine {
         };
         let conn = ConnectionInfo {
             id: Uuid::new_v4(),
-            endpoint: "multi-track-config",
+            endpoint: "multi-track-config".to_string(),
             ip_addr: "".to_string(),
             app_name: ingest_pick.name.clone(),
             key: req.authentication.clone(),

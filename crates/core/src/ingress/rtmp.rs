@@ -391,7 +391,7 @@ fn socket_handler(
         }
         let info = ConnectionInfo {
             id: *id_pub.lock().unwrap(),
-            endpoint: "rtmp",
+            endpoint: "rtmp".to_string(),
             ip_addr: ip_addr.clone(),
             app_name: app.to_string(),
             key: key.to_string(),
@@ -438,7 +438,7 @@ fn socket_handler(
     let info = ConnectionInfo {
         id,
         ip_addr: addr.to_string(),
-        endpoint: "rtmp",
+        endpoint: "rtmp".to_string(),
         app_name: pr.0.trim().to_string(),
         key: pr.1.trim().to_string(),
     };

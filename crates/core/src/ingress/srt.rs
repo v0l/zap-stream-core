@@ -38,7 +38,7 @@ pub async fn listen(
                 let socket = request.accept(None).await?;
                 let mut info = ConnectionInfo {
                     id: Uuid::new_v4(),
-                    endpoint: "srt",
+                    endpoint: "srt".to_string(),
                     ip_addr: socket.settings().remote.to_string(),
                     app_name: "".to_string(),
                     key: socket

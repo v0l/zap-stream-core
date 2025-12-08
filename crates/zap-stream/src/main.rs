@@ -91,7 +91,7 @@ pub unsafe extern "C" fn av_log_redirect(
     }
 }
 
-#[tokio::main]
+#[tokio::main(worker_threads = 4)]
 async fn main() -> Result<()> {
     let _args = Args::parse();
 
@@ -147,7 +147,9 @@ async fn main() -> Result<()> {
     let (overseer, api) = {
         let mut overseer = ZapStreamOverseer::from_settings(&settings, shutdown.clone()).await?;
         #[cfg(feature = "moq")]
-        overseer.set_moq_origin(moq_origin.clone());
+        if let Some(ref ms) = settings.moq {
+            overseer.set_moq_origin(moq_origin.clone(), ms.bind.clone());
+        }
 
         let arc = Arc::new(overseer);
         let api = Api::new(arc.clone(), settings.clone());
@@ -206,7 +208,7 @@ async fn main() -> Result<()> {
 
     // QUIC server
     #[cfg(feature = "moq")]
-    if let Some(cfg) = settings.moq_server_config {
+    if let Some(cfg) = settings.moq {
         let mut server = cfg.init()?;
         tasks.push(tokio::spawn(async move {
             info!("MoQ server started..");
@@ -222,7 +224,7 @@ async fn main() -> Result<()> {
 
                 match zap_stream_core::hang::moq_lite::Session::accept(
                     session,
-                    None,
+                    moq_origin.producer.consume(),
                     moq_origin.producer.clone(),
                 )
                 .await
@@ -232,6 +234,7 @@ async fn main() -> Result<()> {
                             if let Err(e) = session.closed().await {
                                 error!("MoQ session closed with error {}", e);
                             }
+                            info!("MoQ session closed.");
                         });
                     }
                     Err(e) => {

@@ -31,7 +31,7 @@ pub async fn listen(
 
     let info = ConnectionInfo {
         id: Uuid::new_v4(),
-        endpoint: "test-pattern",
+        endpoint: "test-pattern".to_string(),
         ip_addr: "test-pattern".to_string(),
         app_name: "".to_string(),
         key: "test".to_string(),

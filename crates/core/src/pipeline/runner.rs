@@ -965,9 +965,11 @@ impl PipelineRunner {
                     let origin = self
                         .handle
                         .block_on(async { self.overseer.get_moq_origin().await })?;
-                    let moq = MoqEgress::new(origin, &variant_mapping)?;
+                    let id = self.connection.id.to_string();
+                    let moq = MoqEgress::new(self.handle.clone(), origin, &id, &variant_mapping)?;
                     self.egress.push(Box::new(moq));
                 }
+                #[allow(unreachable_patterns)]
                 _ => bail!("Unhandled egress type: {:?}", e),
             }
         }

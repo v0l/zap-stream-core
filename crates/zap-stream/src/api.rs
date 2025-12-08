@@ -25,7 +25,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tracing::{error, info, warn};
 use uuid::Uuid;
-use zap_stream_core::egress::hls::HlsEgress;
 use zap_stream_core::listen::ListenerEndpoint;
 use zap_stream_core::overseer::Overseer;
 use zap_stream_db::{IngestEndpoint, ZapStreamDb};
@@ -1724,7 +1723,14 @@ impl HttpServerPlugin for Api {
             for stream in streams {
                 let viewers = viewers.get_viewer_count(&stream.id).await;
                 ret.push(StreamData {
-                    live_url: format!("{}/{}/live.m3u8", stream.id, HlsEgress::PATH),
+                    #[cfg(feature = "hls")]
+                    live_url: format!(
+                        "{}/{}/live.m3u8",
+                        stream.id,
+                        zap_stream_core::egress::hls::HlsEgress::PATH
+                    ),
+                    #[cfg(not(feature = "hls"))]
+                    live_url: "".to_string(),
                     id: stream.id,
                     title: stream.title.unwrap_or_default(),
                     summary: stream.summary,

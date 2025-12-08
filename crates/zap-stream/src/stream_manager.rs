@@ -12,7 +12,7 @@ use tokio::sync::{RwLock, broadcast};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
-use zap_stream_core::ingress::EndpointStats;
+use zap_stream_core::ingress::{ConnectionInfo, EndpointStats};
 
 #[derive(Clone)]
 pub struct StreamViewerState {
@@ -26,9 +26,9 @@ pub struct ActiveStreamInfo {
     pub pubkey: String,
     pub user_id: u64,
     pub started_at: DateTime<Utc>,
-    pub last_segment_time: Option<DateTime<Utc>>,
     pub node_name: String,
 
+    pub last_update: Option<DateTime<Utc>>,
     pub viewers: u32,
     pub average_fps: f32,
     pub target_fps: f32,
@@ -38,6 +38,9 @@ pub struct ActiveStreamInfo {
     pub ip_address: String,
     pub ingress_name: String,
     pub endpoint_stats: HashMap<String, EndpointStats>,
+
+    #[serde(skip)]
+    pub connection: ConnectionInfo,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -246,44 +249,34 @@ impl StreamManager {
         &self,
         pubkey: &str,
         user_id: u64,
-        stream_id: &str,
+        pipeline_id: &str,
         target_fps: f32,
-        endpoint_name: &str,
         input_resolution: &str,
-        ingress_name: &str,
-        ip: &str,
+        conn: &ConnectionInfo,
     ) {
         let now = Utc::now();
         let mut streams = self.active_streams.write().await;
         streams.insert(
-            stream_id.to_string(),
+            pipeline_id.to_string(),
             ActiveStreamInfo {
                 pubkey: pubkey.to_string(),
                 user_id,
                 node_name: self.node_name.clone(),
-                stream_id: stream_id.to_string(),
+                stream_id: pipeline_id.to_string(),
                 started_at: now,
-                last_segment_time: None,
+                last_update: None,
                 average_fps: 0.0,
                 viewers: 0,
                 target_fps,
                 frame_count: 0,
                 input_resolution: input_resolution.to_string(),
-                endpoint_name: endpoint_name.to_string(),
-                ingress_name: ingress_name.to_string(),
-                ip_address: ip.to_string(),
+                endpoint_name: conn.app_name.clone(),
+                ingress_name: conn.endpoint.clone(),
+                ip_address: conn.ip_addr.clone(),
                 endpoint_stats: HashMap::new(),
+                connection: conn.clone(),
             },
         );
-    }
-
-    /// Update the last segment time for a stream
-    pub async fn update_stream_segment_time(&self, stream_id: &str) {
-        let now = Utc::now();
-        let mut streams = self.active_streams.write().await;
-        if let Some(info) = streams.get_mut(stream_id) {
-            info.last_segment_time = Some(now);
-        }
     }
 
     /// Remove a stream from active tracking
@@ -304,7 +297,7 @@ impl StreamManager {
 
         if let Some(stream_info) = streams.get(stream_id) {
             // Stream is in active map, but check if it's been inactive too long
-            let timeout = if let Some(last_segment) = stream_info.last_segment_time {
+            let timeout = if let Some(last_segment) = stream_info.last_update {
                 // No segments for 60 seconds = timeout
                 (now - last_segment).num_seconds() > 60
             } else {
@@ -375,6 +368,7 @@ impl StreamManager {
             info.average_fps = average_fps;
             info.frame_count = frame_count;
             info.viewers = self.get_viewer_count(stream_id).await as _;
+            info.last_update = Some(Utc::now());
             if let Err(e) = self
                 .broadcaster
                 .send(StreamManagerMetric::ActiveStream(info.clone()))
@@ -407,8 +401,8 @@ impl StreamManager {
         }
     }
 
-    pub async fn get_active_streams(&self) -> HashMap<String, ActiveStreamInfo> {
+    pub async fn get_stream(&self, stream_id: &str) -> Option<ActiveStreamInfo> {
         let streams = self.active_streams.read().await;
-        streams.clone()
+        streams.get(stream_id).cloned()
     }
 }

@@ -3,6 +3,7 @@
 # All the endpoints must be valid URI's
 endpoints:
   - "rtmp://127.0.0.1:3336"
+  - test-pattern://
 
 # Public hostname which points to the IP address used to listen for all [endpoints]
 endpoints_public_hostname: "localhost"
@@ -11,7 +12,7 @@ endpoints_public_hostname: "localhost"
 output_dir: "./out"
 
 # Public URL for serving files for [output_dir]
-public_url: "http://localhost:8080"
+public_url: "http://kieran.lan:8080"
 
 # Bind address for http server serving files from [output_dir]
 listen_http: "127.0.0.1:8080"
@@ -53,3 +54,15 @@ overseer:
 # Redis server for coordination
 redis:
   url: "redis://localhost:6399"
+
+# MoQ listener config
+moq:
+  # IP:PORT to bind for UDP (HTTP/3 QUIC)
+  bind: "[::]:1443"
+  tls:
+    # Path to one of more certificates
+    cert: ["/home/kieran/kieran_lan.crt"]
+    # Path to one or more certificate key
+    key: ["/home/kieran/kieran_lan.key"]
+    # Generate a TLS cert using the following hostnames
+    # generate: []

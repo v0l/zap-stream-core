@@ -9,18 +9,24 @@ use hang::moq_lite::{Broadcast, OriginProducer};
 use hang::{Catalog, Frame, Timestamp, TrackProducer, catalog};
 use std::collections::HashMap;
 use std::slice;
+use tokio::runtime::Handle;
+use tracing::log::warn;
 use uuid::Uuid;
 
 pub struct MoqEgress {
+    handle: Handle,
     /// Track producer handle for stream data
     tracks: HashMap<String, TrackProducer>,
+    pts_offset: f64,
 }
 
 impl MoqEgress {
     pub const PATH: &'static str = "moq";
 
     pub fn new<'a>(
+        handle: Handle,
         origin: OriginProducer,
+        id: &str,
         groups: &Vec<EncoderVariantGroup>,
     ) -> Result<Self> {
         // create a Catalog which contains all the video / audio tracks
@@ -42,7 +48,7 @@ impl MoqEgress {
                                     constraints: 0,
                                     level: 0,
                                 }
-                                    .into(),
+                                .into(),
                                 "h265" | "hevc" => H265 {
                                     //TODO: take from encoder
                                     in_band: false,
@@ -53,7 +59,7 @@ impl MoqEgress {
                                     level_idc: 0,
                                     constraint_flags: [0, 0, 0, 0, 0, 0],
                                 }
-                                    .into(),
+                                .into(),
                                 "vp8" => VideoCodec::VP8,
                                 "vp9" => VP9 {
                                     //TODO: take from encoder
@@ -66,7 +72,7 @@ impl MoqEgress {
                                     matrix_coefficients: 0,
                                     full_range: false,
                                 }
-                                    .into(),
+                                .into(),
                                 _ => bail!("Unsupported video codec {}", &var.codec),
                             },
                             description: None,
@@ -139,11 +145,17 @@ impl MoqEgress {
             tracks.insert(id, broadcast.producer.create_track(track).into());
         }
 
-        if !origin.publish_broadcast("", broadcast.consumer) {
+        let g = handle.enter();
+        if !origin.publish_broadcast(id, broadcast.consumer) {
             bail!("Failed to publish, not allowed")
         }
+        drop(g);
 
-        Ok(Self { tracks })
+        Ok(Self {
+            tracks,
+            handle,
+            pts_offset: 0.0,
+        })
     }
 }
 impl Egress for MoqEgress {
@@ -151,7 +163,13 @@ impl Egress for MoqEgress {
         if let Some(track) = self.tracks.get_mut(variant.to_string().as_str()) {
             let is_keyframe = packet.flags & AV_PKT_FLAG_KEY != 0;
             let data_slice = unsafe { slice::from_raw_parts(packet.data, packet.size as _) };
-            let pts_secs = packet.pts as f64 * unsafe { av_q2d(packet.time_base) };
+            let mut pts_secs = packet.pts as f64 * unsafe { av_q2d(packet.time_base) };
+            pts_secs += self.pts_offset;
+            if pts_secs < 0.0 {
+                self.pts_offset += pts_secs.abs();
+                warn!("PTS was negative, new offset {:.4}s", self.pts_offset);
+                pts_secs += self.pts_offset;
+            }
             track.write(Frame {
                 timestamp: Timestamp::from_secs_f64(pts_secs),
                 keyframe: is_keyframe,
