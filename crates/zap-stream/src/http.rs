@@ -410,11 +410,6 @@ where
                     let plugin = self.plugin.clone();
                     let backend_name = m.params.get("backend").map(|s| s.to_string());
                     Box::pin(async move {
-                        // Log which backend this webhook is for
-                        if let Some(backend) = &backend_name {
-                            info!("Received webhook for backend: {}", backend);
-                        }
-                        
                         // Read the webhook payload
                         let body_bytes = req.collect().await?.to_bytes();
                         

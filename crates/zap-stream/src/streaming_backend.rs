@@ -80,6 +80,18 @@ pub enum ExternalStreamEvent {
         /// Identifier to look up the stream (e.g., Cloudflare Live Input UID)
         input_uid: String,
     },
+    /// Video recording is ready (e.g. Cloudflare sends this after live disconnected)
+    /// Sent when Cloudflare finishes processing a stream recording
+    VideoAssetReady {
+        /// Cloudflare Live Input UID to look up the stream
+        input_uid: String,
+        /// HLS recording URL (m3u8)
+        recording_url: String,
+        /// Thumbnail URL
+        thumbnail_url: String,
+        /// Recording duration in seconds
+        duration: f32,
+    },
 }
 
 /// Endpoint information returned to API clients

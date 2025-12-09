@@ -93,19 +93,19 @@ pub struct Playback {
     pub dash: String,
 }
 
-/// Cloudflare Stream Live webhook payload
+/// Cloudflare Live Input webhook payload
 /// Based on: https://developers.cloudflare.com/stream/stream-live/webhooks/
 #[derive(Debug, Deserialize)]
-pub struct CloudflareWebhookPayload {
+pub struct LiveInputWebhook {
     pub name: String,
     pub text: String,
-    pub data: CloudflareWebhookData,
+    pub data: LiveInputWebhookData,
     pub ts: i64,
 }
 
-/// Webhook data containing event information
+/// Live Input webhook data containing event information
 #[derive(Debug, Deserialize)]
-pub struct CloudflareWebhookData {
+pub struct LiveInputWebhookData {
     pub notification_name: String,
     #[serde(rename = "input_id")]
     pub input_id: String,
@@ -129,4 +129,23 @@ pub struct WebhookResult {
     pub notification_url: String,
     pub modified: String,
     pub secret: String,
+}
+
+/// Cloudflare Video Asset webhook payload
+/// Sent when a recording is ready after a live stream ends
+#[derive(Debug, Deserialize)]
+pub struct VideoAssetWebhook {
+    pub uid: String,
+    pub thumbnail: String,
+    pub duration: f32,
+    pub playback: Playback,
+    #[serde(rename = "liveInput")]
+    pub live_input: String,
+    pub status: VideoAssetStatus,
+}
+
+/// Video Asset status information
+#[derive(Debug, Deserialize)]
+pub struct VideoAssetStatus {
+    pub state: String,
 }

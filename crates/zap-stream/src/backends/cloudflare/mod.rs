@@ -17,13 +17,15 @@ use uuid::Uuid;
 use zap_stream_db::{IngestEndpoint, User};
 
 use crate::streaming_backend::{Endpoint, EndpointCost, ExternalStreamEvent, StreamingBackend};
-use types::CloudflareWebhookPayload;
+use types::{LiveInputWebhook, VideoAssetWebhook};
 
 /// Stream information stored in cache
 #[derive(Clone, Debug)]
 struct StreamInfo {
     live_input_uid: String,
     hls_url: Option<String>,
+    recording_url: Option<String>,
+    thumbnail_url: Option<String>,
 }
 
 /// Viewer count cache entry with timestamp
@@ -93,6 +95,8 @@ impl StreamingBackend for CloudflareBackend {
             StreamInfo {
                 live_input_uid: live_input_uid.clone(),
                 hls_url: None,
+                recording_url: None,
+                thumbnail_url: None,
             },
         );
         
@@ -130,6 +134,8 @@ impl StreamingBackend for CloudflareBackend {
             StreamInfo {
                 live_input_uid: live_input_uid.clone(),
                 hls_url: None,
+                recording_url: None,
+                thumbnail_url: None,
             },
         );
         
@@ -208,15 +214,16 @@ impl StreamingBackend for CloudflareBackend {
     }
 
     async fn get_recording_url(&self, stream_id: &str) -> Result<Option<String>> {
-        // Deferred to Step 3D
-        warn!("get_recording_url called for stream '{}' but recordings not yet implemented (Step 3D)", stream_id);
-        Ok(None)
+        let cache = self.live_input_cache.read().await;
+        Ok(cache.get(stream_id).and_then(|info| info.recording_url.clone()))
     }
 
     async fn get_thumbnail_url(&self, stream_id: &str) -> Result<String> {
-        // Deferred to Step 3D - return error for now
-        warn!("get_thumbnail_url called for stream '{}' but thumbnails not yet implemented (Step 3D)", stream_id);
-        Err(anyhow!("Thumbnails not implemented yet (Step 3D)"))
+        let cache = self.live_input_cache.read().await;
+        match cache.get(stream_id).and_then(|info| info.thumbnail_url.clone()) {
+            Some(url) => Ok(url),
+            None => Err(anyhow!("Thumbnail not yet available for stream {}", stream_id)),
+        }
     }
 
     async fn get_viewer_count(&self, stream_id: &str) -> Result<u32> {
@@ -225,8 +232,6 @@ impl StreamingBackend for CloudflareBackend {
             let cache = self.viewer_count_cache.read().await;
             if let Some(cached) = cache.get(stream_id) {
                 if cached.timestamp.elapsed() < self.cache_duration {
-                    info!("Using cached viewer count for stream {} (age: {:?})", 
-                        stream_id, cached.timestamp.elapsed());
                     return Ok(cached.count);
                 }
             }
@@ -342,46 +347,93 @@ impl StreamingBackend for CloudflareBackend {
     }
     
     fn parse_external_event(&self, payload: &[u8]) -> Result<Option<ExternalStreamEvent>> {
-        // Log raw webhook payload for debugging
         let payload_str = String::from_utf8_lossy(payload);
         info!("Raw Cloudflare webhook payload: {}", payload_str);
         
-        // Parse webhook payload
-        let webhook: CloudflareWebhookPayload = match serde_json::from_slice(payload) {
-            Ok(w) => w,
-            Err(e) => {
-                warn!("Failed to parse Cloudflare webhook payload: {}", e);
-                warn!("Payload was: {}", payload_str);
+        // Try parsing a webhook connection test message
+        if payload_str.contains("\"text\"") && payload_str.contains("Hello World") {
+            info!("Received webhook test message - webhook configuration successful!");
+            return Ok(None);
+        }
+        
+        // Try parsing as Live Input webhook first (has "name" field)
+        if let Ok(webhook) = serde_json::from_slice::<LiveInputWebhook>(payload) {
+            info!("Received Cloudflare webhook event: {} for input_id: {}", 
+                webhook.data.event_type, webhook.data.input_id);
+            
+            // Map Cloudflare event types to our generic events
+            return match webhook.data.event_type.as_str() {
+                "live_input.connected" => {
+                    Ok(Some(ExternalStreamEvent::Connected {
+                        input_uid: webhook.data.input_id,
+                        // Cloudflare webhooks don't include tier info
+                        // Default to "Basic" (free tier) for now
+                        // TODO: Future enhancement - look up user's preferred tier from DB
+                        app_name: "Basic".to_string(),
+                    }))
+                }
+                "live_input.disconnected" | "live_input.errored" => {
+                    Ok(Some(ExternalStreamEvent::Disconnected {
+                        input_uid: webhook.data.input_id,
+                    }))
+                }
+                _ => {
+                    warn!("Unknown Cloudflare event type: {}", webhook.data.event_type);
+                    Ok(None)
+                }
+            };
+        }
+        
+        // Try parsing as Video Asset webhook (no "name" field, has "uid" field)
+        if let Ok(video_asset) = serde_json::from_slice::<VideoAssetWebhook>(payload) {
+            info!("Received Cloudflare Video Asset webhook: uid={}, status={}, duration={}", 
+                video_asset.uid, video_asset.status.state, video_asset.duration);
+            
+            // Only process if the video is ready
+            if video_asset.status.state == "ready" {
+                let input_uid = video_asset.live_input.clone();
+                let recording_url = video_asset.playback.hls.clone();
+                let thumbnail_url = video_asset.thumbnail.clone();
+                
+                // Look up stream_id from input_uid and update cache
+                // Use block_in_place since parse_external_event is not async
+                let stream_id_opt = tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(async {
+                        let mapping = self.reverse_mapping.read().await;
+                        mapping.get(&input_uid).cloned()
+                    })
+                });
+                
+                if let Some(stream_id) = stream_id_opt {
+                    // Update cache with recording info
+                    tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current().block_on(async {
+                            let mut cache = self.live_input_cache.write().await;
+                            if let Some(info) = cache.get_mut(&stream_id) {
+                                info.recording_url = Some(recording_url.clone());
+                                info.thumbnail_url = Some(thumbnail_url.clone());
+                                info!("Cached recording URLs for stream {} during webhook parse", stream_id);
+                            }
+                        })
+                    });
+                }
+                
+                return Ok(Some(ExternalStreamEvent::VideoAssetReady {
+                    input_uid,
+                    recording_url,
+                    thumbnail_url,
+                    duration: video_asset.duration,
+                }));
+            } else {
+                info!("Video Asset not ready yet (state: {}), ignoring", video_asset.status.state);
                 return Ok(None);
             }
-        };
-        
-        info!("Received Cloudflare webhook event: {} for input_id: {}", 
-            webhook.data.event_type, webhook.data.input_id);
-        
-        // Map Cloudflare event types to our generic events
-        match webhook.data.event_type.as_str() {
-            "live_input.connected" => {
-                info!("Stream connected for input_uid: {}", webhook.data.input_id);
-                Ok(Some(ExternalStreamEvent::Connected {
-                    input_uid: webhook.data.input_id,
-                    // Cloudflare webhooks don't include tier info
-                    // Default to "Basic" (free tier) for now
-                    // TODO: Future enhancement - look up user's preferred tier from DB
-                    app_name: "Basic".to_string(),
-                }))
-            }
-            "live_input.disconnected" | "live_input.errored" => {
-                info!("Stream disconnected for input_uid: {}", webhook.data.input_id);
-                Ok(Some(ExternalStreamEvent::Disconnected {
-                    input_uid: webhook.data.input_id,
-                }))
-            }
-            _ => {
-                warn!("Unknown Cloudflare event type: {}", webhook.data.event_type);
-                Ok(None)
-            }
         }
+        
+        // Failed to parse as either type
+        warn!("Failed to parse Cloudflare webhook payload as either Live Input or Video Asset");
+        warn!("Payload was: {}", payload_str);
+        Ok(None)
     }
     
     fn register_stream_mapping(&self, input_uid: &str, stream_id: Uuid) -> Result<()> {
@@ -401,6 +453,8 @@ impl StreamingBackend for CloudflareBackend {
             StreamInfo {
                 live_input_uid: input_uid.to_string(),
                 hls_url: None,
+                recording_url: None,
+                thumbnail_url: None,
             },
         );
         drop(cache);
@@ -429,11 +483,19 @@ impl StreamingBackend for CloudflareBackend {
     }
     
     fn remove_stream_mapping(&self, input_uid: &str) -> Result<()> {
-        let mut mapping = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(self.reverse_mapping.write())
+        // Delay removal by 60 seconds to catch late-arriving Video Asset webhooks
+        // Video Asset webhooks typically arrive 10-30 seconds after disconnect
+        let mapping = self.reverse_mapping.clone();
+        let input_uid_owned = input_uid.to_string();
+        
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            let mut m = mapping.write().await;
+            m.remove(&input_uid_owned);
+            info!("Removed mapping for input_uid {} after 60s", input_uid_owned);
         });
-        mapping.remove(input_uid);
-        info!("Removed mapping for input_uid {}", input_uid);
+        
+        // info!("Scheduled mapping removal for input_uid {} in 60 seconds", input_uid);
         Ok(())
     }
 }

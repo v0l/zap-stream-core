@@ -238,11 +238,11 @@ else
     echo "✗ Missing: live_input.connected webhook"
 fi
 
-if echo "$LOGS" | grep -q "Stream started successfully via webhook:"; then
+if echo "$LOGS" | grep -q "Stream started"; then
     echo "✓ Stream started successfully"
     START_TESTS_PASSED=$((START_TESTS_PASSED + 1))
 else
-    echo "✗ Missing: Stream started successfully"
+    echo "✗ Missing: Stream started"
 fi
 
 if [ $START_TESTS_PASSED -eq 2 ]; then
@@ -395,11 +395,11 @@ else
     echo "✗ Missing: live_input.disconnected webhook"
 fi
 
-if echo "$LOGS" | grep -q "Stream ended successfully via webhook:"; then
+if echo "$LOGS" | grep -q "Stream ended"; then
     echo "✓ Stream ended successfully"
     END_TESTS_PASSED=$((END_TESTS_PASSED + 1))
 else
-    echo "✗ Missing: Stream ended successfully"
+    echo "✗ Missing: Stream ended"
 fi
 
 if [ $END_TESTS_PASSED -eq 2 ]; then

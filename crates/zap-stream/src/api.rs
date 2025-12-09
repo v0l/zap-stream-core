@@ -1806,8 +1806,6 @@ impl HttpServerPlugin for Api {
                 
                 match event {
                     ExternalStreamEvent::Connected { input_uid, app_name } => {
-                        info!("Webhook: Stream connected for input_uid: {}, app_name: {}", input_uid, app_name);
-                        
                         // 1. Generate fresh UUID for this stream session
                         let stream_id = Uuid::new_v4();
                         
@@ -1843,7 +1841,7 @@ impl HttpServerPlugin for Api {
                                         
                                         // 7. Call overseer.start_stream() with None (webhook backends don't have local pipeline)
                                         match overseer.start_stream(&final_connection_info, None).await {
-                                            Ok(_) => info!("Stream started successfully via webhook: {}", final_stream_id),
+                                            Ok(_) => {}
                                             Err(e) => {
                                                 error!("Failed to start stream via webhook: {}", e);
                                                 // Clean up mapping on failure
@@ -1860,15 +1858,12 @@ impl HttpServerPlugin for Api {
                         }
                     }
                     ExternalStreamEvent::Disconnected { input_uid } => {
-                        info!("Webhook: Stream disconnected for input_uid: {}", input_uid);
-                        
                         // 1. Look up stream_id from mapping
                         match backend.get_stream_id_for_input_uid(&input_uid) {
                             Ok(Some(stream_id)) => {
                                 // 2. Call overseer.on_end()
                                 match overseer.on_end(&stream_id).await {
                                     Ok(_) => {
-                                        info!("Stream ended successfully via webhook: {}", stream_id);
                                         // 3. Clean up mapping
                                         if let Err(e) = backend.remove_stream_mapping(&input_uid) {
                                             warn!("Failed to remove stream mapping: {}", e);
@@ -1881,6 +1876,34 @@ impl HttpServerPlugin for Api {
                                 warn!("Received disconnect webhook for unknown input_uid: {}", input_uid);
                             }
                             Err(e) => error!("Failed to lookup stream_id: {}", e),
+                        }
+                    }
+                    ExternalStreamEvent::VideoAssetReady { input_uid, recording_url, thumbnail_url, duration } => {
+                        info!("Video recording ready for input_uid {}: duration={:.1}s, recording={}, thumbnail={}", 
+                            input_uid, duration, recording_url, thumbnail_url);
+                        
+                        // Look up stream_id and trigger Nostr event republish
+                        // Backend has already cached the recording URLs during parse_external_event()
+                        match backend.get_stream_id_for_input_uid(&input_uid) {
+                            Ok(Some(stream_id)) => {
+                                // We get the recording and thumbnail URLs
+                                // We populate the back end cache
+                                // We do NOT need to update the recording URL in the database as it's not stored there 
+                                // We DO need to update the thumbnail URL in the database (matches RML RTMP pattern via on_thumbnail)
+                                if let Err(e) = overseer.on_thumbnail(&stream_id, 0, 0, &std::path::PathBuf::new()).await {
+                                    warn!("Failed to update thumbnail for stream {}: {}", stream_id, e);
+                                }
+                                
+                                // Then republish Nostr event
+                                // Which will update the thumbnail URL (from the DB) and the recording URL (from the backend cache)
+                                if let Err(e) = overseer.on_update(&stream_id).await {
+                                    warn!("Failed to republish Nostr event with recording for stream {}: {}", stream_id, e);
+                                }
+                            }
+                            Ok(None) => {
+                                info!("Received VideoAssetReady webhook for input_uid {} but stream mapping not found (may have expired after 60s)", input_uid);
+                            }
+                            Err(e) => error!("Failed to lookup stream_id for VideoAssetReady: {}", e),
                         }
                     }
                 }

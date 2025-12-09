@@ -994,6 +994,8 @@ impl Overseer for ZapStreamOverseer {
         new_stream.event = Some(stream_event.as_json());
         self.db.update_stream(&new_stream).await?;
 
+        info!("Stream started {}", new_stream.id);
+
         // publish N94 stream (only for local backends with variants)
         if let Some(n94) = &self.n94 && has_pipeline {
             n94.on_start(N94StreamInfo {
