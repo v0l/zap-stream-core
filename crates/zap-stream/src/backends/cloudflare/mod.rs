@@ -348,7 +348,8 @@ impl StreamingBackend for CloudflareBackend {
     
     fn parse_external_event(&self, payload: &[u8]) -> Result<Option<ExternalStreamEvent>> {
         let payload_str = String::from_utf8_lossy(payload);
-        info!("Raw Cloudflare webhook payload: {}", payload_str);
+        // Do you need to debug? Here's the payload:
+        // info!("Raw Cloudflare webhook payload: {}", payload_str);
         
         // Try parsing a webhook connection test message
         if payload_str.contains("\"text\"") && payload_str.contains("Hello World") {
@@ -366,10 +367,12 @@ impl StreamingBackend for CloudflareBackend {
                 "live_input.connected" => {
                     Ok(Some(ExternalStreamEvent::Connected {
                         input_uid: webhook.data.input_id,
-                        // Cloudflare webhooks don't include tier info
-                        // Default to "Basic" (free tier) for now
-                        // TODO: Future enhancement - look up user's preferred tier from DB
-                        app_name: "Basic".to_string(),
+                        // Cloudflare ingest endpoints don't use multiple app_names and so don't include tier info
+                        // Leaving app_name here empty for now
+                        // Given empty the overseer charges most expensive by default
+                        // Good practice for now: Use zap.stream admin to configure ONE endpoint ONLY
+                        // TODO: Future enhancement - support multiple endpoints
+                        app_name: String::new(),
                     }))
                 }
                 "live_input.disconnected" | "live_input.errored" => {
@@ -386,11 +389,10 @@ impl StreamingBackend for CloudflareBackend {
         
         // Try parsing as Video Asset webhook (no "name" field, has "uid" field)
         if let Ok(video_asset) = serde_json::from_slice::<VideoAssetWebhook>(payload) {
-            info!("Received Cloudflare Video Asset webhook: uid={}, status={}, duration={}", 
-                video_asset.uid, video_asset.status.state, video_asset.duration);
-            
             // Only process if the video is ready
             if video_asset.status.state == "ready" {
+                info!("Cloudflare Video Asset ready for input_uid {}, recording: {} thumbnail: {}", 
+                    video_asset.live_input, video_asset.playback.hls, video_asset.thumbnail);
                 let input_uid = video_asset.live_input.clone();
                 let recording_url = video_asset.playback.hls.clone();
                 let thumbnail_url = video_asset.thumbnail.clone();

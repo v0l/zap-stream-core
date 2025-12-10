@@ -1691,26 +1691,12 @@ impl Api {
     }
 }
 
-/// Helper function to extract streaming URL from Nostr event JSON
-fn extract_streaming_url(event_json: &str) -> Option<String> {
-    let event: serde_json::Value = serde_json::from_str(event_json).ok()?;
-    let tags = event.get("tags")?.as_array()?;
-    
-    for tag in tags {
-        let tag_array = tag.as_array()?;
-        if tag_array.len() >= 2 
-            && tag_array[0].as_str()? == "streaming" {
-            return tag_array[1].as_str().map(String::from);
-        }
-    }
-    None
-}
-
 impl HttpServerPlugin for Api {
     fn get_active_streams(&self) -> Pin<Box<dyn Future<Output = Result<Vec<StreamData>>> + Send>> {
         let db = self.db.clone();
         let viewers = self.stream_manager.clone();
         let output_dir = self.settings.output_dir.clone();
+        let overseer = self.overseer.clone();
         
         Box::pin(async move {
             let streams = db.list_live_streams().await?;
@@ -1725,14 +1711,16 @@ impl HttpServerPlugin for Api {
                     .exists();
                 
                 let live_url = if local_file_exists {
-                    // LOCAL stream (RTMP) - unchanged behavior
+                    // LOCAL stream (RML RTMP) - PRIMACY - unchanged behavior
+                    // Respect upstream zap-stream-core logic fully
                     local_path
-                } else if let Some(event_json) = &stream.event {
-                    // NON-LOCAL stream (Cloudflare) - extract from Nostr event
-                    extract_streaming_url(event_json).unwrap_or(local_path)
                 } else {
-                    // No event - fallback to local path
-                    local_path
+                    // NON-LOCAL stream (Cloudflare or other backends) - use backend abstraction
+                    let backend = overseer.streaming_backend();
+                    match backend.get_hls_url(&stream.id).await {
+                        Ok(url) => url,
+                        Err(_) => local_path,  // Ultimate fallback
+                    }
                 };
                 
                 let viewers = viewers.get_viewer_count(&stream.id).await;
@@ -1879,9 +1867,6 @@ impl HttpServerPlugin for Api {
                         }
                     }
                     ExternalStreamEvent::VideoAssetReady { input_uid, recording_url, thumbnail_url, duration } => {
-                        info!("Video recording ready for input_uid {}: duration={:.1}s, recording={}, thumbnail={}", 
-                            input_uid, duration, recording_url, thumbnail_url);
-                        
                         // Look up stream_id and trigger Nostr event republish
                         // Backend has already cached the recording URLs during parse_external_event()
                         match backend.get_stream_id_for_input_uid(&input_uid) {
