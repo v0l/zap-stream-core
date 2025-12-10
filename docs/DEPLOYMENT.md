@@ -36,6 +36,10 @@ For file storage, zap.stream can use existing public Blossom servers for thumbna
 
 Required for processing Bitcoin payments and withdrawals. You'll need access to an LND node.
 
+### 5. Backend Selection (Optional)
+
+Zap Stream Core includes an internal RTMP ingest server backend. It is possible to customise the software to use an alternative external RTMP ingest backend if you prefer. An example Cloudflare Live Stream backend has been provided and can be configured by speciying it and providing credentials in the config file.
+
 ## Docker Deployment
 
 ### Basic Docker Compose Setup

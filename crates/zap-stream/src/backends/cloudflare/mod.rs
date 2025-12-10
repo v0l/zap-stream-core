@@ -143,7 +143,7 @@ impl StreamingBackend for CloudflareBackend {
         // (matches RML RTMP backend pattern for DX consistency)
         for db_endpoint in db_endpoints {
             endpoints.push(Endpoint {
-                name: format!("Cloudflare-{}", db_endpoint.name),
+                name: db_endpoint.name.clone(),
                 url: rtmps_base_url.clone(),
                 key: rtmps_stream_key.clone(),
                 capabilities: db_endpoint.capabilities
