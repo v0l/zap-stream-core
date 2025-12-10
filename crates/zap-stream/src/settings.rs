@@ -73,6 +73,8 @@ pub struct OverseerConfig {
     pub cloudflare: Option<CloudflareSettings>,
     /// Terms of Service URL (defaults to https://zap.stream/tos)
     pub tos_url: Option<String>,
+    /// Client URL for "Watch live on" alt tag (defaults to https://zap.stream)
+    pub client_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

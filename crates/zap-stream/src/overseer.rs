@@ -69,6 +69,8 @@ pub struct ZapStreamOverseer {
     out_dir: PathBuf,
     /// Streaming backend for URL generation
     streaming_backend: Arc<dyn StreamingBackend>,
+    /// Client URL for "Watch live on" alt tag
+    client_url: String,
 }
 
 impl ZapStreamOverseer {
@@ -114,7 +116,7 @@ impl ZapStreamOverseer {
         
         // Setup webhooks for backends that support them (backend decides if it's a no-op)
         let webhook_url = format!("{}/webhooks/{}", settings.public_url, backend_type);
-        info!("Configuring webhook URL for {} backend: {}", backend_type, webhook_url);
+        // info!("Configuring webhook URL for {} backend: {}", backend_type, webhook_url);
         streaming_backend.setup_webhooks(&webhook_url).await?;
         
         ZapStreamOverseer::new(
@@ -132,6 +134,7 @@ impl ZapStreamOverseer {
             stream_manager,
             node_name,
             redis_client,
+            settings.overseer.client_url.clone().unwrap_or_else(|| "https://zap.stream".to_string()),
             shutdown,
         )
         .await
@@ -152,6 +155,7 @@ impl ZapStreamOverseer {
         stream_manager: StreamManager,
         node_name: String,
         redis_client: Option<redis::Client>,
+        client_url: String,
         shutdown: CancellationToken,
     ) -> Result<Self> {
         let db = ZapStreamDb::new(db).await?;
@@ -196,6 +200,7 @@ impl ZapStreamOverseer {
             nwc_topup_requests: Arc::new(RwLock::new(HashMap::new())),
             out_dir,
             streaming_backend,
+            client_url,
         };
 
         // Enable Redis stats distribution if available
@@ -440,7 +445,8 @@ impl ZapStreamOverseer {
         tags.push(Tag::parse([
             "alt",
             &format!(
-                "Watch live on https://zap.stream/{}",
+                "Watch live on {}/{}",
+                self.client_url,
                 nostr_sdk::nips::nip19::Nip19Coordinate {
                     coordinate: coord,
                     relays: vec![]

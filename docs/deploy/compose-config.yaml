@@ -6,12 +6,22 @@ endpoints:
 
 # Public hostname which points to the IP address used to listen for all [endpoints]
 endpoints_public_hostname: "localhost"
+# e.g. for rml_rtmp backend "domain.name" results in "rtmp://domain.name:1935/basic"
+# e.g. for cloudflare backend "" (leave blank) results in e.g. "rtmps://live.cloudflare.com:443/live/"
+# e.g. for cloudflare backend "domain.name" results in "rtmps://domain.name:443/live/"
+# use this to configure e.g. cloudflare custom ingest domains per https://developers.cloudflare.com/stream/stream-live/custom-domains/
+# DO NOT include http:// here e.g. "domain.name" NOT "http://domain.name"
 
 # Output directory for recording / hls
 output_dir: "./out"
 
 # Public URL for serving files for [output_dir]
 public_url: "https://kieran.zap-stream"
+# ignore_auth_url: true
+# e.g. specifying "http://domain.name" results in:
+# e.g. "http://domain.name/api/v1" -> Zap Stream Core API endpoint
+# e.g. "http://domain.name/webhooks/cloudflare" -> Cloudflare webhook endpoint
+# DO include http:// here e.g. "http://domain.name"
 
 # Admin pukey (hex), this must be set if you want to use the Admin UI
 admin_pubkey: "63fe6318dc58583cfe16810f86dd09e18bfd76aabc24a0081ce2856f330504ed"
@@ -21,21 +31,22 @@ listen_http: "0.0.0.0:8080"
 
 # Overseer is the main control structure which controls access to the service
 overseer:
-  # Streaming backend type (optional, defaults to "rml_rtmp")
-  # Options:
-  #   - "rml_rtmp" (default): Local RTMP processing with HLS output to filesystem
-  #   - "cloudflare": Cloudflare Stream (requires cloudflare section below)
-  #backend: "rml_rtmp"
-
-  # Cloudflare Stream configuration (only needed when backend is "cloudflare")
-  #cloudflare:
-  #  api-token: "your_cloudflare_api_token_here"
-  #  account-id: "your_cloudflare_account_id_here"
+  # Streaming backend type (options: "rml_rtmp" or "cloudflare", defaults to "rml_rtmp")
+  # backend: "cloudflare"
+  # If cloudflare is selected enter api_token and account_id
+  # cloudflare:
+  #   api-token: "4nhpVkH_9gIUWltY6FISPKZfU72Hm00JD_-qYXMW"
+  #   account-id: "7855c995d208d26c1e9dcfa3e9d9a059"
 
   # At what balance we should alert the streamer to topup
   low_balance_threshold: 500
   # Primary nsec key for publishing stream events
   nsec: "nsec1wya428srvpu96n4h78gualaj7wqw4ecgatgja8d5ytdqrxw56r2se440y4"
+  # Terms URL (defaults to https://zap.stream/tos)
+  # tos-url: "https://zap.stream/tos"
+  # Client URL for "alt" tag "Watch live on" (defaults to https://zap.stream)
+  # e.g. "http://domain.name" will result in "Watch live on http://domain.name/{naddr}"
+  # client-url: "https://zap.stream"
   #blossom:
   #  - "http://localhost:8881"
   relays:
