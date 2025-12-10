@@ -109,6 +109,7 @@ impl ZapStreamOverseer {
                 Arc::new(CloudflareBackend::new(
                     cf_settings.api_token.clone(),
                     cf_settings.account_id.clone(),
+                    settings.endpoints_public_hostname.clone(),
                 ))
             }
             _ => bail!("Unknown backend type: {}", backend_type),

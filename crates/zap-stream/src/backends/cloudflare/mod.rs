@@ -59,11 +59,21 @@ pub struct CloudflareBackend {
     min_update_minutes: i64,
     /// Cache duration for viewer counts (30 seconds)
     cache_duration: Duration,
+    /// Custom ingest domain (if configured)
+    custom_ingest_domain: Option<String>,
 }
 
 impl CloudflareBackend {
     /// Create a new Cloudflare backend
-    pub fn new(api_token: String, account_id: String) -> Self {
+    pub fn new(api_token: String, account_id: String, endpoints_public_hostname: String) -> Self {
+        // Use custom ingest domain if configured (not empty and not localhost)
+        let custom_ingest_domain = if !endpoints_public_hostname.is_empty() 
+            && endpoints_public_hostname != "localhost" {
+            Some(endpoints_public_hostname)
+        } else {
+            None
+        };
+        
         Self {
             client: CloudflareClient::new(api_token, account_id),
             live_input_cache: Arc::new(RwLock::new(HashMap::new())),
@@ -73,6 +83,7 @@ impl CloudflareBackend {
             viewer_count_states: Arc::new(RwLock::new(HashMap::new())),
             min_update_minutes: 10,
             cache_duration: Duration::from_secs(30),
+            custom_ingest_domain,
         }
     }
 }
@@ -125,8 +136,23 @@ impl StreamingBackend for CloudflareBackend {
         };
         
         // Store base URL and stream key separately (consistent with RML RTMP backend)
-        let rtmps_base_url = live_input.result.rtmps.url.clone();
+        let mut rtmps_base_url = live_input.result.rtmps.url.clone();
         let rtmps_stream_key = live_input.result.rtmps.stream_key.clone();
+        
+        // If custom ingest domain is configured, replace Cloudflare hostname with custom domain
+        if let Some(custom_domain) = &self.custom_ingest_domain {
+            if !custom_domain.is_empty() && custom_domain != "localhost" {
+                // Parse the Cloudflare URL and replace hostname
+                // FROM: rtmps://live.cloudflare.com:443/live/
+                // TO:   rtmps://custom.domain.com:443/live/
+                if let Ok(mut url) = url::Url::parse(&rtmps_base_url) {
+                    if url.set_host(Some(custom_domain)).is_ok() {
+                        rtmps_base_url = url.to_string();
+                        info!("Using custom ingest domain: {}", rtmps_base_url);
+                    }
+                }
+            }
+        }
         
         // Store mapping for later HLS lookup (HLS URL will be populated when first requested)
         self.live_input_cache.write().await.insert(

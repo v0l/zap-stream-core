@@ -47,7 +47,7 @@ View Cloudflare docs at `https://developers.cloudflare.com/notifications/`
 
 In your Cloudflare dashboard > Manage Account > Notifications, look for "All Notification" and "Destinations"
 
-Configure your new Webhook as a destination. Press Destinations > Create and enter:
+Configure your new Webhook as a destination. Press Destinations > Create, then enter:
 
 - Name (whatever you choose)
 - URL (the URL from the log earlier, e.g. `https://your.domain.name/webhooks/cloudflare`)
@@ -55,6 +55,17 @@ Configure your new Webhook as a destination. Press Destinations > Create and ent
 Press Save and Test. If your Docker is running, it should show a test webhook has been received successfully.
 
 `Received webhook test message - webhook configuration successful!`
+
+Next, configure your Cloudflare Notifications to use the webhook.
+
+Press All Notifications > then select:
+
+- live_input.connected
+- live_input.disconnected
+- live_input.errored
+- Add webhook > the name of the webhook you have just created
+- Specify name, description, etc to suit your needs and Save
+- Ensure this notification is set to "Enabled"
 
 Your Cloudflare backend is now operational and connected to Cloudflare.
 
@@ -89,4 +100,5 @@ DNS will take a few hours to propogate and the change and show "Active" when rea
 
 If this is correctly configured
 
-- Queries to your Zap Stream Core API at `/api/v1/accounts` will return your RTMP ingest endpoint with your custom domain name.
+- Queries to your Zap Stream Core API at `/api/v1/accounts` will return your RTMP ingest endpoint with your custom domain name e.g. `rtmps://my.domain.name:443/live/`.
+- Streams to this custom ingest domain will be sent correctly to Cloudflare Live Stream.
