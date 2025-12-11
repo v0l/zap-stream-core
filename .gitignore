@@ -14,3 +14,6 @@ docs/deploy/docker-compose.override.yml
 # Cloudflare API credentials and test output
 scripts/.env
 cloudflare-api-responses-*/
+
+# AI development notes
+notes/
