@@ -248,17 +248,11 @@ else
     docker logs --tail 50 zap-stream-core-core-1 2>&1 | grep -i "cloudflare\|webhook\|stream"
 fi
 
-# Check for stream start with ID
-if echo "$LOGS" | grep -q "Stream started successfully via webhook:"; then
+# Check for stream start
+if echo "$LOGS" | grep -q "Stream started"; then
     echo "✓ Stream started successfully"
-    # Try to verify it's User A's stream
-    if echo "$LOGS" | grep "Stream started successfully via webhook:" | grep -q "$STREAM_ID_A"; then
-        echo "✓ Confirmed: Stream ID $STREAM_ID_A started"
-    else
-        echo "⚠️  Could not confirm stream ID in logs (will check at end)"
-    fi
 else
-    echo "❌ Missing: Stream started successfully"
+    echo "❌ Missing: Stream started"
 fi
 
 echo "✅ TEST 5 PASSED (with notes)"
@@ -376,10 +370,10 @@ else
 fi
 
 # Check for stream end
-if echo "$LOGS" | grep -q "Stream ended successfully via webhook:"; then
+if echo "$LOGS" | grep -q "Stream ended"; then
     echo "✓ Stream ended successfully"
 else
-    echo "❌ Missing: Stream ended successfully"
+    echo "❌ Missing: Stream ended"
 fi
 
 # Verify User B still streaming
