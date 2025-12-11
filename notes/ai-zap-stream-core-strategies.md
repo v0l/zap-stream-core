@@ -710,9 +710,9 @@ Options: ["Build completed successfully", "Build failed - see error"]
 ### Database Setup
 
 **Test User for Streaming:**
-- **User ID**: 55
-- **Pubkey**: `9b8929f0ddefc96c9eb70dff17eec27826277acee7b6536fcf843b592fad793c`
-- **Stream Key**: `81b97dd0-b959-11f0-b22c-d690ca11bae8`
+- **User ID**: 1
+- **Pubkey**: `630b86f848644ae98b3fe671b36a37150f162f386673ef1093d06a10c543576b`
+- **Stream Key**: `2cf93cda-b914-11f0-b22c-d690ca11bae8`
 - **Balance**: 0 (works with free "Basic" endpoint)
 
 **Query to get user info:**

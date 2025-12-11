@@ -995,35 +995,41 @@ impl Api {
     ) -> Result<CreateStreamKeyResponse> {
         let uid = self.db.upsert_user(&pubkey.to_bytes()).await?;
 
-        // Generate a new stream key first
-        let key = Uuid::new_v4().to_string();
+        // Generate a new stream key using the backend
+        let backend = self.overseer.streaming_backend();
+        let key = backend.generate_stream_key(&pubkey.to_bytes()).await?;
 
         // Create a new stream record for this key
         let stream_id = Uuid::new_v4();
 
-        // Create the stream key record and get its ID
-        let key_id = self
-            .db
-            .create_stream_key(uid, &key, req.expires, &stream_id.to_string())
-            .await?;
-
+        // Create the stream record FIRST (parent table) to satisfy foreign key constraint
+        // The stream_key_id will be updated after we create the key
         let new_stream = zap_stream_db::UserStream {
             id: stream_id.to_string(),
             user_id: uid,
             starts: Utc::now(),
             state: zap_stream_db::UserStreamState::Planned,
-            title: req.event.title,
-            summary: req.event.summary,
-            image: req.event.image,
-            tags: req.event.tags.map(|t| t.join(",")),
-            content_warning: req.event.content_warning,
-            goal: req.event.goal,
-            stream_key_id: Some(key_id),
+            title: req.event.title.clone(),
+            summary: req.event.summary.clone(),
+            image: req.event.image.clone(),
+            tags: req.event.tags.as_ref().map(|t| t.join(",")),
+            content_warning: req.event.content_warning.clone(),
+            goal: req.event.goal.clone(),
+            stream_key_id: None,  // Will be set after key creation
             ..Default::default()
         };
-
-        // Create the stream record with the stream_key_id set
         self.db.insert_stream(&new_stream).await?;
+
+        // Now create the stream key record (child table with foreign key to user_stream)
+        let key_id = self
+            .db
+            .create_stream_key(uid, &key, req.expires, &stream_id.to_string())
+            .await?;
+
+        // Update the stream with the key_id for bidirectional linking
+        let mut updated_stream = new_stream.clone();
+        updated_stream.stream_key_id = Some(key_id);
+        self.db.update_stream(&updated_stream).await?;
 
         // For now, return minimal response - event building would require nostr integration
         Ok(CreateStreamKeyResponse {
