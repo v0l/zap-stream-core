@@ -85,7 +85,7 @@ impl EgressEncoderConfig {
                     codec: "h264".to_string(),
                     codec_params: vec![
                         EncoderParam::Preset {
-                            name: "fast".to_string(),
+                            name: "veryfast".to_string(),
                         },
                         EncoderParam::Tune {
                             name: "zerolatency".to_string(),
