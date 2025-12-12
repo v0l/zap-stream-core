@@ -1,4 +1,4 @@
-use crate::overseer::{IngressStream, IngressStreamType};
+use crate::overseer::{IngressStream, StreamType};
 use crate::variant::VariantStream;
 use anyhow::Result;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVStream;
@@ -15,7 +15,7 @@ pub mod recorder;
 #[cfg(feature = "egress-rtmp")]
 pub mod rtmp;
 
-pub trait Egress {
+pub trait Egress: Send {
     fn process_pkt(&mut self, packet: AvPacketRef, variant: &Uuid) -> Result<EgressResult>;
     fn reset(&mut self) -> Result<EgressResult>;
 }
@@ -71,7 +71,7 @@ pub struct EgressEncoderConfig {
     /// Codec params
     pub codec_params: EncoderParams,
     /// The ingress stream type
-    pub stream_type: IngressStreamType,
+    pub stream_type: StreamType,
 }
 
 impl EgressEncoderConfig {
@@ -80,7 +80,7 @@ impl EgressEncoderConfig {
     /// you would need to transcode multiple times
     pub fn default_h264(stream: &IngressStream) -> Option<Self> {
         match stream.stream_type {
-            IngressStreamType::Video => {
+            StreamType::Video => {
                 Some(EgressEncoderConfig {
                     codec: "h264".to_string(),
                     codec_params: vec![
@@ -111,10 +111,10 @@ impl EgressEncoderConfig {
                         },
                     ]
                     .into(),
-                    stream_type: IngressStreamType::Video,
+                    stream_type: StreamType::Video,
                 })
             }
-            IngressStreamType::Audio => Some(EgressEncoderConfig {
+            StreamType::Audio => Some(EgressEncoderConfig {
                 codec: "aac".to_string(),
                 codec_params: vec![
                     EncoderParam::SampleFormat {
@@ -136,7 +136,7 @@ impl EgressEncoderConfig {
                     },
                 ]
                 .into(),
-                stream_type: IngressStreamType::Audio,
+                stream_type: StreamType::Audio,
             }),
             _ => None,
         }

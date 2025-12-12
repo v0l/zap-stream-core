@@ -15,7 +15,7 @@ use zap_stream_core::endpoint::{EndpointConfigEngine, parse_capabilities};
 use zap_stream_core::ingress::ConnectionInfo;
 use zap_stream_core::listen::ListenerEndpoint;
 use zap_stream_core::map_codec_id;
-use zap_stream_core::overseer::{IngressInfo, IngressStream, IngressStreamType, Overseer};
+use zap_stream_core::overseer::{IngressInfo, IngressStream, StreamType, Overseer};
 use zap_stream_core::variant::VariantStream;
 use zap_stream_db::ZapStreamDb;
 
@@ -97,7 +97,7 @@ impl MultiTrackEngine {
             streams: vec![
                 IngressStream {
                     index: 0,
-                    stream_type: IngressStreamType::Video,
+                    stream_type: StreamType::Video,
                     codec: ingest_video_codec as _,
                     format: unsafe {
                         let str = cstr!(pix_fmt);
@@ -125,7 +125,7 @@ impl MultiTrackEngine {
                 },
                 IngressStream {
                     index: 1,
-                    stream_type: IngressStreamType::Audio,
+                    stream_type: StreamType::Audio,
                     codec: ingest_audio_codec as _,
                     format: unsafe {
                         let str = cstr!(sample_fmt);

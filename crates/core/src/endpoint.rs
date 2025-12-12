@@ -1,5 +1,5 @@
 use crate::egress::{EgressEncoderConfig, EncoderParam, EncoderParams};
-use crate::overseer::{IngressInfo, IngressStream, IngressStreamType};
+use crate::overseer::{IngressInfo, IngressStream, StreamType};
 use crate::pipeline::{EgressConfig, EgressType};
 use crate::variant::{AudioVariant, VariantGroup, VariantStream, VideoVariant};
 use anyhow::{Result, bail};
@@ -83,12 +83,12 @@ impl EndpointConfigEngine {
         let transcode_video_src = info
             .streams
             .iter()
-            .filter(|a| a.stream_type == IngressStreamType::Video)
+            .filter(|a| a.stream_type == StreamType::Video)
             .max_by_key(|a| a.width * a.height); // TODO: filter by codec
         let transcode_audio_src = info
             .streams
             .iter()
-            .filter(|a| a.stream_type == IngressStreamType::Audio)
+            .filter(|a| a.stream_type == StreamType::Audio)
             .max_by_key(|a| a.sample_rate * a.channels as usize); // TODO: filter by codec (opus vs aac)
 
         let mut dup_map = HashMap::new();
@@ -99,7 +99,7 @@ impl EndpointConfigEngine {
                     let copy_groups: Vec<_> = info
                         .streams
                         .iter()
-                        .filter(|a| a.stream_type == IngressStreamType::Video)
+                        .filter(|a| a.stream_type == StreamType::Video)
                         .map(|s| {
                             // for each video stream create a mapping to the transcode audio src
                             // usually there is only a single ingress audio stream so we just want
@@ -283,7 +283,7 @@ impl EndpointConfigEngine {
                     // if the egress expects a different codec we cant copy it
                     // TODO: check params?
                     if !copy || (copy && p.codec == v.codec_name().unwrap_or("".to_string())) {
-                        params.push((e, p, v.index, Uuid::new_v4()));
+                        params.push((e, p, v, Uuid::new_v4()));
                     } else {
                         warn!(
                             "Failed to get encoder params, could not copy #{} to {:?}",
@@ -295,7 +295,7 @@ impl EndpointConfigEngine {
                     && let Some(p) = e.get_encoder_params(a, &stream.audio_params)
                 {
                     if !copy || (copy && p.codec == a.codec_name().unwrap_or("".to_string())) {
-                        params.push((e, p, a.index, Uuid::new_v4()));
+                        params.push((e, p, a, Uuid::new_v4()));
                     } else {
                         warn!(
                             "Failed to get encoder params, could not copy #{} to {:?}",
@@ -307,7 +307,7 @@ impl EndpointConfigEngine {
                     && let Some(p) = e.get_encoder_params(s, &stream.subtitle_params)
                 {
                     if !copy || (copy && p.codec == s.codec_name().unwrap_or("".to_string())) {
-                        params.push((e, p, s.index, Uuid::new_v4()));
+                        params.push((e, p, s, Uuid::new_v4()));
                     } else {
                         warn!(
                             "Failed to get encoder params, could not copy #{} to {:?}",
@@ -326,32 +326,33 @@ impl EndpointConfigEngine {
         let mut egress_map: HashMap<Uuid, VariantGroup> = HashMap::new();
         let mut ret = Vec::new();
         for (_, chunk) in &streams.into_iter().chunk_by(|c| c.0) {
-            for (e, param, src_index, id) in chunk.into_iter() {
+            for (e, param, ingress_stream, id) in chunk.into_iter() {
                 let e_map = egress_map.entry(e.id()).or_insert(Default::default());
 
                 // create a new variant stream using this config and store mapping for deduplication
                 match dup_map.entry(param.clone()) {
                     Entry::Occupied(v) => match &param.stream_type {
-                        IngressStreamType::Video => {
+                        StreamType::Video => {
                             e_map.video.replace(v.get().clone());
                         }
-                        IngressStreamType::Audio => {
+                        StreamType::Audio => {
                             e_map.audio.replace(v.get().clone());
                         }
-                        IngressStreamType::Subtitle => {
+                        StreamType::Subtitle => {
                             e_map.subtitle.replace(v.get().clone());
                         }
                         _ => {}
                     },
                     Entry::Vacant(dup) => match &param.stream_type {
-                        IngressStreamType::Video => {
+                        StreamType::Video => {
                             let mut cfg = VideoVariant {
                                 id,
-                                src_index,
+                                src_index: ingress_stream.index,
                                 codec: param.codec.clone(),
                                 ..Default::default()
                             };
                             cfg.apply_params(&param.codec_params);
+                            cfg.patch_for_ingress(ingress_stream);
                             if copy {
                                 ret.push(VariantStream::CopyVideo(cfg));
                             } else {
@@ -360,20 +361,21 @@ impl EndpointConfigEngine {
                             dup.insert(id);
                             e_map.video.replace(id);
                         }
-                        IngressStreamType::Audio => {
+                        StreamType::Audio => {
                             let mut cfg = AudioVariant {
                                 id,
-                                src_index,
+                                src_index: ingress_stream.index,
                                 codec: param.codec.clone(),
                                 ..Default::default()
                             };
                             cfg.apply_params(&param.codec_params);
+                            cfg.patch_for_ingress(ingress_stream);
                             // Never copy audio streams always transcode
                             ret.push(VariantStream::Audio(cfg));
                             dup.insert(id);
                             e_map.audio.replace(id);
                         }
-                        IngressStreamType::Subtitle => {
+                        StreamType::Subtitle => {
                             todo!()
                         }
                         _ => {}
@@ -693,7 +695,7 @@ fn ingress_stream_to_params(stream: &IngressStream) -> EncoderParams {
     let mut ret = vec![];
 
     match stream.stream_type {
-        IngressStreamType::Video => {
+        StreamType::Video => {
             if stream.fps.is_normal() && stream.fps > 0.0 {
                 let fps_q = unsafe { av_d2q(stream.fps as _, 90_000) };
                 ret.push(EncoderParam::Framerate {
@@ -720,7 +722,7 @@ fn ingress_stream_to_params(stream: &IngressStream) -> EncoderParams {
                 ret.push(EncoderParam::PixelFormat { name })
             }
         }
-        IngressStreamType::Audio => {
+        StreamType::Audio => {
             if stream.channels != 0 {
                 ret.push(EncoderParam::AudioChannels {
                     count: stream.channels as _,
@@ -740,7 +742,7 @@ fn ingress_stream_to_params(stream: &IngressStream) -> EncoderParams {
                 ret.push(EncoderParam::SampleFormat { name })
             }
         }
-        IngressStreamType::Subtitle => {
+        StreamType::Subtitle => {
             todo!()
         }
         _ => {}
@@ -765,7 +767,7 @@ mod tests {
             streams: vec![
                 IngressStream {
                     index: 0,
-                    stream_type: IngressStreamType::Video,
+                    stream_type: StreamType::Video,
                     codec: AVCodecID::AV_CODEC_ID_H264 as _,
                     format: AV_PIX_FMT_YUV420P as _,
                     width: 1920,
@@ -776,7 +778,7 @@ mod tests {
                 },
                 IngressStream {
                     index: 1,
-                    stream_type: IngressStreamType::Video,
+                    stream_type: StreamType::Video,
                     codec: AVCodecID::AV_CODEC_ID_H264 as _,
                     format: AV_PIX_FMT_YUV420P as _,
                     width: 1280,
@@ -787,7 +789,7 @@ mod tests {
                 },
                 IngressStream {
                     index: 2,
-                    stream_type: IngressStreamType::Audio,
+                    stream_type: StreamType::Audio,
                     codec: AVCodecID::AV_CODEC_ID_AAC as _,
                     format: AV_SAMPLE_FMT_FLTP as _,
                     bitrate: 320_000,

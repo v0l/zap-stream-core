@@ -1,5 +1,6 @@
 use crate::egress::EncoderParam;
 use crate::map_codec_id;
+use crate::overseer::IngressStream;
 use anyhow::{Result, bail};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVColorSpace::AVCOL_SPC_BT709;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_NONE;
@@ -51,6 +52,14 @@ pub struct VideoVariant {
     pub color_space: String,
     /// Video color range
     pub color_range: String,
+    /// Scale mode to use when resizing frames
+    pub scale_mode: Option<ScaleMode>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
+pub enum ScaleMode {
+    #[default]
+    Default,
 }
 
 impl Display for VideoVariant {
@@ -119,6 +128,17 @@ impl VideoVariant {
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// Apply any modifications to the config based on the ingress stream which is used for this variant
+    pub fn patch_for_ingress(&mut self, ingress: &IngressStream) {
+        // if the ingress stream is a different size, apply scale mode
+        if ingress.width as u16 != self.width
+            || ingress.height as u16 != self.height
+            || ingress.pixel_format_name().unwrap() != self.pixel_format
+        {
+            self.scale_mode = Some(ScaleMode::Default);
         }
     }
 

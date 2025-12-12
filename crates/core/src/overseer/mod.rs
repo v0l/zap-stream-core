@@ -26,7 +26,7 @@ pub struct IngressInfo {
 #[derive(PartialEq, Clone, Debug, Default)]
 pub struct IngressStream {
     pub index: usize,
-    pub stream_type: IngressStreamType,
+    pub stream_type: StreamType,
     /// FFMPEG codec ID
     pub codec: isize,
     /// FFMPEG sample/pixel format ID
@@ -57,7 +57,7 @@ impl IngressStream {
     }
 
     pub fn pixel_format_name(&self) -> Result<String> {
-        if self.stream_type != IngressStreamType::Video {
+        if self.stream_type != StreamType::Video {
             bail!("Ingress stream type not Video");
         }
         unsafe {
@@ -70,7 +70,7 @@ impl IngressStream {
     }
 
     pub fn sample_format_name(&self) -> Result<String> {
-        if self.stream_type != IngressStreamType::Audio {
+        if self.stream_type != StreamType::Audio {
             bail!("Ingress stream type not Audio");
         }
         unsafe {
@@ -87,7 +87,7 @@ impl Display for IngressStream {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let codec_name = self.codec_name().unwrap_or_else(|_| "unknown".to_string());
         match self.stream_type {
-            IngressStreamType::Video => {
+            StreamType::Video => {
                 let pix_fmt = self
                     .pixel_format_name()
                     .unwrap_or_else(|_| "unknown".to_string());
@@ -103,7 +103,7 @@ impl Display for IngressStream {
                     self.bitrate / 1000
                 )
             }
-            IngressStreamType::Audio => {
+            StreamType::Audio => {
                 let sample_fmt = self
                     .sample_format_name()
                     .unwrap_or_else(|_| "unknown".to_string());
@@ -122,20 +122,20 @@ impl Display for IngressStream {
                 }
                 Ok(())
             }
-            IngressStreamType::Subtitle => {
+            StreamType::Subtitle => {
                 write!(f, "#{} Subtitle: {}", self.index, codec_name)?;
                 if !self.language.is_empty() {
                     write!(f, ", lang={}", self.language)?;
                 }
                 Ok(())
             }
-            IngressStreamType::Unknown => write!(f, "#{} Unknown", self.index),
+            StreamType::Unknown => write!(f, "#{} Unknown", self.index),
         }
     }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Hash, Default)]
-pub enum IngressStreamType {
+pub enum StreamType {
     #[default]
     Unknown,
     Video,

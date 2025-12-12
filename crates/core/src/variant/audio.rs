@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 use std::mem::transmute;
 use uuid::Uuid;
+use crate::overseer::IngressStream;
 
 /// Information related to variant streams for a given egress
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
@@ -65,6 +66,11 @@ impl AudioVariant {
                 _ => {}
             }
         }
+    }
+
+    /// Apply any modifications to the config based on the ingress stream which is used for this variant
+    pub fn patch_for_ingress(&mut self, _ingress: &IngressStream) {
+        // NOOP
     }
 
     pub fn sample_format_id(&self) -> Result<i32> {

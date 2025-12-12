@@ -2,12 +2,13 @@ use std::fmt::{Display, Formatter};
 
 use crate::egress::{EgressEncoderConfig, EncoderParam, EncoderParams};
 use crate::mux::SegmentType;
-use crate::overseer::{IngressInfo, IngressStream, IngressStreamType};
+use crate::overseer::{IngressInfo, IngressStream, StreamType};
 use crate::variant::{VariantGroup, VariantStream};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub mod runner;
+pub(crate) mod worker;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum EgressType {
@@ -66,7 +67,7 @@ impl EgressType {
     ) -> Option<EgressEncoderConfig> {
         let mut p = EgressEncoderConfig::default_h264(stream)?;
         p.codec_params.extend(input_params.clone());
-        if matches!(self, EgressType::HLS { .. }) && stream.stream_type == IngressStreamType::Audio
+        if matches!(self, EgressType::HLS { .. }) && stream.stream_type == StreamType::Audio
         {
             // for HLS force the audio bitrate to always be 192khz
             p.codec_params
@@ -88,6 +89,24 @@ pub struct PipelineConfig {
     pub video_src: usize,
     /// Primary audio source stream
     pub audio_src: Option<usize>,
+}
+
+impl PipelineConfig {
+    /// Are we transcoding any video variants
+    pub fn is_video_transcoding(&self) -> bool {
+        self.variants.iter().any(|v| match v {
+            VariantStream::Video(_) => true,
+            _ => false,
+        })
+    }
+
+    pub fn is_transcoding_src(&self, src_index: usize) -> bool {
+        self.variants.iter().any(|var| match var {
+            VariantStream::Video(v) if v.src_index == src_index => true,
+            VariantStream::Audio(v) if v.src_index == src_index => true,
+            _ => false,
+        })
+    }
 }
 
 impl Display for PipelineConfig {
