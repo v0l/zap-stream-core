@@ -67,8 +67,7 @@ impl EgressType {
     ) -> Option<EgressEncoderConfig> {
         let mut p = EgressEncoderConfig::default_h264(stream)?;
         p.codec_params.extend(input_params.clone());
-        if matches!(self, EgressType::HLS { .. }) && stream.stream_type == StreamType::Audio
-        {
+        if matches!(self, EgressType::HLS { .. }) && stream.stream_type == StreamType::Audio {
             // for HLS force the audio bitrate to always be 192khz
             p.codec_params
                 .add_param(EncoderParam::Bitrate { value: 192_000 });
@@ -92,10 +91,10 @@ pub struct PipelineConfig {
 }
 
 impl PipelineConfig {
-    /// Are we transcoding any video variants
-    pub fn is_video_transcoding(&self) -> bool {
+    /// Are we transcoding any video or audio variants
+    pub fn is_transcoding(&self) -> bool {
         self.variants.iter().any(|v| match v {
-            VariantStream::Video(_) => true,
+            VariantStream::Video(_) | VariantStream::Audio(_) => true,
             _ => false,
         })
     }

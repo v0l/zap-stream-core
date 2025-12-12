@@ -259,7 +259,7 @@ impl PipelineRunner {
             && is_keyframe;
 
         // only process via decoder if we have encoders and (need transcoding OR thumbnail generation)
-        if config.is_video_transcoding() && (needs_transcode || needs_thumb_decode) {
+        if config.is_transcoding() && (needs_transcode || needs_thumb_decode) {
             trace!(
                 "PKT->DECODER: stream={}, pts={}, dts={}, duration={}, flags={}",
                 stream_index, packet.pts, packet.dts, packet.duration, packet.flags
