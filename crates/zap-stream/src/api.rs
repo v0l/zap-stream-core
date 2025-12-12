@@ -56,6 +56,7 @@ enum Route {
     DeleteStream,
     WebhookBitvora,
     MultiTrackConfig,
+    Metrics,
 }
 
 #[derive(Clone)]
@@ -162,6 +163,7 @@ impl Api {
         router
             .insert("/api/v1/multi-track-config", Route::MultiTrackConfig)
             .unwrap();
+        router.insert("/metrics", Route::Metrics).unwrap();
 
         Self {
             db: overseer.database(),
@@ -178,15 +180,24 @@ impl Api {
         self,
         req: Request<Incoming>,
     ) -> Result<Response<BoxBody<Bytes, anyhow::Error>>, anyhow::Error> {
-        let base = Response::builder()
+        let base_no_ct = Response::builder()
             .header("server", "zap-stream")
-            .header("content-type", "application/json")
             .header("access-control-allow-origin", "*")
             .header("access-control-allow-headers", "*")
             .header(
                 "access-control-allow-methods",
                 "HEAD, GET, PATCH, DELETE, POST, OPTIONS",
             );
+
+        let base = Response::builder()
+            .header("server", "zap-stream")
+            .header("access-control-allow-origin", "*")
+            .header("access-control-allow-headers", "*")
+            .header(
+                "access-control-allow-methods",
+                "HEAD, GET, PATCH, DELETE, POST, OPTIONS",
+            )
+            .header("content-type", "application/json");
 
         // Handle OPTIONS requests
         if req.method() == Method::OPTIONS {
@@ -574,15 +585,8 @@ impl Api {
                         .get("stream_id")
                         .ok_or_else(|| anyhow!("Missing stream_id"))?;
                     let log_content = self.admin_get_pipeline_log(admin_uid, stream_id).await?;
-                    let response = Response::builder()
-                        .header("server", "zap-stream")
+                    let response = base_no_ct
                         .header("content-type", "text/plain; charset=utf-8")
-                        .header("access-control-allow-origin", "*")
-                        .header("access-control-allow-headers", "*")
-                        .header(
-                            "access-control-allow-methods",
-                            "HEAD, GET, PATCH, DELETE, POST, OPTIONS",
-                        )
                         .body(Full::from(log_content).map_err(|e| match e {}).boxed())?;
                     Ok(response)
                 }
@@ -604,6 +608,18 @@ impl Api {
                     );
                     let rsp = engine.get_multi_track_config(mtr_req).await?;
                     Ok(base.body(Self::body_json(&rsp)?)?)
+                }
+                (&Method::GET, Route::Metrics) => {
+                    use zap_stream_core::metrics::{PipelineMetrics, set_total_viewers};
+                    // Update total viewers gauge before exporting
+                    let total_viewers = self.stream_manager.get_total_viewers().await;
+                    set_total_viewers(total_viewers);
+                    let metrics_output = PipelineMetrics::export_text()
+                        .map_err(|e| anyhow!("Failed to export metrics: {}", e))?;
+                    let response = base_no_ct
+                        .header("content-type", PipelineMetrics::content_type())
+                        .body(Full::from(metrics_output).map_err(|e| match e {}).boxed())?;
+                    Ok(response)
                 }
                 _ => Ok(base.status(405).body(Default::default())?), // Method not allowed
             }

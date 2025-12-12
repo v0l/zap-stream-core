@@ -26,6 +26,7 @@ use tracing::{error, info, warn};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::{EnvFilter, Layer};
 use zap_stream_core::listen::try_create_listener;
+use zap_stream_core::metrics::PipelineMetrics;
 use zap_stream_core::overseer::Overseer;
 
 mod api;
@@ -91,7 +92,7 @@ pub unsafe extern "C" fn av_log_redirect(
     }
 }
 
-#[tokio::main(worker_threads = 4)]
+#[tokio::main]
 async fn main() -> Result<()> {
     let _args = Args::parse();
 
@@ -103,6 +104,11 @@ async fn main() -> Result<()> {
     tracing::subscriber::set_global_default(logger)?;
 
     info!("Starting zap-stream");
+
+    // Initialize prometheus metrics
+    if let Err(e) = PipelineMetrics::init_global() {
+        warn!("Failed to initialize pipeline metrics: {}", e);
+    }
 
     setup_crypto_provider();
 

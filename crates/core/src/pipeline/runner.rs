@@ -228,11 +228,16 @@ impl PipelineRunner {
                 }
 
                 let thumb_duration = thumb_start.elapsed();
+
+                // Record thumbnail generation time in prometheus histogram
+                crate::metrics::record_thumbnail_generation_time(thumb_duration);
+
                 info!(
                     "Saved thumb ({}ms) to: {}",
                     thumb_duration.as_millis(),
                     dst_pic.display(),
                 );
+                let block_on_start = Instant::now();
                 if let Err(e) = handle.block_on(overseer.on_thumbnail(
                     &id,
                     frame.width as _,
@@ -241,6 +246,7 @@ impl PipelineRunner {
                 )) {
                     warn!("Failed to handle on_thumbnail: {}", e);
                 }
+                crate::metrics::record_block_on_thumbnail(block_on_start.elapsed());
             });
         }
         Ok(())
@@ -655,6 +661,7 @@ impl PipelineRunner {
     fn handle_egress_results(&self, results: Vec<EgressResult>) {
         // Process reset results and notify overseer of deleted segments
         if self.config.is_some() && !results.is_empty() {
+            let block_on_start = Instant::now();
             self.handle.block_on(async {
                 for result in results {
                     match result {
@@ -676,6 +683,7 @@ impl PipelineRunner {
                     }
                 }
             });
+            crate::metrics::record_block_on_egress_results(block_on_start.elapsed());
         }
     }
 
@@ -780,6 +788,18 @@ impl PipelineRunner {
                 self.stats_start = Instant::now();
                 self.fps_last_frame_ctr = self.frame_ctr;
 
+                // Record playback rate metric
+                if let Some(config) = &self.config {
+                    let target_fps = config
+                        .ingress_info
+                        .streams
+                        .get(config.video_src)
+                        .map(|s| s.fps)
+                        .unwrap_or(0.0);
+                    let pipeline_id = self.connection.id.to_string();
+                    crate::metrics::record_playback_rate(&pipeline_id, avg_fps, target_fps);
+                }
+
                 // emit metrics every 2s to overseer
                 let overseer = self.overseer.clone();
                 let metrics = PipelineStats {
@@ -841,11 +861,13 @@ impl PipelineRunner {
                 })
                 .collect(),
         };
+        let block_on_start = Instant::now();
         let cfg = self.handle.block_on(async {
             self.overseer
                 .start_stream(&mut self.connection, &i_info)
                 .await
         })?;
+        crate::metrics::record_block_on_start_stream(block_on_start.elapsed());
 
         let inputs: HashSet<usize> = cfg.variants.iter().map(|e| e.src_index()).collect();
         self.decoder.enable_hw_decoder_any();
@@ -954,7 +976,10 @@ impl PipelineRunner {
                 #[cfg(feature = "egress-rtmp")]
                 EgressType::RTMPForwarder(_, dst) => {
                     let mut fwd = RtmpEgress::new(dst, variant_mapping)?;
-                    if let Err(e) = self.handle.block_on(async { fwd.connect().await }) {
+                    let block_on_start = Instant::now();
+                    let connect_result = self.handle.block_on(async { fwd.connect().await });
+                    crate::metrics::record_block_on_rtmp_connect(block_on_start.elapsed());
+                    if let Err(e) = connect_result {
                         error!("Failed to connect forwarder: {}", e);
                     } else {
                         self.egress.push(Box::new(fwd));
@@ -962,9 +987,11 @@ impl PipelineRunner {
                 }
                 #[cfg(feature = "egress-moq")]
                 EgressType::Moq { .. } => {
+                    let block_on_start = Instant::now();
                     let origin = self
                         .handle
                         .block_on(async { self.overseer.get_moq_origin().await })?;
+                    crate::metrics::record_block_on_moq_origin(block_on_start.elapsed());
                     let id = self.connection.id.to_string();
                     let moq = MoqEgress::new(self.handle.clone(), origin, &id, &variant_mapping)?;
                     self.egress.push(Box::new(moq));

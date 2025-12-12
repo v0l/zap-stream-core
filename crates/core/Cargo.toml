@@ -39,6 +39,7 @@ ringbuf = "0.4.7"
 libc = "0.2.175"
 tracing-appender = "0.2.3"
 chrono = "0.4.42"
+prometheus = "0.14"
 
 # hls
 m3u8-rs = { workspace = true, optional = true }

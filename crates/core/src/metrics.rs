@@ -1,8 +1,220 @@
 use crate::ingress::EndpointStats;
 use crate::pipeline::runner::PipelineCommand;
+use prometheus::{Encoder, Gauge, Histogram, HistogramOpts, HistogramVec, Opts, Registry, TextEncoder};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, warn};
+
+/// Global metrics registry
+static METRICS: OnceLock<PipelineMetrics> = OnceLock::new();
+
+/// Pipeline metrics collection
+pub struct PipelineMetrics {
+    /// Histogram tracking thumbnail generation time in seconds
+    pub thumbnail_generation_time: Histogram,
+    /// Histogram tracking playback rate as fraction of target FPS (with pipeline_id label)
+    pub playback_rate: HistogramVec,
+    /// Histogram tracking block_on duration for on_thumbnail calls
+    pub block_on_thumbnail: Histogram,
+    /// Histogram tracking block_on duration for handle_egress_results calls
+    pub block_on_egress_results: Histogram,
+    /// Histogram tracking block_on duration for start_stream calls
+    pub block_on_start_stream: Histogram,
+    /// Histogram tracking block_on duration for RTMP forwarder connect calls
+    pub block_on_rtmp_connect: Histogram,
+    /// Histogram tracking block_on duration for MoQ origin calls
+    pub block_on_moq_origin: Histogram,
+    /// Gauge tracking total number of viewers across all streams
+    pub total_viewers: Gauge,
+}
+
+impl PipelineMetrics {
+    /// Create new pipeline metrics and register with the given registry
+    pub fn new(registry: &Registry) -> prometheus::Result<Self> {
+        let thumbnail_generation_time = Histogram::with_opts(HistogramOpts::new(
+            "thumbnail_generation_seconds",
+            "Time taken to generate thumbnails in seconds",
+        )
+        .buckets(vec![0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]))?;
+
+        // Playback rate histogram - buckets from 0 to 2 (0% to 200% of target FPS)
+        let playback_rate = HistogramVec::new(
+            HistogramOpts::new(
+                "pipeline_playback_rate",
+                "Playback rate as fraction of target FPS (1.0 = 100%)",
+            )
+            .buckets(vec![0.0, 0.25, 0.5, 0.75, 0.9, 0.95, 1.0, 1.05, 1.1, 1.25, 1.5, 2.0]),
+            &["pipeline_id"],
+        )?;
+
+        // Block-on duration buckets (in seconds) - from 1ms to 10s
+        let block_on_buckets = vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0];
+
+        let block_on_thumbnail = Histogram::with_opts(
+            HistogramOpts::new(
+                "pipeline_block_on_thumbnail_seconds",
+                "Duration of block_on calls for on_thumbnail",
+            )
+            .buckets(block_on_buckets.clone()),
+        )?;
+
+        let block_on_egress_results = Histogram::with_opts(
+            HistogramOpts::new(
+                "pipeline_block_on_egress_results_seconds",
+                "Duration of block_on calls for handle_egress_results",
+            )
+            .buckets(block_on_buckets.clone()),
+        )?;
+
+        let block_on_start_stream = Histogram::with_opts(
+            HistogramOpts::new(
+                "pipeline_block_on_start_stream_seconds",
+                "Duration of block_on calls for start_stream",
+            )
+            .buckets(block_on_buckets.clone()),
+        )?;
+
+        let block_on_rtmp_connect = Histogram::with_opts(
+            HistogramOpts::new(
+                "pipeline_block_on_rtmp_connect_seconds",
+                "Duration of block_on calls for RTMP forwarder connect",
+            )
+            .buckets(block_on_buckets.clone()),
+        )?;
+
+        let block_on_moq_origin = Histogram::with_opts(
+            HistogramOpts::new(
+                "pipeline_block_on_moq_origin_seconds",
+                "Duration of block_on calls for MoQ origin",
+            )
+            .buckets(block_on_buckets),
+        )?;
+
+        let total_viewers = Gauge::with_opts(Opts::new(
+            "total_viewers",
+            "Total number of viewers across all streams",
+        ))?;
+
+        registry.register(Box::new(thumbnail_generation_time.clone()))?;
+        registry.register(Box::new(playback_rate.clone()))?;
+        registry.register(Box::new(block_on_thumbnail.clone()))?;
+        registry.register(Box::new(block_on_egress_results.clone()))?;
+        registry.register(Box::new(block_on_start_stream.clone()))?;
+        registry.register(Box::new(block_on_rtmp_connect.clone()))?;
+        registry.register(Box::new(block_on_moq_origin.clone()))?;
+        registry.register(Box::new(total_viewers.clone()))?;
+
+        Ok(Self {
+            thumbnail_generation_time,
+            playback_rate,
+            block_on_thumbnail,
+            block_on_egress_results,
+            block_on_start_stream,
+            block_on_rtmp_connect,
+            block_on_moq_origin,
+            total_viewers,
+        })
+    }
+
+    /// Initialize global metrics with the default registry
+    pub fn init_global() -> prometheus::Result<()> {
+        let metrics = Self::new(prometheus::default_registry())?;
+        METRICS
+            .set(metrics)
+            .map_err(|_| prometheus::Error::Msg("PipelineMetrics already initialized".to_string()))?;
+        Ok(())
+    }
+
+    /// Get the global metrics instance
+    pub fn global() -> Option<&'static PipelineMetrics> {
+        METRICS.get()
+    }
+
+    /// Export all metrics in prometheus text format
+    pub fn export_text() -> Result<String, prometheus::Error> {
+        let encoder = TextEncoder::new();
+        let metric_families = prometheus::gather();
+        let mut buffer = Vec::new();
+        encoder.encode(&metric_families, &mut buffer)?;
+        String::from_utf8(buffer).map_err(|e| prometheus::Error::Msg(e.to_string()))
+    }
+
+    /// Get the prometheus content type for HTTP responses
+    pub fn content_type() -> &'static str {
+        prometheus::TEXT_FORMAT
+    }
+}
+
+/// Record a thumbnail generation duration
+pub fn record_thumbnail_generation_time(duration: Duration) {
+    if let Some(metrics) = PipelineMetrics::global() {
+        metrics
+            .thumbnail_generation_time
+            .observe(duration.as_secs_f64());
+    }
+}
+
+/// Record playback rate as fraction of target FPS
+pub fn record_playback_rate(pipeline_id: &str, average_fps: f32, target_fps: f32) {
+    if target_fps > 0.0 {
+        if let Some(metrics) = PipelineMetrics::global() {
+            let rate = average_fps as f64 / target_fps as f64;
+            metrics
+                .playback_rate
+                .with_label_values(&[pipeline_id])
+                .observe(rate);
+        }
+    }
+}
+
+/// Record block_on duration for on_thumbnail calls
+pub fn record_block_on_thumbnail(duration: Duration) {
+    if let Some(metrics) = PipelineMetrics::global() {
+        metrics.block_on_thumbnail.observe(duration.as_secs_f64());
+    }
+}
+
+/// Record block_on duration for handle_egress_results calls
+pub fn record_block_on_egress_results(duration: Duration) {
+    if let Some(metrics) = PipelineMetrics::global() {
+        metrics
+            .block_on_egress_results
+            .observe(duration.as_secs_f64());
+    }
+}
+
+/// Record block_on duration for start_stream calls
+pub fn record_block_on_start_stream(duration: Duration) {
+    if let Some(metrics) = PipelineMetrics::global() {
+        metrics
+            .block_on_start_stream
+            .observe(duration.as_secs_f64());
+    }
+}
+
+/// Record block_on duration for RTMP forwarder connect calls
+pub fn record_block_on_rtmp_connect(duration: Duration) {
+    if let Some(metrics) = PipelineMetrics::global() {
+        metrics
+            .block_on_rtmp_connect
+            .observe(duration.as_secs_f64());
+    }
+}
+
+/// Record block_on duration for MoQ origin calls
+pub fn record_block_on_moq_origin(duration: Duration) {
+    if let Some(metrics) = PipelineMetrics::global() {
+        metrics.block_on_moq_origin.observe(duration.as_secs_f64());
+    }
+}
+
+/// Set the total number of viewers across all streams
+pub fn set_total_viewers(count: u64) {
+    if let Some(metrics) = PipelineMetrics::global() {
+        metrics.total_viewers.set(count as f64);
+    }
+}
 
 /// Generic packet metrics collection for ingress and egress components
 #[derive(Debug, Clone)]

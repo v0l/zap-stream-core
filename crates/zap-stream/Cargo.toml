@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
-default = ["srt", "rtmp", "test-pattern", "moq", "hls", "tls-ring"]
+default = ["srt", "rtmp", "test-pattern", "hls", "tls-ring"]
 srt = ["zap-stream-core/ingress-srt"]
 rtmp = ["zap-stream-core/ingress-rtmp"]
 hls = ["zap-stream-core/egress-hls"]

@@ -352,6 +352,11 @@ impl StreamManager {
         viewers.get_viewer_count(stream_id).await
     }
 
+    pub async fn get_total_viewers(&self) -> u64 {
+        let streams = self.active_streams.read().await;
+        streams.values().map(|s| s.viewers as u64).sum()
+    }
+
     pub async fn track_viewer(&self, stream_id: &str, token: &str) {
         let mut viewers = self.viewer_tracker.write().await;
         viewers.track_viewer(stream_id, token).await;
