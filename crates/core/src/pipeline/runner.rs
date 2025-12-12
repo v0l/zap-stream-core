@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{Read, stdout};
 use std::ops::Sub;
 use std::path::PathBuf;
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -23,7 +24,7 @@ use anyhow::{Result, anyhow, bail};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{AV_NOPTS_VALUE, AV_PKT_FLAG_KEY};
 use ffmpeg_rs_raw::{AvFrameRef, AvPacketRef, Decoder, Demuxer, StreamType, get_frame_from_hw};
 use tokio::runtime::Handle;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::UnboundedReceiver;
 use tracing::{debug, error, info, trace, warn};
 use tracing_appender::{non_blocking, rolling};
 use tracing_subscriber::{EnvFilter, Layer, fmt, layer::SubscriberExt};
@@ -75,7 +76,7 @@ pub struct PipelineRunner {
     decoder: Decoder,
 
     /// Channels for sending work to each thread by variant id
-    worker_channels: HashMap<Uuid, UnboundedSender<WorkerThreadCommand>>,
+    worker_channels: HashMap<Uuid, Sender<WorkerThreadCommand>>,
 
     /// All configured egress'
     egress: Arc<Mutex<Vec<Box<dyn Egress>>>>,

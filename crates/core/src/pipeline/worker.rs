@@ -8,11 +8,10 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{AV_NOPTS_VALUE, av_rescale_q};
 use ffmpeg_rs_raw::{AudioFifo, AvFrameRef, AvPacketRef, Encoder, Resample, Scaler};
 use std::path::PathBuf;
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::runtime::Handle;
-use tokio::sync::mpsc::error::TryRecvError;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tracing::{error, info, trace, warn};
 use uuid::Uuid;
 
@@ -41,12 +40,14 @@ pub struct PipelineWorkerThread {
     egress: Arc<Mutex<Vec<Box<dyn Egress>>>>,
     overseer: Arc<dyn Overseer>,
 
-    work_queue_tx: Option<UnboundedSender<WorkerThreadCommand>>,
-    work_queue_rx: UnboundedReceiver<WorkerThreadCommand>,
+    work_queue_tx: Option<Sender<WorkerThreadCommand>>,
+    work_queue_rx: Receiver<WorkerThreadCommand>,
+
+    did_flush: bool,
 }
 
 impl PipelineWorkerThread {
-    pub fn sender(&mut self) -> Option<UnboundedSender<WorkerThreadCommand>> {
+    pub fn sender(&mut self) -> Option<Sender<WorkerThreadCommand>> {
         self.work_queue_tx.take()
     }
 
@@ -286,15 +287,18 @@ impl PipelineWorkerThread {
             WorkerThreadCommand::MuxPacket { packet } => {
                 self.egress_packets(vec![packet])?;
             }
-            WorkerThreadCommand::Flush => match self.variant {
-                VariantStream::Video(_) => {
-                    self.encode_mux_frame(None)?;
+            WorkerThreadCommand::Flush => {
+                self.did_flush = true;
+                match self.variant {
+                    VariantStream::Video(_) => {
+                        self.encode_mux_frame(None)?;
+                    }
+                    VariantStream::Audio(_) => {
+                        self.resample_encode_frame(None)?;
+                    }
+                    _ => {}
                 }
-                VariantStream::Audio(_) => {
-                    self.resample_encode_frame(None)?;
-                }
-                _ => {}
-            },
+            }
         }
         Ok(())
     }
@@ -311,21 +315,18 @@ impl PipelineWorkerThread {
             ))
             .spawn(move || {
                 loop {
-                    match self.work_queue_rx.try_recv() {
+                    match self.work_queue_rx.recv() {
                         Ok(msg) => {
                             if let Err(e) = self.process_msg(msg) {
                                 error!("Failed to process message: {}", e);
                             }
                         }
-                        Err(e) => match e {
-                            TryRecvError::Empty => {
-                                std::thread::sleep(std::time::Duration::from_millis(10))
+                        Err(e) => {
+                            if !self.did_flush {
+                                error!("Channel closed before flush command! {e}");
                             }
-                            TryRecvError::Disconnected => {
-                                error!("Disconnected from worker");
-                                break;
-                            }
-                        },
+                            break;
+                        }
                     }
                 }
             })
@@ -346,8 +347,8 @@ pub struct PipelineWorkerThreadBuilder {
     scaler: Option<Scaler>,
     encoder: Option<Encoder>,
     resampler: Option<(Resample, AudioFifo)>,
-    work_queue_tx: UnboundedSender<WorkerThreadCommand>,
-    work_queue_rx: UnboundedReceiver<WorkerThreadCommand>,
+    work_queue_tx: Sender<WorkerThreadCommand>,
+    work_queue_rx: Receiver<WorkerThreadCommand>,
 }
 
 impl PipelineWorkerThreadBuilder {
@@ -387,6 +388,7 @@ impl PipelineWorkerThreadBuilder {
             overseer: self.overseer.ok_or(anyhow!("Overseer not set"))?,
             work_queue_tx: Some(self.work_queue_tx),
             work_queue_rx: self.work_queue_rx,
+            did_flush: false,
         })
     }
 }
@@ -397,7 +399,7 @@ impl TryFrom<&VariantStream> for PipelineWorkerThreadBuilder {
         match value {
             VariantStream::Video(v) => {
                 let enc = v.create_encoder(true)?;
-                let (tx, rx) = unbounded_channel();
+                let (tx, rx) = channel();
                 Ok(Self {
                     pipeline_id: None,
                     handle: None,
@@ -420,7 +422,7 @@ impl TryFrom<&VariantStream> for PipelineWorkerThreadBuilder {
                 let fmt = unsafe { std::mem::transmute(a.sample_format_id()?) };
                 let rs = Resample::new(fmt, a.sample_rate as _, a.channels as _);
                 let f = AudioFifo::new(fmt, a.channels as _)?;
-                let (tx, rx) = unbounded_channel();
+                let (tx, rx) = channel();
                 Ok(Self {
                     pipeline_id: None,
                     handle: None,
@@ -436,7 +438,7 @@ impl TryFrom<&VariantStream> for PipelineWorkerThreadBuilder {
             }
             VariantStream::Subtitle { .. } => todo!(),
             VariantStream::CopyVideo(_) | VariantStream::CopyAudio(_) => {
-                let (tx, rx) = unbounded_channel();
+                let (tx, rx) = channel();
                 Ok(Self {
                     pipeline_id: None,
                     handle: None,
