@@ -168,6 +168,15 @@ pub fn record_playback_rate(pipeline_id: &str, average_fps: f32, target_fps: f32
     }
 }
 
+/// Remove playback rate metrics for a pipeline when it ends
+pub fn remove_playback_rate(pipeline_id: &str) {
+    if let Some(metrics) = PipelineMetrics::global() {
+        if let Err(e) = metrics.playback_rate.remove_label_values(&[pipeline_id]) {
+            debug!("Failed to remove playback rate metrics for {}: {}", pipeline_id, e);
+        }
+    }
+}
+
 /// Record block_on duration for on_thumbnail calls
 pub fn record_block_on_thumbnail(duration: Duration) {
     if let Some(metrics) = PipelineMetrics::global() {

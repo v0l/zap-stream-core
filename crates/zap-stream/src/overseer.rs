@@ -1045,6 +1045,7 @@ impl Overseer for ZapStreamOverseer {
         let user = self.db.get_user(stream.user_id).await?;
 
         self.stream_manager.remove_active_stream(&stream.id).await;
+        zap_stream_core::metrics::remove_playback_rate(&stream.id);
 
         stream.state = UserStreamState::Ended;
         stream.ends = Some(Utc::now());
