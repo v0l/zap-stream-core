@@ -31,6 +31,7 @@ use zap_stream_core::overseer::Overseer;
 
 mod api;
 mod auth;
+mod game_db;
 mod http;
 mod multitrack;
 mod overseer;
@@ -39,7 +40,6 @@ mod settings;
 mod stream_manager;
 mod viewer;
 mod websocket_metrics;
-mod game_db;
 
 #[derive(Parser, Debug)]
 #[clap(version, about)]
@@ -139,10 +139,14 @@ async fn main() -> Result<()> {
         }
     }
 
-    let builder = Config::builder()
+    let mut builder = Config::builder()
         .add_source(config::File::with_name("config.yaml"))
-        .add_source(config::Environment::with_prefix("APP"))
-        .build()?;
+        .add_source(config::Environment::with_prefix("APP"));
+    #[cfg(debug_assertions)]
+    {
+        builder = builder.add_source(config::File::with_name("config.dev.yaml").required(false));
+    }
+    let builder = builder.build()?;
 
     // setup termination handler
     let shutdown = CancellationToken::new();
