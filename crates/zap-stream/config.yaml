@@ -61,8 +61,13 @@ moq:
   bind: "[::]:1443"
   tls:
     # Path to one of more certificates
-    cert: ["/home/kieran/kieran_lan.crt"]
+    cert: [ "/home/kieran/kieran_lan.crt" ]
     # Path to one or more certificate key
-    key: ["/home/kieran/kieran_lan.key"]
+    key: [ "/home/kieran/kieran_lan.key" ]
     # Generate a TLS cert using the following hostnames
     # generate: []
+
+# Twitch API (IGDB)
+# twitch:
+  # client_id: "my_client_id"
+  # client_secret: "my_client_secret"
