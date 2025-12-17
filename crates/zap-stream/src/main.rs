@@ -39,6 +39,7 @@ mod settings;
 mod stream_manager;
 mod viewer;
 mod websocket_metrics;
+mod game_db;
 
 #[derive(Parser, Debug)]
 #[clap(version, about)]

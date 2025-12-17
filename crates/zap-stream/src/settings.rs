@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     /// List of listen endpoints
+    /// List of listen endpoints
     ///
     /// - srt://localhost:3333
     /// - tcp://localhost:3334
@@ -18,24 +19,31 @@ pub struct Settings {
     /// Public facing URL that maps to [output_dir]
     pub public_url: String,
 
+    #[serde(default)]
     /// Ignore the url check inNIP-98
     pub ignore_auth_url: Option<bool>,
 
     /// Binding address for http server serving files from [output_dir]
     pub listen_http: String,
 
+    #[serde(default)]
     /// Admin pubkey
     pub admin_pubkey: Option<String>,
 
     /// Overseer service see [Overseer] for more info
     pub overseer: OverseerConfig,
 
+    #[serde(default)]
     /// Redis config for horizonal-scaling
     pub redis: Option<RedisConfig>,
 
     #[cfg(feature = "moq")]
     /// MoQ server config
     pub moq: Option<moq_native::ServerConfig>,
+
+    #[serde(default)]
+    /// Twitch API configuration
+    pub twitch: TwitchConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,4 +103,10 @@ pub enum PaymentBackend {
     #[serde(rename_all = "kebab-case")]
     // Plain LUD-16 payment backend
     LNURL { address: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TwitchConfig {
+    pub client_id: String,
+    pub client_secret: String,
 }

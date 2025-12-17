@@ -15,17 +15,20 @@ use lnurl::pay::{LnURLPayInvoice, PayResponse};
 use matchit::Router;
 use nostr_sdk::prelude::EventDeletionRequest;
 use nostr_sdk::{Client, NostrSigner, PublicKey, serde_json};
-use nwc::NWC;
-use nwc::prelude::NostrWalletConnectURI;
+use nwc::prelude::{NostrWalletConnect, NostrWalletConnectUri};
 use payments_rs::lightning::{AddInvoiceRequest, LightningNode};
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 use uuid::Uuid;
+
+use crate::game_db::GameDb;
 use zap_stream_core::listen::ListenerEndpoint;
+use zap_stream_core::metrics::PipelineMetrics;
 use zap_stream_core::overseer::Overseer;
 use zap_stream_db::{IngestEndpoint, ZapStreamDb};
 
@@ -57,6 +60,8 @@ enum Route {
     WebhookBitvora,
     MultiTrackConfig,
     Metrics,
+    GamesSearch,
+    GameInfo,
 }
 
 #[derive(Clone)]
@@ -68,6 +73,7 @@ pub struct Api {
     overseer: Arc<dyn Overseer>,
     stream_manager: StreamManager,
     nostr_client: Client,
+    game_db: GameDb,
 }
 
 impl Api {
@@ -88,9 +94,9 @@ impl Api {
 
     pub fn new(overseer: Arc<ZapStreamOverseer>, settings: Settings) -> Self {
         let mut router = Router::new();
-
         // Define routes (path only, method will be matched separately)
         router.insert("/api/v1/account", Route::Account).unwrap();
+        // ... existing routes ...
         router.insert("/api/v1/event", Route::Event).unwrap();
         router.insert("/api/v1/forward", Route::Forward).unwrap();
         router
@@ -163,10 +169,16 @@ impl Api {
         router
             .insert("/api/v1/multi-track-config", Route::MultiTrackConfig)
             .unwrap();
+        router
+            .insert("/api/v1/games/search", Route::GamesSearch)
+            .unwrap();
+        router
+            .insert("/api/v1/games/{id}", Route::GameInfo)
+            .unwrap();
         router.insert("/metrics", Route::Metrics).unwrap();
-
         Self {
             db: overseer.database(),
+            game_db: GameDb::new(settings.twitch.clone()),
             settings,
             payments: overseer.lightning(),
             router,
@@ -621,6 +633,32 @@ impl Api {
                         .body(Full::from(metrics_output).map_err(|e| match e {}).boxed())?;
                     Ok(response)
                 }
+                (&Method::GET, Route::GamesSearch) => {
+                    let full_url = format!(
+                        "{}{}",
+                        self.settings.public_url.trim_end_matches('/'),
+                        req.uri()
+                    );
+                    let url: url::Url = full_url.parse()?;
+                    let q: String = url
+                        .query_pairs()
+                        .find_map(|(k, v)| if k == "q" { Some(v.to_string()) } else { None })
+                        .ok_or(anyhow!("Missing query parameter 'q'"))?;
+                    let limit: u16 = url
+                        .query_pairs()
+                        .find_map(|(k, v)| if k == "limit" { Some(v) } else { None })
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(10);
+                    let rsp = self.game_db.search_games(&q, limit).await?;
+                    let response = base.body(Full::from(rsp).map_err(|e| match e {}).boxed())?;
+                    Ok(response)
+                }
+                (&Method::GET, Route::GameInfo) => {
+                    let game_id = params.get("id").ok_or(anyhow!("Missing game ID"))?;
+                    let rsp = self.game_db.get_game(game_id).await?;
+                    let response = base.body(Full::from(rsp).map_err(|e| match e {}).boxed())?;
+                    Ok(response)
+                }
                 _ => Ok(base.status(405).body(Default::default())?), // Method not allowed
             }
         } else {
@@ -723,8 +761,8 @@ impl Api {
             && account.remove_nwc.is_none()
         {
             // test connection
-            let parsed = NostrWalletConnectURI::parse(&url)?;
-            let nwc = NWC::new(parsed);
+            let parsed = NostrWalletConnectUri::parse(&url)?;
+            let nwc = NostrWalletConnect::new(parsed);
             let info = nwc.get_info().await?;
             if !info.methods.contains(&nwc::prelude::Method::PayInvoice) {
                 bail!("NWC connection does not allow paying invoices!");
