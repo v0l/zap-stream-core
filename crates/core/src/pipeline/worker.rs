@@ -329,6 +329,7 @@ impl PipelineWorkerThread {
                         }
                     }
                 }
+                info!("Worker thread terminated");
             })
         {
             bail!("Failed to start worker: {e}");

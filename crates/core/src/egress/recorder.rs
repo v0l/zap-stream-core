@@ -30,10 +30,12 @@ impl RecorderEgress {
                 match g.stream {
                     EncoderOrSourceStream::Encoder(enc) => {
                         let stream = m.add_stream_encoder(enc)?;
+                        (*(*stream).codecpar).codec_tag = 0;
                         var_map.insert(g.variant.id(), (*stream).index);
                     }
                     EncoderOrSourceStream::SourceStream(stream) => {
                         let stream = m.add_copy_stream(stream)?;
+                        (*(*stream).codecpar).codec_tag = 0;
                         var_map.insert(g.variant.id(), (*stream).index);
                     }
                 }

@@ -788,12 +788,15 @@ impl Overseer for ZapStreamOverseer {
         let caps = parse_capabilities(&endpoint.capabilities);
 
         // configure list of egress' we're going to use
-        let egress = self.get_egress(&connection).await?;
+        let mut egress = self.get_egress(&connection).await?;
 
         let cfg = EndpointConfigEngine::get_variants_from_endpoint(stream_info, &caps, &egress)?;
         if cfg.variants.is_empty() {
             bail!("No variants configured");
         }
+
+        // replace requested egress' with the configured egress'
+        egress = cfg.egress;
 
         // in cases where the previous stream should be resumed, the pipeline ID will match a previous
         // stream so we should first try to find the current pipeline id as if it already exists
@@ -1096,18 +1099,18 @@ impl Overseer for ZapStreamOverseer {
             segment_length: self.segment_length,
             segment_type: SegmentType::FMP4,
         });
-        if let Some(h) = caps.iter().find_map(|c| {
-            if let EndpointCapability::DVR { height } = c {
-                Some(*height)
-            } else {
-                None
-            }
-        }) {
-            egress.push(EgressType::Recorder {
-                id: Uuid::new_v4(),
-                height: h,
-            })
-        }
+        // if let Some(h) = caps.iter().find_map(|c| {
+        //     if let EndpointCapability::DVR { height } = c {
+        //         Some(*height)
+        //     } else {
+        //         None
+        //     }
+        // }) {
+        //     egress.push(EgressType::Recorder {
+        //         id: Uuid::new_v4(),
+        //         height: h,
+        //     })
+        // }
 
         // let forward_dest = self.db.get_user_forwards(user.id).await?;
         // for fwd in forward_dest {
