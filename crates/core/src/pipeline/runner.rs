@@ -200,7 +200,8 @@ impl PipelineRunner {
                 self.process_packet(pkt)
             } else {
                 // EOF, exit
-                self.flush()
+                self.flush();
+                Ok(())
             }
         }
     }
@@ -417,14 +418,13 @@ impl PipelineRunner {
     }
 
     /// EOF, cleanup
-    unsafe fn flush(&mut self) -> Result<()> {
+    fn flush(&mut self) {
         self.state = RunnerState::Shutdown;
-        for (_, w) in &self.worker_channels {
+        for (_, w) in self.worker_channels.drain() {
             if let Err(e) = w.send(WorkerThreadCommand::Flush) {
                 warn!("Failed to send flush to worker thread: {}", e);
             }
         }
-        Ok(())
     }
 
     pub fn run(&mut self) {
@@ -475,7 +475,7 @@ impl PipelineRunner {
             while let Ok(c) = cmd.try_recv() {
                 match c {
                     PipelineCommand::Shutdown => {
-                        self.state = RunnerState::Shutdown;
+                        self.flush();
                         return Ok(Some(true));
                     }
                     PipelineCommand::IngressMetrics(s) => {
@@ -766,16 +766,12 @@ impl PipelineRunner {
 
 impl Drop for PipelineRunner {
     fn drop(&mut self) {
-        unsafe {
-            // First try to flush properly
-            if let Err(e) = self.flush() {
-                error!("Failed to flush pipeline during drop: {}", e);
-            }
+        // First try to flush properly
+        self.flush();
 
-            info!(
-                "PipelineRunner cleaned up resources for stream: {}",
-                self.connection.id
-            );
-        }
+        info!(
+            "PipelineRunner cleaned up resources for stream: {}",
+            self.connection.id
+        );
     }
 }
