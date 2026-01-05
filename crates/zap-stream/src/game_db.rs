@@ -90,9 +90,9 @@ impl GameDb {
     pub async fn search_games(&self, search: &str, limit: u16) -> Result<String> {
         let url = "https://api.igdb.com/v4/games";
         let q = format!(
-            "search \"{}\"; fields \"{}\"; limit {};",
-            Self::GAME_FIELDS,
+            "search \"{}\"; fields {}; limit {};",
             search,
+            Self::GAME_FIELDS,
             limit
         );
 
@@ -103,7 +103,7 @@ impl GameDb {
     /// Get a specific game and return the raw JSON string response
     pub async fn get_game(&self, game_id: &str) -> Result<String> {
         let url = "https://api.igdb.com/v4/games";
-        let q = format!("fields \"{}\"; where id = {};", Self::GAME_FIELDS, game_id);
+        let q = format!("fields {}; where id = {};", Self::GAME_FIELDS, game_id);
         let rsp = self.post_base(url).await?.body(q).send().await?;
         rsp.text().await.map_err(anyhow::Error::from)
     }
