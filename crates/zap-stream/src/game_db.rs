@@ -1,8 +1,9 @@
 use crate::settings::TwitchConfig;
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
 use nostr_sdk::Timestamp;
 use serde::Deserialize;
 use std::sync::Arc;
+use std::collections::HashMap;
 use tokio::sync::RwLock;
 use tracing::{error, info};
 
@@ -19,6 +20,8 @@ pub struct GameDb {
     config: TwitchConfig,
     client: reqwest::Client,
     current_token: Arc<RwLock<Option<CurrentToken>>>,
+    // Simple in‑memory cache: key -> (response, timestamp)
+    cache: Arc<RwLock<HashMap<String, (String, u64)>>>,
 }
 
 impl GameDb {
@@ -28,6 +31,7 @@ impl GameDb {
             config,
             client: reqwest::Client::new(),
             current_token: Default::default(),
+            cache: Default::default(),
         }
     }
 
@@ -75,6 +79,25 @@ impl GameDb {
         }
     }
 
+    /// Retrieve a cached response if it exists and is fresh.
+    async fn get_cached(&self, key: &str) -> Option<String> {
+        let read = self.cache.read().await;
+        if let Some((value, ts)) = read.get(key) {
+            // Simple TTL of 1 hour (3600 seconds)
+            const TTL: u64 = 3600;
+            if Timestamp::now().as_secs() - ts < TTL {
+                return Some(value.clone());
+            }
+        }
+        None
+    }
+
+    /// Store a response in the cache with the current timestamp.
+    async fn set_cached(&self, key: String, value: String) {
+        let mut write = self.cache.write().await;
+        write.insert(key, (value, Timestamp::now().as_secs()));
+    }
+
     async fn post_base(&self, url: impl reqwest::IntoUrl) -> Result<reqwest::RequestBuilder> {
         let token = self.refresh_token().await?;
         Ok(self
@@ -86,8 +109,15 @@ impl GameDb {
             .header("accept", "application/json"))
     }
 
-    /// Search for games and return the raw JSON string response
+    /// Search for games and return the raw JSON string response.
+    /// Results are cached for up to one hour to avoid excessive IGDB calls.
     pub async fn search_games(&self, search: &str, limit: u16) -> Result<String> {
+        // Create a deterministic cache key.
+        let cache_key = format!("search:{}:limit:{}", search, limit);
+        if let Some(cached) = self.get_cached(&cache_key).await {
+            return Ok(cached);
+        }
+
         let url = "https://api.igdb.com/v4/games";
         let q = format!(
             "search \"{}\"; fields {}; limit {};",
@@ -97,14 +127,24 @@ impl GameDb {
         );
 
         let rsp = self.post_base(url).await?.body(q).send().await?;
-        rsp.text().await.map_err(anyhow::Error::from)
+        let txt = rsp.text().await.map_err(anyhow::Error::from)?;
+        // Cache the fresh response before returning.
+        self.set_cached(cache_key, txt.clone()).await;
+        Ok(txt)
     }
 
-    /// Get a specific game and return the raw JSON string response
+    /// Get a specific game and return the raw JSON string response.
+    /// Results are cached for up to one hour.
     pub async fn get_game(&self, game_id: &str) -> Result<String> {
+        let cache_key = format!("game:{}", game_id);
+        if let Some(cached) = self.get_cached(&cache_key).await {
+            return Ok(cached);
+        }
         let url = "https://api.igdb.com/v4/games";
         let q = format!("fields {}; where id = {};", Self::GAME_FIELDS, game_id);
         let rsp = self.post_base(url).await?.body(q).send().await?;
-        rsp.text().await.map_err(anyhow::Error::from)
+        let txt = rsp.text().await.map_err(anyhow::Error::from)?;
+        self.set_cached(cache_key, txt.clone()).await;
+        Ok(txt)
     }
 }
