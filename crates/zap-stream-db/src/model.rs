@@ -164,7 +164,7 @@ pub struct Payment {
     pub user_id: u64,
     pub invoice: Option<String>,
     pub is_paid: bool,
-    pub amount: u64,
+    pub amount: i64,
     pub created: DateTime<Utc>,
     pub expires: DateTime<Utc>,
     pub nostr: Option<String>,
