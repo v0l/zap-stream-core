@@ -373,6 +373,17 @@ impl Api {
                     self.delete_forward(&auth.pubkey, forward_id).await?;
                     Ok(base.body(Self::body_json(&())?)?)
                 }
+                (&Method::PATCH, Route::ForwardId) => {
+                    let auth = check_nip98_auth(&req, &self.settings, &self.db).await?;
+                    let forward_id = params
+                        .get("id")
+                        .ok_or_else(|| anyhow!("Missing forward ID"))?;
+                    let body = req.collect().await?.to_bytes();
+                    let update_req: UpdateForwardRequest = serde_json::from_slice(&body)?;
+                    self.update_forward(&auth.pubkey, forward_id, update_req)
+                        .await?;
+                    Ok(base.body(Self::body_json(&())?)?)
+                }
                 (&Method::GET, Route::History) => {
                     let auth = check_nip98_auth(&req, &self.settings, &self.db).await?;
                     let rsp = self.get_account_history(&auth.pubkey).await?;
@@ -729,6 +740,7 @@ impl Api {
                 .map(|f| ForwardDest {
                     id: f.id,
                     name: f.name,
+                    disabled: f.disabled,
                 })
                 .collect(),
             details: Some(PatchEventDetails {
@@ -990,6 +1002,20 @@ impl Api {
         let uid = self.db.upsert_user(&pubkey.to_bytes()).await?;
         let forward_id: u64 = forward_id.parse()?;
         self.db.delete_forward(uid, forward_id).await?;
+        Ok(())
+    }
+
+    async fn update_forward(
+        &self,
+        pubkey: &PublicKey,
+        forward_id: &str,
+        req: UpdateForwardRequest,
+    ) -> Result<()> {
+        let uid = self.db.upsert_user(&pubkey.to_bytes()).await?;
+        let forward_id: u64 = forward_id.parse()?;
+        self.db
+            .update_forward_disabled(uid, forward_id, req.disabled)
+            .await?;
         Ok(())
     }
 
@@ -1912,6 +1938,11 @@ struct ForwardResponse {
 }
 
 #[derive(Deserialize, Serialize)]
+struct UpdateForwardRequest {
+    pub disabled: bool,
+}
+
+#[derive(Deserialize, Serialize)]
 struct HistoryEntry {
     pub created: u64,
     #[serde(rename = "type")]
@@ -1973,6 +2004,7 @@ struct PatchEventDetails {
 struct ForwardDest {
     pub id: u64,
     pub name: String,
+    pub disabled: bool,
 }
 
 #[derive(Deserialize, Serialize)]

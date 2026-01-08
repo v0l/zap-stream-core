@@ -280,6 +280,22 @@ impl ZapStreamDb {
         Ok(())
     }
 
+    /// Update a forward's disabled status
+    pub async fn update_forward_disabled(
+        &self,
+        user_id: u64,
+        forward_id: u64,
+        disabled: bool,
+    ) -> Result<()> {
+        sqlx::query("update user_stream_forward set disabled = ? where id = ? and user_id = ?")
+            .bind(disabled)
+            .bind(forward_id)
+            .bind(user_id)
+            .execute(&self.db)
+            .await?;
+        Ok(())
+    }
+
     /// Create a new stream key
     pub async fn create_stream_key(
         &self,

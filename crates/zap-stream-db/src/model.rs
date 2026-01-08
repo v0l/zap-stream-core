@@ -115,6 +115,8 @@ pub struct UserStreamForward {
     pub name: String,
     /// Target RTMP url for forwarding
     pub target: String,
+    /// Whether this forward is disabled
+    pub disabled: bool,
 }
 
 #[derive(Debug, Clone, FromRow)]
