@@ -276,6 +276,34 @@ DELETE /api/v1/forward/{id}
 
 **Description:** Removes an RTMP forward destination by ID.
 
+#### Update RTMP Forward
+
+```
+PATCH /api/v1/forward/{id}
+```
+
+**Authentication:** Required
+
+**Path Parameters:**
+
+- `id`: Forward ID to delete
+
+**Request Body:**
+
+```json
+{
+  "disabled": true
+}
+```
+
+**Response:**
+
+```json
+{}
+```
+
+**Description:** Update an RTMP forward destination by ID.
+
 ### History and Keys
 
 #### Get Account History
