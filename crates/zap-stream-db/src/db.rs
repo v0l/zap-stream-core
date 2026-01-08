@@ -285,7 +285,7 @@ impl ZapStreamDb {
         &self,
         user_id: u64,
         key: &str,
-        expires: Option<chrono::DateTime<chrono::Utc>>,
+        expires: Option<DateTime<Utc>>,
         stream_id: &str,
     ) -> Result<u64> {
         let result = sqlx::query(
