@@ -99,6 +99,7 @@ impl Api {
         // ... existing routes ...
         router.insert("/api/v1/event", Route::Event).unwrap();
         router.insert("/api/v1/forward", Route::Forward).unwrap();
+        router.insert("/api/v1/account/forward", Route::Forward).unwrap();
         router
             .insert("/api/v1/forward/{id}", Route::ForwardId)
             .unwrap();
