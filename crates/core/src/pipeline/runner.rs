@@ -19,9 +19,12 @@ use crate::pipeline::{EgressType, PipelineConfig};
 use crate::reorder::FrameReorderBuffer;
 use crate::variant::VariantStream;
 use anyhow::{Result, anyhow, bail};
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::{AV_NOPTS_VALUE, AV_PKT_FLAG_KEY};
-use ffmpeg_rs_raw::{AvFrameRef, AvPacketRef, Decoder, Demuxer, Muxer, StreamType, get_frame_from_hw, get_frame_from_hw_with_fmt};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::{AV_NOPTS_VALUE, AV_PKT_FLAG_KEY};
+use ffmpeg_rs_raw::{
+    AvFrameRef, AvPacketRef, Decoder, Demuxer, Muxer, StreamType, get_frame_from_hw,
+    get_frame_from_hw_with_fmt,
+};
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tracing::{debug, error, info, trace, warn};
@@ -427,6 +430,11 @@ impl PipelineRunner {
                 warn!("Failed to send flush to worker thread: {}", e);
             }
         }
+        self.handle.block_on(async {
+            if let Err(e) = self.overseer.on_end(&self.connection.id).await {
+                error!("Failed to end stream: {e}");
+            }
+        })
     }
 
     pub fn run(&mut self) {
@@ -615,7 +623,12 @@ impl PipelineRunner {
         self.setup_encoders(&cfg)?;
         info!("{}", cfg);
         // Log decoder info (including HW accel status)
-        for input_idx in cfg.variants.iter().map(|e| e.src_index()).collect::<HashSet<_>>() {
+        for input_idx in cfg
+            .variants
+            .iter()
+            .map(|e| e.src_index())
+            .collect::<HashSet<_>>()
+        {
             if let Some(dec) = self.decoder.get_decoder(input_idx as i32) {
                 info!("Decoder for stream {}: {}", input_idx, dec.codec_name());
             }
@@ -728,7 +741,9 @@ impl PipelineRunner {
                     }
                 }
                 #[cfg(feature = "egress-rtmp")]
-                EgressType::RTMPForwarder { ref destination, .. } => {
+                EgressType::RTMPForwarder {
+                    ref destination, ..
+                } => {
                     let Some(g) = variant_mapping.first() else {
                         warn!("Could not configure RTMP forwarder, no variants configured");
                         continue;

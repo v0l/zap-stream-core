@@ -124,11 +124,6 @@ impl PipelineWorkerThread {
         self.handle.block_on(async {
             for result in results {
                 match result {
-                    EgressResult::Flush => {
-                        if let Err(e) = self.overseer.on_end(&self.pipeline_id).await {
-                            error!("Failed to end stream: {e}");
-                        }
-                    }
                     EgressResult::Segments { created, deleted } => {
                         if let Err(e) = self
                             .overseer
