@@ -799,6 +799,9 @@ impl Overseer for ZapStreamOverseer {
         // add forward egress'
         let fwds = self.db.get_user_forwards(user.id).await?;
         for fwd in fwds {
+            if fwd.disabled {
+                continue;
+            }
             let fwd_id = Uuid::new_v4();
             cfg.egress.push(EgressType::RTMPForwarder {
                 id: fwd_id,
