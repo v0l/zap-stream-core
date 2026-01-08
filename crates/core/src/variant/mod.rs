@@ -46,6 +46,16 @@ impl VariantStream {
             VariantStream::CopyAudio(v) => v.src_index,
         }
     }
+
+    pub fn bitrate(&self) -> usize {
+        match self {
+            VariantStream::Video(v) => v.bitrate as _,
+            VariantStream::Audio(a) => a.bitrate as _,
+            VariantStream::Subtitle { .. } => 0,
+            VariantStream::CopyVideo(v) => v.bitrate as _,
+            VariantStream::CopyAudio(a) => a.bitrate as _,
+        }
+    }
 }
 
 impl Display for VariantStream {

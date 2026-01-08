@@ -814,7 +814,11 @@ impl Overseer for ZapStreamOverseer {
                     id: Uuid::new_v4(),
                     video: cfg
                         .video_src
-                        .and_then(|s| cfg.variants.iter().find(|x| x.src_index() == s.index))
+                        .and_then(|s| {
+                            cfg.variants
+                                .iter()
+                                .find(|x| x.src_index() == s.index && x.bitrate() <= 6_000_000)
+                        })
                         .map(|x| x.id()),
                     audio: cfg
                         .audio_src
