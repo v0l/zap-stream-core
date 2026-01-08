@@ -1,10 +1,9 @@
-use std::fmt::{Display, Formatter};
-
 use crate::egress::{EgressEncoderConfig, EncoderParam, EncoderParams};
 use crate::mux::SegmentType;
 use crate::overseer::{IngressInfo, IngressStream, StreamType};
 use crate::variant::{VariantGroup, VariantStream};
 use serde::{Deserialize, Serialize};
+use std::fmt::{Display, Formatter};
 use uuid::Uuid;
 
 pub mod runner;
@@ -163,7 +162,10 @@ impl Display for PipelineConfig {
                 EgressType::HLS { id, .. } => format!("HLS ({})", id),
                 EgressType::Recorder { id, height } => format!("Recorder {}p ({})", height, id),
                 EgressType::RTMPForwarder { id, destination } => {
-                    format!("RTMPForwarder {} ({})", destination, id)
+                    let mut usplit = destination.split('/').collect::<Vec<&str>>();
+                    usplit.pop();
+                    usplit.push("<stream-key>");
+                    format!("RTMPForwarder {} ({})", usplit.join("/"), id)
                 }
                 EgressType::Moq { id } => format!("MoQ ({})", id),
             };
