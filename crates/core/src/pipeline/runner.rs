@@ -19,11 +19,9 @@ use crate::pipeline::{EgressType, PipelineConfig};
 use crate::reorder::FrameReorderBuffer;
 use crate::variant::VariantStream;
 use anyhow::{Result, anyhow, bail};
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{AV_NOPTS_VALUE, AV_PKT_FLAG_KEY};
 use ffmpeg_rs_raw::{
     AvFrameRef, AvPacketRef, Decoder, Demuxer, Muxer, StreamType, get_frame_from_hw,
-    get_frame_from_hw_with_fmt,
 };
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -342,8 +340,7 @@ impl PipelineRunner {
                 }
 
                 // Copy frame from GPU if using hwaccel decoding
-                // TODO: add automatic pixel conversion in encoder step
-                let frame = get_frame_from_hw_with_fmt(frame, AV_PIX_FMT_YUV420P)?;
+                let frame = get_frame_from_hw(frame)?;
 
                 if stream_idx == video_src {
                     self.generate_thumb_from_frame(&frame)?;

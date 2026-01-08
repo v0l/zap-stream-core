@@ -5,8 +5,8 @@ use anyhow::{Result, anyhow, bail};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_WEBP;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPictureType::AV_PICTURE_TYPE_NONE;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::{AV_NOPTS_VALUE, av_rescale_q};
-use ffmpeg_rs_raw::{AudioFifo, AvFrameRef, AvPacketRef, Encoder, Resample, Scaler};
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::{AV_NOPTS_VALUE, av_get_pix_fmt_name, av_rescale_q};
+use ffmpeg_rs_raw::{AudioFifo, AvFrameRef, AvPacketRef, Encoder, Resample, Scaler, rstr};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
@@ -178,6 +178,19 @@ impl PipelineWorkerThread {
         // before encoding frame, rescale timestamps
         if let Some(frame) = frame.as_mut() {
             let enc_ctx = e.codec_context();
+
+            if frame.width != 0 && frame.format as i32 != unsafe { (*enc_ctx).pix_fmt } as i32 {
+                warn!(
+                    "A scaler was automatically configured because the pixel format \
+                    of the frame was different to what the encoder expected! \
+                    {} != {}",
+                    unsafe { rstr!(av_get_pix_fmt_name(std::mem::transmute(frame.format))) },
+                    unsafe { rstr!(av_get_pix_fmt_name((*enc_ctx).pix_fmt)) }
+                );
+                let sc = Scaler::new();
+                self.scaler.replace(sc);
+                return self.scale_encode_frame(frame.clone());
+            }
             frame.pict_type = AV_PICTURE_TYPE_NONE;
             frame.pts = unsafe { av_rescale_q(frame.pts, frame.time_base, (*enc_ctx).time_base) };
             frame.pkt_dts = AV_NOPTS_VALUE;
