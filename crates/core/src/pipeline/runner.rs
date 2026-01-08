@@ -10,9 +10,7 @@ use std::time::{Duration, Instant};
 use crate::egress::hls::HlsEgress;
 #[cfg(feature = "egress-moq")]
 use crate::egress::moq::MoqEgress;
-use crate::egress::recorder::RecorderEgress;
-#[cfg(feature = "egress-rtmp")]
-use crate::egress::rtmp::RtmpEgress;
+use crate::egress::muxer_egress::MuxerEgress;
 use crate::egress::{Egress, EncoderOrSourceStream, EncoderVariant, EncoderVariantGroup};
 use crate::ingress::{ConnectionInfo, EndpointStats};
 use crate::overseer::{IngressInfo, IngressStream, Overseer, StatsType};
@@ -22,7 +20,8 @@ use crate::reorder::FrameReorderBuffer;
 use crate::variant::VariantStream;
 use anyhow::{Result, anyhow, bail};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{AV_NOPTS_VALUE, AV_PKT_FLAG_KEY};
-use ffmpeg_rs_raw::{AvFrameRef, AvPacketRef, Decoder, Demuxer, StreamType, get_frame_from_hw};
+use ffmpeg_rs_raw::{AvFrameRef, AvPacketRef, Decoder, Demuxer, Muxer, StreamType, get_frame_from_hw, get_frame_from_hw_with_fmt};
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tracing::{debug, error, info, trace, warn};
@@ -115,6 +114,8 @@ pub struct PipelineRunner {
 unsafe impl Send for PipelineRunner {}
 
 impl PipelineRunner {
+    pub const RECORDING_PATH: &'static str = "recording.mp4";
+
     pub fn new(
         handle: Handle,
         out_dir: PathBuf,
@@ -338,7 +339,8 @@ impl PipelineRunner {
                 }
 
                 // Copy frame from GPU if using hwaccel decoding
-                let frame = get_frame_from_hw(frame)?;
+                // TODO: add automatic pixel conversion in encoder step
+                let frame = get_frame_from_hw_with_fmt(frame, AV_PIX_FMT_YUV420P)?;
 
                 if stream_idx == video_src {
                     self.generate_thumb_from_frame(&frame)?;
@@ -612,6 +614,12 @@ impl PipelineRunner {
         }
         self.setup_encoders(&cfg)?;
         info!("{}", cfg);
+        // Log decoder info (including HW accel status)
+        for input_idx in cfg.variants.iter().map(|e| e.src_index()).collect::<HashSet<_>>() {
+            if let Some(dec) = self.decoder.get_decoder(input_idx as i32) {
+                info!("Decoder for stream {}: {}", input_idx, dec.codec_name());
+            }
+        }
         self.config = Some(cfg);
         Ok(())
     }
@@ -701,7 +709,16 @@ impl PipelineRunner {
                         })
                     });
                     if let Some(a) = match_var {
-                        let rec = RecorderEgress::new(self.out_dir.clone(), a)?;
+                        let dst = self.out_dir.join(Self::RECORDING_PATH);
+                        let muxer = unsafe {
+                            Muxer::builder()
+                                .with_output_path(dst.to_str().unwrap(), None)?
+                                .build()?
+                        };
+
+                        let mut options = HashMap::new();
+                        options.insert("movflags".to_string(), "faststart".to_string());
+                        let rec = MuxerEgress::new("Recorder", muxer, a, Some(options))?;
                         setup_egress.push(Box::new(rec));
                     } else {
                         warn!(
@@ -711,16 +728,19 @@ impl PipelineRunner {
                     }
                 }
                 #[cfg(feature = "egress-rtmp")]
-                EgressType::RTMPForwarder(_, dst) => {
-                    let mut fwd = RtmpEgress::new(dst, variant_mapping)?;
-                    let block_on_start = Instant::now();
-                    let connect_result = self.handle.block_on(async { fwd.connect().await });
-                    crate::metrics::record_block_on_rtmp_connect(block_on_start.elapsed());
-                    if let Err(e) = connect_result {
-                        error!("Failed to connect forwarder: {}", e);
-                    } else {
-                        setup_egress.push(Box::new(fwd));
-                    }
+                EgressType::RTMPForwarder { ref destination, .. } => {
+                    let Some(g) = variant_mapping.first() else {
+                        warn!("Could not configure RTMP forwarder, no variants configured");
+                        continue;
+                    };
+                    let muxer = unsafe {
+                        let dest = destination.to_owned();
+                        Muxer::builder()
+                            .with_output_path(dest.as_str(), Some("flv"))?
+                            .build()?
+                    };
+                    let fwd = MuxerEgress::new("RTMP Forward", muxer, g, None)?;
+                    setup_egress.push(Box::new(fwd));
                 }
                 #[cfg(feature = "egress-moq")]
                 EgressType::Moq { .. } => {

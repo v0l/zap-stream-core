@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::mem::transmute;
-use tracing::log::warn;
+use tracing::warn;
 use uuid::Uuid;
 
 /// Information related to variant streams

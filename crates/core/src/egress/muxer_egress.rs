@@ -7,7 +7,8 @@ use uuid::Uuid;
 use crate::egress::{Egress, EgressResult, EncoderOrSourceStream, EncoderVariantGroup};
 use crate::metrics::PacketMetrics;
 
-pub struct RecorderEgress {
+/// Generic muxer egress which accepts a pre-build muxer instance
+pub struct MuxerEgress {
     /// Internal muxer writing the output packets
     muxer: Muxer,
     /// Mapping from Variant ID to stream index
@@ -16,45 +17,36 @@ pub struct RecorderEgress {
     metrics: PacketMetrics,
 }
 
-impl RecorderEgress {
-    pub const FILENAME: &'static str = "recording.mp4";
-
-    pub fn new<'a>(out_dir: PathBuf, group: &EncoderVariantGroup) -> Result<Self> {
-        let out_file = out_dir.join(Self::FILENAME);
+impl MuxerEgress {
+    pub fn new(name: &str, mut muxer: Muxer, group: &EncoderVariantGroup, options: Option<HashMap<String, String>>) -> Result<Self> {
         let mut var_map = HashMap::new();
         let muxer = unsafe {
-            let mut m = Muxer::builder()
-                .with_output_path(out_file.to_str().unwrap(), None)?
-                .build()?;
             for g in &group.streams {
                 match g.stream {
                     EncoderOrSourceStream::Encoder(enc) => {
-                        let stream = m.add_stream_encoder(enc)?;
+                        let stream = muxer.add_stream_encoder(enc)?;
                         (*(*stream).codecpar).codec_tag = 0;
                         var_map.insert(g.variant.id(), (*stream).index);
                     }
                     EncoderOrSourceStream::SourceStream(stream) => {
-                        let stream = m.add_copy_stream(stream)?;
+                        let stream = muxer.add_copy_stream(stream)?;
                         (*(*stream).codecpar).codec_tag = 0;
                         var_map.insert(g.variant.id(), (*stream).index);
                     }
                 }
             }
-            let mut options = HashMap::new();
-            options.insert("movflags".to_string(), "faststart".to_string());
-
-            m.open(Some(options))?;
-            m
+            muxer.open(options)?;
+            muxer
         };
         Ok(Self {
             muxer,
             var_map,
-            metrics: PacketMetrics::new("Recorder Egress", None),
+            metrics: PacketMetrics::new(name, None),
         })
     }
 }
 
-impl Egress for RecorderEgress {
+impl Egress for MuxerEgress {
     fn process_pkt(&mut self, mut packet: AvPacketRef, variant: &Uuid) -> Result<EgressResult> {
         if let Some(stream) = self.var_map.get(variant) {
             // Update metrics with packet data (auto-reports when interval elapsed)

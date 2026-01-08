@@ -11,9 +11,7 @@ use uuid::Uuid;
 pub mod hls;
 #[cfg(feature = "egress-moq")]
 pub mod moq;
-pub mod recorder;
-#[cfg(feature = "egress-rtmp")]
-pub mod rtmp;
+pub mod muxer_egress;
 
 pub trait Egress: Send {
     fn process_pkt(&mut self, packet: AvPacketRef, variant: &Uuid) -> Result<EgressResult>;

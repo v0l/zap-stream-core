@@ -10,8 +10,7 @@ use nostr_sdk::{
     Client, Event, EventBuilder, JsonUtil, Keys, Kind, Metadata, NostrSigner, Tag, Timestamp,
     ToBech32,
 };
-use nwc::NWC;
-use nwc::prelude::{NostrWalletConnectURI, PayInvoiceRequest};
+use nwc::prelude::{NostrWalletConnect, NostrWalletConnectUri, PayInvoiceRequest};
 use payments_rs::lightning::{AddInvoiceRequest, InvoiceUpdate, LightningNode};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -27,7 +26,6 @@ use tracing::{error, info, warn};
 use url::Url;
 use uuid::Uuid;
 use zap_stream_core::egress::EgressSegment;
-use zap_stream_core::egress::recorder::RecorderEgress;
 use zap_stream_core::endpoint::{EndpointCapability, EndpointConfigEngine, parse_capabilities};
 use zap_stream_core::ingress::ConnectionInfo;
 use zap_stream_core::mux::SegmentType;
@@ -44,6 +42,8 @@ use zap_stream_core::egress::hls::HlsEgress;
 use zap_stream_core::hang::moq_lite::{OriginConsumer, OriginProducer, Produce};
 #[cfg(feature = "hls")]
 use zap_stream_core::mux::HlsMuxer;
+use zap_stream_core::pipeline::runner::PipelineRunner;
+use zap_stream_core::variant::VariantGroup;
 
 /// zap.stream NIP-53 overseer
 #[derive(Clone)]
@@ -490,7 +490,7 @@ impl ZapStreamOverseer {
                         "recording",
                         self.map_to_public_url(
                             pipeline_dir
-                                .join(RecorderEgress::FILENAME)
+                                .join(PipelineRunner::RECORDING_PATH)
                                 .to_str()
                                 .unwrap(),
                         )?
@@ -788,15 +788,39 @@ impl Overseer for ZapStreamOverseer {
         let caps = parse_capabilities(&endpoint.capabilities);
 
         // configure list of egress' we're going to use
-        let mut egress = self.get_egress(&connection).await?;
+        let egress = self.get_egress(&connection).await?;
 
-        let cfg = EndpointConfigEngine::get_variants_from_endpoint(stream_info, &caps, &egress)?;
+        let mut cfg =
+            EndpointConfigEngine::get_variants_from_endpoint(stream_info, &caps, &egress)?;
         if cfg.variants.is_empty() {
             bail!("No variants configured");
         }
 
-        // replace requested egress' with the configured egress'
-        egress = cfg.egress;
+        // add forward egress'
+        let fwds = self.db.get_user_forwards(user.id).await?;
+        for fwd in fwds {
+            let fwd_id = Uuid::new_v4();
+            cfg.egress.push(EgressType::RTMPForwarder {
+                id: fwd_id,
+                destination: fwd.target,
+            });
+            // TODO: forward source stream over transcoded stream
+            cfg.egress_map.insert(
+                fwd_id,
+                vec![VariantGroup {
+                    id: Default::default(),
+                    video: cfg
+                        .video_src
+                        .and_then(|s| cfg.variants.iter().find(|x| x.src_index() == s.index))
+                        .map(|x| x.id()),
+                    audio: cfg
+                        .audio_src
+                        .and_then(|s| cfg.variants.iter().find(|x| x.src_index() == s.index))
+                        .map(|x| x.id()),
+                    subtitle: None,
+                }],
+            );
+        }
 
         // in cases where the previous stream should be resumed, the pipeline ID will match a previous
         // stream so we should first try to find the current pipeline id as if it already exists
@@ -883,19 +907,10 @@ impl Overseer for ZapStreamOverseer {
             })
             .await?;
         }
+        let egress_config = cfg.get_egress_configs();
         Ok(PipelineConfig {
             variants: cfg.variants,
-            egress: cfg
-                .egress_map
-                .into_iter()
-                .filter_map(|e| {
-                    let kind = egress.iter().find(|c| c.id() == e.0)?;
-                    Some(EgressConfig {
-                        kind: kind.clone(),
-                        variants: e.1,
-                    })
-                })
-                .collect(),
+            egress: egress_config,
             ingress_info: stream_info.clone(),
             video_src: cfg.video_src.unwrap().index,
             audio_src: cfg.audio_src.map(|s| s.index),
@@ -942,7 +957,7 @@ impl Overseer for ZapStreamOverseer {
                     let user = user.clone();
                     let overseer = self.clone();
                     let jh = tokio::spawn(async move {
-                        let nwc_url = match NostrWalletConnectURI::parse(user.nwc.unwrap()) {
+                        let nwc_url = match NostrWalletConnectUri::parse(user.nwc.unwrap()) {
                             Ok(u) => u,
                             Err(e) => {
                                 error!("Failed to parse NWC url for user {}: {}", user.id, e);
@@ -950,7 +965,7 @@ impl Overseer for ZapStreamOverseer {
                                 return;
                             }
                         };
-                        let nwc = NWC::new(nwc_url);
+                        let nwc = NostrWalletConnect::new(nwc_url);
 
                         let pubkey = user.pubkey.as_slice().try_into().unwrap();
                         let topup = match overseer.topup(pubkey, NWC_TOPUP_AMOUNT, None).await {

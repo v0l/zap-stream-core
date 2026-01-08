@@ -231,7 +231,7 @@ pub struct PacketMetrics {
     pub bytes_processed: u64,
     pub packets_processed: u64,
     pub last_metrics_update: Instant,
-    pub source_name: &'static str,
+    pub source_name: String,
     pub reporting_interval: Duration,
     sender: Option<UnboundedSender<PipelineCommand>>,
 }
@@ -239,7 +239,7 @@ pub struct PacketMetrics {
 impl PacketMetrics {
     /// Create new packet metrics instance with default 2-second reporting interval
     pub fn new(
-        source_name: &'static str,
+        source_name: &str,
         sender: Option<UnboundedSender<PipelineCommand>>,
     ) -> Self {
         Self::new_with_interval(source_name, sender, Duration::from_secs(2))
@@ -247,7 +247,7 @@ impl PacketMetrics {
 
     /// Create new packet metrics instance with custom reporting interval
     pub fn new_with_interval(
-        source_name: &'static str,
+        source_name: &str,
         sender: Option<UnboundedSender<PipelineCommand>>,
         reporting_interval: Duration,
     ) -> Self {
@@ -255,7 +255,7 @@ impl PacketMetrics {
             bytes_processed: 0,
             packets_processed: 0,
             last_metrics_update: Instant::now(),
-            source_name,
+            source_name: source_name.to_string(),
             reporting_interval,
             sender,
         }

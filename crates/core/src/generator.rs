@@ -13,7 +13,6 @@ use fontdue::Font;
 use fontdue::layout::{CoordinateSystem, Layout, TextStyle};
 use std::mem::transmute;
 use std::ops::Sub;
-use std::slice;
 use std::time::{Duration, Instant};
 
 /// Frame generator
@@ -312,15 +311,18 @@ impl FrameGenerator {
             let Some(next_frame) = &self.next_frame else {
                 bail!("Must call begin() before writing frame data")
             };
-            let buf = slice::from_raw_parts_mut(
-                next_frame.data[0],
-                self.width as usize * self.height as usize * 4,
-            );
-            for chunk in buf.chunks_exact_mut(4) {
-                chunk[0] = color32[0];
-                chunk[1] = color32[1];
-                chunk[2] = color32[2];
-                chunk[3] = color32[3];
+            let linesize = next_frame.linesize[0] as usize;
+            let dst = next_frame.data[0];
+
+            for y in 0..self.height as usize {
+                let row_start = dst.add(y * linesize);
+                for x in 0..self.width as usize {
+                    let pixel = row_start.add(x * 4);
+                    *pixel.offset(0) = color32[0];
+                    *pixel.offset(1) = color32[1];
+                    *pixel.offset(2) = color32[2];
+                    *pixel.offset(3) = color32[3];
+                }
             }
             Ok(())
         }
@@ -332,14 +334,25 @@ impl FrameGenerator {
             let Some(next_frame) = &self.next_frame else {
                 bail!("Must call begin() before writing frame data")
             };
-            let buf = slice::from_raw_parts_mut(
-                next_frame.data[0],
-                self.width as usize * self.height as usize * 4,
-            );
-            if buf.len() < data.len() {
-                bail!("Frame buffer is too small");
+            let linesize = next_frame.linesize[0] as usize;
+            let src_stride = self.width as usize * 4;
+
+            // Source data is tightly packed (width * 4 bytes per row)
+            // Destination may have padding (linesize >= width * 4)
+            if data.len() < src_stride * self.height as usize {
+                bail!("Source data is too small");
             }
-            buf.copy_from_slice(data);
+
+            let dst = next_frame.data[0];
+            for y in 0..self.height as usize {
+                let src_offset = y * src_stride;
+                let dst_offset = y * linesize;
+                std::ptr::copy_nonoverlapping(
+                    data.as_ptr().add(src_offset),
+                    dst.add(dst_offset),
+                    src_stride,
+                );
+            }
             Ok(())
         }
     }

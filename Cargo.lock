@@ -1334,7 +1334,7 @@ dependencies = [
 [[package]]
 name = "ffmpeg-rs-raw"
 version = "0.3.0"
-source = "git+https://git.v0l.io/Kieran/ffmpeg-rs-raw.git?rev=0b1c89b0ae531deadc3a36c939f13bbfc1d101fa#0b1c89b0ae531deadc3a36c939f13bbfc1d101fa"
+source = "git+https://git.v0l.io/Kieran/ffmpeg-rs-raw.git?rev=14d3988c18d5807f593f2c7c8ff262ee2aedb724#14d3988c18d5807f593f2c7c8ff262ee2aedb724"
 dependencies = [
  "anyhow",
  "ffmpeg-sys-the-third",
