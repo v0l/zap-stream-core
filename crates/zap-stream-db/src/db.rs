@@ -326,7 +326,7 @@ impl ZapStreamDb {
         payment_hash: &[u8],
         user_id: u64,
         invoice: Option<&str>,
-        amount: u64,
+        amount: i64,
         payment_type: PaymentType,
         fee: u64,
         expires: DateTime<Utc>,
@@ -613,7 +613,7 @@ impl ZapStreamDb {
     }
 
     /// Add credit to user balance (admin operation)
-    pub async fn add_admin_credit(&self, uid: u64, amount: u64, _memo: Option<&str>) -> Result<()> {
+    pub async fn add_admin_credit(&self, uid: u64, amount: i64, _memo: Option<&str>) -> Result<()> {
         // Create payment record for admin credit
         let payment_hash: [u8; 32] = random();
         self.create_payment(

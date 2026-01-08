@@ -1361,7 +1361,7 @@ impl Api {
         }
 
         if let Some(credit_amount) = req.add_credit
-            && credit_amount > 0
+            && credit_amount != 0
         {
             self.db
                 .add_admin_credit(uid, credit_amount, req.memo.as_deref())
@@ -2002,7 +2002,7 @@ struct AdminUserRequest {
     pub set_admin: Option<bool>,
     pub set_blocked: Option<bool>,
     pub set_stream_dump_recording: Option<bool>,
-    pub add_credit: Option<u64>,
+    pub add_credit: Option<i64>,
     pub memo: Option<String>,
     pub title: Option<String>,
     pub summary: Option<String>,

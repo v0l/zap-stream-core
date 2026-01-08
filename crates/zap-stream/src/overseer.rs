@@ -626,7 +626,7 @@ impl ZapStreamOverseer {
                 &r_hash,
                 uid,
                 Some(&response.pr()),
-                amount_msats,
+                amount_msats as _,
                 zap_stream_db::PaymentType::TopUp,
                 0,
                 DateTime::from_timestamp(
