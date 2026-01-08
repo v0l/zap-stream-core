@@ -811,7 +811,7 @@ impl Overseer for ZapStreamOverseer {
             cfg.egress_map.insert(
                 fwd_id,
                 vec![VariantGroup {
-                    id: Default::default(),
+                    id: Uuid::new_v4(),
                     video: cfg
                         .video_src
                         .and_then(|s| cfg.variants.iter().find(|x| x.src_index() == s.index))
