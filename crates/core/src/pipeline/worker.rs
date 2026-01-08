@@ -179,7 +179,10 @@ impl PipelineWorkerThread {
         if let Some(frame) = frame.as_mut() {
             let enc_ctx = e.codec_context();
 
-            if frame.width != 0 && frame.format as i32 != unsafe { (*enc_ctx).pix_fmt } as i32 {
+            if frame.width != 0
+                && frame.format as i32 != unsafe { (*enc_ctx).pix_fmt } as i32
+                && self.scaler.is_none()
+            {
                 warn!(
                     "A scaler was automatically configured because the pixel format \
                     of the frame was different to what the encoder expected! \
