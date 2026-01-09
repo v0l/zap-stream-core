@@ -728,7 +728,7 @@ impl PipelineRunner {
 
                         let mut options = HashMap::new();
                         options.insert("movflags".to_string(), "faststart".to_string());
-                        let rec = MuxerEgress::new("Recorder", muxer, a, Some(options))?;
+                        let rec = MuxerEgress::new("Recorder", muxer, a, Some(options), false)?;
                         setup_egress.push(Box::new(rec));
                     } else {
                         warn!(
@@ -737,7 +737,6 @@ impl PipelineRunner {
                         );
                     }
                 }
-                #[cfg(feature = "egress-rtmp")]
                 EgressType::RTMPForwarder {
                     ref destination, ..
                 } => {
@@ -751,7 +750,7 @@ impl PipelineRunner {
                             .with_output_path(dest.as_str(), Some("flv"))?
                             .build()?
                     };
-                    let fwd = MuxerEgress::new("RTMP Forward", muxer, g, None)?;
+                    let fwd = MuxerEgress::new("RTMP Forward", muxer, g, None, false)?;
                     setup_egress.push(Box::new(fwd));
                 }
                 #[cfg(feature = "egress-moq")]

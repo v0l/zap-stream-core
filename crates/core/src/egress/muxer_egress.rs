@@ -1,7 +1,7 @@
 use anyhow::Result;
 use ffmpeg_rs_raw::{AvPacketRef, Muxer};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use tracing::warn;
 use uuid::Uuid;
 
 use crate::egress::{Egress, EgressResult, EncoderOrSourceStream, EncoderVariantGroup};
@@ -15,10 +15,18 @@ pub struct MuxerEgress {
     var_map: HashMap<Uuid, i32>,
     /// Packet metrics tracking
     metrics: PacketMetrics,
+    /// If packet muxing fails should the pipeline also fail
+    critical: bool,
 }
 
 impl MuxerEgress {
-    pub fn new(name: &str, mut muxer: Muxer, group: &EncoderVariantGroup, options: Option<HashMap<String, String>>) -> Result<Self> {
+    pub fn new(
+        name: &str,
+        mut muxer: Muxer,
+        group: &EncoderVariantGroup,
+        options: Option<HashMap<String, String>>,
+        critical: bool,
+    ) -> Result<Self> {
         let mut var_map = HashMap::new();
         let muxer = unsafe {
             for g in &group.streams {
@@ -42,6 +50,7 @@ impl MuxerEgress {
             muxer,
             var_map,
             metrics: PacketMetrics::new(name, None),
+            critical,
         })
     }
 }
@@ -54,7 +63,13 @@ impl Egress for MuxerEgress {
 
             // very important for muxer to know which stream this pkt belongs to
             packet.stream_index = *stream;
-            self.muxer.write_packet(&packet)?;
+            if let Err(e) = self.muxer.write_packet(&packet) {
+                if self.critical {
+                    return Err(e);
+                } else {
+                    warn!("Error muxing packet in {}: {}", self.metrics.source_name, e);
+                }
+            };
         }
         Ok(EgressResult::None)
     }

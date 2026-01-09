@@ -807,7 +807,6 @@ impl Overseer for ZapStreamOverseer {
                 id: fwd_id,
                 destination: fwd.target,
             });
-            // TODO: forward source stream over transcoded stream
             cfg.egress_map.insert(
                 fwd_id,
                 vec![VariantGroup {
