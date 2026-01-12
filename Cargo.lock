@@ -6791,7 +6791,7 @@ dependencies = [
 
 [[package]]
 name = "zap-stream"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6839,7 +6839,7 @@ dependencies = [
 
 [[package]]
 name = "zap-stream-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6875,7 +6875,7 @@ dependencies = [
 
 [[package]]
 name = "zap-stream-core-nostr"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -6893,7 +6893,7 @@ dependencies = [
 
 [[package]]
 name = "zap-stream-db"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
