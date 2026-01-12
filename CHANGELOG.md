@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-01-12
+
+### What’s New
+
+- Administrators can now turn off stream forwarding and adjust user credit balances, even into negative values.
+- Faster game information loading thanks to cached IGDB calls, and added game summaries.
+- New configuration options for developers and a new API for games data.
+- The system now runs pipelines on multiple threads for better performance and provides metrics for monitoring.
+- Added testing utilities for the MoQ streaming protocol.
+
+### Improvements
+
+- Better handling of invoice processing failures.
+- More stable streaming pipeline with automatic scaler activation and lower‑bitrate fallback.
+- Sensitive URLs are no longer logged in full.
+- Streams now end cleanly and forward API paths are compatible with older versions.
+- Various internal updates to keep dependencies current and documentation up‑to‑date.
+
+### Bug Fixes
+
+- Fixed issues causing crashes in recorder and RTMP forwarding.
+- Resolved problems with stream key handling, balance calculations, and metrics cleanup.
+- Corrected encoding settings and ensured proper video scaling.
+
+### Maintenance
+
+- Updated version numbers and dependency upgrades.
+
 ## [0.1.0] - 2025-12-05
 
 ### Added
