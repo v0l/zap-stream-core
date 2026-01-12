@@ -246,25 +246,28 @@ impl ZapStreamOverseer {
                         .unwrap_or("Now".to_string())
                 );
                 let mut stream = ln.subscribe_invoices(last_payment_hash).await?;
-
                 loop {
                     tokio::select! {
                         _ = token.cancelled() => {
                             info!("Payment handler exiting...");
                             return Ok(());
                         }
-                        Some(msg) = stream.next() => {
+                        msg = stream.next() => {
                             //info!("Received message: {:?}", msg);
                             match msg {
-                               InvoiceUpdate::Settled {
+                               Some(InvoiceUpdate::Settled {
                                     payment_hash, preimage, ..
-                                } => {
+                                }) => {
                                     if let Err(e) = Self::try_complete_payment(payment_hash, preimage, &db, &client).await {
                                         error!("Failed to complete payment: {}", e);
                                     }
                                 }
-                                InvoiceUpdate::Error(error) => {
+                                Some(InvoiceUpdate::Error(error)) => {
                                     error!("Invoice update error: {}", error);
+                                }
+                                None => {
+                                    warn!("Invoice update stream ended!");
+                                    break;
                                 }
                                 _ => {}
                             }
