@@ -526,6 +526,17 @@ impl ZapStreamDb {
             .try_get(0)?)
     }
 
+    /// Get user id if user is an admin by pubkey
+    pub async fn get_admin_uid(&self, pubkey: &[u8; 32]) -> Result<Option<u64>> {
+        Ok(
+            sqlx::query("select id from user where pubkey = ? and is_admin = true")
+                .bind(pubkey.as_slice())
+                .fetch_optional(&self.db)
+                .await?
+                .and_then(|r| r.try_get(0).ok()),
+        )
+    }
+
     /// Set user admin status
     pub async fn set_admin(&self, uid: u64, is_admin: bool) -> Result<()> {
         sqlx::query("update user set is_admin = ? where id = ?")

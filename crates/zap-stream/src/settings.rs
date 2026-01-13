@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use zap_stream_api_common::TwitchConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
@@ -103,10 +104,4 @@ pub enum PaymentBackend {
     #[serde(rename_all = "kebab-case")]
     // Plain LUD-16 payment backend
     LNURL { address: String },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct TwitchConfig {
-    pub client_id: String,
-    pub client_secret: String,
 }

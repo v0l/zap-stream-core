@@ -1,4 +1,3 @@
-use crate::auth::{AuthRequest, TokenSource, authenticate_nip98};
 use crate::settings::Settings;
 use crate::stream_manager::{ActiveStreamInfo, NodeInfo, StreamManager, StreamManagerMetric};
 use anyhow::Result;

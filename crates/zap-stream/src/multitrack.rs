@@ -15,10 +15,11 @@ use zap_stream_core::endpoint::{EndpointConfigEngine, parse_capabilities};
 use zap_stream_core::ingress::ConnectionInfo;
 use zap_stream_core::listen::ListenerEndpoint;
 use zap_stream_core::map_codec_id;
-use zap_stream_core::overseer::{IngressInfo, IngressStream, StreamType, Overseer};
+use zap_stream_core::overseer::{IngressInfo, IngressStream, Overseer, StreamType};
 use zap_stream_core::variant::VariantStream;
 use zap_stream_db::ZapStreamDb;
 
+#[derive(Clone)]
 pub struct MultiTrackEngine {
     db: ZapStreamDb,
     settings: Settings,

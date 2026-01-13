@@ -5,7 +5,9 @@ use redis::AsyncCommands;
 use redis::aio::MultiplexedConnection;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
 pub struct ViewerInfo {
@@ -13,8 +15,9 @@ pub struct ViewerInfo {
     pub last_seen: Instant,
 }
 
+#[derive(Clone)]
 pub struct ViewerTracker {
-    viewers: HashMap<String, ViewerInfo>,
+    viewers: Arc<RwLock<HashMap<String, ViewerInfo>>>,
     timeout_duration: Duration,
     redis: Option<MultiplexedConnection>,
 }
@@ -22,7 +25,7 @@ pub struct ViewerTracker {
 impl ViewerTracker {
     pub fn new() -> Self {
         Self {
-            viewers: HashMap::new(),
+            viewers: Arc::new(RwLock::new(HashMap::new())),
             timeout_duration: Duration::from_secs(600), // 10 minutes
             redis: None,
         }
@@ -31,7 +34,7 @@ impl ViewerTracker {
     pub async fn with_redis(redis: redis::Client) -> Result<Self> {
         let conn = redis.get_multiplexed_async_connection().await?;
         Ok(Self {
-            viewers: HashMap::new(),
+            viewers: Arc::new(RwLock::new(HashMap::new())),
             timeout_duration: Duration::from_secs(600), // 10 minutes
             redis: Some(conn),
         })
@@ -56,12 +59,13 @@ impl ViewerTracker {
         BASE32_NOPAD.encode(fingerprint).to_lowercase()
     }
 
-    pub async fn track_viewer(&mut self, stream_id: &str, token: &str) {
-        if let Some(conn) = &mut self.redis {
+    pub async fn track_viewer(&self, stream_id: &str, token: &str) {
+        if self.redis.is_some() {
             let key = format!("viewers:{}", stream_id);
             let now = Utc::now().timestamp();
 
             // Add viewer to sorted set with current timestamp as score
+            let mut conn = self.redis.as_ref().unwrap().clone();
             match conn.zadd::<_, _, _, ()>(&key, token, now).await {
                 Ok(_) => {
                     debug!(
@@ -74,17 +78,18 @@ impl ViewerTracker {
                         "Failed to track viewer in Redis: {}, falling back to in-memory",
                         e
                     );
-                    self.track_viewer_in_memory(stream_id, token);
+                    self.track_viewer_in_memory(stream_id, token).await;
                 }
             }
         } else {
             // Fall back to in-memory tracking
-            self.track_viewer_in_memory(stream_id, token);
+            self.track_viewer_in_memory(stream_id, token).await;
         }
     }
 
-    fn track_viewer_in_memory(&mut self, stream_id: &str, token: &str) {
-        if let Some(existing) = self.viewers.get_mut(token) {
+    async fn track_viewer_in_memory(&self, stream_id: &str, token: &str) {
+        let mut v_lock = self.viewers.write().await;
+        if let Some(existing) = v_lock.get_mut(token) {
             debug!("Updating viewer {} for stream {}", token, stream_id);
             existing.last_seen = Instant::now();
         } else {
@@ -93,12 +98,12 @@ impl ViewerTracker {
                 stream_id: stream_id.to_string(),
                 last_seen: Instant::now(),
             };
-            self.viewers.insert(token.to_string(), viewer_info);
+            v_lock.insert(token.to_string(), viewer_info);
         }
     }
 
-    pub async fn get_viewer_count(&mut self, stream_id: &str) -> usize {
-        if let Some(conn) = &mut self.redis {
+    pub async fn get_viewer_count(&self, stream_id: &str) -> usize {
+        if self.redis.is_some() {
             let key = format!("viewers:{}", stream_id);
 
             // First, clean up expired viewers
@@ -106,6 +111,7 @@ impl ViewerTracker {
             let cutoff = now - self.timeout_duration.as_secs() as i64;
 
             // Remove viewers with timestamp older than cutoff (scores less than cutoff)
+            let mut conn = self.redis.as_ref().unwrap().clone();
             if let Err(e) = conn.zrembyscore::<_, _, _, ()>(&key, "-inf", cutoff).await {
                 warn!("Failed to clean up expired viewers in Redis: {}", e);
             }
@@ -126,24 +132,25 @@ impl ViewerTracker {
         }
 
         // Fall back to in-memory counting
-        self.viewers
-            .values()
-            .filter(|v| v.stream_id == stream_id)
-            .count()
+        let v_lock = self.viewers.read().await;
+        v_lock.values().filter(|v| v.stream_id == stream_id).count()
     }
 
-    pub fn cleanup_expired_viewers(&mut self) {
+    pub async fn cleanup_expired_viewers(&self) {
         let now = Instant::now();
 
-        let expired_tokens: Vec<String> = self
-            .viewers
-            .iter()
-            .filter(|(_, viewer)| now.duration_since(viewer.last_seen) > self.timeout_duration)
-            .map(|(token, _)| token.clone())
-            .collect();
+        let expired_tokens: Vec<String> = {
+            let v_lock = self.viewers.read().await;
+            v_lock
+                .iter()
+                .filter(|(_, viewer)| now.duration_since(viewer.last_seen) > self.timeout_duration)
+                .map(|(token, _)| token.clone())
+                .collect()
+        };
 
+        let mut v_lock = self.viewers.write().await;
         for token in expired_tokens {
-            if let Some(viewer) = self.viewers.remove(&token) {
+            if let Some(viewer) = v_lock.remove(&token) {
                 debug!(
                     "Expired viewer {} from stream {} (last seen {:?} ago)",
                     token,

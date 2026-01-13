@@ -6,8 +6,9 @@ use hex::ToHex;
 use lnurl::lightning_address::LightningAddress;
 use lnurl::pay::PayResponse;
 use lnurl::{AsyncClient, LnUrlResponse};
-use nwc::NWC;
-use nwc::prelude::{MakeInvoiceRequest, NostrWalletConnectURI, NotificationResult};
+use nwc::prelude::{
+    MakeInvoiceRequest, NostrWalletConnect, NostrWalletConnectUri, NotificationResult,
+};
 use payments_rs::lightning::{
     AddInvoiceRequest, AddInvoiceResponse, BitvoraNode, InvoiceUpdate, LightningNode, LndNode,
 };
@@ -20,13 +21,13 @@ use tracing::{error, info, warn};
 use zap_stream_db::ZapStreamDb;
 
 pub struct NWCNode {
-    conn: NWC,
+    conn: NostrWalletConnect,
 }
 
 impl NWCNode {
     pub async fn new(url: &str) -> Result<Self> {
-        let url = NostrWalletConnectURI::parse(url)?;
-        let conn = NWC::new(url);
+        let url = NostrWalletConnectUri::parse(url)?;
+        let conn = NostrWalletConnect::new(url);
         let info = conn.get_info().await?;
         if let Some(id) = info.alias.or(info.pubkey.map(|k| k.to_string())) {
             info!("Connected to NWC node {}!", id);

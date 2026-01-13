@@ -1,8 +1,6 @@
 use crate::api::Api;
-use crate::http::HttpServer;
-use crate::overseer::ZapStreamOverseer;
-use crate::settings::Settings;
 use anyhow::Result;
+use axum::Router;
 use clap::Parser;
 use config::Config;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::{AV_CODEC_ID_H264, AV_CODEC_ID_HEVC};
@@ -10,12 +8,9 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
     av_hwdevice_get_type_name, av_log_set_callback, av_version_info, avcodec_find_decoder,
 };
 use ffmpeg_rs_raw::{Decoder, ffmpeg_sys_the_third, rstr};
-use hyper::server::conn::http1;
-use hyper_util::rt::TokioIo;
 use payments_rs::lightning::setup_crypto_provider;
 use std::io::stdout;
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::ptr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -25,21 +20,16 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::{EnvFilter, Layer};
+use zap_stream::http::{HlsRouter, IndexRouter, MultiTrackRouter, ZapRouter};
+use zap_stream::multitrack::MultiTrackEngine;
+use zap_stream::overseer::ZapStreamOverseer;
+use zap_stream::settings::Settings;
+use zap_stream_api_common::{AxumAdminApi, AxumApi};
 use zap_stream_core::listen::try_create_listener;
 use zap_stream_core::metrics::PipelineMetrics;
 use zap_stream_core::overseer::Overseer;
 
 mod api;
-mod auth;
-mod game_db;
-mod http;
-mod multitrack;
-mod overseer;
-mod payments;
-mod settings;
-mod stream_manager;
-mod viewer;
-mod websocket_metrics;
 
 #[derive(Parser, Debug)]
 #[clap(version, about)]
@@ -156,6 +146,7 @@ async fn main() -> Result<()> {
 
     let settings: Settings = builder.try_deserialize()?;
     let (overseer, api) = {
+        #[allow(unused_mut)]
         let mut overseer = ZapStreamOverseer::from_settings(&settings, shutdown.clone()).await?;
         #[cfg(feature = "moq")]
         if let Some(ref ms) = settings.moq {
@@ -178,41 +169,41 @@ async fn main() -> Result<()> {
     })
     .expect("Error setting Ctrl-C handler");
 
-    // create ingest endpoints
-    let overseer = overseer as Arc<dyn Overseer>;
-    for e in &settings.endpoints {
-        match try_create_listener(e, &settings.output_dir, &overseer, shutdown.clone()) {
-            Ok(l) => tasks.push(l),
-            Err(e) => error!("{}", e),
-        }
+    // HTTP server
+    let http_addr: SocketAddr = settings.listen_http.parse()?;
+    let mut server = Router::new()
+        .merge(IndexRouter::new(overseer.stream_manager()))
+        .nest("/api", AxumApi::new(api.clone()))
+        .nest("/api", AxumAdminApi::new(api.clone()))
+        .merge(ZapRouter::new(
+            settings.public_url.clone(),
+            overseer.nostr_client(),
+            overseer.database(),
+            api.clone(),
+        ))
+        .nest(
+            "/api",
+            MultiTrackRouter::new(MultiTrackEngine::new(
+                overseer.database(),
+                settings.clone(),
+                overseer.clone() as Arc<dyn Overseer>,
+            )),
+        );
+
+    #[cfg(feature = "hls")]
+    {
+        server = server.merge(HlsRouter::new(
+            settings.output_dir.clone(),
+            overseer.stream_manager(),
+        ));
     }
 
-    let http_addr: SocketAddr = settings.listen_http.parse()?;
-
-    // HTTP server
-    let server = HttpServer::new(PathBuf::from(settings.output_dir), api);
     let shutdown_http = shutdown.clone();
     tasks.push(tokio::spawn(async move {
         let listener = TcpListener::bind(&http_addr).await?;
-
-        loop {
-            tokio::select! {
-                _ = shutdown_http.cancelled() => {
-                    break;
-                }
-                Ok((socket, _)) = listener.accept() => {
-                    let io = TokioIo::new(socket);
-                    let server = server.clone();
-                    let b = http1::Builder::new();
-
-                    tokio::spawn(async move {
-                        if let Err(e) = b.serve_connection(io, server).with_upgrades().await {
-                            error!("Failed to handle request: {}", e);
-                        }
-                    });
-                }
-            }
-        }
+        axum::serve(listener, server)
+            .with_graceful_shutdown(async move { shutdown_http.cancelled().await })
+            .await?;
         info!("HTTP server shutdown.");
         Ok(())
     }));
@@ -277,6 +268,15 @@ async fn main() -> Result<()> {
         info!("Background processor shutdown.");
         Ok(())
     }));
+
+    // create ingest endpoints
+    let overseer = overseer as Arc<dyn Overseer>;
+    for e in &settings.endpoints {
+        match try_create_listener(e, &settings.output_dir, &overseer, shutdown.clone()) {
+            Ok(l) => tasks.push(l),
+            Err(e) => error!("{}", e),
+        }
+    }
 
     // Join tasks and get errors
     for handle in tasks {

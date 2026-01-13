@@ -13,7 +13,6 @@ use nostr_sdk::{
 use nwc::prelude::{NostrWalletConnect, NostrWalletConnectUri, PayInvoiceRequest};
 use payments_rs::lightning::{AddInvoiceRequest, InvoiceUpdate, LightningNode};
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::ops::Add;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -30,7 +29,7 @@ use zap_stream_core::endpoint::{EndpointCapability, EndpointConfigEngine, parse_
 use zap_stream_core::ingress::ConnectionInfo;
 use zap_stream_core::mux::SegmentType;
 use zap_stream_core::overseer::{ConnectResult, IngressInfo, Overseer, StatsType};
-use zap_stream_core::pipeline::{EgressConfig, EgressType, PipelineConfig};
+use zap_stream_core::pipeline::{EgressType, PipelineConfig};
 use zap_stream_core_nostr::n94::{N94Publisher, N94Segment, N94StreamInfo};
 use zap_stream_db::{
     IngestEndpoint, Payment, StreamKeyType, User, UserStream, UserStreamState, ZapStreamDb,
@@ -75,7 +74,7 @@ pub struct ZapStreamOverseer {
     moq_origin: Option<Arc<Produce<OriginProducer, OriginConsumer>>>,
     /// MoQ socket address
     #[cfg(feature = "moq")]
-    moq_bind: Option<SocketAddr>,
+    moq_bind: Option<std::net::SocketAddr>,
 }
 
 impl ZapStreamOverseer {
@@ -216,11 +215,19 @@ impl ZapStreamOverseer {
         self.lightning.clone()
     }
 
+    pub fn stream_manager(&self) -> StreamManager {
+        self.stream_manager.clone()
+    }
+
+    pub fn nostr_client(&self) -> Client {
+        self.client.clone()
+    }
+
     #[cfg(feature = "moq")]
     pub fn set_moq_origin(
         &mut self,
         origin: Arc<Produce<OriginProducer, OriginConsumer>>,
-        bind: Option<SocketAddr>,
+        bind: Option<std::net::SocketAddr>,
     ) {
         self.moq_origin = Some(origin);
         self.moq_bind = bind;
@@ -339,14 +346,6 @@ impl ZapStreamOverseer {
         let id = client.send_event_builder(receipt).await?;
         info!("Sent zap receipt {}", id.val);
         Ok(())
-    }
-
-    pub fn stream_manager(&self) -> StreamManager {
-        self.stream_manager.clone()
-    }
-
-    pub fn nostr_client(&self) -> Client {
-        self.client.clone()
     }
 
     async fn stream_to_event_builder(&self, stream: &UserStream) -> Result<EventBuilder> {
@@ -1113,7 +1112,7 @@ impl Overseer for ZapStreamOverseer {
     async fn get_egress(&self, conn: &ConnectionInfo) -> Result<Vec<EgressType>> {
         // Get ingest endpoint configuration based on connection type
         let endpoint = self.detect_endpoint(conn).await?;
-        let caps = parse_capabilities(&endpoint.capabilities);
+        let _caps = parse_capabilities(&endpoint.capabilities);
 
         // configure list of egress' we're going to use
         let mut egress = vec![];

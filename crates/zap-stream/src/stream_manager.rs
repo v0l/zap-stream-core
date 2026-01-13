@@ -79,7 +79,7 @@ pub struct StreamManager {
     /// Any streams which are not contained in this map are dead
     active_streams: Arc<RwLock<HashMap<String, ActiveStreamInfo>>>,
     /// Viewer tracking for active streams
-    viewer_tracker: Arc<RwLock<ViewerTracker>>,
+    viewer_tracker: ViewerTracker,
     /// Track last published viewer count and update time for each stream
     stream_viewer_states: Arc<RwLock<HashMap<String, StreamViewerState>>>,
     /// Broadcast channel to listen to metrics updates
@@ -94,7 +94,7 @@ impl StreamManager {
         Self {
             node_name,
             active_streams: Arc::new(RwLock::new(HashMap::new())),
-            viewer_tracker: Arc::new(RwLock::new(ViewerTracker::new())),
+            viewer_tracker: ViewerTracker::new(),
             stream_viewer_states: Arc::new(RwLock::new(HashMap::new())),
             broadcaster: tx,
             min_update_minutes: 5,
@@ -108,7 +108,7 @@ impl StreamManager {
         Ok(Self {
             node_name,
             active_streams: Arc::new(RwLock::new(HashMap::new())),
-            viewer_tracker: Arc::new(RwLock::new(ViewerTracker::with_redis(redis).await?)),
+            viewer_tracker: ViewerTracker::with_redis(redis).await?,
             stream_viewer_states: Arc::new(RwLock::new(HashMap::new())),
             broadcaster: tx,
             min_update_minutes: 5,
@@ -123,8 +123,7 @@ impl StreamManager {
                 tokio::select! {
                     _ = token.cancelled() => break,
                     _ = timer.tick() => {
-                        let mut viewers = mgr.viewer_tracker.write().await;
-                        viewers.cleanup_expired_viewers();
+                        mgr.viewer_tracker.cleanup_expired_viewers().await;
                     }
                 }
             }
@@ -315,8 +314,7 @@ impl StreamManager {
         &self,
         stream_id: &str,
     ) -> Result<bool, anyhow::Error> {
-        let mut viewers = self.viewer_tracker.write().await;
-        let viewer_count = viewers.get_viewer_count(stream_id).await;
+        let viewer_count = self.viewer_tracker.get_viewer_count(stream_id).await;
         let now = Utc::now();
 
         let should_update = {
@@ -348,8 +346,7 @@ impl StreamManager {
     }
 
     pub async fn get_viewer_count(&self, stream_id: &str) -> usize {
-        let mut viewers = self.viewer_tracker.write().await;
-        viewers.get_viewer_count(stream_id).await
+        self.viewer_tracker.get_viewer_count(stream_id).await
     }
 
     pub async fn get_total_viewers(&self) -> u64 {
@@ -358,8 +355,7 @@ impl StreamManager {
     }
 
     pub async fn track_viewer(&self, stream_id: &str, token: &str) {
-        let mut viewers = self.viewer_tracker.write().await;
-        viewers.track_viewer(stream_id, token).await;
+        self.viewer_tracker.track_viewer(stream_id, token).await;
     }
 
     pub async fn update_pipeline_metrics(
@@ -409,5 +405,10 @@ impl StreamManager {
     pub async fn get_stream(&self, stream_id: &str) -> Option<ActiveStreamInfo> {
         let streams = self.active_streams.read().await;
         streams.get(stream_id).cloned()
+    }
+
+    pub async fn get_active_streams(&self) -> Vec<ActiveStreamInfo> {
+        let streams = self.active_streams.read().await;
+        streams.values().cloned().collect()
     }
 }

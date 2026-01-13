@@ -21,6 +21,7 @@ tls-aws-lc-rs = ["payments-rs/tls-aws", "redis/tokio-rustls-comp", "moq-native/a
 zap-stream-db = { path = "../zap-stream-db", default-features = false }
 zap-stream-core = { path = "../core", default-features = false }
 zap-stream-core-nostr = { path = "../core-nostr", default-features = false }
+zap-stream-api-common = { path = "../zap-stream-api-common", default-features = false, features = ["axum", "admin"] }
 
 uuid.workspace = true
 ffmpeg-rs-raw.workspace = true
@@ -41,10 +42,8 @@ nostr-sdk.workspace = true
 ctrlc.workspace = true
 
 # http stuff
-hyper = { version = "1.8", features = ["server", "http1", "http2"] }
-bytes = "1"
-http-body-util = "0.1.2"
-hyper-util = "0.1.10"
+axum = { version = "0.8", features = ["http1", "http2", "json", "macros", "query", "tokio", "tracing", "ws"], default-features = false }
+axum-extra = { version = "0.12", features = ["async-read-body"] }
 
 # websocket stuff
 tungstenite = "0.28"

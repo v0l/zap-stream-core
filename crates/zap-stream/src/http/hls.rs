@@ -1,0 +1,225 @@
+use crate::http::range::RangeBody;
+use crate::stream_manager::StreamManager;
+use crate::viewer::ViewerTracker;
+use anyhow::Result;
+use axum::Router;
+use axum::extract::{Path, Query, State};
+use axum::http::header::CONTENT_TYPE;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::get;
+use http_range_header::parse_range_header;
+use serde::Deserialize;
+use std::borrow::Cow;
+use std::fs::Metadata;
+use std::path::PathBuf;
+use tokio::fs::File;
+use tracing::warn;
+use uuid::Uuid;
+use zap_stream_core::egress::hls::HlsEgress;
+
+#[derive(Clone)]
+pub struct HlsRouter {
+    base_path: PathBuf,
+    stream_manager: StreamManager,
+}
+
+impl HlsRouter {
+    pub fn new<P>(base_path: P, stream_manager: StreamManager) -> Router
+    where
+        P: Into<PathBuf>,
+    {
+        Router::new()
+            .route(
+                &format!("/{{stream}}/{}/live.m3u8", HlsEgress::PATH),
+                get(Self::get_master_playlist),
+            )
+            .route(
+                &format!("/{{stream}}/{}/{{variant}}/live.m3u8", HlsEgress::PATH),
+                get(Self::get_variant_playlist),
+            )
+            .route(
+                &format!("/{{stream}}/{}/{{variant}}/{{seg}}", HlsEgress::PATH),
+                get(Self::get_segment),
+            )
+            .with_state(Self {
+                base_path: base_path.into(),
+                stream_manager,
+            })
+    }
+
+    async fn get_master_playlist(
+        Path(stream): Path<Uuid>,
+        State(this): State<HlsRouter>,
+        headers: HeaderMap,
+    ) -> Result<Response, String> {
+        let client_ip = Self::get_client_ip(&headers);
+        let user_agent = headers.get("user-agent").and_then(|h| h.to_str().ok());
+
+        let token = ViewerTracker::generate_viewer_token(&client_ip, user_agent);
+
+        // Read the playlist file
+        let playlist_path = this
+            .base_path
+            .join(stream.to_string())
+            .join(HlsEgress::PATH)
+            .join("live.m3u8");
+        let playlist_content = tokio::fs::read(playlist_path)
+            .await
+            .map_err(|e| format!("Failed to read playlist file: {}", e))?;
+
+        // Parse and modify playlist to add viewer token to URLs
+        let modified_content = Self::add_viewer_token_to_playlist(&playlist_content, &token)
+            .map_err(|e| format!("Failed to add playlist token to playlist: {}", e))?;
+
+        let headers = [(CONTENT_TYPE, "application/vnd.apple.mpegurl")];
+        Ok((
+            headers,
+            match modified_content {
+                Cow::Borrowed(content) => content.to_string(),
+                Cow::Owned(modified_content) => modified_content,
+            },
+        )
+            .into_response())
+    }
+
+    async fn get_variant_playlist(
+        Path((stream_id, variant)): Path<(String, String)>,
+        Query(q): Query<ViewerTokenQuery>,
+        State(this): State<HlsRouter>,
+    ) -> Result<RangeBody, (StatusCode, &'static str)> {
+        let playlist_path = this
+            .base_path
+            .join(stream_id.to_string())
+            .join(HlsEgress::PATH)
+            .join(variant)
+            .join("live.m3u8");
+
+        this.stream_manager.track_viewer(&stream_id, &q.vt).await;
+        Self::serve_path(playlist_path).await
+    }
+
+    async fn get_segment(
+        State(this): State<HlsRouter>,
+        Path((stream_id, variant, segment)): Path<(Uuid, String, String)>,
+        headers: HeaderMap,
+    ) -> Result<RangeBody, (StatusCode, &'static str)> {
+        let segment_path = this
+            .base_path
+            .join(stream_id.to_string())
+            .join(HlsEgress::PATH)
+            .join(variant)
+            .join(segment);
+
+        if !segment_path.exists() {
+            return Err((StatusCode::NOT_FOUND, "File not found"));
+        }
+        if let Some(r) = headers.get("range") {
+            if let Ok(ranges) = parse_range_header(r.to_str().unwrap()) {
+                if ranges.ranges.len() > 1 {
+                    warn!("Multipart ranges are not supported, fallback to non-range request");
+                    Ok(Self::serve_path(segment_path).await?)
+                } else {
+                    let (file, metadata) = Self::try_open_file(&segment_path).await?;
+                    let single_range = ranges.ranges.first().unwrap();
+                    let range = match RangeBody::get_range(metadata.len(), single_range) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            warn!("Failed to get range: {}", e);
+                            return Err((StatusCode::RANGE_NOT_SATISFIABLE, "Invalid range"));
+                        }
+                    };
+                    if range.start > range.end {
+                        return Err((StatusCode::RANGE_NOT_SATISFIABLE, "Invalid range"));
+                    }
+                    let r_body = RangeBody::new(file, metadata.len()).with_range(range);
+                    Ok(r_body)
+                }
+            } else {
+                Err((StatusCode::BAD_REQUEST, "Invalid range"))
+            }
+        } else {
+            Ok(Self::serve_path(segment_path).await?)
+        }
+    }
+
+    async fn try_open_file(path: &PathBuf) -> Result<(File, Metadata), (StatusCode, &'static str)> {
+        let file = File::open(&path).await.map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "cannot open segment file",
+            )
+        })?;
+        let metadata = file.metadata().await.map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "cannot read segment metadata",
+            )
+        })?;
+        Ok((file, metadata))
+    }
+    async fn serve_path(path: PathBuf) -> Result<RangeBody, (StatusCode, &'static str)> {
+        let (file, metadata) = Self::try_open_file(&path).await?;
+        Ok(RangeBody::new(file, metadata.len()))
+    }
+
+    fn get_client_ip(headers: &HeaderMap) -> String {
+        // Check common headers for real client IP
+        if let Some(forwarded) = headers.get("x-forwarded-for")
+            && let Ok(forwarded_str) = forwarded.to_str()
+            && let Some(first_ip) = forwarded_str.split(',').next()
+        {
+            return first_ip.trim().to_string();
+        }
+
+        if let Some(real_ip) = headers.get("x-real-ip")
+            && let Ok(ip_str) = real_ip.to_str()
+        {
+            return ip_str.to_string();
+        }
+
+        // use random string as IP to avoid broken view tracker due to proxying
+        Uuid::new_v4().to_string()
+    }
+
+    fn add_viewer_token_to_playlist<'a>(
+        content: &'a [u8],
+        viewer_token: &str,
+    ) -> Result<Cow<'a, str>> {
+        // Parse the M3U8 playlist using the m3u8-rs crate
+        let (_, playlist) = m3u8_rs::parse_playlist(content)
+            .map_err(|e| anyhow::anyhow!("Failed to parse M3U8 playlist: {}", e))?;
+
+        match playlist {
+            m3u8_rs::Playlist::MasterPlaylist(mut master) => {
+                // For master playlists, add viewer token to variant streams
+                for variant in &mut master.variants {
+                    variant.uri = Self::add_token_to_url(&variant.uri, viewer_token);
+                }
+
+                // Write the modified playlist back to string
+                let mut output = Vec::new();
+                master
+                    .write_to(&mut output)
+                    .map_err(|e| anyhow::anyhow!("Failed to write master playlist: {}", e))?;
+                String::from_utf8(output)
+                    .map(Cow::Owned)
+                    .map_err(|e| anyhow::anyhow!("Failed to convert playlist to string: {}", e))
+            }
+            m3u8_rs::Playlist::MediaPlaylist(_) => Ok(Cow::Borrowed(str::from_utf8(content)?)),
+        }
+    }
+
+    fn add_token_to_url(url: &str, viewer_token: &str) -> String {
+        if url.contains('?') {
+            format!("{}&vt={}", url, viewer_token)
+        } else {
+            format!("{}?vt={}", url, viewer_token)
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct ViewerTokenQuery {
+    pub vt: String,
+}

@@ -1,0 +1,22 @@
+[package]
+name = "zap-stream-api-common"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[features]
+admin = []
+axum = ["dep:axum", "dep:base64"]
+
+[dependencies]
+tokio.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+chrono.workspace = true
+async-trait.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+nostr-sdk.workspace = true
+base64 = { version = "0.22", optional = true }
+reqwest = { version = "0.13", features = ["json"] }
+axum = { version = "0.8", default-features = false, features = ["query", "json"], optional = true }
