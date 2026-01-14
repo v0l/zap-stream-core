@@ -10,12 +10,12 @@ use std::sync::Arc;
 use tracing::{info, warn};
 use url::Url;
 use uuid::Uuid;
-use zap_stream_core::endpoint::{EndpointConfigEngine, EndpointConfigurator};
+use zap_stream_core::endpoint::{EndpointConfigEngine, EndpointConfigurator, VariantType};
 use zap_stream_core::ingress::ConnectionInfo;
 use zap_stream_core::listen::ListenerEndpoint;
-use zap_stream_core::map_codec_id;
 use zap_stream_core::overseer::{IngressInfo, IngressStream, StreamType};
 use zap_stream_core::variant::VariantStream;
+use zap_stream_core::{map_codec_id, recommended_bitrate};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct MultiTrackEngineConfig {
@@ -68,6 +68,7 @@ impl MultiTrackEngine {
                 )));
             }
         };
+        let caps = self.endpoint_config.get_capabilities(&conn).await?;
 
         let canvas = req
             .preferences
@@ -87,21 +88,22 @@ impl MultiTrackEngine {
         let pix_fmt = "yuv420p";
         let sample_fmt = "fltp";
 
-        let ingest_video_codec = map_codec_id(ingest_video_codec)
+        let ingest_video_codec_id = map_codec_id(ingest_video_codec)
             .context(format!("No video codec for {}", ingest_video_codec))?;
-        let ingest_audio_codec = map_codec_id(ingest_audio_codec)
+        let ingest_audio_codec_id = map_codec_id(ingest_audio_codec)
             .context(format!("No video codec for {}", ingest_audio_codec))?;
 
         // create a fake ingress info using the supported params sent in the request
         // this ingress info can be used by the pipeline endpoint config system to create
         // what the ideal output variants should be
+        let canvas_fps = canvas.framerate.numerator as f32 / canvas.framerate.denominator as f32;
         let pseudo_ingress = IngressInfo {
             bitrate: req.preferences.maximum_aggregate_bitrate.unwrap_or(0) as _,
             streams: vec![
                 IngressStream {
                     index: 0,
                     stream_type: StreamType::Video,
-                    codec: ingest_video_codec as _,
+                    codec: ingest_video_codec_id as _,
                     format: unsafe {
                         let str = cstr!(pix_fmt);
                         let ret: i32 = av_get_pix_fmt(str) as _;
@@ -120,16 +122,31 @@ impl MultiTrackEngine {
                     color_range: 0,
                     width: canvas.width as _,
                     height: canvas.height as _,
-                    fps: canvas.framerate.numerator as f32 / canvas.framerate.denominator as f32,
+                    fps: canvas_fps,
                     sample_rate: 0,
-                    bitrate: 0,
+                    bitrate: if let Some(c) = caps.iter().find_map(|c| match c {
+                        VariantType::Variant { bitrate, height }
+                            if *height as u32 == canvas.height =>
+                        {
+                            Some(*bitrate)
+                        }
+                        _ => None,
+                    }) {
+                        c as _
+                    } else {
+                        recommended_bitrate(
+                            ingest_video_codec,
+                            canvas.width as u64 * canvas.height as u64,
+                            canvas_fps,
+                        ) as _
+                    },
                     channels: 0,
                     language: "".to_string(),
                 },
                 IngressStream {
                     index: 1,
                     stream_type: StreamType::Audio,
-                    codec: ingest_audio_codec as _,
+                    codec: ingest_audio_codec_id as _,
                     format: unsafe {
                         let str = cstr!(sample_fmt);
                         let ret: i32 = av_get_sample_fmt(str) as _;
@@ -150,13 +167,12 @@ impl MultiTrackEngine {
                     height: 0,
                     fps: 0.0,
                     sample_rate: req.preferences.audio_samples_per_sec as _,
-                    bitrate: 0,
+                    bitrate: 320_000,
                     channels: req.preferences.audio_channels as _,
                     language: "".to_string(),
                 },
             ],
         };
-        let caps = self.endpoint_config.get_capabilities(&conn).await?;
         let encoder_config = match EndpointConfigEngine::get_variants_from_endpoint(
             &pseudo_ingress,
             &caps,
@@ -196,7 +212,7 @@ impl MultiTrackEngine {
                             _ => return None,
                         },
                         url_template: c
-                            .to_public_url(public_url.host_str()?, "live/{stream_key}")?,
+                            .to_public_url(&public_url.host()?.to_string(), "live/{stream_key}")?,
                         authentication: None,
                     })
                 })
@@ -391,7 +407,7 @@ impl MultiTrackConfigRequest {
                         })
                     }
                 }
-                0x12d2 => {
+                0x12d2 | 0x10de => {
                     // NVIDIA
                     Some(ObsEncoderType {
                         name: format!("obs_nvenc_{}_tex", codec.to_lowercase()),
@@ -552,7 +568,7 @@ impl Default for MultiTrackConfigResponse {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum MTStatusCode {
     Unknown,
@@ -595,7 +611,7 @@ pub struct MTVideoEncoderConfig {
     pub canvas_index: u32,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub enum MTObsScale {
     #[serde(rename = "OBS_SCALE_DISABLE")]
     Disable,
@@ -611,7 +627,7 @@ pub enum MTObsScale {
     Area,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum MTVideoColorspace {
     #[serde(rename = "VIDEO_CS_DEFAULT")]
     Default,
@@ -627,7 +643,7 @@ pub enum MTVideoColorspace {
     BT2100HLG,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub enum MTVideoFormat {
     #[serde(rename = "VIDEO_FORMAT_NONE")]
     None,
@@ -649,7 +665,7 @@ pub enum MTVideoFormat {
     P416,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub enum MTVideoRange {
     #[serde(rename = "VIDEO_RANGE_DEFAULT")]
     Default,
@@ -894,6 +910,10 @@ impl TryFrom<&str> for ObsEncoderType {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+    use zap_stream_core::egress::EgressType;
+    use zap_stream_core::endpoint::VariantType;
+    use zap_stream_core::mux::SegmentType;
 
     #[test]
     fn test_obs_encoder_ids() {
@@ -1167,5 +1187,207 @@ mod tests {
             encoders[6].implementation,
             ObsEncoderImplementation::Unknown
         ));
+    }
+
+    #[tokio::test]
+    async fn test_get_multi_track_config_linux_nvidia() {
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .try_init()
+            .ok();
+        let cfg = DummyEndpointConfigurator {
+            ingress: vec![ListenerEndpoint::RTMP {
+                endpoint: "rtmp://0.0.0.0:1935".to_string(),
+            }],
+            caps: vec![
+                VariantType::SourceVariant,
+                VariantType::Variant {
+                    height: 1080,
+                    bitrate: 6_000_000,
+                },
+                VariantType::Variant {
+                    height: 720,
+                    bitrate: 3_000_000,
+                },
+                VariantType::Variant {
+                    height: 480,
+                    bitrate: 800_000,
+                },
+                VariantType::DVR { height: 720 },
+            ],
+            egress: vec![
+                EgressType::HLS {
+                    id: Uuid::new_v4(),
+                    segment_length: 2.0,
+                    segment_type: SegmentType::FMP4,
+                },
+                EgressType::Recorder {
+                    id: Uuid::new_v4(),
+                    height: 720,
+                },
+            ],
+        };
+        let engine = MultiTrackEngine::new(
+            MultiTrackEngineConfig {
+                public_url: "https://localhost".to_string(),
+                dashboard_url: None,
+            },
+            Arc::new(cfg),
+        );
+
+        let req = MultiTrackConfigRequest {
+            authentication: "test".to_string(),
+            capabilities: MTCapabilities {
+                cpu: MTCpu {
+                    logical_cores: 20,
+                    physical_cores: 10,
+                    speed: Some(3_000),
+                    name: Some("Intel Core i9-14900K".to_string()),
+                },
+                memory: MTMemory {
+                    free: 54961823744,
+                    total: 67148804096,
+                },
+                gaming_features: None,
+                system: MTSystem {
+                    version: "linux".to_string(),
+                    name: "Ubuntu".to_string(),
+                    build: 0,
+                    release: "24.04".to_string(),
+                    revision: "".to_string(),
+                    bits: 64,
+                    arm: false,
+                    arm_emulation: false,
+                },
+                gpu: vec![MTGpu {
+                    model: "GeForce RTX 5090".to_string(),
+                    vendor_id: 4318,
+                    device_id: 0,
+                    dedicated_video_memory: 69_000_000_000,
+                    shared_system_memory: 0,
+                    driver_version: Some("NVIDIA 535.274.2".to_string()),
+                }],
+            },
+            client: MTClient {
+                name: "obs-studio".to_string(),
+                supported_codecs: vec!["h264".to_string(), "h265".to_string(), "av1".to_string()],
+                supported_encoders: vec![],
+                version: "32.0.2".to_string(),
+            },
+            preferences: MTPreferences {
+                maximum_aggregate_bitrate: Some(12_000_000),
+                maximum_video_tracks: None,
+                vod_track_audio: false,
+                composition_gpu_index: Some(0),
+                audio_samples_per_sec: 48_000,
+                audio_channels: 2,
+                audio_max_buffering_ms: 960,
+                audio_fixed_buffering: false,
+                canvases: vec![MTCanvas {
+                    width: 2560,
+                    height: 1440,
+                    canvas_width: 2560,
+                    canvas_height: 1440,
+                    framerate: MTFramerate {
+                        denominator: 1,
+                        numerator: 30,
+                    },
+                }],
+            },
+            schema_version: "2025-01-25".to_string(),
+            service: "IVS".to_string(),
+        };
+
+        let rsp = engine.get_multi_track_config(req).await.expect("config");
+
+        let ep = rsp.ingest_endpoints.first().expect("endpoint");
+        assert_eq!(ep.protocol, "RTMP");
+        assert_eq!(ep.url_template, "rtmp://localhost:1935/live/{stream_key}");
+
+        let audio = rsp.audio_configurations.live.first().expect("audio");
+        assert!(rsp.audio_configurations.vod.is_none());
+        assert_eq!(audio.channels, 2);
+        assert_eq!(audio.codec, "ffmpeg_aac");
+        assert_eq!(audio.track_id, 0);
+        assert_eq!(audio.settings.get("bitrate"), Some(&json!(192)));
+
+        let v1440 = rsp
+            .encoder_configurations
+            .iter()
+            .find(|c| c.height == 1440)
+            .expect("encoder-1440");
+        let v1080 = rsp
+            .encoder_configurations
+            .iter()
+            .find(|c| c.height == 1080)
+            .expect("encoder-1080");
+        let v720 = rsp
+            .encoder_configurations
+            .iter()
+            .find(|c| c.height == 720)
+            .expect("encoder-720");
+        let v480 = rsp
+            .encoder_configurations
+            .iter()
+            .find(|c| c.height == 480)
+            .expect("encoder-480");
+
+        assert_eq!(v1440.width, 2560);
+        assert_eq!(v1440.height, 1440);
+        assert_eq!(v1440.canvas_index, 0);
+        assert_eq!(v1440.format, Some(MTVideoFormat::NV12));
+        assert_eq!(
+            v1440.settings.get("bitrate"),
+            Some(&json!(recommended_bitrate("h264", 2560 * 1440, 30.0) / 1000))
+        );
+
+        assert_eq!(v1080.width, 1920);
+        assert_eq!(v1080.height, 1080);
+        assert_eq!(v1080.canvas_index, 0);
+        assert_eq!(v1080.format, Some(MTVideoFormat::NV12));
+        assert_eq!(v1080.settings.get("bitrate"), Some(&json!(6000)));
+
+        assert_eq!(v720.width, 1280);
+        assert_eq!(v720.height, 720);
+        assert_eq!(v720.canvas_index, 0);
+        assert_eq!(v720.format, Some(MTVideoFormat::NV12));
+        assert_eq!(v720.settings.get("bitrate"), Some(&json!(3000)));
+
+        assert_eq!(v480.width, 854);
+        assert_eq!(v480.height, 480);
+        assert_eq!(v480.canvas_index, 0);
+        assert_eq!(v480.format, Some(MTVideoFormat::NV12));
+        assert_eq!(v480.settings.get("bitrate"), Some(&json!(800)));
+    }
+
+    struct DummyEndpointConfigurator {
+        ingress: Vec<ListenerEndpoint>,
+        caps: Vec<VariantType>,
+        egress: Vec<EgressType>,
+    }
+
+    #[async_trait::async_trait]
+    impl EndpointConfigurator for DummyEndpointConfigurator {
+        async fn get_capabilities(
+            &self,
+            conn: &ConnectionInfo,
+        ) -> anyhow::Result<Vec<VariantType>> {
+            Ok(self.caps.clone())
+        }
+
+        async fn get_ingress(&self) -> anyhow::Result<Vec<ListenerEndpoint>> {
+            Ok(self.ingress.clone())
+        }
+
+        async fn get_egress(&self, conn: &ConnectionInfo) -> anyhow::Result<Vec<EgressType>> {
+            Ok(self.egress.clone())
+        }
+
+        #[cfg(feature = "moq")]
+        async fn get_moq_origin(
+            &self,
+        ) -> anyhow::Result<zap_stream_core::hang::moq_lite::OriginProducer> {
+            todo!()
+        }
     }
 }

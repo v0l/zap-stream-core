@@ -302,6 +302,11 @@ impl EgressType {
         stream: &IngressStream,
         input_params: &EncoderParams,
     ) -> Option<EgressEncoderConfig> {
+        if matches!(self, EgressType::Recorder { .. }) {
+            // Recorder doesn't expect any encoder params because it only re-muxes existing variants
+            return None;
+        }
+        
         let mut p = EgressEncoderConfig::default_h264(stream)?;
         p.codec_params.extend(input_params.clone());
         if matches!(self, EgressType::HLS { .. }) && stream.stream_type == StreamType::Audio {

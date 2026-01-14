@@ -51,3 +51,16 @@ pub fn map_codec_id(codec: &str) -> Option<AVCodecID> {
         _ => None,
     }
 }
+
+/// bitrate‑per‑pixel‑per‑second
+pub fn recommended_bitrate(codec: &str, pixels: u64, fps: f32) -> u32 {
+    let bitrate = match codec {
+        "h264" => pixels as f64 * fps as f64 * 0.07,
+        "h265" | "hevc" => pixels as f64 * fps as f64 * 0.035,
+        "av1" => pixels as f64 * fps as f64 * 0.025,
+        "vp9" => pixels as f64 * fps as f64 * 0.05,
+        "webp" => pixels as f64 * fps as f64 * 0.06,
+        _ => pixels as f64 * fps as f64 * 0.08,
+    };
+    bitrate.round() as u32
+}

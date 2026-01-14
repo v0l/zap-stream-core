@@ -7,6 +7,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
+#[derive(Clone)]
 pub enum ListenerEndpoint {
     SRT { endpoint: String },
     RTMP { endpoint: String },
@@ -43,18 +44,30 @@ impl ListenerEndpoint {
     pub fn to_public_url(&self, public_hostname: &str, ingest_name: &str) -> Option<String> {
         match self {
             ListenerEndpoint::SRT { endpoint } => {
-                if let Ok(addr) = endpoint.parse::<std::net::SocketAddr>() {
-                    Some(format!("srt://{}:{}", public_hostname, addr.port()))
+                if let Ok(addr) = endpoint.parse::<Url>() {
+                    Some(format!(
+                        "srt://{}:{}",
+                        public_hostname,
+                        if let Some(p) = addr.port() {
+                            format!(":{}", p)
+                        } else {
+                            return None;
+                        }
+                    ))
                 } else {
                     None
                 }
             }
             ListenerEndpoint::RTMP { endpoint } => {
-                if let Ok(addr) = endpoint.parse::<std::net::SocketAddr>() {
+                if let Ok(addr) = endpoint.parse::<Url>() {
                     Some(format!(
-                        "rtmp://{}:{}/{}",
+                        "rtmp://{}{}/{}",
                         public_hostname,
-                        addr.port(),
+                        if let Some(p) = addr.port() {
+                            format!(":{}", p)
+                        } else {
+                            "".to_string()
+                        },
                         ingest_name
                     ))
                 } else {
@@ -62,8 +75,16 @@ impl ListenerEndpoint {
                 }
             }
             ListenerEndpoint::TCP { endpoint } => {
-                if let Ok(addr) = endpoint.parse::<std::net::SocketAddr>() {
-                    Some(format!("tcp://{}:{}", public_hostname, addr.port()))
+                if let Ok(addr) = endpoint.parse::<Url>() {
+                    Some(format!(
+                        "tcp://{}:{}",
+                        public_hostname,
+                        if let Some(p) = addr.port() {
+                            format!(":{}", p)
+                        } else {
+                            return None;
+                        }
+                    ))
                 } else {
                     None
                 }

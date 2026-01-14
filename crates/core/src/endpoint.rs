@@ -3,7 +3,7 @@ use crate::ingress::ConnectionInfo;
 use crate::listen::ListenerEndpoint;
 use crate::overseer::{IngressInfo, IngressStream, StreamType};
 use crate::variant::{AudioVariant, VariantGroup, VariantStream, VideoVariant};
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::av_d2q;
 use itertools::Itertools;
@@ -86,7 +86,7 @@ impl EndpointConfigEngine {
     ) -> Result<EndpointConfig<'a>> {
         let mut variants = Vec::new();
         let mut egress_map = HashMap::new();
-        let mut egress = egress.clone();
+        let egress = egress.clone();
 
         // pick the highest quality ingress stream for transcoding
         let transcode_video_src = info
@@ -231,19 +231,32 @@ impl EndpointConfigEngine {
                     }
                 }
                 VariantType::DVR { height } => {
+                    let egress_id = match egress
+                        .iter()
+                        .find(|e| matches!(e, EgressType::Recorder { .. }))
+                    {
+                        Some(EgressType::Recorder { height: he, .. }) if he != height => {
+                            warn!(
+                                "Variant DVR was included in capabilities but, a different egress recorder height was requested"
+                            );
+                            continue;
+                        }
+                        Some(EgressType::Recorder { id, .. }) => id.clone(),
+                        None => {
+                            warn!(
+                                "Variant DVR was included in capabilities but, no egress was requested"
+                            );
+                            continue;
+                        }
+                        _ => continue,
+                    };
                     if let Some(var) = variants.iter().find(|v| match v {
                         VariantStream::Video(v) | VariantStream::CopyVideo(v) => {
                             v.height == *height
                         }
                         _ => false,
                     }) {
-                        // insert the Recorder egress
-                        let id = Uuid::new_v4();
-                        egress.push(EgressType::Recorder {
-                            id,
-                            height: *height,
-                        });
-                        let e_map = egress_map.entry(id).or_insert(Vec::new());
+                        let e_map = egress_map.entry(egress_id).or_insert(Vec::new());
                         e_map.push(VariantGroup {
                             video: Some(var.id()),
                             audio: transcode_audio_src.and_then(|s| {
@@ -261,13 +274,19 @@ impl EndpointConfigEngine {
             }
         }
 
-        Ok(EndpointConfig {
+        let ret = EndpointConfig {
             audio_src: transcode_audio_src,
             video_src: transcode_video_src,
             variants,
             egress_map,
             egress: egress.clone(),
-        })
+        };
+        Ok(ret.verify().map_err(|e| {
+            anyhow!(
+                "Invalid endpoint config, missing variants {}",
+                e.iter().join(", ")
+            )
+        })?)
     }
 
     fn get_streams_for_egress(
@@ -767,10 +786,14 @@ mod tests {
     use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID;
     use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
     use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVSampleFormat::AV_SAMPLE_FMT_FLTP;
+    use tracing_subscriber::filter::LevelFilter;
 
     #[test]
     fn test_endpoint_config() -> Result<()> {
-        tracing_subscriber::fmt::try_init().ok();
+        tracing_subscriber::fmt()
+            .with_max_level(LevelFilter::TRACE)
+            .try_init()
+            .ok();
 
         let mock_ingress = IngressInfo {
             bitrate: 0,
@@ -898,11 +921,11 @@ mod tests {
         assert!(heights.contains(&240), "Expected 240p variant");
 
         // Verify egress are copied to config
-        assert_eq!(cfg.egress.len(), 2);
+        assert_eq!(cfg.egress.len(), 1);
         assert_eq!(cfg.egress[0].id(), hls_id);
 
         // Verify egress mapping exists for each egress
-        assert_eq!(cfg.egress_map.len(), 2);
+        assert_eq!(cfg.egress_map.len(), 1);
 
         // Verify each egress has variant groups
         for egress in &cfg.egress {
