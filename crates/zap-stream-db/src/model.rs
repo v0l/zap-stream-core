@@ -38,6 +38,8 @@ pub struct User {
     pub goal: Option<String>,
     /// Nostr Wallet Connect configuration
     pub nwc: Option<String>,
+    /// Users selected default ingest ID
+    pub ingest_id: Option<u64>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Type)]
