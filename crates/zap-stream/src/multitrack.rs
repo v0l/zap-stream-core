@@ -1,5 +1,4 @@
-use crate::settings::Settings;
-use anyhow::{Context, anyhow};
+use anyhow::Context;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
     av_d2q, av_get_pix_fmt, av_get_sample_fmt, avcodec_profile_name,
 };
@@ -7,31 +6,39 @@ use ffmpeg_rs_raw::{cstr, free_cstr, rstr};
 use nostr_sdk::serde_json;
 use serde::{Deserialize, Serialize};
 use std::convert::TryFrom;
-use std::str::FromStr;
 use std::sync::Arc;
 use tracing::{info, warn};
+use url::Url;
 use uuid::Uuid;
-use zap_stream_core::endpoint::{EndpointConfigEngine, parse_capabilities};
+use zap_stream_core::endpoint::{EndpointConfigEngine, EndpointConfigurator};
 use zap_stream_core::ingress::ConnectionInfo;
 use zap_stream_core::listen::ListenerEndpoint;
 use zap_stream_core::map_codec_id;
-use zap_stream_core::overseer::{IngressInfo, IngressStream, Overseer, StreamType};
+use zap_stream_core::overseer::{IngressInfo, IngressStream, StreamType};
 use zap_stream_core::variant::VariantStream;
-use zap_stream_db::ZapStreamDb;
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct MultiTrackEngineConfig {
+    pub public_url: String,
+    pub dashboard_url: Option<String>,
+}
 
 #[derive(Clone)]
 pub struct MultiTrackEngine {
-    db: ZapStreamDb,
-    settings: Settings,
-    overseer: Arc<dyn Overseer>,
+    config: MultiTrackEngineConfig,
+    endpoint_config: Arc<dyn EndpointConfigurator>,
 }
 
 impl MultiTrackEngine {
-    pub fn new(db: ZapStreamDb, settings: Settings, overseer: Arc<dyn Overseer>) -> Self {
+    const DASHBOARD_LINK: &'static str = "<a href=\"https://zap.stream/dashboard\">zap.stream</a>";
+
+    pub fn new(
+        config: MultiTrackEngineConfig,
+        endpoint_config: Arc<dyn EndpointConfigurator>,
+    ) -> Self {
         Self {
-            db,
-            settings,
-            overseer,
+            config,
+            endpoint_config,
         }
     }
 
@@ -39,40 +46,35 @@ impl MultiTrackEngine {
         &self,
         req: MultiTrackConfigRequest,
     ) -> anyhow::Result<MultiTrackConfigResponse> {
-        const DASHBOARD_LINK: &'static str =
-            "<a href=\"https://zap.stream/dashboard\">zap.stream</a>";
-
-        let db_ingest_endpoints = self.db.get_ingest_endpoints().await?;
-        let Some(key) = self.db.find_user_stream_key(&req.authentication).await? else {
-            return Ok(MultiTrackConfigResponse::status_error(format!(
-                "Stream key is invalid please visit {} to find your stream key.",
-                DASHBOARD_LINK
-            )));
+        let conn = ConnectionInfo {
+            id: Uuid::new_v4(),
+            endpoint: "multi-track-config".to_string(),
+            ip_addr: "".to_string(),
+            app_name: "live".to_string(),
+            key: req.authentication.clone(),
         };
-        let user = self.db.get_user(key.user_id()).await?;
-        info!(
-            "User {} requested multi-track config with request {}",
-            hex::encode(&user.pubkey),
-            serde_json::to_string(&req)?
-        );
 
-        // TODO: user selects ingest via account update
-        // pick most expensive for now
-        let ingest_pick = db_ingest_endpoints
-            .iter()
-            .max_by_key(|e| e.cost)
-            .ok_or(anyhow!("No ingest configs"))?;
+        let egress_config = match self.endpoint_config.get_egress(&conn).await {
+            Ok(c) => c,
+            Err(e) => {
+                return Ok(MultiTrackConfigResponse::status_error(format!(
+                    "Stream key is invalid please visit {} to find your stream key. ({})",
+                    self.config
+                        .dashboard_url
+                        .as_ref()
+                        .map(|s| s.as_str())
+                        .unwrap_or(Self::DASHBOARD_LINK),
+                    e
+                )));
+            }
+        };
 
-        let Some(canvas) = req
+        let canvas = req
             .preferences
             .canvases
             .iter()
-            .max_by_key(|c| c.width * c.height)
-        else {
-            return Ok(MultiTrackConfigResponse::status_error(
-                "No canvas configs found".to_string(),
-            ));
-        };
+            .next()
+            .context("no canvases")?;
 
         // TODO: pick best ingest codec for best egress copy mapping
         let ingest_video_codec = req
@@ -154,26 +156,20 @@ impl MultiTrackEngine {
                 },
             ],
         };
-        let conn = ConnectionInfo {
-            id: Uuid::new_v4(),
-            endpoint: "multi-track-config".to_string(),
-            ip_addr: "".to_string(),
-            app_name: ingest_pick.name.clone(),
-            key: req.authentication.clone(),
+        let caps = self.endpoint_config.get_capabilities(&conn).await?;
+        let encoder_config = match EndpointConfigEngine::get_variants_from_endpoint(
+            &pseudo_ingress,
+            &caps,
+            &egress_config,
+        ) {
+            Ok(c) => c,
+            Err(e) => {
+                return Ok(MultiTrackConfigResponse::status_error(format!(
+                    "Failed to configure stream <pre>{}</pre>",
+                    e
+                )));
+            }
         };
-        let egress = self.overseer.get_egress(&conn).await?;
-        let caps = parse_capabilities(&ingest_pick.capabilities);
-        let encoder_config =
-            match EndpointConfigEngine::get_variants_from_endpoint(&pseudo_ingress, &caps, &egress)
-            {
-                Ok(c) => c,
-                Err(e) => {
-                    return Ok(MultiTrackConfigResponse::status_error(format!(
-                        "Failed to configure stream <pre>{}</pre>",
-                        e
-                    )));
-                }
-            };
         info!("{}", encoder_config);
         let max_audio = encoder_config
             .variants
@@ -187,21 +183,20 @@ impl MultiTrackEngine {
                 _ => unreachable!(),
             });
 
+        let ingress = self.endpoint_config.get_ingress().await?;
+        let public_url: Url = self.config.public_url.parse()?;
         Ok(MultiTrackConfigResponse {
-            ingest_endpoints: self
-                .settings
-                .endpoints
+            ingest_endpoints: ingress
                 .iter()
                 .filter_map(|c| {
-                    let ep = ListenerEndpoint::from_str(c).ok()?;
                     Some(MTIngestEndpoint {
-                        protocol: match ep {
+                        protocol: match c {
                             ListenerEndpoint::RTMP { .. } => "RTMP".to_string(),
                             ListenerEndpoint::SRT { .. } => "SRT".to_string(),
                             _ => return None,
                         },
-                        url_template: ep
-                            .to_public_url(&self.settings.public_url, "live/{stream_key}")?,
+                        url_template: c
+                            .to_public_url(public_url.host_str()?, "live/{stream_key}")?,
                         authentication: None,
                     })
                 })

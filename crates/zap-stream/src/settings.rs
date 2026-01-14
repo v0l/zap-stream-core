@@ -58,8 +58,9 @@ pub struct OverseerConfig {
     pub relays: Vec<String>,
     /// Nsec to sign nostr events
     pub nsec: String,
+    #[serde(default)]
     /// Blossom servers
-    pub blossom: Option<Vec<String>>,
+    pub blossom: Vec<String>,
     /// Segment length for HLS egress
     pub segment_length: Option<f32>,
     /// Low balance notification threshold in sats

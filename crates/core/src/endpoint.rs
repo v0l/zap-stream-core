@@ -1,8 +1,10 @@
-use crate::egress::{EgressEncoderConfig, EncoderParam, EncoderParams};
+use crate::egress::{EgressConfig, EgressEncoderConfig, EgressType, EncoderParam, EncoderParams};
+use crate::ingress::ConnectionInfo;
+use crate::listen::ListenerEndpoint;
 use crate::overseer::{IngressInfo, IngressStream, StreamType};
-use crate::pipeline::{EgressConfig, EgressType};
 use crate::variant::{AudioVariant, VariantGroup, VariantStream, VideoVariant};
 use anyhow::{Result, bail};
+use async_trait::async_trait;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::av_d2q;
 use itertools::Itertools;
 use std::collections::hash_map::Entry;
@@ -11,6 +13,22 @@ use std::fmt::{Display, Formatter};
 use std::str::FromStr;
 use tracing::{info, warn};
 use uuid::Uuid;
+
+#[async_trait]
+pub trait EndpointConfigurator: Send + Sync {
+    /// Get the list of variants which should be used for a given connection
+    async fn get_capabilities(&self, conn: &ConnectionInfo) -> Result<Vec<VariantType>>;
+
+    /// Get a list of ingress endpoints for ingesting streams
+    async fn get_ingress(&self) -> Result<Vec<ListenerEndpoint>>;
+
+    /// Get egress configurations for a connection
+    async fn get_egress(&self, conn: &ConnectionInfo) -> Result<Vec<EgressType>>;
+
+    /// Get the MoQ origin for publishing streams
+    #[cfg(feature = "egress-moq")]
+    async fn get_moq_origin(&self) -> Result<hang::moq_lite::OriginProducer>;
+}
 
 pub struct EndpointConfigEngine;
 
@@ -26,7 +44,7 @@ impl EndpointConfigEngine {
     ///
     /// * `info` - The ingress stream information containing metadata about available source streams
     ///   (video dimensions, codec, fps, audio channels, sample rate, etc.)
-    /// * `capabilities` - A list of [`EndpointCapability`] values specifying what output variants
+    /// * `capabilities` - A list of [`VariantType`] values specifying what output variants
     ///   should be created (e.g., source passthrough, specific resolution/bitrate transcodes)
     ///
     /// # Returns
@@ -63,21 +81,12 @@ impl EndpointConfigEngine {
     /// normalized to either 44.1kHz, 48kHz, or defaulted to 48kHz if the source has a non-standard rate.
     pub fn get_variants_from_endpoint<'a>(
         info: &'a IngressInfo,
-        capabilities: &Vec<EndpointCapability>,
+        capabilities: &Vec<VariantType>,
         egress: &Vec<EgressType>,
     ) -> Result<EndpointConfig<'a>> {
         let mut variants = Vec::new();
         let mut egress_map = HashMap::new();
         let mut egress = egress.clone();
-
-        // Recorder egress cannot be included in the input egress config
-        // and is enabled only by the capabilities
-        if egress
-            .iter()
-            .any(|e| matches!(e, EgressType::Recorder { .. }))
-        {
-            bail!("Recorder egress cannot be included at this stage.");
-        }
 
         // pick the highest quality ingress stream for transcoding
         let transcode_video_src = info
@@ -94,7 +103,7 @@ impl EndpointConfigEngine {
         let mut dup_map = HashMap::new();
         for capability in capabilities.iter().sorted() {
             match capability {
-                EndpointCapability::SourceVariant => {
+                VariantType::SourceVariant => {
                     // for all source streams create the grouped ingress
                     let copy_groups: Vec<_> = info
                         .streams
@@ -138,7 +147,7 @@ impl EndpointConfigEngine {
                         }
                     }
                 }
-                EndpointCapability::Variant { height, bitrate } => {
+                VariantType::Variant { height, bitrate } => {
                     // Add video variant for this group
                     if let Some(video_src) = transcode_video_src {
                         let output_height = *height;
@@ -221,7 +230,7 @@ impl EndpointConfigEngine {
                         }
                     }
                 }
-                EndpointCapability::DVR { height } => {
+                VariantType::DVR { height } => {
                     if let Some(var) = variants.iter().find(|v| match v {
                         VariantStream::Video(v) | VariantStream::CopyVideo(v) => {
                             v.height == *height
@@ -450,24 +459,24 @@ impl EndpointConfig<'_> {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub enum EndpointCapability {
+pub enum VariantType {
     SourceVariant,
     Variant { height: u16, bitrate: u64 },
     DVR { height: u16 },
 }
 
-impl EndpointCapability {
+impl VariantType {
     /// Returns the sort order for capability types: SourceVariant=0, Variant=1, DVR=2
     fn type_order(&self) -> u8 {
         match self {
-            EndpointCapability::SourceVariant => 0,
-            EndpointCapability::Variant { .. } => 1,
-            EndpointCapability::DVR { .. } => 2,
+            VariantType::SourceVariant => 0,
+            VariantType::Variant { .. } => 1,
+            VariantType::DVR { .. } => 2,
         }
     }
 }
 
-impl Ord for EndpointCapability {
+impl Ord for VariantType {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         use std::cmp::Ordering;
 
@@ -480,11 +489,11 @@ impl Ord for EndpointCapability {
         // If same type, compare by height and bitrate (descending for variants)
         match (self, other) {
             (
-                EndpointCapability::Variant {
+                VariantType::Variant {
                     height: h1,
                     bitrate: b1,
                 },
-                EndpointCapability::Variant {
+                VariantType::Variant {
                     height: h2,
                     bitrate: b2,
                 },
@@ -495,7 +504,7 @@ impl Ord for EndpointCapability {
                     ord => ord,
                 }
             }
-            (EndpointCapability::DVR { height: h1 }, EndpointCapability::DVR { height: h2 }) => {
+            (VariantType::DVR { height: h1 }, VariantType::DVR { height: h2 }) => {
                 // Sort DVR by height descending
                 h2.cmp(h1)
             }
@@ -504,34 +513,34 @@ impl Ord for EndpointCapability {
     }
 }
 
-impl PartialOrd for EndpointCapability {
+impl PartialOrd for VariantType {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Display for EndpointCapability {
+impl Display for VariantType {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            EndpointCapability::SourceVariant => write!(f, "variant:source"),
-            EndpointCapability::Variant { height, bitrate } => {
+            VariantType::SourceVariant => write!(f, "variant:source"),
+            VariantType::Variant { height, bitrate } => {
                 write!(f, "variant:{}:{}", height, bitrate)
             }
-            EndpointCapability::DVR { height } => write!(f, "dvr:{}", height),
+            VariantType::DVR { height } => write!(f, "dvr:{}", height),
         }
     }
 }
 
-impl FromStr for EndpointCapability {
+impl FromStr for VariantType {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         let cs = s.split(':').collect::<Vec<&str>>();
         match cs[0] {
-            "variant" if cs[1] == "source" => Ok(EndpointCapability::SourceVariant),
+            "variant" if cs[1] == "source" => Ok(VariantType::SourceVariant),
             "variant" if cs.len() == 3 => {
                 if let (Ok(h), Ok(br)) = (cs[1].parse(), cs[2].parse()) {
-                    Ok(EndpointCapability::Variant {
+                    Ok(VariantType::Variant {
                         height: h,
                         bitrate: br,
                     })
@@ -541,7 +550,7 @@ impl FromStr for EndpointCapability {
             }
             "dvr" if cs.len() == 2 => {
                 if let Ok(h) = cs[1].parse() {
-                    Ok(EndpointCapability::DVR { height: h })
+                    Ok(VariantType::DVR { height: h })
                 } else {
                     bail!("Invalid dvr: {}", s);
                 }
@@ -680,7 +689,7 @@ impl<'a> EndpointConfig<'a> {
     }
 }
 
-pub fn parse_capabilities(cap: &Option<String>) -> Vec<EndpointCapability> {
+pub fn parse_capabilities(cap: &Option<String>) -> Vec<VariantType> {
     if let Some(cap) = cap {
         cap.to_ascii_lowercase()
             .split(',')
@@ -691,6 +700,7 @@ pub fn parse_capabilities(cap: &Option<String>) -> Vec<EndpointCapability> {
     }
 }
 
+/// Extract the EncoderParams from the ingress stream info
 fn ingress_stream_to_params(stream: &IngressStream) -> EncoderParams {
     let mut ret = vec![];
 
@@ -809,24 +819,24 @@ mod tests {
         }];
 
         let mock_caps = vec![
-            EndpointCapability::SourceVariant,
-            EndpointCapability::Variant {
+            VariantType::SourceVariant,
+            VariantType::Variant {
                 height: 1080,
                 bitrate: 4_000_000,
             },
-            EndpointCapability::Variant {
+            VariantType::Variant {
                 height: 720,
                 bitrate: 1_000_000,
             },
-            EndpointCapability::Variant {
+            VariantType::Variant {
                 height: 480,
                 bitrate: 500_000,
             },
-            EndpointCapability::Variant {
+            VariantType::Variant {
                 height: 240,
                 bitrate: 200_000,
             },
-            EndpointCapability::DVR { height: 720 },
+            VariantType::DVR { height: 720 },
         ];
 
         let cfg = EndpointConfigEngine::get_variants_from_endpoint(
@@ -930,22 +940,22 @@ mod tests {
     #[test]
     fn test_endpoint_capability_sorting() {
         let mut caps = vec![
-            EndpointCapability::DVR { height: 720 },
-            EndpointCapability::Variant {
+            VariantType::DVR { height: 720 },
+            VariantType::Variant {
                 height: 480,
                 bitrate: 500_000,
             },
-            EndpointCapability::SourceVariant,
-            EndpointCapability::DVR { height: 1080 },
-            EndpointCapability::Variant {
+            VariantType::SourceVariant,
+            VariantType::DVR { height: 1080 },
+            VariantType::Variant {
                 height: 1080,
                 bitrate: 4_000_000,
             },
-            EndpointCapability::Variant {
+            VariantType::Variant {
                 height: 720,
                 bitrate: 2_000_000,
             },
-            EndpointCapability::Variant {
+            VariantType::Variant {
                 height: 720,
                 bitrate: 1_000_000,
             },
@@ -954,36 +964,36 @@ mod tests {
         caps.sort();
 
         // Expected order: SourceVariant first, then Variants by height desc/bitrate desc, then DVR by height desc
-        assert_eq!(caps[0], EndpointCapability::SourceVariant);
+        assert_eq!(caps[0], VariantType::SourceVariant);
         assert_eq!(
             caps[1],
-            EndpointCapability::Variant {
+            VariantType::Variant {
                 height: 1080,
                 bitrate: 4_000_000
             }
         );
         assert_eq!(
             caps[2],
-            EndpointCapability::Variant {
+            VariantType::Variant {
                 height: 720,
                 bitrate: 2_000_000
             }
         );
         assert_eq!(
             caps[3],
-            EndpointCapability::Variant {
+            VariantType::Variant {
                 height: 720,
                 bitrate: 1_000_000
             }
         );
         assert_eq!(
             caps[4],
-            EndpointCapability::Variant {
+            VariantType::Variant {
                 height: 480,
                 bitrate: 500_000
             }
         );
-        assert_eq!(caps[5], EndpointCapability::DVR { height: 1080 });
-        assert_eq!(caps[6], EndpointCapability::DVR { height: 720 });
+        assert_eq!(caps[5], VariantType::DVR { height: 1080 });
+        assert_eq!(caps[6], VariantType::DVR { height: 720 });
     }
 }

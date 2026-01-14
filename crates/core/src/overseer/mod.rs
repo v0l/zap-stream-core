@@ -1,8 +1,8 @@
 use crate::ingress::{ConnectionInfo, EndpointStats};
 
 use crate::egress::EgressSegment;
-use crate::pipeline::runner::PipelineStats;
-use crate::pipeline::{EgressType, PipelineConfig};
+use crate::pipeline::PipelineConfig;
+use crate::pipeline::PipelineStats;
 use anyhow::{Result, bail};
 use async_trait::async_trait;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
@@ -207,11 +207,4 @@ pub trait Overseer: Send + Sync {
 
     /// Stats emitted by the pipeline periodically
     async fn on_stats(&self, pipeline_id: &Uuid, stats: StatsType) -> Result<()>;
-
-    /// Get egress configurations for a connection
-    async fn get_egress(&self, conn: &ConnectionInfo) -> Result<Vec<EgressType>>;
-
-    /// Get the MoQ origin for publishing streams
-    #[cfg(feature = "egress-moq")]
-    async fn get_moq_origin(&self) -> Result<hang::moq_lite::OriginProducer>;
 }

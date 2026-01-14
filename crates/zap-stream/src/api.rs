@@ -571,7 +571,7 @@ impl ZapStreamApi for Api {
         })
     }
 
-    async fn delete_stream_key(&self, auth: Nip98Auth, key_id: u64) -> Result<()> {
+    async fn delete_stream_key(&self, _auth: Nip98Auth, _key_id: u64) -> Result<()> {
         todo!()
     }
 

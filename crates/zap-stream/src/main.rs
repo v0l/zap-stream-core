@@ -21,7 +21,7 @@ use tracing::{error, info, warn};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::{EnvFilter, Layer};
 use zap_stream::http::{HlsRouter, IndexRouter, MultiTrackRouter, ZapRouter};
-use zap_stream::multitrack::MultiTrackEngine;
+use zap_stream::multitrack::{MultiTrackEngine, MultiTrackEngineConfig};
 use zap_stream::overseer::ZapStreamOverseer;
 use zap_stream::settings::Settings;
 use zap_stream_api_common::{AxumAdminApi, AxumApi};
@@ -184,9 +184,8 @@ async fn main() -> Result<()> {
         .nest(
             "/api",
             MultiTrackRouter::new(MultiTrackEngine::new(
-                overseer.database(),
-                settings.clone(),
-                overseer.clone() as Arc<dyn Overseer>,
+                MultiTrackEngineConfig { public_url: settings.public_url.clone(), dashboard_url: None },
+                overseer.clone(),
             )),
         );
 

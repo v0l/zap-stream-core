@@ -1,7 +1,7 @@
 use crate::generator::FrameGenerator;
 use crate::ingress::{ConnectionInfo, EndpointStats, setup_term_handler, spawn_pipeline};
 use crate::overseer::Overseer;
-use crate::pipeline::runner::PipelineCommand;
+use crate::pipeline::PipelineCommand;
 use anyhow::Result;
 use chrono::Utc;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;

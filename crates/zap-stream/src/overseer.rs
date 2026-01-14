@@ -1,5 +1,5 @@
 use crate::payments::create_lightning;
-use crate::settings::{AdvertiseConfig, PaymentBackend, RedisConfig, Settings};
+use crate::settings::Settings;
 use crate::stream_manager::StreamManager;
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use async_trait::async_trait;
@@ -24,12 +24,14 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use url::Url;
 use uuid::Uuid;
-use zap_stream_core::egress::EgressSegment;
-use zap_stream_core::endpoint::{EndpointCapability, EndpointConfigEngine, parse_capabilities};
+use zap_stream_core::egress::{EgressSegment, EgressType};
+use zap_stream_core::endpoint::{
+    EndpointConfigEngine, EndpointConfigurator, VariantType, parse_capabilities,
+};
 use zap_stream_core::ingress::ConnectionInfo;
 use zap_stream_core::mux::SegmentType;
 use zap_stream_core::overseer::{ConnectResult, IngressInfo, Overseer, StatsType};
-use zap_stream_core::pipeline::{EgressType, PipelineConfig};
+use zap_stream_core::pipeline::PipelineConfig;
 use zap_stream_core_nostr::n94::{N94Publisher, N94Segment, N94StreamInfo};
 use zap_stream_db::{
     IngestEndpoint, Payment, StreamKeyType, User, UserStream, UserStreamState, ZapStreamDb,
@@ -39,30 +41,28 @@ use zap_stream_db::{
 use zap_stream_core::egress::hls::HlsEgress;
 #[cfg(feature = "moq")]
 use zap_stream_core::hang::moq_lite::{OriginConsumer, OriginProducer, Produce};
+use zap_stream_core::listen::ListenerEndpoint;
 #[cfg(feature = "hls")]
 use zap_stream_core::mux::HlsMuxer;
-use zap_stream_core::pipeline::runner::PipelineRunner;
+use zap_stream_core::pipeline::PipelineRunner;
 use zap_stream_core::variant::VariantGroup;
 
 /// zap.stream NIP-53 overseer
 #[derive(Clone)]
 pub struct ZapStreamOverseer {
+    settings: Settings,
     /// Database instance for accounts/streams
     db: ZapStreamDb,
     /// Generic node backend
     lightning: Arc<dyn LightningNode + Send + Sync>,
     /// Nostr client for publishing events
     client: Client,
-    /// Public facing URL pointing to [out_dir]
-    public_url: String,
     /// Stream manager handles viewer tracking
     stream_manager: StreamManager,
     /// NIP-5E publisher
     n94: Option<N94Publisher>,
     /// HLS segment length
     segment_length: f32,
-    /// Low balance notification threshold in sats
-    low_balance_threshold: Option<u64>,
     /// Node name for horizontal scaling
     node_name: String,
     /// NWC topup handles
@@ -82,38 +82,7 @@ impl ZapStreamOverseer {
     const RECONNECT_WINDOW_SECONDS: u64 = 120;
 
     pub async fn from_settings(settings: &Settings, shutdown: CancellationToken) -> Result<Self> {
-        ZapStreamOverseer::new(
-            &settings.public_url,
-            &settings.overseer.nsec,
-            &settings.overseer.database,
-            &settings.overseer.payments,
-            &settings.overseer.relays,
-            &settings.overseer.blossom,
-            settings.overseer.segment_length.unwrap_or(2.0),
-            settings.overseer.low_balance_threshold,
-            &settings.overseer.advertise,
-            &settings.redis,
-            PathBuf::from(&settings.output_dir),
-            shutdown,
-        )
-        .await
-    }
-
-    pub async fn new(
-        public_url: &String,
-        private_key: &str,
-        db: &str,
-        payments: &PaymentBackend,
-        relays: &Vec<String>,
-        blossom_servers: &Option<Vec<String>>,
-        segment_length: f32,
-        low_balance_threshold: Option<u64>,
-        advertise: &Option<AdvertiseConfig>,
-        redis: &Option<RedisConfig>,
-        out_dir: PathBuf,
-        shutdown: CancellationToken,
-    ) -> Result<Self> {
-        let db = ZapStreamDb::new(db).await?;
+        let db = ZapStreamDb::new(&settings.overseer.database).await?;
         db.migrate().await?;
 
         #[cfg(debug_assertions)]
@@ -132,10 +101,10 @@ impl ZapStreamOverseer {
             );
         }
 
-        let payments = create_lightning(payments, db.clone()).await?;
-        let keys = Keys::from_str(private_key)?;
+        let payments = create_lightning(&settings.overseer.payments, db.clone()).await?;
+        let keys = Keys::from_str(&settings.overseer.nsec)?;
         let client = nostr_sdk::ClientBuilder::new().signer(keys.clone()).build();
-        for r in relays {
+        for r in &settings.overseer.relays {
             client.add_relay(r).await?;
         }
         client.connect().await;
@@ -144,7 +113,7 @@ impl ZapStreamOverseer {
             .ok_or_else(|| anyhow::anyhow!("Failed to get hostname!"))?;
 
         // Initialize StreamManager with Redis if available
-        let (stream_manager, redis_client) = if let Some(r) = redis {
+        let (stream_manager, redis_client) = if let Some(r) = &settings.redis {
             let r_client = redis::Client::open(r.url.clone())?;
             (
                 StreamManager::new_with_redis(node_name.clone(), r_client.clone()).await?,
@@ -154,24 +123,31 @@ impl ZapStreamOverseer {
             (StreamManager::new(node_name.clone()), None)
         };
 
+        let segment_length = settings.overseer.segment_length.unwrap_or(2.0);
         let mut overseer = Self {
             db,
             lightning: payments,
-            n94: blossom_servers
-                .as_ref()
-                .map(|s| N94Publisher::new(client.clone(), s, 3, segment_length)),
+            n94: if settings.overseer.blossom.is_empty() {
+                None
+            } else {
+                Some(N94Publisher::new(
+                    client.clone(),
+                    &settings.overseer.blossom,
+                    3,
+                    segment_length,
+                ))
+            },
             client: client.clone(),
             segment_length,
-            public_url: public_url.clone(),
             stream_manager,
-            low_balance_threshold,
             node_name,
             nwc_topup_requests: Arc::new(RwLock::new(HashMap::new())),
-            out_dir,
+            out_dir: PathBuf::from(&settings.output_dir),
             #[cfg(feature = "moq")]
             moq_origin: None,
             #[cfg(feature = "moq")]
             moq_bind: None,
+            settings: settings.clone(),
         };
 
         // Enable Redis stats distribution if available
@@ -185,7 +161,7 @@ impl ZapStreamOverseer {
         let _ = overseer.stream_manager.start_node_metrics_task(shutdown);
 
         // advertise self via NIP-89
-        if let Some(a) = advertise {
+        if let Some(a) = settings.overseer.advertise.as_ref() {
             let meta = Metadata {
                 name: a.name.clone(),
                 display_name: None,
@@ -484,9 +460,7 @@ impl ZapStreamOverseer {
             }
             UserStreamState::Ended => {
                 let caps = parse_capabilities(&endpoint.capabilities);
-                let has_recording = caps
-                    .iter()
-                    .any(|c| matches!(c, EndpointCapability::DVR { .. }));
+                let has_recording = caps.iter().any(|c| matches!(c, VariantType::DVR { .. }));
                 if has_recording {
                     extra_tags.push(Tag::parse([
                         "recording",
@@ -510,7 +484,7 @@ impl ZapStreamOverseer {
     }
 
     fn map_to_public_url(&self, path: &str) -> Result<Url> {
-        let u: Url = self.public_url.parse()?;
+        let u: Url = self.settings.public_url.parse()?;
         Ok(u.join(path)?)
     }
 
@@ -532,7 +506,7 @@ impl ZapStreamOverseer {
             }
             #[cfg(feature = "moq")]
             EgressType::Moq { .. } => {
-                let mut u: Url = self.public_url.parse()?;
+                let u: Url = self.settings.public_url.parse()?;
                 let u = format!(
                     "moq://{}{}/",
                     u.host_str()
@@ -553,7 +527,7 @@ impl ZapStreamOverseer {
 
     /// Send low balance notification as live chat message
     async fn send_low_balance_notification(&self, user: &User, stream: &UserStream) -> Result<()> {
-        if self.low_balance_threshold.is_some() {
+        if self.settings.overseer.low_balance_threshold.is_some() {
             let balance_sats = user.balance / 1000; // Convert millisats to sats
             let message = format!(
                 "⚠️ Low Balance Warning ⚠️ Your streaming balance is low: {} sats. Please top up your account to avoid stream interruption.",
@@ -1018,7 +992,7 @@ impl Overseer for ZapStreamOverseer {
             }
 
             // Check for low balance and send notification if needed
-            if let Some(threshold) = self.low_balance_threshold {
+            if let Some(threshold) = self.settings.overseer.low_balance_threshold {
                 let threshold = threshold as i64 * 1000; // convert to msats
                 let balance_before = bal + cost; // Calculate balance before this deduction
                 if balance_before > threshold && bal <= threshold {
@@ -1108,11 +1082,31 @@ impl Overseer for ZapStreamOverseer {
 
         Ok(())
     }
+}
+
+#[async_trait]
+impl EndpointConfigurator for ZapStreamOverseer {
+    async fn get_capabilities(&self, conn: &ConnectionInfo) -> Result<Vec<VariantType>> {
+        let ep = self.detect_endpoint(conn).await?;
+        Ok(parse_capabilities(&ep.capabilities))
+    }
+
+    async fn get_ingress(&self) -> Result<Vec<ListenerEndpoint>> {
+        Ok(self
+            .settings
+            .endpoints
+            .iter()
+            .filter_map(|e| ListenerEndpoint::from_str(e).ok())
+            .collect())
+    }
 
     async fn get_egress(&self, conn: &ConnectionInfo) -> Result<Vec<EgressType>> {
-        // Get ingest endpoint configuration based on connection type
+        let Some(key) = self.db.find_user_stream_key(&conn.key).await? else {
+            bail!("No user stream key found");
+        };
+
         let endpoint = self.detect_endpoint(conn).await?;
-        let _caps = parse_capabilities(&endpoint.capabilities);
+        let caps = parse_capabilities(&endpoint.capabilities);
 
         // configure list of egress' we're going to use
         let mut egress = vec![];
@@ -1122,23 +1116,26 @@ impl Overseer for ZapStreamOverseer {
             segment_length: self.segment_length,
             segment_type: SegmentType::FMP4,
         });
-        // if let Some(h) = caps.iter().find_map(|c| {
-        //     if let EndpointCapability::DVR { height } = c {
-        //         Some(*height)
-        //     } else {
-        //         None
-        //     }
-        // }) {
-        //     egress.push(EgressType::Recorder {
-        //         id: Uuid::new_v4(),
-        //         height: h,
-        //     })
-        // }
+        if let Some(h) = caps.iter().find_map(|c| {
+            if let VariantType::DVR { height } = c {
+                Some(*height)
+            } else {
+                None
+            }
+        }) {
+            egress.push(EgressType::Recorder {
+                id: Uuid::new_v4(),
+                height: h,
+            })
+        }
 
-        // let forward_dest = self.db.get_user_forwards(user.id).await?;
-        // for fwd in forward_dest {
-        //     egress.push(EgressType::RTMPForwarder(all_var_ids.clone(), fwd.target));
-        // }
+        let forward_dest = self.db.get_user_forwards(key.user_id()).await?;
+        for fwd in forward_dest.into_iter().filter(|f| !f.disabled) {
+            egress.push(EgressType::RTMPForwarder {
+                id: Uuid::new_v4(),
+                destination: fwd.target,
+            });
+        }
 
         #[cfg(feature = "moq")]
         egress.push(EgressType::Moq { id: Uuid::new_v4() });

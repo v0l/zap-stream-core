@@ -11,11 +11,13 @@ use crate::egress::hls::HlsEgress;
 #[cfg(feature = "egress-moq")]
 use crate::egress::moq::MoqEgress;
 use crate::egress::muxer_egress::MuxerEgress;
-use crate::egress::{Egress, EncoderOrSourceStream, EncoderVariant, EncoderVariantGroup};
+use crate::egress::{
+    Egress, EgressType, EncoderOrSourceStream, EncoderVariant, EncoderVariantGroup,
+};
 use crate::ingress::{ConnectionInfo, EndpointStats};
 use crate::overseer::{IngressInfo, IngressStream, Overseer, StatsType};
+use crate::pipeline::PipelineConfig;
 use crate::pipeline::worker::{PipelineWorkerThreadBuilder, WorkerThreadCommand};
-use crate::pipeline::{EgressType, PipelineConfig};
 use crate::reorder::FrameReorderBuffer;
 use crate::variant::VariantStream;
 use anyhow::{Result, anyhow, bail};

@@ -1,6 +1,6 @@
 use crate::metrics::PacketMetrics;
 use crate::overseer::Overseer;
-use crate::pipeline::runner::{PipelineCommand, PipelineRunner};
+use crate::pipeline::{PipelineCommand, PipelineRunner};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};

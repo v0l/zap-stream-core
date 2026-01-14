@@ -1,5 +1,5 @@
 use crate::ingress::EndpointStats;
-use crate::pipeline::runner::PipelineCommand;
+use crate::pipeline::PipelineCommand;
 use prometheus::{Encoder, Gauge, Histogram, HistogramOpts, HistogramVec, Opts, Registry, TextEncoder};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};

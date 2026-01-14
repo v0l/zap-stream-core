@@ -44,12 +44,7 @@ impl ListenerEndpoint {
         match self {
             ListenerEndpoint::SRT { endpoint } => {
                 if let Ok(addr) = endpoint.parse::<std::net::SocketAddr>() {
-                    Some(format!(
-                        "srt://{}:{}/{}",
-                        public_hostname,
-                        addr.port(),
-                        ingest_name
-                    ))
+                    Some(format!("srt://{}:{}", public_hostname, addr.port()))
                 } else {
                     None
                 }
@@ -68,12 +63,7 @@ impl ListenerEndpoint {
             }
             ListenerEndpoint::TCP { endpoint } => {
                 if let Ok(addr) = endpoint.parse::<std::net::SocketAddr>() {
-                    Some(format!(
-                        "tcp://{}:{}/{}",
-                        public_hostname,
-                        addr.port(),
-                        ingest_name
-                    ))
+                    Some(format!("tcp://{}:{}", public_hostname, addr.port()))
                 } else {
                     None
                 }

@@ -9,11 +9,11 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 use zap_stream_core::egress::EgressSegment;
-use zap_stream_core::endpoint::{EndpointCapability, EndpointConfigEngine, parse_capabilities};
+use zap_stream_core::endpoint::{VariantType, EndpointConfigEngine, parse_capabilities};
 use zap_stream_core::ingress::ConnectionInfo;
 use zap_stream_core::listen::try_create_listener;
 use zap_stream_core::overseer::{ConnectResult, IngressInfo, Overseer, StatsType};
-use zap_stream_core::pipeline::{EgressType, PipelineConfig};
+use zap_stream_core::pipeline::{PipelineConfig};
 use zap_stream_core_nostr::n94::{N94Publisher, N94Segment, N94StreamInfo};
 
 #[derive(Parser, Debug)]
@@ -203,7 +203,7 @@ async fn main() -> Result<()> {
 struct N94Overseer {
     stream_info: Arc<RwLock<N94StreamInfo>>,
     publisher: N94Publisher,
-    capabilities: Vec<EndpointCapability>,
+    capabilities: Vec<VariantType>,
     segment_length: f32,
     bridge_url: Option<String>,
     client: Client,
@@ -216,7 +216,7 @@ impl N94Overseer {
         max_blossom_servers: usize,
         segment_length: f32,
         stream_info: N94StreamInfo,
-        capabilities: Vec<EndpointCapability>,
+        capabilities: Vec<VariantType>,
         bridge_url: Option<String>,
     ) -> Self {
         Self {
@@ -381,14 +381,6 @@ impl Overseer for N94Overseer {
         // nothing to do
         info!("Received stats: {:?}", stats);
         Ok(())
-    }
-
-    async fn get_egress(&self, conn: &ConnectionInfo) -> Result<Vec<EgressType>> {
-        todo!()
-    }
-
-    async fn get_moq_origin(&self) -> Result<zap_stream_core::hang::moq_lite::OriginProducer> {
-        todo!()
     }
 }
 

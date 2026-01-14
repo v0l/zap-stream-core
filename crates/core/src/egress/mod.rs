@@ -1,8 +1,10 @@
+use crate::mux::SegmentType;
 use crate::overseer::{IngressStream, StreamType};
-use crate::variant::VariantStream;
+use crate::variant::{VariantGroup, VariantStream};
 use anyhow::Result;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVStream;
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::{AVStream, av_d2q};
 use ffmpeg_rs_raw::{AvPacketRef, Encoder};
+use serde::{Deserialize, Serialize};
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use uuid::Uuid;
@@ -76,65 +78,75 @@ impl EgressEncoderConfig {
     /// you would need to transcode multiple times
     pub fn default_h264(stream: &IngressStream) -> Option<Self> {
         match stream.stream_type {
-            StreamType::Video => {
-                Some(EgressEncoderConfig {
-                    codec: "h264".to_string(),
-                    codec_params: vec![
-                        EncoderParam::Preset {
-                            name: "veryfast".to_string(),
-                        },
-                        EncoderParam::Tune {
-                            name: "zerolatency".to_string(),
-                        },
-                        EncoderParam::GOPSize {
-                            size: stream.fps as u32 * 2,
-                        },
-                        EncoderParam::MaxBFrames { size: 3 },
-                        EncoderParam::Level {
-                            id: 51, // H.264 High 5.1 (4K)
-                        },
-                        EncoderParam::Profile {
-                            id: 77, // AV_PROFILE_H264_MAIN
-                        },
-                        EncoderParam::PixelFormat {
-                            name: "yuv420p".to_string(),
-                        },
-                        EncoderParam::ColorRange {
-                            name: "full".to_string(),
-                        },
-                        EncoderParam::ColorSpace {
-                            name: "bt709".to_string(),
-                        },
-                    ]
-                    .into(),
-                    stream_type: StreamType::Video,
-                })
-            }
-            StreamType::Audio => Some(EgressEncoderConfig {
-                codec: "aac".to_string(),
-                codec_params: vec![
-                    EncoderParam::SampleFormat {
-                        name: "fltp".to_string(),
-                    },
-                    EncoderParam::SampleRate {
-                        size: if stream.sample_rate == 44100 || stream.sample_rate == 48000 {
-                            stream.sample_rate as _
-                        } else {
-                            48_000 // Default to 48kHz if non-standard sample rate
-                        },
-                    },
-                    EncoderParam::AudioChannels {
-                        count: if stream.channels < 3 {
-                            stream.channels as _
-                        } else {
-                            2
-                        },
-                    },
-                ]
-                .into(),
-                stream_type: StreamType::Audio,
-            }),
+            StreamType::Video => Some(Self::default_video_h264(stream.fps)),
+            StreamType::Audio => Some(Self::default_audio_h264(
+                stream.sample_rate as _,
+                stream.channels,
+            )),
             _ => None,
+        }
+    }
+
+    pub fn default_video_h264(fps: f32) -> EgressEncoderConfig {
+        let frac = unsafe { av_d2q(fps as _, 90_000) };
+        EgressEncoderConfig {
+            codec: "h264".to_string(),
+            codec_params: vec![
+                EncoderParam::Preset {
+                    name: "veryfast".to_string(),
+                },
+                EncoderParam::Tune {
+                    name: "zerolatency".to_string(),
+                },
+                EncoderParam::GOPSize {
+                    size: (fps * 2.0) as _,
+                },
+                EncoderParam::MaxBFrames { size: 3 },
+                EncoderParam::Level {
+                    id: 51, // H.264 High 5.1 (4K)
+                },
+                EncoderParam::Profile {
+                    id: 77, // AV_PROFILE_H264_MAIN
+                },
+                EncoderParam::PixelFormat {
+                    name: "yuv420p".to_string(),
+                },
+                EncoderParam::ColorRange {
+                    name: "full".to_string(),
+                },
+                EncoderParam::ColorSpace {
+                    name: "bt709".to_string(),
+                },
+                EncoderParam::Framerate {
+                    num: frac.num as _,
+                    den: frac.den as _,
+                },
+            ]
+            .into(),
+            stream_type: StreamType::Video,
+        }
+    }
+
+    pub fn default_audio_h264(sample_rate: u32, channels: u8) -> EgressEncoderConfig {
+        EgressEncoderConfig {
+            codec: "aac".to_string(),
+            codec_params: vec![
+                EncoderParam::SampleFormat {
+                    name: "fltp".to_string(),
+                },
+                EncoderParam::SampleRate {
+                    size: if sample_rate == 44100 || sample_rate == 48000 {
+                        sample_rate
+                    } else {
+                        48_000 // Default to 48kHz if non-standard sample rate
+                    },
+                },
+                EncoderParam::AudioChannels {
+                    count: if channels < 3 { channels as _ } else { 2 },
+                },
+            ]
+            .into(),
+            stream_type: StreamType::Audio,
         }
     }
 }
@@ -232,5 +244,71 @@ impl DerefMut for EncoderParams {
 impl From<Vec<EncoderParam>> for EncoderParams {
     fn from(v: Vec<EncoderParam>) -> Self {
         EncoderParams(v)
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum EgressType {
+    /// HLS output egress
+    HLS {
+        /// Unique id of this egress
+        id: Uuid,
+        /// Segment length in seconds
+        segment_length: f32,
+        /// Segment type
+        segment_type: SegmentType,
+    },
+    /// Record streams to local disk
+    Recorder {
+        /// Unique id of this egress
+        id: Uuid,
+        /// Desired video size height in pixels
+        height: u16,
+    },
+    /// Forward streams to another RTMP server
+    RTMPForwarder {
+        /// Unique id of this egress
+        id: Uuid,
+        /// Destination RTMP url
+        destination: String,
+    },
+    /// Media over Quic egress
+    Moq {
+        /// Unique id of this egress
+        id: Uuid,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct EgressConfig {
+    pub kind: EgressType,
+    /// Groups of variants
+    pub variants: Vec<VariantGroup>,
+}
+
+impl EgressType {
+    pub fn id(&self) -> Uuid {
+        match self {
+            EgressType::HLS { id, .. } => *id,
+            EgressType::Recorder { id, .. } => *id,
+            EgressType::RTMPForwarder { id, .. } => *id,
+            EgressType::Moq { id } => *id,
+        }
+    }
+
+    /// Get the encoder params this egress needs to process encoded packets
+    pub fn get_encoder_params(
+        &self,
+        stream: &IngressStream,
+        input_params: &EncoderParams,
+    ) -> Option<EgressEncoderConfig> {
+        let mut p = EgressEncoderConfig::default_h264(stream)?;
+        p.codec_params.extend(input_params.clone());
+        if matches!(self, EgressType::HLS { .. }) && stream.stream_type == StreamType::Audio {
+            // for HLS force the audio bitrate to always be 192kb/s
+            p.codec_params
+                .add_param(EncoderParam::Bitrate { value: 192_000 });
+        }
+        Some(p)
     }
 }

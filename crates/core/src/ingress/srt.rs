@@ -1,6 +1,6 @@
 use crate::ingress::{BufferedReader, ConnectionInfo, setup_term_handler, spawn_pipeline};
 use crate::overseer::{ConnectResult, Overseer};
-use crate::pipeline::runner::PipelineCommand;
+use crate::pipeline::PipelineCommand;
 use anyhow::Result;
 use futures_util::StreamExt;
 use futures_util::stream::FusedStream;
