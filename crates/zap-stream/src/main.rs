@@ -1,4 +1,5 @@
 use crate::api::Api;
+use crate::overseer::ZapStreamOverseer;
 use anyhow::Result;
 use axum::Router;
 use clap::Parser;
@@ -22,7 +23,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::{EnvFilter, Layer};
 use zap_stream::http::{HlsRouter, IndexRouter, MultiTrackRouter, ZapRouter};
 use zap_stream::multitrack::{MultiTrackEngine, MultiTrackEngineConfig};
-use zap_stream::overseer::ZapStreamOverseer;
+use zap_stream::payments::PaymentHandler;
 use zap_stream::settings::Settings;
 use zap_stream_api_common::{AxumAdminApi, AxumApi};
 use zap_stream_core::listen::try_create_listener;
@@ -30,6 +31,7 @@ use zap_stream_core::metrics::PipelineMetrics;
 use zap_stream_core::overseer::Overseer;
 
 mod api;
+mod overseer;
 
 #[derive(Parser, Debug)]
 #[clap(version, about)]
@@ -160,7 +162,12 @@ async fn main() -> Result<()> {
     let mut tasks = vec![];
 
     //listen for invoice
-    tasks.push(overseer.start_payment_handler(shutdown.clone()));
+    let handler = PaymentHandler::new(
+        overseer.lightning(),
+        overseer.database(),
+        overseer.nostr_client(),
+    );
+    tasks.push(handler.start_payment_handler(shutdown.clone()));
 
     let shutdown_sig = shutdown.clone();
     ctrlc::set_handler(move || {
@@ -184,7 +191,10 @@ async fn main() -> Result<()> {
         .nest(
             "/api",
             MultiTrackRouter::new(MultiTrackEngine::new(
-                MultiTrackEngineConfig { public_url: settings.public_url.clone(), dashboard_url: None },
+                MultiTrackEngineConfig {
+                    public_url: settings.public_url.clone(),
+                    dashboard_url: None,
+                },
                 overseer.clone(),
             )),
         );

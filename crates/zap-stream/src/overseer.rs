@@ -1,19 +1,11 @@
-use crate::payments::create_lightning;
-use crate::settings::Settings;
-use crate::stream_manager::StreamManager;
-use anyhow::{Context, Result, anyhow, bail, ensure};
+use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
-use nostr_sdk::prelude::Coordinate;
-use nostr_sdk::{
-    Client, Event, EventBuilder, JsonUtil, Keys, Kind, Metadata, NostrSigner, Tag, Timestamp,
-    ToBech32,
-};
+use nostr_sdk::{Client, Event, EventBuilder, JsonUtil, Keys, Kind, Metadata, NostrSigner, Tag};
 use nwc::prelude::{NostrWalletConnect, NostrWalletConnectUri, PayInvoiceRequest};
-use payments_rs::lightning::{AddInvoiceRequest, InvoiceUpdate, LightningNode};
+use payments_rs::lightning::{AddInvoiceRequest, LightningNode};
 use std::collections::HashMap;
-use std::ops::Add;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -24,6 +16,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use url::Url;
 use uuid::Uuid;
+use zap_stream::nostr::N53Publisher;
+use zap_stream::payments::create_lightning;
+use zap_stream::settings::Settings;
+use zap_stream::stream_manager::StreamManager;
 use zap_stream_core::egress::{EgressSegment, EgressType};
 use zap_stream_core::endpoint::{
     EndpointConfigEngine, EndpointConfigurator, VariantType, parse_capabilities,
@@ -57,6 +53,8 @@ pub struct ZapStreamOverseer {
     lightning: Arc<dyn LightningNode + Send + Sync>,
     /// Nostr client for publishing events
     client: Client,
+    /// NIP-53 publisher util
+    n53: N53Publisher,
     /// Stream manager handles viewer tracking
     stream_manager: StreamManager,
     /// NIP-5E publisher
@@ -127,6 +125,7 @@ impl ZapStreamOverseer {
         let mut overseer = Self {
             db,
             lightning: payments,
+            n53: N53Publisher::new(stream_manager.clone()),
             n94: if settings.overseer.blossom.is_empty() {
                 None
             } else {
@@ -209,237 +208,11 @@ impl ZapStreamOverseer {
         self.moq_bind = bind;
     }
 
-    pub fn start_payment_handler(&self, token: CancellationToken) -> JoinHandle<Result<()>> {
-        let ln = self.lightning.clone();
-        let db = self.db.clone();
-        let client = self.client.clone();
-        tokio::spawn(async move {
-            loop {
-                // get last completed payment
-                let last_payment_hash = if let Some(pl) = db.get_latest_completed_payment().await? {
-                    Some(pl.payment_hash)
-                } else {
-                    None
-                };
-                info!(
-                    "Listening to invoices from {}",
-                    last_payment_hash
-                        .as_ref()
-                        .map(hex::encode)
-                        .unwrap_or("Now".to_string())
-                );
-                let mut stream = ln.subscribe_invoices(last_payment_hash).await?;
-                loop {
-                    tokio::select! {
-                        _ = token.cancelled() => {
-                            info!("Payment handler exiting...");
-                            return Ok(());
-                        }
-                        msg = stream.next() => {
-                            //info!("Received message: {:?}", msg);
-                            match msg {
-                               Some(InvoiceUpdate::Settled {
-                                    payment_hash, preimage, ..
-                                }) => {
-                                    if let Err(e) = Self::try_complete_payment(payment_hash, preimage, &db, &client).await {
-                                        error!("Failed to complete payment: {}", e);
-                                    }
-                                }
-                                Some(InvoiceUpdate::Error(error)) => {
-                                    error!("Invoice update error: {}", error);
-                                }
-                                None => {
-                                    warn!("Invoice update stream ended!");
-                                    break;
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-            }
-        })
-    }
-
-    async fn try_complete_payment(
-        payment_hash: String,
-        pre_image: Option<String>,
-        db: &ZapStreamDb,
-        client: &Client,
-    ) -> Result<()> {
-        let ph = hex::decode(&payment_hash)?;
-        match db.complete_payment(&ph, 0).await {
-            Ok(b) => {
-                if b {
-                    info!("Completed payment!");
-                    let payment = db.get_payment(&ph).await?.unwrap();
-                    if let Some(nostr) = payment.nostr {
-                        Self::try_send_zap_receipt(
-                            client,
-                            &nostr,
-                            payment
-                                .invoice
-                                .ok_or(anyhow!("invoice was empty"))?
-                                .as_str(),
-                            pre_image,
-                        )
-                        .await?;
-                    }
-                } else {
-                    warn!("No payments updated! Maybe it doesnt exist or it's already processed.")
-                }
-            }
-            Err(e) => {
-                error!("Failed to complete payment {}: {}", payment_hash, e);
-            }
-        }
-        Ok(())
-    }
-
-    async fn try_send_zap_receipt(
-        client: &Client,
-        zap_request: &str,
-        invoice: &str,
-        pre_image: Option<String>,
-    ) -> Result<()> {
-        let ev = Event::from_json(zap_request)?;
-        ensure!(ev.kind == Kind::ZapRequest, "Wrong zap request kind");
-        ensure!(ev.verify().is_ok(), "Invalid zap request sig");
-
-        let copy_tags = ev
-            .tags
-            .iter()
-            .filter(|t| t.single_letter_tag().is_some())
-            .cloned();
-        let mut receipt = EventBuilder::new(Kind::ZapReceipt, "")
-            .tags(copy_tags)
-            .tag(Tag::description(zap_request))
-            .tag(Tag::parse(["bolt11", invoice])?);
-        if let Some(r) = pre_image {
-            receipt = receipt.tag(Tag::parse(["preimage", &r])?);
-        }
-
-        let id = client.send_event_builder(receipt).await?;
-        info!("Sent zap receipt {}", id.val);
-        Ok(())
-    }
-
-    async fn stream_to_event_builder(&self, stream: &UserStream) -> Result<EventBuilder> {
-        let mut tags = vec![
-            Tag::parse(&["d".to_string(), stream.id.to_string()])?,
-            Tag::parse(&["status".to_string(), stream.state.to_string()])?,
-            Tag::parse(&["starts".to_string(), stream.starts.timestamp().to_string()])?,
-        ];
-        if let Some(ref ends) = stream.ends {
-            tags.push(Tag::parse(&[
-                "ends".to_string(),
-                ends.timestamp().to_string(),
-            ])?);
-        }
-        if let Some(ref title) = stream.title
-            && !title.trim().is_empty()
-        {
-            tags.push(Tag::parse(&["title".to_string(), title.to_string()])?);
-        }
-        if let Some(ref summary) = stream.summary
-            && !summary.trim().is_empty()
-        {
-            tags.push(Tag::parse(&["summary".to_string(), summary.to_string()])?);
-        }
-        let mut has_image = false;
-        if let Some(ref image) = stream.image
-            && !image.trim().is_empty()
-        {
-            has_image = true;
-            tags.push(Tag::parse(&["image".to_string(), image.to_string()])?);
-        }
-        if let Some(ref thumb) = stream.thumb
-            && !thumb.trim().is_empty()
-        {
-            if !has_image {
-                tags.push(Tag::parse(&["image".to_string(), thumb.to_string()])?);
-            } else {
-                tags.push(Tag::parse(&["thumb".to_string(), thumb.to_string()])?);
-            }
-        }
-        if let Some(ref content_warning) = stream.content_warning
-            && !content_warning.trim().is_empty()
-        {
-            tags.push(Tag::parse(&[
-                "content_warning".to_string(),
-                content_warning.to_string(),
-            ])?);
-        }
-        if let Some(ref goal) = stream.goal
-            && !goal.trim().is_empty()
-        {
-            tags.push(Tag::parse(&["goal".to_string(), goal.to_string()])?);
-        }
-        if let Some(ref pinned) = stream.pinned
-            && !pinned.trim().is_empty()
-        {
-            tags.push(Tag::parse(&["pinned".to_string(), pinned.to_string()])?);
-        }
-        if let Some(ref tags_csv) = stream.tags {
-            for tag in tags_csv.split(',') {
-                if tag.trim().is_empty() {
-                    continue;
-                }
-                tags.push(Tag::parse(&["t".to_string(), tag.to_string()])?);
-            }
-        }
-
-        // Add current viewer count for live streams
-        if stream.state == UserStreamState::Live {
-            let viewer_count = self.stream_manager.get_viewer_count(&stream.id).await;
-            tags.push(Tag::parse(&[
-                "current_participants".to_string(),
-                viewer_count.to_string(),
-            ])?);
-        }
-
-        let signer = self.client.signer().await?;
-        let coord =
-            Coordinate::new(Kind::LiveEvent, signer.get_public_key().await?).identifier(&stream.id);
-        tags.push(Tag::parse([
-            "alt",
-            &format!(
-                "Watch live on https://zap.stream/{}",
-                nostr_sdk::nips::nip19::Nip19Coordinate {
-                    coordinate: coord,
-                    relays: vec![]
-                }
-                .to_bech32()?
-            ),
-        ])?);
-
-        let mut eb = EventBuilder::new(Kind::LiveEvent, "").tags(tags);
-
-        // make sure this event is always newer
-        if let Some(previous_event) = &stream.event
-            && let Ok(prev_event) = Event::from_json(previous_event)
-            && prev_event.created_at >= Timestamp::now()
-        {
-            eb = eb.custom_created_at(prev_event.created_at.add(Timestamp::from_secs(1)));
-        }
-
-        Ok(eb)
-    }
-
     pub async fn publish_stream_event(
         &self,
         stream: &UserStream,
         pubkey: &Vec<u8>,
     ) -> Result<Event> {
-        let pipeline_dir = PathBuf::from(stream.id.to_string());
-        let endpoint = if let Some(ref endpoint) = stream.endpoint_id
-            && let Ok(ep) = self.db.get_ingest_endpoint(*endpoint).await
-        {
-            ep
-        } else {
-            bail!("Invalid stream, no endpoint set!")
-        };
-
         let mut extra_tags = vec![
             Tag::parse(["p", hex::encode(pubkey).as_str(), "", "host"])?,
             Tag::parse(["service", self.map_to_public_url("api/v1")?.as_str()])?,
@@ -459,25 +232,27 @@ impl ZapStreamOverseer {
                 }
             }
             UserStreamState::Ended => {
-                let caps = parse_capabilities(&endpoint.capabilities);
-                let has_recording = caps.iter().any(|c| matches!(c, VariantType::DVR { .. }));
+                let recording_path =
+                    PathBuf::from(stream.id.to_string()).join(PipelineRunner::RECORDING_PATH);
+                let has_recording = self.out_dir.join(&recording_path).exists();
                 if has_recording {
                     extra_tags.push(Tag::parse([
                         "recording",
-                        self.map_to_public_url(
-                            pipeline_dir
-                                .join(PipelineRunner::RECORDING_PATH)
-                                .to_str()
-                                .unwrap(),
-                        )?
-                        .as_str(),
+                        self.map_to_public_url(recording_path.to_str().unwrap())?
+                            .as_str(),
                     ])?);
                 }
             }
             _ => {}
         }
-        let ev = self.stream_to_event_builder(stream).await?.tags(extra_tags);
-        let ev = self.client.sign_event_builder(ev).await?;
+        let signer = self.client.signer().await?;
+        let ev = self
+            .n53
+            .stream_to_event_builder(stream, signer.clone())
+            .await?
+            .tags(extra_tags)
+            .build(signer.get_public_key().await?);
+        let ev = signer.sign_event(ev).await?;
         self.client.send_event(&ev).await?;
         info!("Published stream event {}", ev.id.to_hex());
         Ok(ev)
@@ -617,6 +392,24 @@ impl ZapStreamOverseer {
 
         let payment = self.db.get_payment(&r_hash).await?;
         Ok(payment.unwrap())
+    }
+
+    /// Detect which ingest endpoint should be used based on connection info
+    async fn detect_endpoint(&self, connection: &ConnectionInfo) -> Result<IngestEndpoint> {
+        // TODO: allow user to select their default endpoint
+
+        let endpoints = self.db.get_ingest_endpoints().await?;
+
+        if endpoints.is_empty() {
+            bail!("No endpoints found, please configure endpoints first!");
+        }
+        let default = endpoints.iter().max_by_key(|e| e.cost);
+        Ok(endpoints
+            .iter()
+            .find(|e| e.name.eq_ignore_ascii_case(&connection.app_name))
+            .or(default)
+            .unwrap()
+            .clone())
     }
 }
 
@@ -1148,26 +941,6 @@ impl EndpointConfigurator for ZapStreamOverseer {
             bail!("MoQ not configured")
         };
         Ok(prod.producer.clone())
-    }
-}
-
-impl ZapStreamOverseer {
-    /// Detect which ingest endpoint should be used based on connection info
-    async fn detect_endpoint(&self, connection: &ConnectionInfo) -> Result<IngestEndpoint> {
-        // TODO: allow user to select their default endpoint
-
-        let endpoints = self.db.get_ingest_endpoints().await?;
-
-        if endpoints.is_empty() {
-            bail!("No endpoints found, please configure endpoints first!");
-        }
-        let default = endpoints.iter().max_by_key(|e| e.cost);
-        Ok(endpoints
-            .iter()
-            .find(|e| e.name.eq_ignore_ascii_case(&connection.app_name))
-            .or(default)
-            .unwrap()
-            .clone())
     }
 }
 

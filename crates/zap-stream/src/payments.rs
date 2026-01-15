@@ -1,11 +1,12 @@
 use crate::settings::PaymentBackend;
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail, ensure};
 use async_trait::async_trait;
 use futures_util::{Stream, StreamExt};
 use hex::ToHex;
 use lnurl::lightning_address::LightningAddress;
 use lnurl::pay::PayResponse;
 use lnurl::{AsyncClient, LnUrlResponse};
+use nostr_sdk::{Client, Event, EventBuilder, JsonUtil, Kind, Tag};
 use nwc::prelude::{
     MakeInvoiceRequest, NostrWalletConnect, NostrWalletConnectUri, NotificationResult,
 };
@@ -17,6 +18,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::ReceiverStream;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use zap_stream_db::ZapStreamDb;
 
@@ -213,5 +215,134 @@ pub async fn create_lightning(
             info!("Using LNURL payment backend: {}", address);
             Ok(Arc::new(LNURLNode::new(address.clone(), db.clone()).await?))
         }
+    }
+}
+
+pub struct PaymentHandler {
+    lightning: Arc<dyn LightningNode>,
+    db: ZapStreamDb,
+    client: Client,
+}
+
+impl PaymentHandler {
+    pub fn new(lightning: Arc<dyn LightningNode>, db: ZapStreamDb, client: Client) -> Self {
+        Self {
+            lightning,
+            db,
+            client,
+        }
+    }
+    
+    pub fn start_payment_handler(self, token: CancellationToken) -> JoinHandle<Result<()>> {
+        tokio::spawn(async move {
+            loop {
+                // get last completed payment
+                let last_payment_hash =
+                    if let Some(pl) = self.db.get_latest_completed_payment().await? {
+                        Some(pl.payment_hash)
+                    } else {
+                        None
+                    };
+                info!(
+                    "Listening to invoices from {}",
+                    last_payment_hash
+                        .as_ref()
+                        .map(hex::encode)
+                        .unwrap_or("Now".to_string())
+                );
+                let mut stream = self.lightning.subscribe_invoices(last_payment_hash).await?;
+                loop {
+                    tokio::select! {
+                        _ = token.cancelled() => {
+                            info!("Payment handler exiting...");
+                            return Ok(());
+                        }
+                        msg = stream.next() => {
+                            //info!("Received message: {:?}", msg);
+                            match msg {
+                               Some(InvoiceUpdate::Settled {
+                                    payment_hash, preimage, ..
+                                }) => {
+                                    if let Err(e) = Self::try_complete_payment(payment_hash, preimage, &self.db, &self.client).await {
+                                        error!("Failed to complete payment: {}", e);
+                                    }
+                                }
+                                Some(InvoiceUpdate::Error(error)) => {
+                                    error!("Invoice update error: {}", error);
+                                }
+                                None => {
+                                    warn!("Invoice update stream ended!");
+                                    break;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+        })
+    }
+
+    async fn try_complete_payment(
+        payment_hash: String,
+        pre_image: Option<String>,
+        db: &ZapStreamDb,
+        client: &Client,
+    ) -> Result<()> {
+        let ph = hex::decode(&payment_hash)?;
+        match db.complete_payment(&ph, 0).await {
+            Ok(b) => {
+                if b {
+                    info!("Completed payment!");
+                    let payment = db.get_payment(&ph).await?.unwrap();
+                    if let Some(nostr) = payment.nostr {
+                        Self::try_send_zap_receipt(
+                            client,
+                            &nostr,
+                            payment
+                                .invoice
+                                .ok_or(anyhow!("invoice was empty"))?
+                                .as_str(),
+                            pre_image,
+                        )
+                        .await?;
+                    }
+                } else {
+                    warn!("No payments updated! Maybe it doesnt exist or it's already processed.")
+                }
+            }
+            Err(e) => {
+                error!("Failed to complete payment {}: {}", payment_hash, e);
+            }
+        }
+        Ok(())
+    }
+
+    async fn try_send_zap_receipt(
+        client: &Client,
+        zap_request: &str,
+        invoice: &str,
+        pre_image: Option<String>,
+    ) -> Result<()> {
+        let ev = Event::from_json(zap_request)?;
+        ensure!(ev.kind == Kind::ZapRequest, "Wrong zap request kind");
+        ensure!(ev.verify().is_ok(), "Invalid zap request sig");
+
+        let copy_tags = ev
+            .tags
+            .iter()
+            .filter(|t| t.single_letter_tag().is_some())
+            .cloned();
+        let mut receipt = EventBuilder::new(Kind::ZapReceipt, "")
+            .tags(copy_tags)
+            .tag(Tag::description(zap_request))
+            .tag(Tag::parse(["bolt11", invoice])?);
+        if let Some(r) = pre_image {
+            receipt = receipt.tag(Tag::parse(["preimage", &r])?);
+        }
+
+        let id = client.send_event_builder(receipt).await?;
+        info!("Sent zap receipt {}", id.val);
+        Ok(())
     }
 }

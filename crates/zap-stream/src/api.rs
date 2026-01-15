@@ -1,3 +1,4 @@
+use crate::overseer::ZapStreamOverseer;
 use anyhow::{Result, bail};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -10,7 +11,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tracing::{error, info, warn};
 use uuid::Uuid;
-use zap_stream::overseer::ZapStreamOverseer;
 use zap_stream::settings::Settings;
 use zap_stream_api_common::{
     AccountInfo, AccountTos, AdminAuditLogEntry, AdminAuditLogResponse, AdminIngestEndpointRequest,
