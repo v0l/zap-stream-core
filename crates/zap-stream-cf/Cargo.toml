@@ -1,0 +1,24 @@
+[package]
+name = "zap-stream-cf"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+zap-stream-db = { path = "../zap-stream-db", default-features = false }
+zap-stream = { path = "../zap-stream", default-features = false, features = ["tls-ring"] }
+zap-stream-api-common = { path = "../zap-stream-api-common", default-features = false, features = ["axum", "admin"] }
+
+tokio.workspace = true
+tokio-util.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+nostr-sdk.workspace = true
+ctrlc.workspace = true
+axum.workspace = true
+async-trait.workspace = true
+uuid.workspace = true
+
+config = { version = "0.15.6", features = ["yaml"] }

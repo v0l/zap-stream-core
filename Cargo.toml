@@ -35,3 +35,4 @@ data-encoding = "2.9"
 rand = "0.9"
 nostr-sdk = { git = "https://github.com/rust-nostr/nostr.git", pacakge = "nostr-sdk", rev = "f14d869dd85e3355c756cc4fa355fd8c8318c642", features = ["nip57", "nip47"] }
 ctrlc = { version = "3.4", features = ["termination"] }
+axum = { version = "0.8", features = ["http1", "http2", "json", "macros", "query", "tokio", "tracing", "ws"], default-features = false }

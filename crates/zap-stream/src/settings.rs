@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use zap_stream::payments::PaymentBackend;
 use zap_stream_api_common::TwitchConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,25 +85,4 @@ pub struct AdvertiseConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RedisConfig {
     pub url: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum PaymentBackend {
-    #[serde(rename_all = "kebab-case")]
-    LND {
-        address: String,
-        cert: String,
-        macaroon: String,
-    },
-    #[serde(rename_all = "kebab-case")]
-    Bitvora {
-        api_token: String,
-        webhook_secret: String,
-    },
-    #[serde(rename_all = "kebab-case")]
-    NWC { url: String },
-    #[serde(rename_all = "kebab-case")]
-    // Plain LUD-16 payment backend
-    LNURL { address: String },
 }

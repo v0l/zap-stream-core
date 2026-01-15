@@ -15,7 +15,7 @@ hex.workspace = true
 tracing.workspace = true
 nostr-sdk.workspace = true
 
-reqwest = { version = "0.12.20", features = ["stream", "json", "http2", "default-tls"], default-features = false }
-base64 = { version = "0.22.1" }
-rand = { version = "0.8.5" }
+reqwest = { version = "0.13", features = ["stream", "json", "http2", "default-tls"], default-features = false }
+base64 = { version = "0.22" }
+rand = { version = "0.9" }
 futures = { version = "0.3" }

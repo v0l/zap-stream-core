@@ -1,4 +1,3 @@
-use crate::settings::PaymentBackend;
 use anyhow::{Result, anyhow, bail, ensure};
 use async_trait::async_trait;
 use futures_util::{Stream, StreamExt};
@@ -13,6 +12,7 @@ use nwc::prelude::{
 use payments_rs::lightning::{
     AddInvoiceRequest, AddInvoiceResponse, BitvoraNode, InvoiceUpdate, LightningNode, LndNode,
 };
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -21,6 +21,27 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use zap_stream_db::ZapStreamDb;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PaymentBackend {
+    #[serde(rename_all = "kebab-case")]
+    LND {
+        address: String,
+        cert: String,
+        macaroon: String,
+    },
+    #[serde(rename_all = "kebab-case")]
+    Bitvora {
+        api_token: String,
+        webhook_secret: String,
+    },
+    #[serde(rename_all = "kebab-case")]
+    NWC { url: String },
+    #[serde(rename_all = "kebab-case")]
+    // Plain LUD-16 payment backend
+    LNURL { address: String },
+}
 
 pub struct NWCNode {
     conn: NostrWalletConnect,
@@ -232,7 +253,7 @@ impl PaymentHandler {
             client,
         }
     }
-    
+
     pub fn start_payment_handler(self, token: CancellationToken) -> JoinHandle<Result<()>> {
         tokio::spawn(async move {
             loop {

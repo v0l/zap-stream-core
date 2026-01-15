@@ -11,7 +11,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tracing::{error, info, warn};
 use uuid::Uuid;
-use zap_stream::settings::Settings;
+use crate::settings::Settings;
 use zap_stream_api_common::{
     AccountInfo, AccountTos, AdminAuditLogEntry, AdminAuditLogResponse, AdminIngestEndpointRequest,
     AdminIngestEndpointResponse, AdminIngestEndpointsResponse, AdminStreamInfo,

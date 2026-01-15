@@ -1,0 +1,35 @@
+# MySQL connection string
+database: "mysql://root:root@localhost:3368/zap_stream?max_connections=2"
+
+# Public URL for serving files for [output_dir]
+public_url: "http://kieran.lan:8080"
+
+# Bind address for http server serving files from [output_dir]
+listen_http: "127.0.0.1:8080"
+
+# Primary nsec key for publishing stream events
+nsec: "nsec1wya428srvpu96n4h78gualaj7wqw4ecgatgja8d5ytdqrxw56r2se440y4"
+
+# Nostr relays to publish to
+relays:
+  - "ws://localhost:7766"
+
+# Lightning node config
+payments:
+  # LUD-21 is required to use a lightning address backend
+  #lnurl:
+  #  address: "v0l@getalby.com"
+  #bitvora:
+  #  api_token: "abc123"
+  #  webhook_secret: "abc123"
+  #nwc:
+  #  url: "nostr+walletconnect://f4f933dbf21bc80ab223ed593f681c9dc20feaac1c9b9e5596614d8882be5ba8?relay=ws://localhost:7766&secret=4341e0e3d983d739aba8f529935112f7535c36c7cb36fe1bece375e780483459"
+  lnd:
+    address: "https://127.0.0.1:10001"
+    cert: "/home/kieran/.polar/networks/1/volumes/lnd/alice/tls.cert"
+    macaroon: "/home/kieran/.polar/networks/1/volumes/lnd/alice/data/chain/bitcoin/regtest/admin.macaroon"
+
+# Twitch API (IGDB)
+# twitch:
+# client_id: "my_client_id"
+# client_secret: "my_client_secret"

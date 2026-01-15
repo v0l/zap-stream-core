@@ -4013,7 +4013,6 @@ dependencies = [
  "bytes",
  "encoding_rs",
  "futures-core",
- "futures-util",
  "h2 0.4.12",
  "http 1.4.0",
  "http-body 1.0.1",
@@ -4035,14 +4034,12 @@ dependencies = [
  "sync_wrapper",
  "tokio",
  "tokio-native-tls",
- "tokio-util 0.7.17",
  "tower",
  "tower-http",
  "tower-service",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
- "wasm-streams",
  "web-sys",
 ]
 
@@ -4056,6 +4053,7 @@ dependencies = [
  "bytes",
  "encoding_rs",
  "futures-core",
+ "futures-util",
  "h2 0.4.12",
  "http 1.4.0",
  "http-body 1.0.1",
@@ -4077,12 +4075,14 @@ dependencies = [
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
+ "tokio-util 0.7.17",
  "tower",
  "tower-http",
  "tower-service",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-streams",
  "web-sys",
 ]
 
@@ -6993,6 +6993,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "zap-stream-cf"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "config",
+ "ctrlc",
+ "nostr-sdk",
+ "serde",
+ "tokio",
+ "tokio-util 0.7.17",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "zap-stream",
+ "zap-stream-api-common",
+ "zap-stream-db",
+]
+
+[[package]]
 name = "zap-stream-core"
 version = "0.1.1"
 dependencies = [
@@ -7037,8 +7058,8 @@ dependencies = [
  "futures",
  "hex",
  "nostr-sdk",
- "rand 0.8.5",
- "reqwest 0.12.24",
+ "rand 0.9.2",
+ "reqwest 0.13.1",
  "serde",
  "sha2 0.10.9",
  "tokio",

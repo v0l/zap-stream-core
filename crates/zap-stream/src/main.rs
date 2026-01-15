@@ -1,5 +1,6 @@
 use crate::api::Api;
 use crate::overseer::ZapStreamOverseer;
+use crate::settings::Settings;
 use anyhow::Result;
 use axum::Router;
 use clap::Parser;
@@ -24,7 +25,6 @@ use tracing_subscriber::{EnvFilter, Layer};
 use zap_stream::http::{HlsRouter, IndexRouter, MultiTrackRouter, ZapRouter};
 use zap_stream::multitrack::{MultiTrackEngine, MultiTrackEngineConfig};
 use zap_stream::payments::PaymentHandler;
-use zap_stream::settings::Settings;
 use zap_stream_api_common::{AxumAdminApi, AxumApi};
 use zap_stream_core::listen::try_create_listener;
 use zap_stream_core::metrics::PipelineMetrics;
@@ -32,6 +32,7 @@ use zap_stream_core::overseer::Overseer;
 
 mod api;
 mod overseer;
+mod settings;
 
 #[derive(Parser, Debug)]
 #[clap(version, about)]
@@ -87,14 +88,8 @@ pub unsafe extern "C" fn av_log_redirect(
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    tracing_subscriber::fmt().init();
     let _args = Args::parse();
-
-    let logger = tracing_subscriber::registry().with(
-        tracing_subscriber::fmt::Layer::new()
-            .with_writer(stdout)
-            .with_filter(EnvFilter::from_default_env()),
-    );
-    tracing::subscriber::set_global_default(logger)?;
 
     info!("Starting zap-stream");
 
@@ -210,6 +205,7 @@ async fn main() -> Result<()> {
     let shutdown_http = shutdown.clone();
     tasks.push(tokio::spawn(async move {
         let listener = TcpListener::bind(&http_addr).await?;
+        info!("Listening on: {}", http_addr);
         axum::serve(listener, server)
             .with_graceful_shutdown(async move { shutdown_http.cancelled().await })
             .await?;

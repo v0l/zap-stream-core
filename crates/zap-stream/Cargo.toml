@@ -42,7 +42,7 @@ nostr-sdk.workspace = true
 ctrlc.workspace = true
 
 # http stuff
-axum = { version = "0.8", features = ["http1", "http2", "json", "macros", "query", "tokio", "tracing", "ws"], default-features = false }
+axum.workspace = true
 axum-extra = { version = "0.12", features = ["async-read-body"] }
 
 # websocket stuff
