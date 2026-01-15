@@ -6,6 +6,7 @@ rust-version.workspace = true
 
 [features]
 default = []
+pipeline = []
 ingress-srt = ["dep:srt-tokio"]
 ingress-rtmp = ["dep:rml_rtmp", "dep:xflv", "dep:bytes"]
 ingress-test = []
@@ -28,16 +29,16 @@ hex.workspace = true
 itertools.workspace = true
 sha2.workspace = true
 url.workspace = true
+chrono.workspace = true
 
-futures-util = "0.3.30"
-resvg = "0.45.1"
-usvg = "0.45.1"
-tiny-skia = "0.11.4"
-fontdue = "0.9.2"
-ringbuf = "0.4.7"
-libc = "0.2.175"
-tracing-appender = "0.2.3"
-chrono = "0.4.42"
+futures-util = "0.3"
+resvg = "0.46"
+usvg = "0.46"
+tiny-skia = "0.11"
+fontdue = "0.9"
+ringbuf = "0.4"
+libc = "0.2"
+tracing-appender = "0.2"
 prometheus = "0.14"
 
 # hls

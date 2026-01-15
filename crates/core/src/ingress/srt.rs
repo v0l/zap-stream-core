@@ -1,5 +1,5 @@
 use crate::ingress::{BufferedReader, ConnectionInfo, setup_term_handler, spawn_pipeline};
-use crate::overseer::{ConnectResult, Overseer};
+use crate::overseer::{ConnectResult, Overseer, StatsType};
 use crate::pipeline::PipelineCommand;
 use anyhow::Result;
 use futures_util::StreamExt;
@@ -65,7 +65,8 @@ pub async fn listen(
                     }
                 }
 
-                let mut br = BufferedReader::new(4096, MAX_SRT_BUFFER_SIZE, "SRT", Some(tx.clone()));
+                let mtx = BufferedReader::stats_to_overseer(info.id.clone(), &Handle::current(), overseer.clone());
+                let mut br = BufferedReader::new(4096, MAX_SRT_BUFFER_SIZE, "SRT", Some(mtx));
                 setup_term_handler(shutdown.clone(), tx.clone());
                 let out_dir = out_dir.join(info.id.to_string());
                 if !out_dir.exists() {

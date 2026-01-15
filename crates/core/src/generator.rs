@@ -1,4 +1,4 @@
-use crate::overseer::IngressStream;
+use crate::ingress::IngressStream;
 use anyhow::{Result, bail};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVColorSpace::AVCOL_SPC_RGB;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPictureType::AV_PICTURE_TYPE_NONE;

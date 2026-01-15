@@ -5,17 +5,22 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
-default = ["srt", "rtmp", "test-pattern", "hls", "tls-ring"]
-srt = ["zap-stream-core/ingress-srt"]
-rtmp = ["zap-stream-core/ingress-rtmp"]
-hls = ["zap-stream-core/egress-hls"]
-moq = ["zap-stream-core/egress-moq", "dep:moq-native"]
-
-test-pattern = ["zap-stream-db/test-pattern", "zap-stream-core/ingress-test"]
+default = ["rtmp", "hls", "test-pattern", "tls-ring"]
+pipeline = ["zap-stream-core/pipeline"]
+srt = ["pipeline", "zap-stream-core/ingress-srt"]
+rtmp = ["pipeline", "zap-stream-core/ingress-rtmp"]
+hls = ["pipeline", "zap-stream-core/egress-hls"]
+moq = ["pipeline", "zap-stream-core/egress-moq", "dep:moq-native"]
+test-pattern = ["pipeline", "zap-stream-db/test-pattern", "zap-stream-core/ingress-test"]
 withdrawal = []
 
 tls-ring = ["payments-rs/tls-ring", "redis/tokio-rustls-comp", "moq-native/ring"]
 tls-aws-lc-rs = ["payments-rs/tls-aws", "redis/tokio-rustls-comp", "moq-native/aws-lc-rs"]
+
+[[bin]]
+path = "src/main.rs"
+name = "zap-stream"
+required-features = ["pipeline"]
 
 [dependencies]
 zap-stream-db = { path = "../zap-stream-db", default-features = false }
@@ -32,6 +37,7 @@ tokio.workspace = true
 tokio-util.workspace = true
 async-trait.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 chrono.workspace = true
 hex.workspace = true
 url.workspace = true
@@ -65,6 +71,3 @@ redis = { version = "0.32.5", features = ["cluster", "tokio-comp"] }
 libc = "0.2.175"
 nwc = { git = "https://github.com/rust-nostr/nostr.git", pacakge = "nwc", rev = "f14d869dd85e3355c756cc4fa355fd8c8318c642" }
 tokio-stream = "0.1.17"
-
-[dev-dependencies]
-serde_json = "1"

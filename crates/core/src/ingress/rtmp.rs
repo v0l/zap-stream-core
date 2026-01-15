@@ -1,4 +1,5 @@
 use crate::ingress::{BufferedReader, ConnectionInfo, setup_term_handler};
+use crate::metrics::EndpointStats;
 use crate::overseer::{ConnectResult, Overseer};
 use crate::pipeline::{PipelineCommand, PipelineRunner};
 use anyhow::{Result, anyhow, bail};
@@ -44,7 +45,11 @@ struct RtmpClient {
 }
 
 impl RtmpClient {
-    pub fn new(socket: TcpStream, tx: UnboundedSender<PipelineCommand>) -> Result<Self> {
+    pub fn new(
+        socket: TcpStream,
+        tx: UnboundedSender<PipelineCommand>,
+        mtx: Option<UnboundedSender<EndpointStats>>,
+    ) -> Result<Self> {
         socket.set_nonblocking(false)?;
         let cfg = ServerSessionConfig::new();
         let (ses, res) = ServerSession::new(cfg)?;
@@ -52,12 +57,7 @@ impl RtmpClient {
             socket,
             session: ses,
             socket_buf: [0; 4096],
-            buffer: BufferedReader::new(
-                1024 * 1024,
-                MAX_MEDIA_BUFFER_SIZE,
-                "RTMP",
-                Some(tx.clone()),
-            ),
+            buffer: BufferedReader::new(1024 * 1024, MAX_MEDIA_BUFFER_SIZE, "RTMP", mtx),
             msg_queue: VecDeque::from(res),
             published_stream: None,
             publish_handler: None,
@@ -313,7 +313,7 @@ impl Read for RtmpClient {
                         return Ok(0);
                     }
                 }
-                Ok(None) if self.buffer.buf.len() > 0 => {
+                Ok(None) if !self.buffer.buf.is_empty() => {
                     // allow reading some data when there is no more data available
                     break;
                 }
@@ -377,7 +377,8 @@ fn socket_handler(
     tx: UnboundedSender<PipelineCommand>,
     rx: UnboundedReceiver<PipelineCommand>,
 ) -> Result<()> {
-    let mut cc = RtmpClient::new(socket.into_std()?, tx)?;
+    let mtx = BufferedReader::stats_to_overseer(id, &handle, overseer.clone());
+    let mut cc = RtmpClient::new(socket.into_std()?, tx, Some(mtx))?;
     let ip_addr = addr.to_string();
     let ov_pub = overseer.clone();
     let handle_pub = handle.clone();

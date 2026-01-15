@@ -63,7 +63,7 @@ impl PipelineWorkerThread {
         };
 
         // use scaler to convert pixel format if not YUV420P
-        if frame.format as i32 != AV_PIX_FMT_YUV420P as i32 {
+        if frame.format != AV_PIX_FMT_YUV420P as i32 {
             let mut sw = Scaler::new();
             let new_frame = sw.process_frame(
                 &frame,
@@ -123,18 +123,14 @@ impl PipelineWorkerThread {
         let block_on_start = Instant::now();
         self.handle.block_on(async {
             for result in results {
-                match result {
-                    EgressResult::Segments { created, deleted } => {
-                        if let Err(e) = self
-                            .overseer
-                            .on_segments(&self.pipeline_id, &created, &deleted)
-                            .await
-                        {
-                            error!("Failed to notify overseer of deleted segments: {e}");
-                        }
+                if let EgressResult::Segments { created, deleted } = result
+                    && let Err(e) = self
+                        .overseer
+                        .on_segments(&self.pipeline_id, &created, &deleted)
+                        .await
+                    {
+                        error!("Failed to notify overseer of deleted segments: {e}");
                     }
-                    _ => {}
-                }
             }
         });
         crate::metrics::record_block_on_egress_results(block_on_start.elapsed());
@@ -180,7 +176,7 @@ impl PipelineWorkerThread {
             let enc_ctx = e.codec_context();
 
             if frame.width != 0
-                && frame.format as i32 != unsafe { (*enc_ctx).pix_fmt } as i32
+                && frame.format != unsafe { (*enc_ctx).pix_fmt } as i32
                 && self.scaler.is_none()
             {
                 warn!(
@@ -260,16 +256,14 @@ impl PipelineWorkerThread {
             while let Some(mut frame) = f.get_frame(frame_size as usize)? {
                 // Set correct timebase for audio (1/sample_rate)
                 frame.time_base.num = 1;
-                frame.time_base.den = sample_rate as i32;
+                frame.time_base.den = sample_rate;
                 ret.push(frame);
             }
             ret
+        } else if let Some(frame) = frame {
+            vec![frame]
         } else {
-            if let Some(frame) = frame {
-                vec![frame]
-            } else {
-                vec![]
-            }
+            vec![]
         };
         for frame in frames {
             self.encode_mux_frame(Some(frame))?;
@@ -418,7 +412,7 @@ impl TryFrom<&VariantStream> for PipelineWorkerThreadBuilder {
                     egress: None,
                     overseer: None,
                     variant: value.clone(),
-                    scaler: if let Some(_) = v.scale_mode {
+                    scaler: if v.scale_mode.is_some() {
                         Some(Scaler::default())
                     } else {
                         None

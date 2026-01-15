@@ -90,7 +90,7 @@ impl HlsRouter {
     ) -> Result<RangeBody, (StatusCode, &'static str)> {
         let playlist_path = this
             .base_path
-            .join(stream_id.to_string())
+            .join(&stream_id)
             .join(HlsEgress::PATH)
             .join(variant)
             .join("live.m3u8");

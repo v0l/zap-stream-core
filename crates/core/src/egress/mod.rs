@@ -1,5 +1,5 @@
+use crate::ingress::{IngressStream, StreamType};
 use crate::mux::SegmentType;
-use crate::overseer::{IngressStream, StreamType};
 use crate::variant::{VariantGroup, VariantStream};
 use anyhow::Result;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{AVStream, av_d2q};
@@ -306,7 +306,7 @@ impl EgressType {
             // Recorder doesn't expect any encoder params because it only re-muxes existing variants
             return None;
         }
-        
+
         let mut p = EgressEncoderConfig::default_h264(stream)?;
         p.codec_params.extend(input_params.clone());
         if matches!(self, EgressType::HLS { .. }) && stream.stream_type == StreamType::Audio {

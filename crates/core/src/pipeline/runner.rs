@@ -14,8 +14,8 @@ use crate::egress::muxer_egress::MuxerEgress;
 use crate::egress::{
     Egress, EgressType, EncoderOrSourceStream, EncoderVariant, EncoderVariantGroup,
 };
-use crate::ingress::{ConnectionInfo, EndpointStats};
-use crate::overseer::{IngressInfo, IngressStream, Overseer, StatsType};
+use crate::ingress::{ConnectionInfo, IngressInfo, IngressStream};
+use crate::overseer::{Overseer, StatsType};
 use crate::pipeline::PipelineConfig;
 use crate::pipeline::worker::{PipelineWorkerThreadBuilder, WorkerThreadCommand};
 use crate::reorder::FrameReorderBuffer;
@@ -44,10 +44,6 @@ pub enum RunnerState {
 pub enum PipelineCommand {
     /// External process requested clean shutdown
     Shutdown,
-    /// Metrics provided by the ingress
-    IngressMetrics(EndpointStats),
-    /// Metrics provided by egress components
-    EgressMetrics(EndpointStats),
 }
 
 #[derive(Debug, Clone)]
@@ -183,13 +179,13 @@ impl PipelineRunner {
 
             // send thumbnail on the first worker
             // TODO: pick one that has less work to do (copy streams / audio)
-            if let Some(w) = self.worker_channels.values().next() {
-                if let Err(e) = w.send(WorkerThreadCommand::SaveThumbnail {
+            if let Some(w) = self.worker_channels.values().next()
+                && let Err(e) = w.send(WorkerThreadCommand::SaveThumbnail {
                     frame,
                     dst: dst_pic,
-                }) {
-                    error!("Error sending worker thread command: {}", e);
-                }
+                })
+            {
+                error!("Error sending worker thread command: {}", e);
             }
         }
         Ok(())
@@ -239,7 +235,7 @@ impl PipelineRunner {
     }
 
     unsafe fn process_packet(&mut self, packet: AvPacketRef) -> Result<()> {
-        let Some(config) = self.config.as_ref().map(|c| c.clone()) else {
+        let Some(config) = self.config.clone() else {
             bail!("Pipeline not configured, cant process packet")
         };
 
@@ -371,18 +367,15 @@ impl PipelineRunner {
             );
 
             // Get or create reorder buffer for this source stream
-            let reorder_buffer = self
-                .frame_reorder_buffers
-                .entry(stream_index)
-                .or_insert_with(FrameReorderBuffer::new);
+            let reorder_buffer = self.frame_reorder_buffers.entry(stream_index).or_default();
 
             // Push frame into reorder buffer and get any frames ready to encode
             let mut frames_to_encode = reorder_buffer.push(frame.pts, frame.duration, frame);
 
             // Process each reordered frame through all video variants
-            for mut frame_ref in &mut frames_to_encode {
+            for frame_ref in &mut frames_to_encode {
                 // Fix PTS discontinuities after reorder (frames now in PTS order)
-                self.mangle_frame_pts(stream_index, &mut frame_ref);
+                self.mangle_frame_pts(stream_index, frame_ref);
 
                 trace!(
                     "REORDER->VARIANTS: src={}, pts={}, pkt_dts={}, duration={}, tb={}/{}",
@@ -482,30 +475,12 @@ impl PipelineRunner {
     fn handle_command(&mut self) -> Result<Option<bool>> {
         if let Some(cmd) = &mut self.cmd_channel {
             while let Ok(c) = cmd.try_recv() {
-                match c {
+                return match c {
                     PipelineCommand::Shutdown => {
                         self.flush();
-                        return Ok(Some(true));
+                        Ok(Some(true))
                     }
-                    PipelineCommand::IngressMetrics(s) => {
-                        let id = self.connection.id;
-                        let overseer = self.overseer.clone();
-                        self.handle.spawn(async move {
-                            if let Err(e) = overseer.on_stats(&id, StatsType::Ingress(s)).await {
-                                warn!("Pipeline stats error: {e}");
-                            }
-                        });
-                    }
-                    PipelineCommand::EgressMetrics(s) => {
-                        let id = self.connection.id;
-                        let overseer = self.overseer.clone();
-                        self.handle.spawn(async move {
-                            if let Err(e) = overseer.on_stats(&id, StatsType::Egress(s)).await {
-                                warn!("Pipeline egress stats error: {e}");
-                            }
-                        });
-                    }
-                }
+                };
             }
         }
         Ok(None)
@@ -583,10 +558,10 @@ impl PipelineRunner {
                     Some(IngressStream {
                         index: s.index,
                         stream_type: match s.stream_type {
-                            StreamType::Video => crate::overseer::StreamType::Video,
-                            StreamType::Audio => crate::overseer::StreamType::Audio,
-                            StreamType::Subtitle => crate::overseer::StreamType::Subtitle,
-                            StreamType::Unknown => crate::overseer::StreamType::Unknown,
+                            StreamType::Video => crate::ingress::StreamType::Video,
+                            StreamType::Audio => crate::ingress::StreamType::Audio,
+                            StreamType::Subtitle => crate::ingress::StreamType::Subtitle,
+                            StreamType::Unknown => crate::ingress::StreamType::Unknown,
                         },
                         codec: s.codec,
                         format: s.format,
@@ -606,11 +581,9 @@ impl PipelineRunner {
                 .collect(),
         };
         let block_on_start = Instant::now();
-        let cfg = self.handle.block_on(async {
-            self.overseer
-                .start_stream(&mut self.connection, &i_info)
-                .await
-        })?;
+        let cfg = self
+            .handle
+            .block_on(async { self.overseer.start_stream(&self.connection, &i_info).await })?;
         crate::metrics::record_block_on_start_stream(block_on_start.elapsed());
 
         let inputs: HashSet<usize> = cfg.variants.iter().map(|e| e.src_index()).collect();
@@ -644,7 +617,7 @@ impl PipelineRunner {
                 .with_egress(self.egress.clone())
                 .with_handle(self.handle.clone())
                 .with_overseer(self.overseer.clone())
-                .with_pipeline_id(self.connection.id.clone());
+                .with_pipeline_id(self.connection.id);
             workers.insert(var.id(), w);
         }
 

@@ -11,8 +11,8 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
 };
 use ffmpeg_rs_raw::{Decoder, ffmpeg_sys_the_third, rstr};
 use payments_rs::lightning::setup_crypto_provider;
-use std::io::stdout;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::ptr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,17 +20,17 @@ use tokio::net::TcpListener;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::{EnvFilter, Layer};
-use zap_stream::http::{HlsRouter, IndexRouter, MultiTrackRouter, ZapRouter};
+use zap_stream::admin_api::ZapStreamAdminApiImpl;
+use zap_stream::http::{IndexRouter, MultiTrackRouter, ZapRouter};
 use zap_stream::multitrack::{MultiTrackEngine, MultiTrackEngineConfig};
 use zap_stream::payments::PaymentHandler;
 use zap_stream_api_common::{AxumAdminApi, AxumApi};
-use zap_stream_core::listen::try_create_listener;
 use zap_stream_core::metrics::PipelineMetrics;
 use zap_stream_core::overseer::Overseer;
+use zap_stream_core::pipeline::try_create_listener;
 
 mod api;
+#[cfg(feature = "pipeline")]
 mod overseer;
 mod settings;
 
@@ -142,6 +142,7 @@ async fn main() -> Result<()> {
     let moq_origin = Arc::new(zap_stream_core::hang::moq_lite::Origin::produce());
 
     let settings: Settings = builder.try_deserialize()?;
+
     let (overseer, api) = {
         #[allow(unused_mut)]
         let mut overseer = ZapStreamOverseer::from_settings(&settings, shutdown.clone()).await?;
@@ -173,10 +174,16 @@ async fn main() -> Result<()> {
 
     // HTTP server
     let http_addr: SocketAddr = settings.listen_http.parse()?;
+    let admin_api_impl = ZapStreamAdminApiImpl::new(
+        overseer.database(),
+        PathBuf::from(&settings.output_dir),
+        settings.endpoints.clone(),
+        settings.endpoints_public_hostname.clone(),
+    );
     let mut server = Router::new()
         .merge(IndexRouter::new(overseer.stream_manager()))
         .nest("/api", AxumApi::new(api.clone()))
-        .nest("/api", AxumAdminApi::new(api.clone()))
+        .nest("/api", AxumAdminApi::new(admin_api_impl))
         .merge(ZapRouter::new(
             settings.public_url.clone(),
             overseer.nostr_client(),
@@ -196,7 +203,7 @@ async fn main() -> Result<()> {
 
     #[cfg(feature = "hls")]
     {
-        server = server.merge(HlsRouter::new(
+        server = server.merge(zap_stream::http::HlsRouter::new(
             settings.output_dir.clone(),
             overseer.stream_manager(),
         ));

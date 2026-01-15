@@ -1,7 +1,7 @@
 use crate::generator::FrameGenerator;
-use crate::ingress::{ConnectionInfo, EndpointStats, setup_term_handler, spawn_pipeline};
+use crate::ingress::{BufferedReader, ConnectionInfo, setup_term_handler, spawn_pipeline};
+use crate::metrics::EndpointStats;
 use crate::overseer::Overseer;
-use crate::pipeline::PipelineCommand;
 use anyhow::Result;
 use chrono::Utc;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
@@ -42,7 +42,12 @@ pub async fn listen(
     if !out_dir.exists() {
         std::fs::create_dir_all(&out_dir)?;
     }
-    let src = TestPatternSrc::new(tx)?;
+    let mtx = BufferedReader::stats_to_overseer(
+        info.id,
+        &Handle::current(),
+        overseer.clone(),
+    );
+    let src = TestPatternSrc::new(mtx)?;
     let h = spawn_pipeline(
         Handle::current(),
         info,
@@ -74,7 +79,7 @@ struct TestPatternSrc {
     background: Pixmap,
     muxer: Muxer,
     reader: HeapCons<u8>,
-    tx: UnboundedSender<PipelineCommand>,
+    tx: UnboundedSender<EndpointStats>,
     last_metrics: Instant,
     data_sent: u64,
 }
@@ -87,7 +92,7 @@ const VIDEO_HEIGHT: u16 = 720;
 const SAMPLE_RATE: u32 = 44100;
 
 impl TestPatternSrc {
-    pub fn new(tx: UnboundedSender<PipelineCommand>) -> Result<Self> {
+    pub fn new(tx: UnboundedSender<EndpointStats>) -> Result<Self> {
         let video_encoder = unsafe {
             Encoder::new_with_name("libx264")?
                 .with_stream_index(0)
@@ -193,11 +198,11 @@ impl TestPatternSrc {
             }
             let metric_duration = Instant::now().duration_since(self.last_metrics);
             if metric_duration > Duration::from_secs(5) {
-                if let Err(e) = self.tx.send(PipelineCommand::IngressMetrics(EndpointStats {
+                if let Err(e) = self.tx.send(EndpointStats {
                     name: "test".to_string(),
                     bitrate: ((self.data_sent as f64 / metric_duration.as_secs_f64()) * 8.0)
                         as usize,
-                })) {
+                }) {
                     warn!("Failed to send pipeline metrics: {}", e);
                 }
                 self.data_sent = 0;

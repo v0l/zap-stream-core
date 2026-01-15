@@ -11,7 +11,9 @@ pub mod ingress;
 pub mod listen;
 pub mod metrics;
 pub mod mux;
+#[cfg(feature = "pipeline")]
 pub mod overseer;
+#[cfg(feature = "pipeline")]
 pub mod pipeline;
 pub mod reorder;
 #[cfg(test)]

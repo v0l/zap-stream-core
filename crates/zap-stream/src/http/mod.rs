@@ -43,11 +43,11 @@ pub struct IndexRouter {
 impl IndexRouter {
     pub fn new(stream_manager: StreamManager) -> Router {
         let me = IndexRouter { stream_manager };
-        let router = Router::new()
-            .route("/", get(Self::index_route))
-            .with_state(me);
+        
 
-        router
+        Router::new()
+            .route("/", get(Self::index_route))
+            .with_state(me)
     }
 
     async fn index_route(State(me): State<IndexRouter>) -> Result<Html<String>, String> {

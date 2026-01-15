@@ -1,4 +1,5 @@
 use crate::egress::EncoderParam;
+use crate::ingress::IngressStream;
 use crate::map_codec_id;
 use anyhow::Result;
 use anyhow::bail;
@@ -11,7 +12,6 @@ use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 use std::mem::transmute;
 use uuid::Uuid;
-use crate::overseer::IngressStream;
 
 /// Information related to variant streams for a given egress
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]

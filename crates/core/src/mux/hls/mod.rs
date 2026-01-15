@@ -127,15 +127,12 @@ impl HlsMuxer {
         for var in self.variants.iter_mut() {
             if let Some(vs) = var.streams.iter().find(|s| s.id() == *variant) {
                 found = true;
-                match var.process_packet(&pkt, vs.clone())? {
-                    EgressResult::Segments {
+                if let EgressResult::Segments {
                         created: c,
                         deleted: d,
-                    } => {
-                        created.extend(c);
-                        deleted.extend(d);
-                    }
-                    _ => {}
+                    } = var.process_packet(&pkt, vs.clone())? {
+                    created.extend(c);
+                    deleted.extend(d);
                 }
             }
         }

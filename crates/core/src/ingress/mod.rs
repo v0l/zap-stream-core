@@ -1,27 +1,27 @@
-use crate::metrics::PacketMetrics;
-use crate::overseer::Overseer;
-use crate::pipeline::{PipelineCommand, PipelineRunner};
-use anyhow::Result;
+use anyhow::{Result, bail};
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
+    av_get_pix_fmt_name, av_get_sample_fmt_name, avcodec_get_name,
+};
+use ffmpeg_rs_raw::rstr;
 use serde::{Deserialize, Serialize};
-use std::io::{Read, Write};
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::thread::JoinHandle;
-use std::time::Instant;
-use tokio::runtime::Handle;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use std::fmt::{Display, Formatter};
+use std::mem::transmute;
 use uuid::Uuid;
 
+#[cfg(feature = "pipeline")]
+mod pipeline;
+#[cfg(feature = "pipeline")]
+pub use pipeline::*;
+
+#[cfg(feature = "pipeline")]
 pub mod file;
-#[cfg(feature = "ingress-rtmp")]
+#[cfg(all(feature = "pipeline", feature = "ingress-rtmp"))]
 pub mod rtmp;
-#[cfg(feature = "ingress-srt")]
+#[cfg(all(feature = "pipeline", feature = "ingress-srt"))]
 pub mod srt;
 #[cfg(feature = "ingress-tcp")]
 pub mod tcp;
-#[cfg(feature = "ingress-test")]
+#[cfg(all(feature = "pipeline", feature = "ingress-test"))]
 pub mod test;
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -42,111 +42,130 @@ pub struct ConnectionInfo {
     pub key: String,
 }
 
-pub fn spawn_pipeline(
-    handle: Handle,
-    info: ConnectionInfo,
-    out_dir: PathBuf,
-    seer: Arc<dyn Overseer>,
-    reader: Box<dyn Read + Send>,
-    url: Option<String>,
-    rx: Option<UnboundedReceiver<PipelineCommand>>,
-) -> Result<JoinHandle<()>> {
-    let pl = PipelineRunner::new(handle, out_dir, seer, info, reader, url, rx)?;
-    run_pipeline(pl)
-}
-
-pub fn run_pipeline(mut pl: PipelineRunner) -> Result<JoinHandle<()>> {
-    info!("New client connected: {}", &pl.connection.ip_addr);
-
-    Ok(std::thread::Builder::new()
-        .name(format!(
-            "client:{}:{}",
-            pl.connection.endpoint, pl.connection.id
-        ))
-        .spawn(move || {
-            pl.run();
-            info!("Pipeline {} completed.", pl.connection.id);
-        })?)
-}
-
-pub(crate) fn setup_term_handler(
-    shutdown: CancellationToken,
-    tx: UnboundedSender<PipelineCommand>,
-) {
-    // handle termination
-    tokio::spawn(async move {
-        shutdown.cancelled().await;
-        if let Err(e) = tx.send(PipelineCommand::Shutdown) {
-            warn!("Failed to send shutdown signal: {}", e);
-        }
-    });
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct EndpointStats {
-    pub name: String,
+/// A copy of [ffmpeg_rs_raw::DemuxerInfo] without internal ptr
+#[derive(PartialEq, Clone)]
+pub struct IngressInfo {
     pub bitrate: usize,
+    pub streams: Vec<IngressStream>,
 }
 
-/// Common buffered reader functionality for ingress sources
-pub struct BufferedReader {
-    pub buf: Vec<u8>,
-    pub max_buffer_size: usize,
-    pub last_buffer_log: Instant,
-    pub metrics: PacketMetrics,
-    dump_handle: Option<Box<dyn Write + Send + 'static>>,
+/// A copy of [ffmpeg_rs_raw::StreamInfo] without ptr
+#[derive(PartialEq, Clone, Debug, Default)]
+pub struct IngressStream {
+    pub index: usize,
+    pub stream_type: StreamType,
+    /// FFMPEG codec ID
+    pub codec: isize,
+    /// FFMPEG sample/pixel format ID
+    pub format: isize,
+    pub profile: isize,
+    pub level: isize,
+    pub color_space: isize,
+    pub color_range: isize,
+    pub width: usize,
+    pub height: usize,
+    pub fps: f32,
+    pub sample_rate: usize,
+    pub bitrate: usize,
+    pub channels: u8,
+    pub language: String,
 }
 
-impl BufferedReader {
-    pub fn new(
-        capacity: usize,
-        max_size: usize,
-        source_name: &'static str,
-        metrics_sender: Option<UnboundedSender<PipelineCommand>>,
-    ) -> Self {
-        Self {
-            buf: Vec::with_capacity(capacity),
-            max_buffer_size: max_size,
-            last_buffer_log: Instant::now(),
-            metrics: PacketMetrics::new(source_name, metrics_sender),
-            dump_handle: None,
+impl IngressStream {
+    /// Get the name of the codec from the FFMPEG codec ID
+    pub fn codec_name(&self) -> Result<String> {
+        unsafe {
+            let codec = avcodec_get_name(transmute(self.codec as i32));
+            if codec.is_null() {
+                bail!("Codec not found {}", self.codec);
+            }
+            Ok(rstr!(codec).to_string())
         }
     }
 
-    pub fn set_dump_handle<W: Write + Send + 'static>(&mut self, handle: W) {
-        self.dump_handle = Some(Box::new(handle));
+    pub fn pixel_format_name(&self) -> Result<String> {
+        if self.stream_type != StreamType::Video {
+            bail!("Ingress stream type not Video");
+        }
+        unsafe {
+            let name = av_get_pix_fmt_name(transmute(self.format as i32));
+            if name.is_null() {
+                bail!("Pixel format not found {}", self.format);
+            }
+            Ok(rstr!(name).to_string())
+        }
     }
 
-    /// Add data to buffer with size limit and performance tracking
-    pub fn add_data(&mut self, data: &[u8]) {
-        if let Some(dump_handle) = &mut self.dump_handle {
-            dump_handle.write_all(data).unwrap();
+    pub fn sample_format_name(&self) -> Result<String> {
+        if self.stream_type != StreamType::Audio {
+            bail!("Ingress stream type not Audio");
         }
-
-        // Inline buffer management to avoid borrow issues
-        if self.buf.len() + data.len() > self.max_buffer_size {
-            let bytes_to_drop = (self.buf.len() + data.len()) - self.max_buffer_size;
-            warn!(
-                "{} buffer full ({} bytes), dropping {} oldest bytes",
-                self.metrics.source_name,
-                self.buf.len(),
-                bytes_to_drop
-            );
-            self.buf.drain(..bytes_to_drop);
+        unsafe {
+            let name = av_get_sample_fmt_name(transmute(self.format as i32));
+            if name.is_null() {
+                bail!("Sample format not found {}", self.format);
+            }
+            Ok(rstr!(name).to_string())
         }
-        self.buf.extend(data);
-
-        // Update performance counters using PacketMetrics (auto-reports when interval elapsed)
-        self.metrics.update(data.len());
     }
+}
 
-    /// Read data from buffer
-    pub fn read_buffered(&mut self, buf: &mut [u8]) -> usize {
-        let to_drain = buf.len().min(self.buf.len());
-        if to_drain > 0 {
-            let drain = self.buf.drain(..to_drain);
-            buf[..to_drain].copy_from_slice(drain.as_slice());
+impl Display for IngressStream {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let codec_name = self.codec_name().unwrap_or_else(|_| "unknown".to_string());
+        match self.stream_type {
+            StreamType::Video => {
+                let pix_fmt = self
+                    .pixel_format_name()
+                    .unwrap_or_else(|_| "unknown".to_string());
+                write!(
+                    f,
+                    "#{} Video: {}x{} @ {:.2}fps, {} ({}), {}kbps",
+                    self.index,
+                    self.width,
+                    self.height,
+                    self.fps,
+                    codec_name,
+                    pix_fmt,
+                    self.bitrate / 1000
+                )
+            }
+            StreamType::Audio => {
+                let sample_fmt = self
+                    .sample_format_name()
+                    .unwrap_or_else(|_| "unknown".to_string());
+                write!(
+                    f,
+                    "#{} Audio: {}ch @ {}Hz, {} ({}), {}kbps",
+                    self.index,
+                    self.channels,
+                    self.sample_rate,
+                    codec_name,
+                    sample_fmt,
+                    self.bitrate / 1000
+                )?;
+                if !self.language.is_empty() {
+                    write!(f, ", lang={}", self.language)?;
+                }
+                Ok(())
+            }
+            StreamType::Subtitle => {
+                write!(f, "#{} Subtitle: {}", self.index, codec_name)?;
+                if !self.language.is_empty() {
+                    write!(f, ", lang={}", self.language)?;
+                }
+                Ok(())
+            }
+            StreamType::Unknown => write!(f, "#{} Unknown", self.index),
         }
-        to_drain
     }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Hash, Default)]
+pub enum StreamType {
+    #[default]
+    Unknown,
+    Video,
+    Audio,
+    Subtitle,
 }

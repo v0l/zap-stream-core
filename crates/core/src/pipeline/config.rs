@@ -1,5 +1,5 @@
 use crate::egress::{EgressConfig, EgressType};
-use crate::overseer::IngressInfo;
+use crate::ingress::IngressInfo;
 use crate::variant::VariantStream;
 use std::fmt::{Display, Formatter};
 

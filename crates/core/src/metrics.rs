@@ -1,6 +1,7 @@
-use crate::ingress::EndpointStats;
-use crate::pipeline::PipelineCommand;
-use prometheus::{Encoder, Gauge, Histogram, HistogramOpts, HistogramVec, Opts, Registry, TextEncoder};
+use prometheus::{
+    Encoder, Gauge, Histogram, HistogramOpts, HistogramVec, Opts, Registry, TextEncoder,
+};
+use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::UnboundedSender;
@@ -32,11 +33,13 @@ pub struct PipelineMetrics {
 impl PipelineMetrics {
     /// Create new pipeline metrics and register with the given registry
     pub fn new(registry: &Registry) -> prometheus::Result<Self> {
-        let thumbnail_generation_time = Histogram::with_opts(HistogramOpts::new(
-            "thumbnail_generation_seconds",
-            "Time taken to generate thumbnails in seconds",
-        )
-        .buckets(vec![0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]))?;
+        let thumbnail_generation_time = Histogram::with_opts(
+            HistogramOpts::new(
+                "thumbnail_generation_seconds",
+                "Time taken to generate thumbnails in seconds",
+            )
+            .buckets(vec![0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]),
+        )?;
 
         // Playback rate histogram - buckets from 0 to 2 (0% to 200% of target FPS)
         let playback_rate = HistogramVec::new(
@@ -44,12 +47,16 @@ impl PipelineMetrics {
                 "pipeline_playback_rate",
                 "Playback rate as fraction of target FPS (1.0 = 100%)",
             )
-            .buckets(vec![0.0, 0.25, 0.5, 0.75, 0.9, 0.95, 1.0, 1.05, 1.1, 1.25, 1.5, 2.0]),
+            .buckets(vec![
+                0.0, 0.25, 0.5, 0.75, 0.9, 0.95, 1.0, 1.05, 1.1, 1.25, 1.5, 2.0,
+            ]),
             &["pipeline_id"],
         )?;
 
         // Block-on duration buckets (in seconds) - from 1ms to 10s
-        let block_on_buckets = vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0];
+        let block_on_buckets = vec![
+            0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+        ];
 
         let block_on_thumbnail = Histogram::with_opts(
             HistogramOpts::new(
@@ -120,9 +127,9 @@ impl PipelineMetrics {
     /// Initialize global metrics with the default registry
     pub fn init_global() -> prometheus::Result<()> {
         let metrics = Self::new(prometheus::default_registry())?;
-        METRICS
-            .set(metrics)
-            .map_err(|_| prometheus::Error::Msg("PipelineMetrics already initialized".to_string()))?;
+        METRICS.set(metrics).map_err(|_| {
+            prometheus::Error::Msg("PipelineMetrics already initialized".to_string())
+        })?;
         Ok(())
     }
 
@@ -157,23 +164,26 @@ pub fn record_thumbnail_generation_time(duration: Duration) {
 
 /// Record playback rate as fraction of target FPS
 pub fn record_playback_rate(pipeline_id: &str, average_fps: f32, target_fps: f32) {
-    if target_fps > 0.0 {
-        if let Some(metrics) = PipelineMetrics::global() {
-            let rate = average_fps as f64 / target_fps as f64;
-            metrics
-                .playback_rate
-                .with_label_values(&[pipeline_id])
-                .observe(rate);
-        }
+    if target_fps > 0.0
+        && let Some(metrics) = PipelineMetrics::global()
+    {
+        let rate = average_fps as f64 / target_fps as f64;
+        metrics
+            .playback_rate
+            .with_label_values(&[pipeline_id])
+            .observe(rate);
     }
 }
 
 /// Remove playback rate metrics for a pipeline when it ends
 pub fn remove_playback_rate(pipeline_id: &str) {
-    if let Some(metrics) = PipelineMetrics::global() {
-        if let Err(e) = metrics.playback_rate.remove_label_values(&[pipeline_id]) {
-            debug!("Failed to remove playback rate metrics for {}: {}", pipeline_id, e);
-        }
+    if let Some(metrics) = PipelineMetrics::global()
+        && let Err(e) = metrics.playback_rate.remove_label_values(&[pipeline_id])
+    {
+        debug!(
+            "Failed to remove playback rate metrics for {}: {}",
+            pipeline_id, e
+        );
     }
 }
 
@@ -225,6 +235,12 @@ pub fn set_total_viewers(count: u64) {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EndpointStats {
+    pub name: String,
+    pub bitrate: usize,
+}
+
 /// Generic packet metrics collection for ingress and egress components
 #[derive(Debug, Clone)]
 pub struct PacketMetrics {
@@ -233,22 +249,19 @@ pub struct PacketMetrics {
     pub last_metrics_update: Instant,
     pub source_name: String,
     pub reporting_interval: Duration,
-    sender: Option<UnboundedSender<PipelineCommand>>,
+    sender: Option<UnboundedSender<EndpointStats>>,
 }
 
 impl PacketMetrics {
     /// Create new packet metrics instance with default 2-second reporting interval
-    pub fn new(
-        source_name: &str,
-        sender: Option<UnboundedSender<PipelineCommand>>,
-    ) -> Self {
+    pub fn new(source_name: &str, sender: Option<UnboundedSender<EndpointStats>>) -> Self {
         Self::new_with_interval(source_name, sender, Duration::from_secs(2))
     }
 
     /// Create new packet metrics instance with custom reporting interval
     pub fn new_with_interval(
         source_name: &str,
-        sender: Option<UnboundedSender<PipelineCommand>>,
+        sender: Option<UnboundedSender<EndpointStats>>,
         reporting_interval: Duration,
     ) -> Self {
         Self {
@@ -351,15 +364,9 @@ impl PacketMetrics {
         if let Some(sender) = &self.sender {
             let bitrate_bps = self.calculate_bitrate() as usize;
             if bitrate_bps > 0 {
-                let stats = match self.source_name.contains("Egress") {
-                    true => PipelineCommand::EgressMetrics(EndpointStats {
-                        name: self.source_name.to_string(),
-                        bitrate: bitrate_bps,
-                    }),
-                    false => PipelineCommand::IngressMetrics(EndpointStats {
-                        name: self.source_name.to_string(),
-                        bitrate: bitrate_bps,
-                    }),
+                let stats = EndpointStats {
+                    name: self.source_name.to_string(),
+                    bitrate: bitrate_bps,
                 };
 
                 if let Err(e) = sender.send(stats) {

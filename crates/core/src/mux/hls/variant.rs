@@ -347,7 +347,7 @@ impl HlsVariant {
     ) -> Result<EgressResult> {
         let mut pkt = pkt.clone();
         let stream_index = var.index() as i32;
-        (*pkt).stream_index = stream_index;
+        pkt.stream_index = stream_index;
         let pkt_stream = unsafe { *(*self.mux.context()).streams.add(stream_index as _) };
 
         let pkt_q = unsafe { av_q2d(pkt.time_base) };

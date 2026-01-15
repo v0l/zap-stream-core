@@ -11,9 +11,8 @@ use tracing::{info, warn};
 use url::Url;
 use uuid::Uuid;
 use zap_stream_core::endpoint::{EndpointConfigEngine, EndpointConfigurator, VariantType};
-use zap_stream_core::ingress::ConnectionInfo;
+use zap_stream_core::ingress::{ConnectionInfo, IngressInfo, IngressStream, StreamType};
 use zap_stream_core::listen::ListenerEndpoint;
-use zap_stream_core::overseer::{IngressInfo, IngressStream, StreamType};
 use zap_stream_core::variant::VariantStream;
 use zap_stream_core::{map_codec_id, recommended_bitrate};
 
@@ -61,8 +60,7 @@ impl MultiTrackEngine {
                     "Stream key is invalid please visit {} to find your stream key. ({})",
                     self.config
                         .dashboard_url
-                        .as_ref()
-                        .map(|s| s.as_str())
+                        .as_deref()
                         .unwrap_or(Self::DASHBOARD_LINK),
                     e
                 )));
@@ -70,12 +68,7 @@ impl MultiTrackEngine {
         };
         let caps = self.endpoint_config.get_capabilities(&conn).await?;
 
-        let canvas = req
-            .preferences
-            .canvases
-            .iter()
-            .next()
-            .context("no canvases")?;
+        let canvas = req.preferences.canvases.first().context("no canvases")?;
 
         // TODO: pick best ingest codec for best egress copy mapping
         let ingest_video_codec = req
@@ -355,18 +348,15 @@ impl MultiTrackConfigRequest {
     /// Using the CPU/GPU info create an encoder
     pub fn get_fallback_encoder(&self, codec: &str) -> Option<ObsEncoderType> {
         // shortcut for audio codec
-        match codec {
-            "aac" => {
-                return Some(ObsEncoderType {
-                    name: "ffmpeg_aac".to_string(),
-                    api: ObsEncoderApi::OBS,
-                    codec: "aac".to_string(),
-                    implementation: ObsEncoderImplementation::Software {
-                        name: "ffmpeg".to_string(),
-                    },
-                });
-            }
-            _ => {}
+        if codec == "aac" {
+            return Some(ObsEncoderType {
+                name: "ffmpeg_aac".to_string(),
+                api: ObsEncoderApi::OBS,
+                codec: "aac".to_string(),
+                implementation: ObsEncoderImplementation::Software {
+                    name: "ffmpeg".to_string(),
+                },
+            });
         }
 
         if let Some(gpu) = self.capabilities.gpu.last() {
@@ -1338,7 +1328,9 @@ mod tests {
         assert_eq!(v1440.format, Some(MTVideoFormat::NV12));
         assert_eq!(
             v1440.settings.get("bitrate"),
-            Some(&json!(recommended_bitrate("h264", 2560 * 1440, 30.0) / 1000))
+            Some(&json!(
+                recommended_bitrate("h264", 2560 * 1440, 30.0) / 1000
+            ))
         );
 
         assert_eq!(v1080.width, 1920);

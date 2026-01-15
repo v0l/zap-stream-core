@@ -5,10 +5,12 @@ use config::Config;
 use nostr_sdk::Keys;
 use serde::Deserialize;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::str::FromStr;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
+use zap_stream::admin_api::ZapStreamAdminApiImpl;
 use zap_stream::http::{IndexRouter, ZapRouter};
 use zap_stream::payments::{PaymentBackend, PaymentHandler, create_lightning};
 use zap_stream::setup_crypto_provider;
@@ -93,11 +95,13 @@ async fn main() -> Result<()> {
 
     // start http server
     let api_impl = CfApiWrapper::new();
+    let admin_api_impl =
+        ZapStreamAdminApiImpl::new(db.clone(), PathBuf::new(), Vec::new(), "".to_string());
     let http_addr: SocketAddr = settings.listen_http.parse()?;
     let server = Router::new()
         .merge(IndexRouter::new(stream_manager.clone()))
         .nest("/api", AxumApi::new(api_impl.clone()))
-        .nest("/api", AxumAdminApi::new(api_impl.clone()))
+        .nest("/api", AxumAdminApi::new(admin_api_impl))
         .merge(ZapRouter::new(
             settings.public_url.clone(),
             client.clone(),

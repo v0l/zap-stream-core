@@ -1,7 +1,6 @@
 use crate::egress::{EgressConfig, EgressEncoderConfig, EgressType, EncoderParam, EncoderParams};
-use crate::ingress::ConnectionInfo;
+use crate::ingress::{ConnectionInfo, IngressInfo, IngressStream, StreamType};
 use crate::listen::ListenerEndpoint;
-use crate::overseer::{IngressInfo, IngressStream, StreamType};
 use crate::variant::{AudioVariant, VariantGroup, VariantStream, VideoVariant};
 use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
@@ -241,7 +240,7 @@ impl EndpointConfigEngine {
                             );
                             continue;
                         }
-                        Some(EgressType::Recorder { id, .. }) => id.clone(),
+                        Some(EgressType::Recorder { id, .. }) => *id,
                         None => {
                             warn!(
                                 "Variant DVR was included in capabilities but, no egress was requested"
@@ -281,12 +280,12 @@ impl EndpointConfigEngine {
             egress_map,
             egress: egress.clone(),
         };
-        Ok(ret.verify().map_err(|e| {
+        ret.verify().map_err(|e| {
             anyhow!(
                 "Invalid endpoint config, missing variants {}",
                 e.iter().join(", ")
             )
-        })?)
+        })
     }
 
     fn get_streams_for_egress(
@@ -355,19 +354,19 @@ impl EndpointConfigEngine {
         let mut ret = Vec::new();
         for (_, chunk) in &streams.into_iter().chunk_by(|c| c.0) {
             for (e, param, ingress_stream, id) in chunk.into_iter() {
-                let e_map = egress_map.entry(e.id()).or_insert(Default::default());
+                let e_map = egress_map.entry(e.id()).or_default();
 
                 // create a new variant stream using this config and store mapping for deduplication
                 match dup_map.entry(param.clone()) {
                     Entry::Occupied(v) => match &param.stream_type {
                         StreamType::Video => {
-                            e_map.video.replace(v.get().clone());
+                            e_map.video.replace(*v.get());
                         }
                         StreamType::Audio => {
-                            e_map.audio.replace(v.get().clone());
+                            e_map.audio.replace(*v.get());
                         }
                         StreamType::Subtitle => {
-                            e_map.subtitle.replace(v.get().clone());
+                            e_map.subtitle.replace(*v.get());
                         }
                         _ => {}
                     },
@@ -682,20 +681,20 @@ impl<'a> EndpointConfig<'a> {
 
         for groups in self.egress_map.values() {
             for group in groups {
-                if let Some(video_id) = &group.video {
-                    if !variant_ids.contains(video_id) {
-                        missing.insert(*video_id);
-                    }
+                if let Some(video_id) = &group.video
+                    && !variant_ids.contains(video_id)
+                {
+                    missing.insert(*video_id);
                 }
-                if let Some(audio_id) = &group.audio {
-                    if !variant_ids.contains(audio_id) {
-                        missing.insert(*audio_id);
-                    }
+                if let Some(audio_id) = &group.audio
+                    && !variant_ids.contains(audio_id)
+                {
+                    missing.insert(*audio_id);
                 }
-                if let Some(subtitle_id) = &group.subtitle {
-                    if !variant_ids.contains(subtitle_id) {
-                        missing.insert(*subtitle_id);
-                    }
+                if let Some(subtitle_id) = &group.subtitle
+                    && !variant_ids.contains(subtitle_id)
+                {
+                    missing.insert(*subtitle_id);
                 }
             }
         }

@@ -1,7 +1,7 @@
+use crate::settings::Settings;
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use futures_util::StreamExt;
 use nostr_sdk::{Client, Event, EventBuilder, JsonUtil, Keys, Kind, Metadata, NostrSigner, Tag};
 use nwc::prelude::{NostrWalletConnect, NostrWalletConnectUri, PayInvoiceRequest};
 use payments_rs::lightning::{AddInvoiceRequest, LightningNode};
@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+#[cfg(feature = "hls")]
 use tokio::fs::remove_dir_all;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
@@ -18,15 +19,15 @@ use url::Url;
 use uuid::Uuid;
 use zap_stream::nostr::N53Publisher;
 use zap_stream::payments::create_lightning;
-use zap_stream::settings::Settings;
 use zap_stream::stream_manager::StreamManager;
 use zap_stream_core::egress::{EgressSegment, EgressType};
 use zap_stream_core::endpoint::{
     EndpointConfigEngine, EndpointConfigurator, VariantType, parse_capabilities,
 };
-use zap_stream_core::ingress::ConnectionInfo;
+use zap_stream_core::ingress::{ConnectionInfo, IngressInfo};
+#[cfg(feature = "hls")]
 use zap_stream_core::mux::SegmentType;
-use zap_stream_core::overseer::{ConnectResult, IngressInfo, Overseer, StatsType};
+use zap_stream_core::overseer::{ConnectResult, Overseer, StatsType};
 use zap_stream_core::pipeline::PipelineConfig;
 use zap_stream_core_nostr::n94::{N94Publisher, N94Segment, N94StreamInfo};
 use zap_stream_db::{

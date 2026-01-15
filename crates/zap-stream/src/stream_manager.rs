@@ -12,7 +12,8 @@ use tokio::sync::{RwLock, broadcast};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
-use zap_stream_core::ingress::{ConnectionInfo, EndpointStats};
+use zap_stream_core::ingress::ConnectionInfo;
+use zap_stream_core::metrics::EndpointStats;
 
 #[derive(Clone)]
 pub struct StreamViewerState {
