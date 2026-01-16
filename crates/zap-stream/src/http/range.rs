@@ -18,7 +18,7 @@ pub struct RangeBody {
     current_offset: u64,
     poll_complete: bool,
     file_size: u64,
-    range: Option<(u64, u64)>,
+    range: Option<Range<u64>>,
 }
 
 const MAX_UNBOUNDED_RANGE: u64 = 1024 * 1024;
@@ -34,7 +34,7 @@ impl RangeBody {
     }
 
     pub fn with_range(mut self, range: Range<u64>) -> Self {
-        self.range = Some((range.start, range.end));
+        self.range = Some(range);
         self
     }
 
@@ -57,33 +57,19 @@ impl RangeBody {
         };
         Ok(range_start..range_end)
     }
-
-    // pub fn get_headers(&self) -> Vec<(&'static str, String)> {
-    //     let r_len = (self.range_end - self.range_start) + 1;
-    //     vec![
-    //         ("content-length", r_len.to_string()),
-    //         (
-    //             "content-range",
-    //             format!(
-    //                 "bytes {}-{}/{}",
-    //                 self.range_start, self.range_end, self.file_size
-    //             ),
-    //         ),
-    //     ]
-    // }
 }
 
 impl IntoResponse for RangeBody {
     fn into_response(self) -> Response {
         let mut rsp = Response::builder().status(StatusCode::OK);
         if let Some(range) = &self.range {
-            let r_len = (range.1 - range.0) + 1;
+            let r_len = (range.end - range.start) + 1;
             rsp = rsp
                 .status(StatusCode::PARTIAL_CONTENT)
                 .header("content-length", r_len)
                 .header(
                     "content-range",
-                    format!("bytes {}-{}/{}", range.0, range.1, self.file_size),
+                    format!("bytes {}-{}/{}", range.start, range.end, self.file_size),
                 );
         }
         match rsp.body(Body::new(AsyncReadBody::new(self))) {
@@ -105,10 +91,11 @@ impl AsyncRead for RangeBody {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
-        let range_start = self.range.map(|r| r.0).unwrap_or(0) + self.current_offset;
+        let range_start = self.range.as_ref().map(|r| r.start).unwrap_or(0) + self.current_offset;
         let range_len = self
             .range
-            .map(|r| r.1)
+            .as_ref()
+            .map(|r| r.end)
             .unwrap_or(self.file_size - 1)
             .saturating_sub(range_start)
             + 1;
