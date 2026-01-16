@@ -101,6 +101,13 @@ impl HlsMuxer {
         Ok(ret)
     }
 
+    pub fn open(&mut self) -> Result<()> {
+        for var in &mut self.variants {
+            var.open()?;
+        }
+        Ok(())
+    }
+
     fn write_master_playlist(&mut self) -> Result<()> {
         let mut pl = m3u8_rs::MasterPlaylist::default();
         pl.version = Some(3);
@@ -128,9 +135,10 @@ impl HlsMuxer {
             if let Some(vs) = var.streams.iter().find(|s| s.id() == *variant) {
                 found = true;
                 if let EgressResult::Segments {
-                        created: c,
-                        deleted: d,
-                    } = var.process_packet(&pkt, vs.clone())? {
+                    created: c,
+                    deleted: d,
+                } = var.process_packet(&pkt, vs.clone())?
+                {
                     created.extend(c);
                     deleted.extend(d);
                 }

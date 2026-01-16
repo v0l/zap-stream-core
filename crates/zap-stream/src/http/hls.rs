@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use tokio::fs::File;
 use tracing::warn;
 use uuid::Uuid;
-use zap_stream_core::egress::hls::HlsEgress;
+use zap_stream_core::egress::hls::HLS_EGRESS_PATH;
 
 #[derive(Clone)]
 pub struct HlsRouter {
@@ -31,15 +31,15 @@ impl HlsRouter {
     {
         Router::new()
             .route(
-                &format!("/{{stream}}/{}/live.m3u8", HlsEgress::PATH),
+                &format!("/{{stream}}/{}/live.m3u8", HLS_EGRESS_PATH),
                 get(Self::get_master_playlist),
             )
             .route(
-                &format!("/{{stream}}/{}/{{variant}}/live.m3u8", HlsEgress::PATH),
+                &format!("/{{stream}}/{}/{{variant}}/live.m3u8", HLS_EGRESS_PATH),
                 get(Self::get_variant_playlist),
             )
             .route(
-                &format!("/{{stream}}/{}/{{variant}}/{{seg}}", HlsEgress::PATH),
+                &format!("/{{stream}}/{}/{{variant}}/{{seg}}", HLS_EGRESS_PATH),
                 get(Self::get_segment),
             )
             .with_state(Self {
@@ -62,7 +62,7 @@ impl HlsRouter {
         let playlist_path = this
             .base_path
             .join(stream.to_string())
-            .join(HlsEgress::PATH)
+            .join(HLS_EGRESS_PATH)
             .join("live.m3u8");
         let playlist_content = tokio::fs::read(playlist_path)
             .await
@@ -91,7 +91,7 @@ impl HlsRouter {
         let playlist_path = this
             .base_path
             .join(&stream_id)
-            .join(HlsEgress::PATH)
+            .join(HLS_EGRESS_PATH)
             .join(variant)
             .join("live.m3u8");
 
@@ -107,7 +107,7 @@ impl HlsRouter {
         let segment_path = this
             .base_path
             .join(stream_id.to_string())
-            .join(HlsEgress::PATH)
+            .join(HLS_EGRESS_PATH)
             .join(variant)
             .join(segment);
 

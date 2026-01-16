@@ -1,7 +1,9 @@
 use crate::egress::{EgressConfig, EgressType};
 use crate::ingress::IngressInfo;
+use crate::pipeline::PipelinePlugin;
 use crate::variant::VariantStream;
 use std::fmt::{Display, Formatter};
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct PipelineConfig {
@@ -15,6 +17,8 @@ pub struct PipelineConfig {
     pub video_src: usize,
     /// Primary audio source stream
     pub audio_src: Option<usize>,
+    /// Runtime plugins enabled for this stream pipeline
+    pub plugins: Vec<Arc<dyn PipelinePlugin>>,
 }
 
 impl PipelineConfig {

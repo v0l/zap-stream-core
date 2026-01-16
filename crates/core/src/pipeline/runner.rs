@@ -6,8 +6,7 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-#[cfg(feature = "egress-hls")]
-use crate::egress::hls::HlsEgress;
+use crate::egress::hls::HLS_EGRESS_PATH;
 #[cfg(feature = "egress-moq")]
 use crate::egress::moq::MoqEgress;
 use crate::egress::muxer_egress::MuxerEgress;
@@ -16,9 +15,11 @@ use crate::egress::{
 };
 use crate::endpoint::EndpointConfigurator;
 use crate::ingress::{ConnectionInfo, IngressInfo, IngressStream};
+#[cfg(feature = "egress-hls")]
+use crate::mux::HlsMuxer;
 use crate::overseer::{Overseer, StatsType};
-use crate::pipeline::PipelineConfig;
 use crate::pipeline::worker::{PipelineWorkerThreadBuilder, WorkerThreadCommand};
+use crate::pipeline::{ConfigurableEgress, PipelineConfig};
 use crate::reorder::FrameReorderBuffer;
 use crate::variant::VariantStream;
 use anyhow::{Result, anyhow, bail};
@@ -681,12 +682,21 @@ impl PipelineRunner {
                     segment_length,
                     ..
                 } => {
-                    let hls = HlsEgress::new(
-                        self.out_dir.clone(),
+                    let mut hls = HlsMuxer::new(
+                        self.out_dir.join(HLS_EGRESS_PATH),
                         &variant_mapping,
                         segment_type,
                         segment_length,
                     )?;
+                    for plugin in &cfg.plugins {
+                        for var in &mut hls.variants {
+                            plugin.configure_egress(ConfigurableEgress::Muxer {
+                                muxer: var.mux(),
+                                egress_type: &e.kind,
+                            })?;
+                        }
+                    }
+                    hls.open()?;
                     setup_egress.push(Box::new(hls));
                 }
                 EgressType::Recorder { height, .. } => {

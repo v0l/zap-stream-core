@@ -1,6 +1,6 @@
 use crate::listen::ListenerEndpoint;
 use crate::overseer::Overseer;
-use anyhow::bail;
+use anyhow::{Result, bail};
 use ffmpeg_rs_raw::{AvFrameRef, Muxer};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -74,12 +74,11 @@ pub fn try_create_listener(
 pub trait PipelinePlugin {
     fn process_frame(&self, frame: AvFrameRef);
     fn get_frame(&self) -> Option<AvFrameRef>;
-    fn configure_egress(&self, e: ConfigurableEgress);
+    fn configure_egress(&self, e: ConfigurableEgress) -> Result<()>;
 }
 
 pub enum ConfigurableEgress<'a> {
-    /// A muxer instance which can be configured with additional stream data
-    /// by a plugin
+    /// A muxer instance which can be configured with additional stream data by a plugin
     Muxer {
         egress_type: &'a EgressType,
         muxer: &'a mut Muxer,

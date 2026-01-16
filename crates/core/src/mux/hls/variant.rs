@@ -192,20 +192,6 @@ impl HlsVariant {
             name, ref_stream_index
         );
 
-        let mut opts = HashMap::new();
-        if let SegmentType::FMP4 = segment_type {
-            // Proper fMP4 segmentation flags for HLS
-            opts.insert(
-                "movflags".to_string(),
-                "+frag_custom+empty_moov+default_base_moof".to_string(),
-            );
-        };
-
-        unsafe {
-            mux.open(Some(opts))?;
-            //av_dump_format(mux.context(), 0, ptr::null_mut(), 0);
-        }
-
         let idx = segments
             .iter()
             .max_by(|a, b| match (a, b) {
@@ -221,7 +207,7 @@ impl HlsVariant {
             })
             .unwrap_or(1);
 
-        let mut variant = Self {
+        let variant = Self {
             name: name.clone(),
             segment_window: 30.0,
             mux,
@@ -242,9 +228,28 @@ impl HlsVariant {
             init_segment_path: None,
         };
 
-        variant.create_init_segment()?;
-
         Ok(variant)
+    }
+
+    pub fn open(&mut self) -> Result<()> {
+        let mut opts = HashMap::new();
+        if let SegmentType::FMP4 = self.segment_type {
+            opts.insert(
+                "movflags".to_string(),
+                "+frag_custom+empty_moov+default_base_moof".to_string(),
+            );
+        };
+        unsafe {
+            self.mux.open(Some(opts))?;
+            //av_dump_format(mux.context(), 0, ptr::null_mut(), 0);
+        }
+
+        self.create_init_segment()?;
+        Ok(())
+    }
+
+    pub fn mux(&mut self) -> &mut Muxer {
+        &mut self.mux
     }
 
     /// Try to read the playlist and get the segment list

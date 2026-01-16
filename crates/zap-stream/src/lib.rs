@@ -1,12 +1,11 @@
+pub mod admin_api;
+pub mod api_base;
 pub mod http;
 pub mod multitrack;
+pub mod nostr;
 pub mod payments;
 pub mod stream_manager;
 pub mod viewer;
-//pub mod websocket_metrics;
-pub mod admin_api;
-pub mod api_base;
-pub mod nostr;
 pub use payments_rs::lightning::setup_crypto_provider;
 
 use zap_stream_api_common::HistoryEntry;

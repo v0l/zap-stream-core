@@ -28,14 +28,14 @@ use zap_stream_core::ingress::{ConnectionInfo, IngressInfo};
 #[cfg(feature = "hls")]
 use zap_stream_core::mux::SegmentType;
 use zap_stream_core::overseer::{ConnectResult, Overseer, StatsType};
-use zap_stream_core::pipeline::{PipelineConfig, PipelinePlugin};
+use zap_stream_core::pipeline::PipelineConfig;
 use zap_stream_core_nostr::n94::{N94Publisher, N94Segment, N94StreamInfo};
 use zap_stream_db::{
     IngestEndpoint, Payment, StreamKeyType, User, UserStream, UserStreamState, ZapStreamDb,
 };
 
 #[cfg(feature = "hls")]
-use zap_stream_core::egress::hls::HlsEgress;
+use zap_stream_core::egress::hls::HLS_EGRESS_PATH;
 #[cfg(feature = "moq")]
 use zap_stream_core::hang::moq_lite::{OriginConsumer, OriginProducer, Produce};
 use zap_stream_core::listen::ListenerEndpoint;
@@ -272,7 +272,7 @@ impl ZapStreamOverseer {
                 return Ok(Some(
                     self.map_to_public_url(
                         pipeline_dir
-                            .join(HlsEgress::PATH)
+                            .join(HLS_EGRESS_PATH)
                             .join(HlsMuxer::MASTER_PLAYLIST)
                             .to_str()
                             .unwrap(),
@@ -468,7 +468,7 @@ impl Overseer for ZapStreamOverseer {
             }
             #[cfg(feature = "hls")]
             {
-                let out_dir_hls = self.out_dir.join(stream.id).join(HlsEgress::PATH);
+                let out_dir_hls = self.out_dir.join(stream.id).join(HLS_EGRESS_PATH);
                 if out_dir_hls.exists() {
                     info!("Deleting expired HLS stream data {}", out_dir_hls.display());
                     if let Err(e) = remove_dir_all(&out_dir_hls).await {
@@ -690,6 +690,7 @@ impl Overseer for ZapStreamOverseer {
             ingress_info: stream_info.clone(),
             video_src: cfg.video_src.unwrap().index,
             audio_src: cfg.audio_src.map(|s| s.index),
+            plugins: Vec::new(),
         })
     }
 
@@ -875,10 +876,6 @@ impl Overseer for ZapStreamOverseer {
         }
 
         Ok(())
-    }
-
-    fn get_plugins(&self, conn: &ConnectionInfo) -> Result<Vec<Arc<dyn PipelinePlugin>>> {
-        todo!()
     }
 }
 

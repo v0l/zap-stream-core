@@ -73,7 +73,4 @@ pub trait Overseer: Send + Sync {
 
     /// Stats emitted by the pipeline periodically
     async fn on_stats(&self, pipeline_id: &Uuid, stats: StatsType) -> Result<()>;
-
-    /// Get plugins for pipeline
-    fn get_plugins(&self, conn: &ConnectionInfo) -> Result<Vec<Arc<dyn PipelinePlugin>>>;
 }
