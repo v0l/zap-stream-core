@@ -114,7 +114,7 @@ pub struct CreateStreamKeyResponse {
     pub event: Option<String>,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct PatchEvent {
     pub id: Option<String>,
     pub title: Option<String>,

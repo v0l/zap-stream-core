@@ -5,6 +5,7 @@ pub mod stream_manager;
 pub mod viewer;
 //pub mod websocket_metrics;
 pub mod admin_api;
+pub mod api_base;
 pub mod nostr;
 pub use payments_rs::lightning::setup_crypto_provider;
 
@@ -21,7 +22,7 @@ pub fn user_history_to_api_model(entry: UserHistoryEntry) -> HistoryEntry {
         let desc = match payment_type {
             3 => Some("Withdrawal".to_string()), // PaymentType::Withdrawal = 3
             2 => Some("Admin Credit".to_string()), // PaymentType::Credit = 2
-            1 => entry.nostr, // PaymentType::Zap = 1, use nostr content
+            1 => entry.nostr,                    // PaymentType::Zap = 1, use nostr content
             _ => None,
         };
         (entry_type, desc)
@@ -29,9 +30,9 @@ pub fn user_history_to_api_model(entry: UserHistoryEntry) -> HistoryEntry {
         // This is a stream entry
         let desc = Some(format!(
             "Stream: {}",
-            entry.stream_title.unwrap_or_else(|| entry
-                .stream_id
-                .unwrap_or_else(|| "Unknown".to_string()))
+            entry
+                .stream_title
+                .unwrap_or_else(|| entry.stream_id.unwrap_or_else(|| "Unknown".to_string()))
         ));
         (1, desc) // Debit
     };

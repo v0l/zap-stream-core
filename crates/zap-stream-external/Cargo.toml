@@ -1,8 +1,13 @@
 [package]
-name = "zap-stream-cf"
+name = "zap-stream-external"
+description = "NIP-53 server using an external streaming provider API"
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
+
+[features]
+default = ["cloudflare"]
+cloudflare = ["reqwest"]
 
 [dependencies]
 zap-stream-db = { path = "../zap-stream-db", default-features = false }
@@ -15,10 +20,17 @@ anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 nostr-sdk.workspace = true
 ctrlc.workspace = true
 axum.workspace = true
 async-trait.workspace = true
 uuid.workspace = true
+chrono.workspace = true
+url.workspace = true
 
 config = { version = "0.15.6", features = ["yaml"] }
+reqwest = { version = "0.13", features = ["json"], optional = true }
+
+[dev-dependencies]
+mockito = "1.6"

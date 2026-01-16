@@ -40,6 +40,8 @@ pub struct User {
     pub nwc: Option<String>,
     /// Users selected default ingest ID
     pub ingest_id: Option<u64>,
+    /// An external ID used to identify this user in an external system
+    pub external_id: Option<String>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Type)]
@@ -84,7 +86,7 @@ pub struct UserStream {
     pub image: Option<String>,
     /// Thumbnail image URL
     pub thumb: Option<String>,
-    /// Comma-seperated list of hashtags
+    /// Comma-separated list of hashtags
     pub tags: Option<String>,
     /// Content warning tag
     pub content_warning: Option<String>,
@@ -106,6 +108,8 @@ pub struct UserStream {
     pub node_name: Option<String>,
     /// Fixed key ID used for this stream event
     pub stream_key_id: Option<u64>,
+    /// An external ID used to identify this stream in an external system
+    pub external_id: Option<String>,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -119,6 +123,8 @@ pub struct UserStreamForward {
     pub target: String,
     /// Whether this forward is disabled
     pub disabled: bool,
+    /// An external ID used to identify this forward in an external system
+    pub external_id: Option<String>,
 }
 
 #[derive(Debug, Clone, FromRow)]

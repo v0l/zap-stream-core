@@ -14,6 +14,11 @@ nsec: "nsec1wya428srvpu96n4h78gualaj7wqw4ecgatgja8d5ytdqrxw56r2se440y4"
 relays:
   - "ws://localhost:7766"
 
+# Cloudflare API token
+cloudflare:
+  token: "abc"
+  account_id: "123"
+
 # Lightning node config
 payments:
   # LUD-21 is required to use a lightning address backend

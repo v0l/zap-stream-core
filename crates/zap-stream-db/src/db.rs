@@ -60,11 +60,18 @@ impl ZapStreamDb {
 
     /// Get user by id
     pub async fn get_user(&self, uid: u64) -> Result<User> {
-        sqlx::query_as("select * from user where id = ?")
+        Ok(sqlx::query_as("select * from user where id = ?")
             .bind(uid)
             .fetch_one(&self.db)
-            .await
-            .map_err(anyhow::Error::new)
+            .await?)
+    }
+
+    /// Get user by id
+    pub async fn get_user_by_external_id(&self, external_id: &str) -> Result<Option<User>> {
+        Ok(sqlx::query_as("select * from user where external_id = ?")
+            .bind(external_id)
+            .fetch_optional(&self.db)
+            .await?)
     }
 
     /// Update a users balance
@@ -87,78 +94,93 @@ impl ZapStreamDb {
     }
 
     pub async fn upsert_user(&self, pubkey: &[u8; 32]) -> Result<u64> {
-        let res = sqlx::query("insert ignore into user(pubkey) values(?) returning id")
-            .bind(pubkey.as_slice())
-            .fetch_optional(&self.db)
-            .await?;
-        match res {
-            None => sqlx::query("select id from user where pubkey = ?")
-                .bind(pubkey.as_slice())
-                .fetch_one(&self.db)
-                .await?
-                .try_get(0)
-                .map_err(anyhow::Error::new),
-            Some(res) => res.try_get(0).map_err(anyhow::Error::new),
-        }
+        let uid = sqlx::query(
+            r#"insert into user (pubkey) values(?)
+            on duplicate key update
+                id = id
+            returning id"#,
+        )
+        .bind(pubkey.as_slice())
+        .fetch_one(&self.db)
+        .await?
+        .try_get(0)?;
+        Ok(uid)
+    }
+
+    /// Sames as [Self::upsert_user] except also includes if the user is new
+    pub async fn upsert_user_opt(&self, pubkey: &[u8; 32]) -> Result<(u64, bool)> {
+        let exec = sqlx::query(
+            r#"insert into user (pubkey) values(?)
+            on duplicate key update
+                id = id
+            returning id"#,
+        )
+        .bind(pubkey.as_slice())
+        .execute(&self.db)
+        .await?;
+        let new_user = exec.rows_affected() == 1;
+        let id = exec.last_insert_id();
+        Ok((id, new_user))
     }
 
     pub async fn insert_stream(&self, user_stream: &UserStream) -> Result<()> {
         sqlx::query(
-            "insert into user_stream (id, user_id, state, starts, ends, title, summary, image, thumb, tags, content_warning, goal, pinned, cost, duration, fee, event, endpoint_id, node_name, stream_key_id)
-             values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-        )
-            .bind(&user_stream.id)
-            .bind(user_stream.user_id)
-            .bind(&user_stream.state)
-            .bind(user_stream.starts)
-            .bind(user_stream.ends)
-            .bind(&user_stream.title)
-            .bind(&user_stream.summary)
-            .bind(&user_stream.image)
-            .bind(&user_stream.thumb)
-            .bind(&user_stream.tags)
-            .bind(&user_stream.content_warning)
-            .bind(&user_stream.goal)
-            .bind(&user_stream.pinned)
-            .bind(user_stream.cost)
-            .bind(user_stream.duration)
-            .bind(user_stream.fee)
-            .bind(&user_stream.event)
-            .bind(user_stream.endpoint_id)
-            .bind(&user_stream.node_name)
-            .bind(user_stream.stream_key_id)
-            .execute(&self.db)
-            .await?;
+        "insert into user_stream (id, user_id, state, starts, ends, title, summary, image, thumb, tags, content_warning, goal, pinned, cost, duration, fee, event, endpoint_id, node_name, stream_key_id, external_id)
+             values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    )
+        .bind(&user_stream.id)
+        .bind(user_stream.user_id)
+        .bind(&user_stream.state)
+        .bind(user_stream.starts)
+        .bind(user_stream.ends)
+        .bind(&user_stream.title)
+        .bind(&user_stream.summary)
+        .bind(&user_stream.image)
+        .bind(&user_stream.thumb)
+        .bind(&user_stream.tags)
+        .bind(&user_stream.content_warning)
+        .bind(&user_stream.goal)
+        .bind(&user_stream.pinned)
+        .bind(user_stream.cost)
+        .bind(user_stream.duration)
+        .bind(user_stream.fee)
+        .bind(&user_stream.event)
+        .bind(user_stream.endpoint_id)
+        .bind(&user_stream.node_name)
+        .bind(user_stream.stream_key_id)
+        .bind(&user_stream.external_id)
+        .execute(&self.db)
+        .await?;
 
         Ok(())
     }
 
     pub async fn update_stream(&self, user_stream: &UserStream) -> Result<()> {
         sqlx::query(
-            "update user_stream set state = ?, starts = ?, ends = ?, title = ?, summary = ?, image = ?, thumb = ?, tags = ?, content_warning = ?, goal = ?, pinned = ?, cost = ?, duration = ?, fee = ?, event = ?, endpoint_id = ?, node_name = ?, stream_key_id = ? where id = ?",
-        )
-            .bind(&user_stream.state)
-            .bind(user_stream.starts)
-            .bind(user_stream.ends)
-            .bind(&user_stream.title)
-            .bind(&user_stream.summary)
-            .bind(&user_stream.image)
-            .bind(&user_stream.thumb)
-            .bind(&user_stream.tags)
-            .bind(&user_stream.content_warning)
-            .bind(&user_stream.goal)
-            .bind(&user_stream.pinned)
-            .bind(user_stream.cost)
-            .bind(user_stream.duration)
-            .bind(user_stream.fee)
-            .bind(&user_stream.event)
-            .bind(user_stream.endpoint_id)
-            .bind(&user_stream.node_name)
-            .bind(user_stream.stream_key_id)
-            .bind(&user_stream.id)
-            .execute(&self.db)
-            .await
-            .map_err(anyhow::Error::new)?;
+        "update user_stream set state = ?, starts = ?, ends = ?, title = ?, summary = ?, image = ?, thumb = ?, tags = ?, content_warning = ?, goal = ?, pinned = ?, cost = ?, duration = ?, fee = ?, event = ?, endpoint_id = ?, node_name = ?, stream_key_id = ? where id = ?",
+    )
+        .bind(&user_stream.state)
+        .bind(user_stream.starts)
+        .bind(user_stream.ends)
+        .bind(&user_stream.title)
+        .bind(&user_stream.summary)
+        .bind(&user_stream.image)
+        .bind(&user_stream.thumb)
+        .bind(&user_stream.tags)
+        .bind(&user_stream.content_warning)
+        .bind(&user_stream.goal)
+        .bind(&user_stream.pinned)
+        .bind(user_stream.cost)
+        .bind(user_stream.duration)
+        .bind(user_stream.fee)
+        .bind(&user_stream.event)
+        .bind(user_stream.endpoint_id)
+        .bind(&user_stream.node_name)
+        .bind(user_stream.stream_key_id)
+        .bind(&user_stream.id)
+        .execute(&self.db)
+        .await
+        .map_err(anyhow::Error::new)?;
         Ok(())
     }
 
@@ -201,11 +223,11 @@ impl ZapStreamDb {
         node_name: &str,
     ) -> Result<Vec<UserStream>> {
         Ok(
-            sqlx::query_as("select * from user_stream where state = 3 and node_name = ? and ends > now() - interval 10 minute")
-                .bind(node_name)
-                .fetch_all(&self.db)
-                .await?,
-        )
+        sqlx::query_as("select * from user_stream where state = 3 and node_name = ? and ends > now() - interval 10 minute")
+            .bind(node_name)
+            .fetch_all(&self.db)
+            .await?,
+    )
     }
 
     /// Add [duration] & [cost] to a stream and return the new user balance
@@ -249,15 +271,32 @@ impl ZapStreamDb {
     }
 
     /// Create a new forward
-    pub async fn create_forward(&self, user_id: u64, name: &str, target: &str) -> Result<u64> {
+    pub async fn create_forward(
+        &self,
+        user_id: u64,
+        name: &str,
+        target: &str,
+        external_id: Option<String>,
+    ) -> Result<u64> {
         let result =
-            sqlx::query("insert into user_stream_forward (user_id, name, target) values (?, ?, ?)")
+            sqlx::query("insert into user_stream_forward (user_id, name, target, external_id) values (?, ?, ?, ?)")
                 .bind(user_id)
                 .bind(name)
                 .bind(target)
+                .bind(external_id)
                 .execute(&self.db)
                 .await?;
         Ok(result.last_insert_id())
+    }
+
+    /// Get a single user forward
+    pub async fn get_user_forward(&self, id: u64) -> Result<Option<UserStreamForward>> {
+        Ok(
+            sqlx::query_as("select * from user_stream_forward where id = ?")
+                .bind(id)
+                .fetch_optional(&self.db)
+                .await?,
+        )
     }
 
     /// Get all forwards for a user
@@ -350,27 +389,27 @@ impl ZapStreamDb {
         external_data: Option<String>,
     ) -> Result<()> {
         sqlx::query("insert into payment (payment_hash, user_id, invoice, amount, payment_type, fee, nostr, expires, external_data) values (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-            .bind(payment_hash)
-            .bind(user_id)
-            .bind(invoice)
-            .bind(amount)
-            .bind(payment_type)
-            .bind(fee)
-            .bind(nostr)
-            .bind(expires)
-            .bind(external_data)
-            .execute(&self.db)
-            .await?;
+        .bind(payment_hash)
+        .bind(user_id)
+        .bind(invoice)
+        .bind(amount)
+        .bind(payment_type)
+        .bind(fee)
+        .bind(nostr)
+        .bind(expires)
+        .bind(external_data)
+        .execute(&self.db)
+        .await?;
         Ok(())
     }
 
     /// Update payment fee and mark as paid, also update users balance (for deposits/credits)
     pub async fn complete_payment(&self, payment_hash: &[u8], fee: u64) -> Result<bool> {
         let res = sqlx::query("update payment p join user u on p.user_id = u.id set p.fee = ?, p.is_paid = true, u.balance = u.balance + p.amount where p.payment_hash = ? and p.is_paid = false")
-            .bind(fee)
-            .bind(payment_hash)
-            .execute(&self.db)
-            .await?;
+        .bind(fee)
+        .bind(payment_hash)
+        .execute(&self.db)
+        .await?;
 
         // user and payment row updates
         Ok(res.rows_affected() == 2)
@@ -379,11 +418,11 @@ impl ZapStreamDb {
     /// Update payment fee and mark as paid for withdrawals (subtracts fee from balance)
     pub async fn complete_withdrawal(&self, payment_hash: &[u8], fee: u64) -> Result<bool> {
         let res = sqlx::query("update payment p join user u on p.user_id = u.id set p.fee = ?, p.is_paid = true, u.balance = u.balance - ? where p.payment_hash = ? and p.is_paid = false")
-            .bind(fee)
-            .bind(fee)
-            .bind(payment_hash)
-            .execute(&self.db)
-            .await?;
+        .bind(fee)
+        .bind(fee)
+        .bind(payment_hash)
+        .execute(&self.db)
+        .await?;
 
         // user and payment row updates
         Ok(res.rows_affected() == 2)
@@ -419,17 +458,17 @@ impl ZapStreamDb {
     /// Get pending payments
     pub async fn get_pending_payments(&self) -> Result<Vec<Payment>> {
         Ok(sqlx::query_as(
-            "select * from payment where is_paid = false and payment_type in (0,1) and expires > current_timestamp() order by created desc",
-        )
-            .fetch_all(&self.db)
-            .await?)
+        "select * from payment where is_paid = false and payment_type in (0,1) and expires > current_timestamp() order by created desc",
+    )
+        .fetch_all(&self.db)
+        .await?)
     }
 
     /// Get the latest completed payment
     pub async fn get_latest_completed_payment(&self) -> Result<Option<Payment>> {
         Ok(sqlx::query_as(
-            "select * from payment where is_paid = true and payment_type in (0,1) order by created desc limit 1",
-        )
+        "select * from payment where is_paid = true and payment_type in (0,1) order by created desc limit 1",
+    )
         .fetch_optional(&self.db)
         .await?)
     }
@@ -446,15 +485,15 @@ impl ZapStreamDb {
         goal: Option<&str>,
     ) -> Result<()> {
         sqlx::query("update user set title = ?, summary = ?, image = ?, tags = ?, content_warning = ?, goal = ? where id = ?")
-            .bind(title)
-            .bind(summary)
-            .bind(image)
-            .bind(tags)
-            .bind(content_warning)
-            .bind(goal)
-            .bind(user_id)
-            .execute(&self.db)
-            .await?;
+        .bind(title)
+        .bind(summary)
+        .bind(image)
+        .bind(tags)
+        .bind(content_warning)
+        .bind(goal)
+        .bind(user_id)
+        .execute(&self.db)
+        .await?;
         Ok(())
     }
 
@@ -597,6 +636,16 @@ impl ZapStreamDb {
             .flatten())
     }
 
+    /// Update users external_id
+    pub async fn update_user_external_id(&self, uid: u64, external_id: &str) -> Result<()> {
+        sqlx::query("update user set external_id = ? where id = ?")
+            .bind(external_id)
+            .bind(uid)
+            .execute(&self.db)
+            .await?;
+        Ok(())
+    }
+
     /// Get user by pubkey
     pub async fn get_user_by_pubkey(&self, pubkey: &[u8; 32]) -> Result<Option<User>> {
         Ok(sqlx::query_as("select * from user where pubkey = ?")
@@ -689,8 +738,8 @@ impl ZapStreamDb {
     /// Get ended streams with costs for a user (for balance history)
     pub async fn get_user_ended_streams(&self, user_id: u64) -> Result<Vec<UserStream>> {
         Ok(sqlx::query_as(
-            "select * from user_stream where user_id = ? and state = 3 and cost > 0 order by ends desc",
-        )
+        "select * from user_stream where user_id = ? and state = 3 and cost > 0 order by ends desc",
+    )
         .bind(user_id)
         .fetch_all(&self.db)
         .await?)
@@ -761,8 +810,8 @@ impl ZapStreamDb {
         metadata: Option<&str>,
     ) -> Result<u64> {
         let result = sqlx::query(
-            "insert into audit_log (admin_id, action, target_type, target_id, message, metadata) values (?, ?, ?, ?, ?, ?)",
-        )
+        "insert into audit_log (admin_id, action, target_type, target_id, message, metadata) values (?, ?, ?, ?, ?, ?)",
+    )
         .bind(admin_id)
         .bind(action)
         .bind(target_type)
@@ -800,7 +849,7 @@ impl ZapStreamDb {
             .await?;
 
         let logs = sqlx::query_as(
-            r#"
+        r#"
             select 
                 al.id,
                 al.admin_id,
@@ -818,7 +867,7 @@ impl ZapStreamDb {
             order by al.created desc
             limit ? offset ?
             "#,
-        )
+    )
         .bind(limit)
         .bind(offset)
         .fetch_all(&self.db)
@@ -892,8 +941,8 @@ impl ZapStreamDb {
         .await?;
 
         let logs = sqlx::query_as(
-            "select * from audit_log where target_type = ? and target_id = ? order by created desc limit ? offset ?",
-        )
+        "select * from audit_log where target_type = ? and target_id = ? order by created desc limit ? offset ?",
+    )
         .bind(target_type)
         .bind(target_id)
         .bind(limit)
@@ -907,14 +956,14 @@ impl ZapStreamDb {
     /// Get number of live streams (separately counting primary key vs stream key) and last stream ended timestamp for a user
     pub async fn get_user_prev_streams(&self, user_id: u64) -> Result<UserPreviousStreams> {
         sqlx::query_as(
-            "select
+        "select
                 cast(coalesce(sum(case when stream_key_id is null then 1 else 0 end), 0) as signed) as live_primary_count,
                 cast(coalesce(sum(case when stream_key_id is not null then 1 else 0 end), 0) as signed) as live_stream_key_count,
                 (select ends from user_stream where user_id = ? and state = 3 and stream_key_id is null order by ends desc limit 1) as last_ended,
                 (select id from user_stream where user_id = ? and state = 3 and stream_key_id is null order by ends desc limit 1) as last_stream_id
              from user_stream
              where user_id = ? and state = 2",
-        )
+    )
         .bind(user_id)
         .bind(user_id)
         .bind(user_id)

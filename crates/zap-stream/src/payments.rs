@@ -9,13 +9,15 @@ use nostr_sdk::{Client, Event, EventBuilder, JsonUtil, Kind, Tag};
 use nwc::prelude::{
     MakeInvoiceRequest, NostrWalletConnect, NostrWalletConnectUri, NotificationResult,
 };
+pub use payments_rs::lightning::LightningNode;
 use payments_rs::lightning::{
-    AddInvoiceRequest, AddInvoiceResponse, BitvoraNode, InvoiceUpdate, LightningNode, LndNode,
+    AddInvoiceRequest, AddInvoiceResponse, BitvoraNode, InvoiceUpdate, LndNode,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
@@ -258,12 +260,15 @@ impl PaymentHandler {
         tokio::spawn(async move {
             loop {
                 // get last completed payment
-                let last_payment_hash =
-                    if let Some(pl) = self.db.get_latest_completed_payment().await? {
-                        Some(pl.payment_hash)
-                    } else {
-                        None
-                    };
+                let last_payment_hash = match self.db.get_latest_completed_payment().await {
+                    Ok(Some(p)) => Some(p.payment_hash),
+                    Ok(None) => None,
+                    Err(e) => {
+                        warn!("Failed to load last completed payment {}", e);
+                        tokio::time::sleep(Duration::from_secs(10)).await;
+                        continue;
+                    }
+                };
                 info!(
                     "Listening to invoices from {}",
                     last_payment_hash
@@ -271,7 +276,14 @@ impl PaymentHandler {
                         .map(hex::encode)
                         .unwrap_or("Now".to_string())
                 );
-                let mut stream = self.lightning.subscribe_invoices(last_payment_hash).await?;
+                let mut stream = match self.lightning.subscribe_invoices(last_payment_hash).await {
+                    Ok(stream) => stream,
+                    Err(e) => {
+                        error!("Failed to subscribe invoices: {}", e);
+                        tokio::time::sleep(Duration::from_secs(10)).await;
+                        continue;
+                    }
+                };
                 loop {
                     tokio::select! {
                         _ = token.cancelled() => {
@@ -293,7 +305,7 @@ impl PaymentHandler {
                                 }
                                 None => {
                                     warn!("Invoice update stream ended!");
-                                    break;
+                                    continue;
                                 }
                                 _ => {}
                             }
