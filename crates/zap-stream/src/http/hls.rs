@@ -1,19 +1,20 @@
-use crate::http::range::RangeBody;
 use crate::stream_manager::StreamManager;
 use crate::viewer::ViewerTracker;
-use anyhow::Result;
+use anyhow::{Result, ensure};
 use axum::Router;
 use axum::extract::{Path, Query, State};
 use axum::http::header::CONTENT_TYPE;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use http_range_header::parse_range_header;
+use axum_extra::response::FileStream;
+use http_range_header::{
+    EndPosition, StartPosition, SyntacticallyCorrectRange, parse_range_header,
+};
 use serde::Deserialize;
 use std::borrow::Cow;
-use std::fs::Metadata;
+use std::ops::Range;
 use std::path::PathBuf;
-use tokio::fs::File;
 use tracing::warn;
 use uuid::Uuid;
 use zap_stream_core::egress::hls::HLS_EGRESS_PATH;
@@ -87,7 +88,7 @@ impl HlsRouter {
         Path((stream_id, variant)): Path<(String, String)>,
         Query(q): Query<ViewerTokenQuery>,
         State(this): State<HlsRouter>,
-    ) -> Result<RangeBody, (StatusCode, &'static str)> {
+    ) -> Result<Response, (StatusCode, &'static str)> {
         let playlist_path = this
             .base_path
             .join(&stream_id)
@@ -95,15 +96,18 @@ impl HlsRouter {
             .join(variant)
             .join("live.m3u8");
 
+        let stream = FileStream::from_path(&playlist_path)
+            .await
+            .map_err(|_| (StatusCode::NOT_FOUND, "File not found"))?;
         this.stream_manager.track_viewer(&stream_id, &q.vt).await;
-        Self::serve_path(playlist_path).await
+        Ok(stream.into_response())
     }
 
     async fn get_segment(
         State(this): State<HlsRouter>,
         Path((stream_id, variant, segment)): Path<(Uuid, String, String)>,
         headers: HeaderMap,
-    ) -> Result<RangeBody, (StatusCode, &'static str)> {
+    ) -> Result<Response, (StatusCode, &'static str)> {
         let segment_path = this
             .base_path
             .join(stream_id.to_string())
@@ -111,56 +115,53 @@ impl HlsRouter {
             .join(variant)
             .join(segment);
 
-        if !segment_path.exists() {
-            return Err((StatusCode::NOT_FOUND, "File not found"));
-        }
+        let stream = FileStream::from_path(&segment_path)
+            .await
+            .map_err(|_| (StatusCode::NOT_FOUND, "File not found"))?;
         if let Some(r) = headers.get("range") {
             if let Ok(ranges) = parse_range_header(r.to_str().unwrap()) {
                 if ranges.ranges.len() > 1 {
                     warn!("Multipart ranges are not supported, fallback to non-range request");
-                    Ok(Self::serve_path(segment_path).await?)
+                    Ok(stream.into_response())
                 } else {
-                    let (file, metadata) = Self::try_open_file(&segment_path).await?;
-                    let single_range = ranges.ranges.first().unwrap();
-                    let range = match RangeBody::get_range(metadata.len(), single_range) {
-                        Ok(r) => r,
-                        Err(e) => {
-                            warn!("Failed to get range: {}", e);
-                            return Err((StatusCode::RANGE_NOT_SATISFIABLE, "Invalid range"));
-                        }
-                    };
-                    if range.start > range.end {
-                        return Err((StatusCode::RANGE_NOT_SATISFIABLE, "Invalid range"));
-                    }
-                    let r_body = RangeBody::new(file, metadata.len()).with_range(range);
-                    Ok(r_body)
+                    let file_size = stream.content_size.unwrap();
+                    let single_range = ranges
+                        .ranges
+                        .into_iter()
+                        .next()
+                        .and_then(|r| Self::get_range(file_size, &r).ok())
+                        .ok_or_else(|| {
+                            (StatusCode::RANGE_NOT_SATISFIABLE, "Invalid range request")
+                        })?;
+                    Ok(stream.into_range_response(single_range.start, single_range.end, file_size))
                 }
             } else {
                 Err((StatusCode::BAD_REQUEST, "Invalid range"))
             }
         } else {
-            Ok(Self::serve_path(segment_path).await?)
+            Ok(stream.into_response())
         }
     }
 
-    async fn try_open_file(path: &PathBuf) -> Result<(File, Metadata), (StatusCode, &'static str)> {
-        let file = File::open(&path).await.map_err(|_| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "cannot open segment file",
-            )
-        })?;
-        let metadata = file.metadata().await.map_err(|_| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "cannot read segment metadata",
-            )
-        })?;
-        Ok((file, metadata))
-    }
-    async fn serve_path(path: PathBuf) -> Result<RangeBody, (StatusCode, &'static str)> {
-        let (file, metadata) = Self::try_open_file(&path).await?;
-        Ok(RangeBody::new(file, metadata.len()))
+    fn get_range(file_size: u64, header: &SyntacticallyCorrectRange) -> Result<Range<u64>> {
+        const MAX_UNBOUNDED_RANGE: u64 = 1024 * 1024;
+        let range_start = match header.start {
+            StartPosition::Index(i) => {
+                ensure!(i < file_size, "Range start out of range");
+                i
+            }
+            StartPosition::FromLast(i) => file_size.saturating_sub(i),
+        };
+        let range_end = match header.end {
+            EndPosition::Index(i) => {
+                ensure!(i <= file_size, "Range end out of range");
+                i
+            }
+            EndPosition::LastByte => {
+                (file_size.saturating_sub(1)).min(range_start + MAX_UNBOUNDED_RANGE)
+            }
+        };
+        Ok(range_start..range_end)
     }
 
     fn get_client_ip(headers: &HeaderMap) -> String {

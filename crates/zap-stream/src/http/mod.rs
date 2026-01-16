@@ -12,8 +12,6 @@ mod hls;
 pub use hls::*;
 mod zap;
 pub use zap::*;
-mod range;
-pub use range::*;
 mod multitrack;
 pub use multitrack::*;
 
