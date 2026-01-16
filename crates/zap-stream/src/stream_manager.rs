@@ -2,7 +2,6 @@ use crate::viewer::ViewerTracker;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
-use nostr_sdk::serde_json;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -14,12 +13,6 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use zap_stream_core::ingress::ConnectionInfo;
 use zap_stream_core::metrics::EndpointStats;
-
-#[derive(Clone)]
-pub struct StreamViewerState {
-    pub last_published_count: usize,
-    pub last_update_time: DateTime<Utc>,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActiveStreamInfo {
@@ -39,6 +32,10 @@ pub struct ActiveStreamInfo {
     pub ip_address: String,
     pub ingress_name: String,
     pub endpoint_stats: HashMap<String, EndpointStats>,
+
+    /// List of streaming urls
+    pub urls: Vec<String>,
+    pub title: Option<String>,
 
     #[serde(skip)]
     pub connection: ConnectionInfo,
@@ -72,8 +69,6 @@ impl StreamManagerMetric {
 /// Manages active streams, viewer tracking
 #[derive(Clone)]
 pub struct StreamManager {
-    /// Minimum update interval in minutes
-    min_update_minutes: i64,
     /// This instances node name
     node_name: String,
     /// Currently active streams with timing info
@@ -81,8 +76,6 @@ pub struct StreamManager {
     active_streams: Arc<RwLock<HashMap<String, ActiveStreamInfo>>>,
     /// Viewer tracking for active streams
     viewer_tracker: ViewerTracker,
-    /// Track last published viewer count and update time for each stream
-    stream_viewer_states: Arc<RwLock<HashMap<String, StreamViewerState>>>,
     /// Broadcast channel to listen to metrics updates
     broadcaster: broadcast::Sender<StreamManagerMetric>,
 }
@@ -96,9 +89,7 @@ impl StreamManager {
             node_name,
             active_streams: Arc::new(RwLock::new(HashMap::new())),
             viewer_tracker: ViewerTracker::new(),
-            stream_viewer_states: Arc::new(RwLock::new(HashMap::new())),
             broadcaster: tx,
-            min_update_minutes: 5,
         }
     }
 
@@ -110,9 +101,7 @@ impl StreamManager {
             node_name,
             active_streams: Arc::new(RwLock::new(HashMap::new())),
             viewer_tracker: ViewerTracker::with_redis(redis).await?,
-            stream_viewer_states: Arc::new(RwLock::new(HashMap::new())),
             broadcaster: tx,
-            min_update_minutes: 5,
         })
     }
 
@@ -253,6 +242,8 @@ impl StreamManager {
         target_fps: f32,
         input_resolution: &str,
         conn: &ConnectionInfo,
+        urls: Vec<String>,
+        title: Option<&str>,
     ) {
         let now = Utc::now();
         let mut streams = self.active_streams.write().await;
@@ -275,6 +266,8 @@ impl StreamManager {
                 ip_address: conn.ip_addr.clone(),
                 endpoint_stats: HashMap::new(),
                 connection: conn.clone(),
+                urls,
+                title: title.map(|t| t.to_string()),
             },
         );
     }
@@ -283,11 +276,6 @@ impl StreamManager {
     pub async fn remove_active_stream(&self, stream_id: &str) {
         let mut streams = self.active_streams.write().await;
         streams.remove(stream_id);
-
-        // Clean up viewer tracking state for this stream
-        let mut viewer_states = self.stream_viewer_states.write().await;
-        let stream_id_str = stream_id.to_string();
-        viewer_states.remove(&stream_id_str);
     }
 
     /// Check if a stream is active and if it should timeout
@@ -307,42 +295,6 @@ impl StreamManager {
             (true, timeout)
         } else {
             (false, false)
-        }
-    }
-
-    /// Check if viewer count should be updated and publish to Nostr if needed
-    pub async fn check_and_update_viewer_count(
-        &self,
-        stream_id: &str,
-    ) -> Result<bool, anyhow::Error> {
-        let viewer_count = self.viewer_tracker.get_viewer_count(stream_id).await;
-        let now = Utc::now();
-
-        let should_update = {
-            let viewer_states = self.stream_viewer_states.read().await;
-            if let Some(state) = viewer_states.get(stream_id) {
-                // Update if count changed OR if 10 minutes have passed since last update
-                viewer_count != state.last_published_count
-                    || (now - state.last_update_time).num_minutes() >= self.min_update_minutes
-            } else {
-                // First time tracking this stream, always update
-                viewer_count > 0
-            }
-        };
-
-        if should_update && viewer_count > 0 {
-            // Update the tracking state
-            let mut viewer_states = self.stream_viewer_states.write().await;
-            viewer_states.insert(
-                stream_id.to_string(),
-                StreamViewerState {
-                    last_published_count: viewer_count,
-                    last_update_time: now,
-                },
-            );
-            Ok(true)
-        } else {
-            Ok(false)
         }
     }
 

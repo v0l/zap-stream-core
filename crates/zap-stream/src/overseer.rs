@@ -2,13 +2,16 @@ use crate::settings::Settings;
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use nostr_sdk::{Client, Event, EventBuilder, JsonUtil, Keys, Kind, Metadata, NostrSigner, Tag};
+use nostr_sdk::{
+    Client, Event, EventBuilder, JsonUtil, Keys, Kind, Metadata, NostrSigner, Tag, Timestamp,
+};
 use nwc::prelude::{NostrWalletConnect, NostrWalletConnectUri, PayInvoiceRequest};
 use payments_rs::lightning::{AddInvoiceRequest, LightningNode};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 #[cfg(feature = "hls")]
 use tokio::fs::remove_dir_all;
 use tokio::sync::RwLock;
@@ -68,6 +71,9 @@ pub struct ZapStreamOverseer {
     nwc_topup_requests: Arc<RwLock<HashMap<u64, JoinHandle<()>>>>,
     /// Primary output directory for media
     out_dir: PathBuf,
+    /// Last time the stream event was published
+    last_event_publish: Arc<AtomicU64>,
+    last_view_counter: Arc<AtomicU32>,
     /// MoQ origin to push streams to
     #[cfg(feature = "moq")]
     moq_origin: Option<Arc<Produce<OriginProducer, OriginConsumer>>>,
@@ -143,6 +149,8 @@ impl ZapStreamOverseer {
             node_name,
             nwc_topup_requests: Arc::new(RwLock::new(HashMap::new())),
             out_dir: PathBuf::from(&settings.output_dir),
+            last_event_publish: Arc::new(AtomicU64::new(0)),
+            last_view_counter: Arc::new(AtomicU32::new(0)),
             #[cfg(feature = "moq")]
             moq_origin: None,
             #[cfg(feature = "moq")]
@@ -256,6 +264,8 @@ impl ZapStreamOverseer {
         let ev = signer.sign_event(ev).await?;
         self.client.send_event(&ev).await?;
         info!("Published stream event {}", ev.id.to_hex());
+        self.last_event_publish
+            .store(Timestamp::now().as_secs(), Ordering::Relaxed);
         Ok(ev)
     }
 
@@ -436,13 +446,16 @@ impl Overseer for ZapStreamOverseer {
                 }
             } else {
                 // Stream is active, check if we should update viewer count in nostr event
+                let last_pub = self.last_event_publish.load(Ordering::Relaxed);
+                let last_view_counter = self.last_view_counter.load(Ordering::Relaxed);
+                let current_viewers = self.stream_manager.get_viewer_count(&stream.id).await;
                 if let Ok(user) = self.db.get_user(stream.user_id).await
-                    && self
-                        .stream_manager
-                        .check_and_update_viewer_count(&stream.id)
-                        .await?
+                    && current_viewers as u32 != last_view_counter
+                    && Timestamp::now().as_secs().saturating_sub(last_pub) > 60 * 5
                 {
                     self.publish_stream_event(&stream, &user.pubkey).await?;
+                    self.last_view_counter
+                        .store(last_view_counter, Ordering::Relaxed);
                 }
             }
         }
@@ -658,6 +671,15 @@ impl Overseer for ZapStreamOverseer {
                     .unwrap()
                     .as_str(),
                 &connection,
+                egress
+                    .iter()
+                    .filter_map(|t| {
+                        self.get_egress_public_url(t, new_stream.id.as_str())
+                            .ok()
+                            .flatten()
+                    })
+                    .collect(),
+                new_stream.title.as_ref().map(|s| s.as_str()),
             )
             .await;
 
