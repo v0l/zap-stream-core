@@ -1,5 +1,8 @@
 use anyhow::{Result, ensure};
+use axum::body::Body;
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use axum_extra::body::AsyncReadBody;
 use http_range_header::{EndPosition, StartPosition, SyntacticallyCorrectRange};
 use std::io::SeekFrom;
 use std::ops::Range;
@@ -7,6 +10,7 @@ use std::pin::{Pin, pin};
 use std::task::{Context, Poll};
 use tokio::fs::File;
 use tokio::io::{AsyncRead, AsyncSeek, ReadBuf};
+use tracing::warn;
 
 /// Range request handler over file handle
 pub struct RangeBody {
@@ -71,7 +75,27 @@ impl RangeBody {
 
 impl IntoResponse for RangeBody {
     fn into_response(self) -> Response {
-        todo!()
+        let mut rsp = Response::builder().status(StatusCode::OK);
+        if let Some(range) = &self.range {
+            let r_len = (range.1 - range.0) + 1;
+            rsp = rsp
+                .status(StatusCode::PARTIAL_CONTENT)
+                .header("content-length", r_len)
+                .header(
+                    "content-range",
+                    format!("bytes {}-{}/{}", range.0, range.1, self.file_size),
+                );
+        }
+        match rsp.body(Body::new(AsyncReadBody::new(self))) {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("Error creating range body: {:?}", e);
+                Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Body::empty())
+                    .unwrap()
+            }
+        }
     }
 }
 
