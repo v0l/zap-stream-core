@@ -43,7 +43,6 @@ pub struct IndexRouter {
 impl IndexRouter {
     pub fn new(stream_manager: StreamManager) -> Router {
         let me = IndexRouter { stream_manager };
-        
 
         Router::new()
             .route("/", get(Self::index_route))
@@ -62,9 +61,9 @@ impl IndexRouter {
                         .into_iter()
                         .map(|s| StreamData {
                             id: s.stream_id,
-                            title: "".to_string(),
+                            title: s.title.unwrap_or(String::default()),
                             summary: None,
-                            live_url: "".to_string(),
+                            live_url: s.urls.into_iter().next().unwrap_or_default(),
                             viewer_count: Some(s.viewers as _),
                         })
                         .collect(),
