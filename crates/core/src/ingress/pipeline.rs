@@ -1,3 +1,4 @@
+use crate::endpoint::EndpointConfigurator;
 use crate::ingress::ConnectionInfo;
 use crate::metrics::{EndpointStats, PacketMetrics};
 use crate::overseer::{Overseer, StatsType};
@@ -19,11 +20,21 @@ pub fn spawn_pipeline(
     info: ConnectionInfo,
     out_dir: PathBuf,
     seer: Arc<dyn Overseer>,
+    endpoint_config: Arc<dyn EndpointConfigurator>,
     reader: Box<dyn Read + Send>,
     url: Option<String>,
     rx: Option<UnboundedReceiver<PipelineCommand>>,
 ) -> Result<JoinHandle<()>> {
-    let pl = PipelineRunner::new(handle, out_dir, seer, info, reader, url, rx)?;
+    let pl = PipelineRunner::new(
+        handle,
+        out_dir,
+        seer,
+        endpoint_config,
+        info,
+        reader,
+        url,
+        rx,
+    )?;
     run_pipeline(pl)
 }
 

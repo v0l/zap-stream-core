@@ -1,3 +1,4 @@
+use crate::endpoint::EndpointConfigurator;
 use crate::ingress::{ConnectionInfo, spawn_pipeline};
 use crate::overseer::Overseer;
 use anyhow::Result;
@@ -12,6 +13,7 @@ pub async fn listen(
     out_dir: String,
     addr: String,
     overseer: Arc<dyn Overseer>,
+    endpoint_config: Arc<dyn EndpointConfigurator>,
     shutdown_rx: broadcast::Receiver<()>,
 ) -> Result<()> {
     let listener = TcpListener::bind(&addr).await?;
@@ -38,6 +40,7 @@ pub async fn listen(
                     info,
                     out_dir.clone(),
                     overseer.clone(),
+                    endpoint_config.clone(),
                     Box::new(socket),
                     None,
                     None,

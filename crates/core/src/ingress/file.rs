@@ -1,3 +1,4 @@
+use crate::endpoint::EndpointConfigurator;
 use crate::ingress::{ConnectionInfo, spawn_pipeline};
 use crate::overseer::Overseer;
 use anyhow::Result;
@@ -7,7 +8,12 @@ use tokio::runtime::Handle;
 use tracing::{error, info};
 use uuid::Uuid;
 
-pub async fn listen(out_dir: String, path: PathBuf, overseer: Arc<dyn Overseer>) -> Result<()> {
+pub async fn listen(
+    out_dir: String,
+    path: PathBuf,
+    overseer: Arc<dyn Overseer>,
+    endpoint_config: Arc<dyn EndpointConfigurator>,
+) -> Result<()> {
     info!("Sending file: {}", path.display());
 
     let info = ConnectionInfo {
@@ -28,6 +34,7 @@ pub async fn listen(out_dir: String, path: PathBuf, overseer: Arc<dyn Overseer>)
         info,
         out_dir.clone(),
         overseer.clone(),
+        endpoint_config.clone(),
         Box::new(file),
         Some(url),
         None,

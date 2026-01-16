@@ -13,12 +13,14 @@ pub use runner::*;
 pub(crate) mod worker;
 
 mod config;
+use crate::endpoint::EndpointConfigurator;
 pub use config::*;
 
 pub fn try_create_listener(
     u: &str,
     out_dir: &str,
-    overseer: &Arc<dyn Overseer>,
+    overseer: Arc<dyn Overseer>,
+    endpoint_config: Arc<dyn EndpointConfigurator>,
     shutdown: CancellationToken,
 ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
     let ep = ListenerEndpoint::from_str(u)?;
@@ -28,6 +30,7 @@ pub fn try_create_listener(
             out_dir.to_string(),
             endpoint,
             overseer.clone(),
+            endpoint_config.clone(),
             shutdown,
         ))),
         #[cfg(feature = "ingress-rtmp")]
@@ -35,6 +38,7 @@ pub fn try_create_listener(
             out_dir.to_string(),
             endpoint,
             overseer.clone(),
+            endpoint_config.clone(),
             shutdown,
         ))),
         #[cfg(feature = "ingress-tcp")]
@@ -42,17 +46,20 @@ pub fn try_create_listener(
             out_dir.to_string(),
             endpoint,
             overseer.clone(),
+            endpoint_config.clone(),
             shutdown,
         ))),
         ListenerEndpoint::File { path } => Ok(tokio::spawn(crate::ingress::file::listen(
             out_dir.to_string(),
             path,
             overseer.clone(),
+            endpoint_config.clone(),
         ))),
         #[cfg(feature = "ingress-test")]
         ListenerEndpoint::TestPattern => Ok(tokio::spawn(crate::ingress::test::listen(
             out_dir.to_string(),
             overseer.clone(),
+            endpoint_config.clone(),
             shutdown,
         ))),
         _ => {

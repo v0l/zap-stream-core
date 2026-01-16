@@ -1,3 +1,4 @@
+use crate::endpoint::EndpointConfigurator;
 use crate::ingress::{BufferedReader, ConnectionInfo, setup_term_handler};
 use crate::metrics::EndpointStats;
 use crate::overseer::{ConnectResult, Overseer};
@@ -333,6 +334,7 @@ pub async fn listen(
     out_dir: String,
     addr: String,
     overseer: Arc<dyn Overseer>,
+    endpoint_config: Arc<dyn EndpointConfigurator>,
     shutdown: CancellationToken,
 ) -> Result<()> {
     let listener = TcpListener::bind(&addr).await?;
@@ -345,6 +347,7 @@ pub async fn listen(
             }
             Ok((socket, addr)) = listener.accept() => {
                 let overseer = overseer.clone();
+                let ep = endpoint_config.clone();
                 let out_dir = PathBuf::from(out_dir.clone());
 
                 let new_id = Uuid::new_v4();
@@ -355,7 +358,7 @@ pub async fn listen(
                 std::thread::Builder::new()
                     .name(format!("client:rtmp:{}", new_id))
                     .spawn(move || {
-                    if let Err(e) = socket_handler(new_id, handle, socket, addr, out_dir, overseer, tx, rx) {
+                    if let Err(e) = socket_handler(new_id, handle, socket, addr, out_dir, overseer, ep, tx, rx) {
                         error!("Error handling RTMP socket: {}", e);
                     }
                 })?;
@@ -374,6 +377,7 @@ fn socket_handler(
     addr: SocketAddr,
     out_dir: PathBuf,
     overseer: Arc<dyn Overseer>,
+    endpoint_config: Arc<dyn EndpointConfigurator>,
     tx: UnboundedSender<PipelineCommand>,
     rx: UnboundedReceiver<PipelineCommand>,
 ) -> Result<()> {
@@ -448,6 +452,7 @@ fn socket_handler(
         handle,
         out_dir,
         overseer,
+        endpoint_config,
         info,
         Box::new(cc),
         None,

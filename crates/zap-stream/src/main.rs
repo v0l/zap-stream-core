@@ -282,9 +282,14 @@ async fn main() -> Result<()> {
     }));
 
     // create ingest endpoints
-    let overseer = overseer as Arc<dyn Overseer>;
     for e in &settings.endpoints {
-        match try_create_listener(e, &settings.output_dir, &overseer, shutdown.clone()) {
+        match try_create_listener(
+            e,
+            &settings.output_dir,
+            overseer.clone(),
+            overseer.clone(),
+            shutdown.clone(),
+        ) {
             Ok(l) => tasks.push(l),
             Err(e) => error!("{}", e),
         }

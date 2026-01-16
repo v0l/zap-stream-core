@@ -14,6 +14,7 @@ use crate::egress::muxer_egress::MuxerEgress;
 use crate::egress::{
     Egress, EgressType, EncoderOrSourceStream, EncoderVariant, EncoderVariantGroup,
 };
+use crate::endpoint::EndpointConfigurator;
 use crate::ingress::{ConnectionInfo, IngressInfo, IngressStream};
 use crate::overseer::{Overseer, StatsType};
 use crate::pipeline::PipelineConfig;
@@ -80,6 +81,8 @@ pub struct PipelineRunner {
     egress: Arc<Mutex<Vec<Box<dyn Egress>>>>,
     /// Overseer managing this pipeline
     overseer: Arc<dyn Overseer>,
+    /// Endpoint configuration impl
+    endpoint_config: Arc<dyn EndpointConfigurator>,
 
     last_stats: Instant,
     fps_last_frame_ctr: u64,
@@ -119,6 +122,7 @@ impl PipelineRunner {
         handle: Handle,
         out_dir: PathBuf,
         overseer: Arc<dyn Overseer>,
+        endpoint_config: Arc<dyn EndpointConfigurator>,
         connection: ConnectionInfo,
         recv: Box<dyn Read + Send>,
         url: Option<String>,
@@ -129,6 +133,7 @@ impl PipelineRunner {
             handle,
             out_dir,
             overseer,
+            endpoint_config,
             connection,
             config: Default::default(),
             demuxer: Demuxer::new_custom_io(recv, url)?,
@@ -733,7 +738,7 @@ impl PipelineRunner {
                     let block_on_start = Instant::now();
                     let origin = self
                         .handle
-                        .block_on(async { self.overseer.get_moq_origin().await })?;
+                        .block_on(async { self.endpoint_config.get_moq_origin().await })?;
                     crate::metrics::record_block_on_moq_origin(block_on_start.elapsed());
                     let id = self.connection.id.to_string();
                     let moq = MoqEgress::new(self.handle.clone(), origin, &id, &variant_mapping)?;

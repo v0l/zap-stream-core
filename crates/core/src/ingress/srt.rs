@@ -1,5 +1,6 @@
+use crate::endpoint::EndpointConfigurator;
 use crate::ingress::{BufferedReader, ConnectionInfo, setup_term_handler, spawn_pipeline};
-use crate::overseer::{ConnectResult, Overseer, StatsType};
+use crate::overseer::{ConnectResult, Overseer};
 use crate::pipeline::PipelineCommand;
 use anyhow::Result;
 use futures_util::StreamExt;
@@ -22,6 +23,7 @@ pub async fn listen(
     out_dir: String,
     addr: String,
     overseer: Arc<dyn Overseer>,
+    endpoint_config: Arc<dyn EndpointConfigurator>,
     shutdown: CancellationToken,
 ) -> Result<()> {
     let binder: SocketAddr = addr.parse()?;
@@ -85,6 +87,7 @@ pub async fn listen(
                     info,
                     out_dir,
                     overseer.clone(),
+                    endpoint_config.clone(),
                     Box::new(SrtReader {
                         handle: Handle::current(),
                         socket,

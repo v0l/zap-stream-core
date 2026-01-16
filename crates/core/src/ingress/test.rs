@@ -1,3 +1,4 @@
+use crate::endpoint::EndpointConfigurator;
 use crate::generator::FrameGenerator;
 use crate::ingress::{BufferedReader, ConnectionInfo, setup_term_handler, spawn_pipeline};
 use crate::metrics::EndpointStats;
@@ -25,6 +26,7 @@ use uuid::Uuid;
 pub async fn listen(
     out_dir: String,
     overseer: Arc<dyn Overseer>,
+    endpoint_config: Arc<dyn EndpointConfigurator>,
     shutdown: CancellationToken,
 ) -> Result<()> {
     info!("Test pattern enabled");
@@ -42,17 +44,14 @@ pub async fn listen(
     if !out_dir.exists() {
         std::fs::create_dir_all(&out_dir)?;
     }
-    let mtx = BufferedReader::stats_to_overseer(
-        info.id,
-        &Handle::current(),
-        overseer.clone(),
-    );
+    let mtx = BufferedReader::stats_to_overseer(info.id, &Handle::current(), overseer.clone());
     let src = TestPatternSrc::new(mtx)?;
     let h = spawn_pipeline(
         Handle::current(),
         info,
         out_dir,
         overseer,
+        endpoint_config,
         Box::new(src),
         None,
         Some(rx),
