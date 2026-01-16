@@ -28,7 +28,7 @@ use zap_stream_core::ingress::{ConnectionInfo, IngressInfo};
 #[cfg(feature = "hls")]
 use zap_stream_core::mux::SegmentType;
 use zap_stream_core::overseer::{ConnectResult, Overseer, StatsType};
-use zap_stream_core::pipeline::PipelineConfig;
+use zap_stream_core::pipeline::{PipelineConfig, PipelinePlugin};
 use zap_stream_core_nostr::n94::{N94Publisher, N94Segment, N94StreamInfo};
 use zap_stream_db::{
     IngestEndpoint, Payment, StreamKeyType, User, UserStream, UserStreamState, ZapStreamDb,
@@ -875,6 +875,10 @@ impl Overseer for ZapStreamOverseer {
         }
 
         Ok(())
+    }
+
+    fn get_plugins(&self, conn: &ConnectionInfo) -> Result<Vec<Arc<dyn PipelinePlugin>>> {
+        todo!()
     }
 }
 

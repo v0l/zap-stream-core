@@ -2898,6 +2898,7 @@ dependencies = [
  "clap",
  "ctrlc",
  "nostr-sdk",
+ "rustls",
  "tokio",
  "tokio-util 0.7.17",
  "tracing",

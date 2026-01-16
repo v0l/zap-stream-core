@@ -1,19 +1,23 @@
 use anyhow::{Result, bail};
+use async_trait::async_trait;
 use chrono::Utc;
 use clap::Parser;
 use nostr_sdk::{Client, EventBuilder, Filter, Keys, Kind, NostrSigner, Tag, TagKind, Url};
+use rustls::crypto::CryptoProvider;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
-use zap_stream_core::egress::EgressSegment;
-use zap_stream_core::endpoint::{VariantType, EndpointConfigEngine, parse_capabilities};
-use zap_stream_core::ingress::ConnectionInfo;
-use zap_stream_core::listen::try_create_listener;
-use zap_stream_core::overseer::{ConnectResult, IngressInfo, Overseer, StatsType};
-use zap_stream_core::pipeline::{PipelineConfig};
+use zap_stream_core::egress::{EgressSegment, EgressType};
+use zap_stream_core::endpoint::{
+    EndpointConfigEngine, EndpointConfigurator, VariantType, parse_capabilities,
+};
+use zap_stream_core::ingress::{ConnectionInfo, IngressInfo};
+use zap_stream_core::listen::ListenerEndpoint;
+use zap_stream_core::overseer::{ConnectResult, Overseer, StatsType};
+use zap_stream_core::pipeline::{PipelineConfig, PipelinePlugin, try_create_listener};
 use zap_stream_core_nostr::n94::{N94Publisher, N94Segment, N94StreamInfo};
 
 #[derive(Parser, Debug)]
@@ -82,14 +86,24 @@ struct Args {
     pub hashtag: Vec<String>,
 }
 
+pub fn setup_crypto_provider() {
+    // install a default provider
+    if CryptoProvider::get_default().is_none() {
+        #[cfg(all(feature = "tls-aws-lc-rs", not(feature = "tls-ring")))]
+        rustls::crypto::aws_lc_rs::default_provider()
+            .install_default()
+            .expect("Failed to install aws-lc-rs as the default crypto provider");
+        #[cfg(all(feature = "tls-ring", not(feature = "tls-aws-lc-rs")))]
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .expect("Failed to install ring as the default crypto provider");
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    if std::env::var("RUST_LOG").is_err() {
-        unsafe {
-            std::env::set_var("RUST_LOG", "info");
-        }
-    }
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt().init();
+    setup_crypto_provider();
 
     info!("Starting N94 Broadcaster!");
     let mut args = Args::parse();
@@ -160,7 +174,7 @@ async fn main() -> Result<()> {
     };
 
     // setup overseer
-    let overseer: Arc<dyn Overseer> = Arc::new(N94Overseer::new(
+    let overseer = Arc::new(N94Overseer::new(
         client,
         args.blossom,
         args.max_blossom_servers,
@@ -183,7 +197,13 @@ async fn main() -> Result<()> {
     // Create ingress listeners
     let mut tasks = vec![];
     for e in args.listen {
-        match try_create_listener(&e, &data_dir, &overseer, shutdown.clone()) {
+        match try_create_listener(
+            &e,
+            &data_dir,
+            overseer.clone(),
+            overseer.clone(),
+            shutdown.clone(),
+        ) {
             Ok(l) => tasks.push(l),
             Err(e) => error!("{}", e),
         }
@@ -381,6 +401,30 @@ impl Overseer for N94Overseer {
         // nothing to do
         info!("Received stats: {:?}", stats);
         Ok(())
+    }
+
+    fn get_plugins(&self, conn: &ConnectionInfo) -> Result<Vec<Arc<dyn PipelinePlugin>>> {
+        todo!()
+    }
+}
+
+#[async_trait]
+impl EndpointConfigurator for N94Overseer {
+    async fn get_capabilities(&self, conn: &ConnectionInfo) -> Result<Vec<VariantType>> {
+        todo!()
+    }
+
+    async fn get_ingress(&self) -> Result<Vec<ListenerEndpoint>> {
+        todo!()
+    }
+
+    async fn get_egress(&self, conn: &ConnectionInfo) -> Result<Vec<EgressType>> {
+        todo!()
+    }
+
+    #[cfg(false)]
+    async fn get_moq_origin(&self) -> Result<OriginProducer> {
+        todo!()
     }
 }
 

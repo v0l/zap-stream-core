@@ -5,8 +5,13 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+default = ["tls-ring"]
+tls-ring = ["rustls/ring"]
+tls-aws-lc-rs = ["rustls/aws-lc-rs"]
+
 [dependencies]
-zap-stream-core = { path = "../core", default-features = false }
+zap-stream-core = { path = "../core", default-features = false, features = ["pipeline", "ingress-rtmp", "ingress-tcp"] }
 zap-stream-core-nostr = { path = "../core-nostr", default-features = false }
 
 uuid.workspace = true
@@ -21,3 +26,4 @@ chrono.workspace = true
 ctrlc.workspace = true
 
 clap = { version = "4.5.16", features = ["derive"] }
+rustls = { version = "0.23", default-features = false }
