@@ -45,7 +45,7 @@ pub struct Settings {
 
     #[serde(default)]
     /// Twitch API configuration
-    pub twitch: TwitchConfig,
+    pub twitch: Option<TwitchConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

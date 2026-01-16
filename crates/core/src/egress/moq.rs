@@ -10,7 +10,7 @@ use hang::{Catalog, Frame, Timestamp, TrackProducer, catalog};
 use std::collections::HashMap;
 use std::slice;
 use tokio::runtime::Handle;
-use tracing::log::warn;
+use tracing::warn;
 use uuid::Uuid;
 
 pub struct MoqEgress {

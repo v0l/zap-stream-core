@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
-default = ["rtmp", "hls", "test-pattern", "tls-ring"]
+default = ["rtmp", "hls", "test-pattern", "moq", "tls-ring"]
 pipeline = ["zap-stream-core/pipeline"]
 srt = ["pipeline", "zap-stream-core/ingress-srt"]
 rtmp = ["pipeline", "zap-stream-core/ingress-rtmp"]

@@ -1,6 +1,6 @@
 use crate::overseer::ZapStreamOverseer;
 use crate::settings::Settings;
-use anyhow::Result;
+use anyhow::{Result, bail};
 use async_trait::async_trait;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -22,7 +22,7 @@ pub struct Api {
     db: ZapStreamDb,
     settings: Settings,
     overseer: Arc<dyn Overseer>,
-    game_db: GameDb,
+    game_db: Option<GameDb>,
     api_base: ApiBase,
 }
 
@@ -31,7 +31,7 @@ impl Api {
         //router.insert("/metrics", Route::Metrics).unwrap();
         Self {
             db: overseer.database(),
-            game_db: GameDb::new(settings.twitch.clone()),
+            game_db: settings.twitch.as_ref().map(|t| GameDb::new(t.clone())),
             settings,
             api_base: ApiBase::new(
                 overseer.database(),
@@ -293,10 +293,18 @@ impl ZapStreamApi for Api {
     }
 
     async fn search_games(&self, q: String) -> Result<Vec<GameInfo>> {
-        self.game_db.search_games(&q, 10).await
+        if let Some(db) = &self.game_db {
+            db.search_games(&q, 10).await
+        } else {
+            bail!("Twitch api keys not configured")
+        }
     }
 
     async fn get_game(&self, id: String) -> Result<GameInfo> {
-        self.game_db.get_game(&id).await
+        if let Some(db) = &self.game_db {
+            db.get_game(&id).await
+        } else {
+            bail!("Twitch api keys not configured")
+        }
     }
 }
