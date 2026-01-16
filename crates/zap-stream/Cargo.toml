@@ -51,10 +51,6 @@ ctrlc.workspace = true
 axum.workspace = true
 axum-extra = { version = "0.12", features = ["async-read-body"] }
 
-# websocket stuff
-tungstenite = "0.28"
-hyper-tungstenite = "0.19"
-
 #moq
 moq-native = { git = "https://github.com/kixelated/moq.git", rev = "b2abf685647f125486cbb40b44e1134f947c6583", optional = true, default-features = false }
 

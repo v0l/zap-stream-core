@@ -2144,21 +2144,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hyper-tungstenite"
-version = "0.19.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc778da281a749ed28d2be73a9f2cd13030680a1574bc729debd1195e44f00e9"
-dependencies = [
- "http-body-util",
- "hyper 1.8.1",
- "hyper-util",
- "pin-project-lite",
- "tokio",
- "tokio-tungstenite 0.28.0",
- "tungstenite 0.28.0",
-]
-
-[[package]]
 name = "hyper-util"
 version = "0.1.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7007,7 +6992,6 @@ dependencies = [
  "futures-util",
  "hex",
  "http-range-header",
- "hyper-tungstenite",
  "libc",
  "lnurl-rs",
  "m3u8-rs",
@@ -7026,7 +7010,6 @@ dependencies = [
  "tokio-util 0.7.17",
  "tracing",
  "tracing-subscriber",
- "tungstenite 0.28.0",
  "url",
  "uuid",
  "zap-stream-api-common",

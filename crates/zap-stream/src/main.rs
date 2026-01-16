@@ -1,6 +1,7 @@
 use crate::api::Api;
 use crate::overseer::ZapStreamOverseer;
 use crate::settings::Settings;
+use crate::websocket_metrics::WebSocketMetricsServer;
 use anyhow::Result;
 use axum::Router;
 use clap::Parser;
@@ -33,6 +34,7 @@ mod api;
 #[cfg(feature = "pipeline")]
 mod overseer;
 mod settings;
+mod websocket_metrics;
 
 #[derive(Parser, Debug)]
 #[clap(version, about)]
@@ -184,6 +186,10 @@ async fn main() -> Result<()> {
         .merge(IndexRouter::new(overseer.stream_manager()))
         .nest("/api", AxumApi::new(api.clone()))
         .nest("/api", AxumAdminApi::new(admin_api_impl))
+        .nest(
+            "/api",
+            WebSocketMetricsServer::new(overseer.database(), overseer.stream_manager()),
+        )
         .merge(ZapRouter::new(
             settings.public_url.clone(),
             overseer.nostr_client(),

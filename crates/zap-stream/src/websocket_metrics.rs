@@ -1,19 +1,17 @@
-use crate::settings::Settings;
-use crate::stream_manager::{ActiveStreamInfo, NodeInfo, StreamManager, StreamManagerMetric};
 use anyhow::Result;
-use bytes::Bytes;
+use axum::Router;
+use axum::extract::ws::{Message, Utf8Bytes, WebSocket};
+use axum::extract::{State, WebSocketUpgrade};
+use axum::routing::any;
+use futures_util::stream::SplitSink;
 use futures_util::{SinkExt, StreamExt};
-use http_body_util::{BodyExt, Empty, combinators::BoxBody};
-use hyper::body::Incoming;
-use hyper::{Request, Response, StatusCode};
-use hyper_tungstenite::{HyperWebsocket, tungstenite::Message};
-use nostr_sdk::{PublicKey, serde_json};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
-use tungstenite::Utf8Bytes;
 use uuid::Uuid;
+use zap_stream::stream_manager::{ActiveStreamInfo, NodeInfo, StreamManager, StreamManagerMetric};
+use zap_stream_api_common::Nip98Auth;
 use zap_stream_db::ZapStreamDb;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,79 +37,48 @@ pub enum MetricMessage {
     Error { message: String },
 }
 
+#[derive(Clone)]
 pub struct WebSocketMetricsServer {
     db: ZapStreamDb,
     stream_manager: StreamManager,
-    settings: Settings,
 }
 
 #[derive(Clone)]
 struct ClientSession {
     id: Uuid,
-    pubkey: Option<PublicKey>,
     is_admin: bool,
     user_id: Option<u64>,
     subscriptions: HashSet<String>,
 }
 
 impl WebSocketMetricsServer {
-    pub fn new(db: ZapStreamDb, stream_manager: StreamManager, settings: Settings) -> Self {
-        Self {
-            db,
-            stream_manager,
-            settings,
-        }
+    pub fn new(db: ZapStreamDb, stream_manager: StreamManager) -> Router {
+        Router::new()
+            .route(
+                "/v1/ws",
+                any(async |ws: WebSocketUpgrade, State(this): State<Self>| {
+                    ws.on_upgrade(async |w| {
+                        if let Err(e) = Self::handle_websocket_connection(w, this).await {
+                            warn!("Websocket handler failed {}", e);
+                        }
+                    })
+                }),
+            )
+            .with_state(Self { db, stream_manager })
     }
 
-    pub fn handle_websocket_upgrade(
-        &self,
-        request: Request<Incoming>,
-    ) -> Result<Response<BoxBody<Bytes, anyhow::Error>>> {
-        if !hyper_tungstenite::is_upgrade_request(&request) {
-            return Ok(Response::builder().status(StatusCode::BAD_REQUEST).body(
-                Empty::<Bytes>::new()
-                    .map_err(|e| anyhow::anyhow!("{}", e))
-                    .boxed(),
-            )?);
-        }
-
-        let (response, websocket) = hyper_tungstenite::upgrade(request, None)?;
-
-        let db = self.db.clone();
-        let settings = self.settings.clone();
-        let stream_manager = self.stream_manager.clone();
-
-        tokio::spawn(async move {
-            if let Err(e) =
-                Self::handle_websocket_connection(websocket, db, stream_manager, settings).await
-            {
-                error!("WebSocket connection error: {}", e);
-            }
-        });
-
-        Ok(response.map(|body| body.map_err(|e| anyhow::anyhow!("{}", e)).boxed()))
-    }
-
-    async fn handle_websocket_connection(
-        websocket: HyperWebsocket,
-        db: ZapStreamDb,
-        stream_manager: StreamManager,
-        settings: Settings,
-    ) -> Result<()> {
-        let ws_stream = websocket.await?;
-        let (mut ws_sender, mut ws_receiver) = ws_stream.split();
+    async fn handle_websocket_connection(websocket: WebSocket, this: Self) -> Result<()> {
+        let (mut ws_sender, mut ws_receiver) = websocket.split();
 
         let mut session = ClientSession {
             id: Uuid::new_v4(),
-            pubkey: None,
             is_admin: false,
             user_id: None,
             subscriptions: HashSet::new(),
         };
 
         info!("WebSocket connection established: {}", session.id);
-
-        let mut metrics = stream_manager.listen_metrics();
+        let mut metrics = this.stream_manager.listen_metrics();
         loop {
             tokio::select! {
                 // Handle incoming WebSocket messages
@@ -121,8 +88,7 @@ impl WebSocketMetricsServer {
                             if let Err(e) = Self::handle_client_message(
                                 &text,
                                 &mut session,
-                                &db,
-                                &settings,
+                                &this.db,
                                 &mut ws_sender
                             ).await {
                                 error!("Error handling client message: {}", e);
@@ -178,80 +144,67 @@ impl WebSocketMetricsServer {
         text: &str,
         session: &mut ClientSession,
         db: &ZapStreamDb,
-        settings: &Settings,
-        ws_sender: &mut futures_util::stream::SplitSink<
-            hyper_tungstenite::WebSocketStream<hyper_util::rt::TokioIo<hyper::upgrade::Upgraded>>,
-            Message,
-        >,
+        ws_sender: &mut SplitSink<WebSocket, Message>,
     ) -> Result<()> {
         let message: MetricMessage = serde_json::from_str(text)?;
 
+        async fn send_reply<T: Serialize>(
+            ws_sender: &mut SplitSink<WebSocket, Message>,
+            msg: T,
+        ) -> Result<()> {
+            let json = serde_json::to_string(&msg)?;
+            ws_sender
+                .send(Message::Text(Utf8Bytes::from(&json)))
+                .await?;
+            Ok(())
+        }
+        async fn send_error(
+            ws_sender: &mut SplitSink<WebSocket, Message>,
+            msg: &str,
+        ) -> Result<()> {
+            let response = MetricMessage::Error {
+                message: msg.to_string(),
+            };
+            send_reply(ws_sender, response).await
+        }
         match message {
             MetricMessage::Auth { token } => {
-                // For WebSocket, construct the expected URL
-                let expected_url = format!(
-                    "{}/api/v1/ws",
-                    settings
-                        .public_url
-                        .trim_end_matches('/')
-                        .replace("http", "ws")
-                );
-
-                let auth_request = AuthRequest {
-                    token_source: TokenSource::WebSocketToken(token),
-                    expected_url: expected_url.parse()?,
-                    expected_method: "GET".to_string(),
-                    skip_url_check: false,
-                    admin_pubkey: settings.admin_pubkey.clone(),
-                };
-
-                match authenticate_nip98(auth_request, db).await {
-                    Ok(auth_result) => {
-                        session.pubkey = Some(auth_result.pubkey);
-                        session.is_admin = auth_result.is_admin;
-                        session.user_id = Some(auth_result.user_id);
-
-                        let response = MetricMessage::AuthResponse {
-                            success: true,
-                            is_admin: auth_result.is_admin,
-                            pubkey: auth_result.pubkey.to_string(),
-                        };
-                        let json = serde_json::to_string(&response)?;
-                        ws_sender
-                            .send(Message::Text(Utf8Bytes::from(&json)))
-                            .await?;
-                        info!(
-                            "Client {} authenticated successfully as {}",
-                            session.id,
-                            if auth_result.is_admin {
-                                "admin"
-                            } else {
-                                "user"
-                            }
-                        );
-                    }
-                    Err(e) => {
-                        let response = MetricMessage::Error {
-                            message: format!("Authentication failed: {}", e),
-                        };
-                        let json = serde_json::to_string(&response)?;
-                        ws_sender
-                            .send(Message::Text(Utf8Bytes::from(&json)))
-                            .await?;
-                        warn!("Authentication failed for client {}: {}", session.id, e);
-                    }
+                let auth = Nip98Auth::try_from_token(&token)?;
+                if auth.method_tag != "GET" {
+                    return send_error(ws_sender, "Invalid request method").await;
                 }
-            }
+                if !(auth.url_tag.starts_with("ws://") || auth.url_tag.starts_with("wss://"))
+                    && !auth.url_tag.contains("/ws")
+                {
+                    return send_error(ws_sender, "Invalid auth URL tag").await;
+                }
 
+                let uid = db.upsert_user(&auth.pubkey).await?;
+                let is_admin = db.is_admin(uid).await?;
+                session.is_admin = is_admin;
+                session.user_id = Some(uid);
+
+                let response = MetricMessage::AuthResponse {
+                    success: true,
+                    is_admin,
+                    pubkey: hex::encode(&auth.pubkey),
+                };
+                send_reply(ws_sender, response).await?;
+                info!(
+                    "Client {} authenticated successfully as {}",
+                    session.id,
+                    if is_admin { "admin" } else { "user" }
+                );
+            }
             MetricMessage::SubscribeStream { stream_id } => {
-                if let Some(_pubkey) = &session.pubkey {
+                if let Some(uid) = &session.user_id {
                     // Check if user can access this stream
                     let can_access = if session.is_admin {
                         // Admins can access any stream
                         true
                     } else {
                         // Regular users can only access their own streams
-                        Self::verify_stream_ownership(&stream_id, session.user_id.unwrap(), db)
+                        Self::verify_stream_ownership(&stream_id, *uid, db)
                             .await
                             .unwrap_or_else(|e| {
                                 warn!("Error checking stream ownership: {}", e);
@@ -263,49 +216,26 @@ impl WebSocketMetricsServer {
                         session.subscriptions.insert(stream_id.clone());
                         debug!("Client {} subscribed to stream {}", session.id, stream_id);
                     } else {
-                        let response = MetricMessage::Error {
-                            message: "Access denied: You can only access your own streams"
-                                .to_string(),
-                        };
-                        let json = serde_json::to_string(&response)?;
-                        ws_sender
-                            .send(Message::Text(Utf8Bytes::from(&json)))
-                            .await?;
+                        send_error(
+                            ws_sender,
+                            "Access denied: You can only access your own streams",
+                        )
+                        .await?;
                     }
                 } else {
-                    let response = MetricMessage::Error {
-                        message: "Authentication required".to_string(),
-                    };
-                    let json = serde_json::to_string(&response)?;
-                    ws_sender
-                        .send(Message::Text(Utf8Bytes::from(&json)))
-                        .await?;
+                    send_error(ws_sender, "Authentication required").await?;
                 }
             }
-
             MetricMessage::SubscribeOverall => {
                 if session.is_admin {
                     session.subscriptions.insert("all".to_string());
                     debug!("Client {} subscribed to overall metrics", session.id);
                 } else {
-                    let response = MetricMessage::Error {
-                        message: "Admin access required for overall metrics".to_string(),
-                    };
-                    let json = serde_json::to_string(&response)?;
-                    ws_sender
-                        .send(Message::Text(Utf8Bytes::from(&json)))
-                        .await?;
+                    send_error(ws_sender, "Admin access required for overall metrics").await?;
                 }
             }
-
             _ => {
-                let response = MetricMessage::Error {
-                    message: "Invalid message type".to_string(),
-                };
-                let json = serde_json::to_string(&response)?;
-                ws_sender
-                    .send(Message::Text(Utf8Bytes::from(&json)))
-                    .await?;
+                send_error(ws_sender, "Invalid message type").await?;
             }
         }
 
