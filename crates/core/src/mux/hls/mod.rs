@@ -8,8 +8,7 @@ use std::fmt::Display;
 use std::fs::File;
 use std::path::PathBuf;
 use std::time::Instant;
-use tracing::log::warn;
-use tracing::trace;
+use tracing::{trace, warn};
 use uuid::Uuid;
 
 mod segment;
@@ -92,19 +91,18 @@ impl HlsMuxer {
                 .for_each(|s| s.segment_length_target = max_seg_duration);
         }
 
-        let mut ret = Self {
+        Ok(Self {
             out_dir,
             variants: vars,
             last_master_write: Instant::now(),
-        };
-        ret.write_master_playlist()?;
-        Ok(ret)
+        })
     }
 
     pub fn open(&mut self) -> Result<()> {
         for var in &mut self.variants {
             var.open()?;
         }
+        self.write_master_playlist()?;
         Ok(())
     }
 
