@@ -26,6 +26,8 @@ pub struct HlsRouter {
 }
 
 impl HlsRouter {
+    const PLAYLIST_CONTENT_TYPE: &'static str = "application/vnd.apple.mpegurl";
+
     pub fn new<P>(base_path: P, stream_manager: StreamManager) -> Router
     where
         P: Into<PathBuf>,
@@ -73,7 +75,7 @@ impl HlsRouter {
         let modified_content = Self::add_viewer_token_to_playlist(&playlist_content, &token)
             .map_err(|e| format!("Failed to add playlist token to playlist: {}", e))?;
 
-        let headers = [(CONTENT_TYPE, "application/vnd.apple.mpegurl")];
+        let headers = [(CONTENT_TYPE, Self::PLAYLIST_CONTENT_TYPE)];
         Ok((
             headers,
             match modified_content {
@@ -100,7 +102,10 @@ impl HlsRouter {
             .await
             .map_err(|_| (StatusCode::NOT_FOUND, "File not found"))?;
         this.stream_manager.track_viewer(&stream_id, &q.vt).await;
-        Ok(stream.into_response())
+        let mut rsp = stream.into_response();
+        rsp.headers_mut()
+            .insert("content-type", Self::PLAYLIST_CONTENT_TYPE.parse().unwrap());
+        Ok(rsp)
     }
 
     async fn get_segment(
