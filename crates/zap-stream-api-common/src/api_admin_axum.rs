@@ -24,7 +24,7 @@ where
     pub fn new(handler: T) -> Router {
         Router::new()
             .route(
-                "/v1/admin/users",
+                "/api/v1/admin/users",
                 get(
                     async |auth: Nip98Auth,
                            State(this): State<AxumAdminApi<T>>,
@@ -41,7 +41,7 @@ where
                 ),
             )
             .route(
-                "/v1/admin/users/{id}",
+                "/api/v1/admin/users/{id}",
                 patch(
                     async |auth: Nip98Auth,
                            State(this): State<AxumAdminApi<T>>,
@@ -55,7 +55,7 @@ where
                 ),
             )
             .route(
-                "/v1/admin/users/{id}/history",
+                "/api/v1/admin/users/{id}/history",
                 get(
                     async |auth: Nip98Auth,
                            State(this): State<AxumAdminApi<T>>,
@@ -73,7 +73,7 @@ where
                 ),
             )
             .route(
-                "/v1/admin/users/{id}/streams",
+                "/api/v1/admin/users/{id}/streams",
                 get(
                     async |auth: Nip98Auth,
                            State(this): State<AxumAdminApi<T>>,
@@ -91,7 +91,7 @@ where
                 ),
             )
             .route(
-                "/v1/admin/users/{id}/stream-key",
+                "/api/v1/admin/users/{id}/stream-key",
                 get(
                     async |auth: Nip98Auth,
                            State(this): State<AxumAdminApi<T>>,
@@ -104,7 +104,7 @@ where
                 ),
             )
             .route(
-                "/v1/admin/users/{id}/stream-key/regenerate",
+                "/api/v1/admin/users/{id}/stream-key/regenerate",
                 post(
                     async |auth: Nip98Auth,
                            State(this): State<AxumAdminApi<T>>,
@@ -117,7 +117,7 @@ where
                 ),
             )
             .route(
-                "/v1/admin/audit-log",
+                "/api/v1/admin/audit-log",
                 get(
                     async |auth: Nip98Auth,
                            State(this): State<AxumAdminApi<T>>,
@@ -134,7 +134,7 @@ where
                 ),
             )
             .route(
-                "/v1/admin/ingest-endpoints",
+                "/api/v1/admin/ingest-endpoints",
                 get(
                     async |auth: Nip98Auth,
                            State(this): State<AxumAdminApi<T>>,
@@ -161,7 +161,7 @@ where
                 ),
             )
             .route(
-                "/v1/admin/ingest-endpoints/{id}",
+                "/api/v1/admin/ingest-endpoints/{id}",
                 get(
                     async |auth: Nip98Auth,
                            State(this): State<AxumAdminApi<T>>,
@@ -195,7 +195,7 @@ where
                 ),
             )
             .route(
-                "/v1/admin/pipeline-log/{stream_id}",
+                "/api/v1/admin/pipeline-log/{stream_id}",
                 get(
                     async |auth: Nip98Auth,
                            State(this): State<AxumAdminApi<T>>,

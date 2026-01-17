@@ -12,7 +12,7 @@ impl MultiTrackRouter {
     pub fn new(engine: MultiTrackEngine) -> Router {
         Router::new()
             .route(
-                "/v1/multi-track-config",
+                "/api/v1/multi-track-config",
                 post(
                     async |State(this): State<MultiTrackRouter>,
                            Json(req): Json<MultiTrackConfigRequest>| {

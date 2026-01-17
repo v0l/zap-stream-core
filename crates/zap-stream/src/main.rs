@@ -20,6 +20,7 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
+use tower_http::cors::CorsLayer;
 use tracing::{error, info, warn};
 use zap_stream::admin_api::ZapStreamAdminApiImpl;
 use zap_stream::http::{IndexRouter, MultiTrackRouter, ZapRouter};
@@ -184,20 +185,19 @@ async fn main() -> Result<()> {
     );
     let mut server = Router::new()
         .merge(IndexRouter::new(overseer.stream_manager()))
-        .nest("/api", AxumApi::new(api.clone()))
-        .nest("/api", AxumAdminApi::new(admin_api_impl))
-        .nest(
-            "/api",
-            WebSocketMetricsServer::new(overseer.database(), overseer.stream_manager()),
-        )
+        .merge(AxumApi::new(api.clone()))
+        .merge(AxumAdminApi::new(admin_api_impl))
+        .merge(WebSocketMetricsServer::new(
+            overseer.database(),
+            overseer.stream_manager(),
+        ))
         .merge(ZapRouter::new(
             settings.public_url.clone(),
             overseer.nostr_client(),
             overseer.database(),
             api.clone(),
         ))
-        .nest(
-            "/api",
+        .merge(
             MultiTrackRouter::new(MultiTrackEngine::new(
                 MultiTrackEngineConfig {
                     public_url: settings.public_url.clone(),
@@ -205,7 +205,8 @@ async fn main() -> Result<()> {
                 },
                 overseer.clone(),
             )),
-        );
+        )
+        .layer(CorsLayer::very_permissive());
 
     #[cfg(feature = "hls")]
     {

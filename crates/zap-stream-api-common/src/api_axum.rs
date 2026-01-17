@@ -1,4 +1,4 @@
-use crate::{ApiError, PageQueryV1};
+use crate::{ApiError, CreateStreamKeyRequest, PageQueryV1, PatchAccount};
 use crate::{ForwardRequest, Nip98Auth, PatchEvent, UpdateForwardRequest, ZapStreamApi};
 use axum::extract::{Path, Query, State};
 use axum::routing::{delete, get, patch, post};
@@ -23,16 +23,26 @@ where
     pub fn new(handler: T) -> Router {
         Router::new()
             .route(
-                "/v1/account",
+                "/api/v1/account",
                 get(async |auth: Nip98Auth, State(this): State<AxumApi<T>>| {
                     match this.handler.get_account(auth).await {
                         Ok(r) => Ok(Json(r)),
                         Err(e) => Err(Json(ApiError::from(e))),
                     }
-                }),
+                })
+                .patch(
+                    async |auth: Nip98Auth,
+                           State(this): State<AxumApi<T>>,
+                           Json(req): Json<PatchAccount>| {
+                        match this.handler.update_account(auth, req).await {
+                            Ok(r) => Ok(Json(r)),
+                            Err(e) => Err(Json(ApiError::from(e))),
+                        }
+                    },
+                ),
             )
             .route(
-                "/v1/event",
+                "/api/v1/event",
                 patch(
                     async |auth: Nip98Auth,
                            State(this): State<AxumApi<T>>,
@@ -45,7 +55,7 @@ where
                 ),
             )
             .route(
-                "/v1/forward",
+                "/api/v1/account/forward",
                 post(
                     async |auth: Nip98Auth,
                            State(this): State<AxumApi<T>>,
@@ -58,7 +68,7 @@ where
                 ),
             )
             .route(
-                "/v1/forward/{id}",
+                "/api/v1/account/forward/{id}",
                 delete(
                     async |auth: Nip98Auth, State(this): State<AxumApi<T>>, Path(id): Path<u64>| {
                         match this.handler.delete_forward(auth, id).await {
@@ -70,7 +80,7 @@ where
                 .patch(
                     async |auth: Nip98Auth,
                            State(this): State<AxumApi<T>>,
-                    Path(id): Path<u64>,
+                           Path(id): Path<u64>,
                            Json(req): Json<UpdateForwardRequest>| {
                         match this.handler.update_forward(auth, id, req).await {
                             Ok(r) => Ok(Json(r)),
@@ -80,7 +90,7 @@ where
                 ),
             )
             .route(
-                "/v1/history",
+                "/api/v1/history",
                 get(
                     async |auth: Nip98Auth,
                            State(this): State<AxumApi<T>>,
@@ -97,16 +107,26 @@ where
                 ),
             )
             .route(
-                "/v1/keys",
+                "/api/v1/keys",
                 get(async |auth: Nip98Auth, State(this): State<AxumApi<T>>| {
                     match this.handler.get_stream_keys(auth).await {
                         Ok(r) => Ok(Json(r)),
                         Err(e) => Err(Json(ApiError::from(e))),
                     }
-                }),
+                })
+                .post(
+                    async |auth: Nip98Auth,
+                           State(this): State<AxumApi<T>>,
+                           Json(req): Json<CreateStreamKeyRequest>| {
+                        match this.handler.create_stream_key(auth, req).await {
+                            Ok(r) => Ok(Json(r)),
+                            Err(e) => Err(Json(ApiError::from(e))),
+                        }
+                    },
+                ),
             )
             .route(
-                "/v1/time",
+                "/api/v1/time",
                 get(async || {
                     Json(TimeResponse {
                         time: SystemTime::now()
@@ -117,7 +137,7 @@ where
                 }),
             )
             .route(
-                "/v1/stream/{id}",
+                "/api/v1/stream/{id}",
                 delete(
                     async |auth: Nip98Auth,
                            State(this): State<AxumApi<T>>,
@@ -130,7 +150,7 @@ where
                 ),
             )
             .route(
-                "/v1/topup",
+                "/api/v1/topup",
                 get(
                     async |auth: Nip98Auth,
                            State(this): State<AxumApi<T>>,
@@ -143,7 +163,7 @@ where
                 ),
             )
             .route(
-                "/v1/games/search",
+                "/api/v1/games/search",
                 get(
                     async |State(this): State<AxumApi<T>>, Query(q): Query<SearchGamesV1Query>| {
                         match this.handler.search_games(q.q).await {
@@ -154,7 +174,7 @@ where
                 ),
             )
             .route(
-                "/v1/games/{id}",
+                "/api/v1/games/{id}",
                 get(
                     async |State(this): State<AxumApi<T>>, Path(id): Path<String>| match this
                         .handler

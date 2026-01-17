@@ -106,7 +106,7 @@ async fn main() -> Result<()> {
     #[allow(unused_mut)]
     let mut server = Router::new()
         .merge(IndexRouter::new(stream_manager.clone()))
-        .nest("/api", AxumAdminApi::new(admin_api_impl));
+        .merge(AxumAdminApi::new(admin_api_impl));
 
     #[cfg(feature = "cloudflare")]
     {
@@ -119,7 +119,7 @@ async fn main() -> Result<()> {
             node.clone(),
         );
         server = server
-            .nest("/api", AxumApi::new(api_impl.clone()))
+            .merge(AxumApi::new(api_impl.clone()))
             .merge(api_impl.make_router())
             .merge(ZapRouter::new(
                 settings.public_url.clone(),

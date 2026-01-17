@@ -51,6 +51,7 @@ ctrlc.workspace = true
 # http stuff
 axum.workspace = true
 axum-extra = { version = "0.12", features = ["file-stream"] }
+tower-http = { version = "0.6", default-features = false, features = ["cors"] }
 
 #moq
 moq-native = { git = "https://github.com/kixelated/moq.git", rev = "b2abf685647f125486cbb40b44e1134f947c6583", optional = true, default-features = false }

@@ -3,6 +3,7 @@ use base64::Engine;
 use chrono::{DateTime, Utc};
 use nostr_sdk::{Alphabet, Event, JsonUtil, Kind, SingleLetterTag, TagKind};
 use serde::{Deserialize, Serialize};
+use std::fmt::format;
 use std::str::FromStr;
 
 mod api;
@@ -87,42 +88,78 @@ impl Nip98Auth {
 }
 
 #[cfg(feature = "axum")]
+use axum::http::*;
+
+#[cfg(feature = "axum")]
 impl<S> axum::extract::FromRequestParts<S> for Nip98Auth {
-    type Rejection = axum::http::StatusCode;
+    type Rejection = (StatusCode, String);
 
     fn from_request_parts(
-        parts: &mut axum::http::request::Parts,
+        parts: &mut request::Parts,
         _state: &S,
     ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
         Box::pin(async {
             let auth = if let Some(a) = parts.headers.get("authorization") {
-                a.to_str()
-                    .map_err(|_| axum::http::StatusCode::BAD_REQUEST)?
+                a.to_str().map_err(|e| {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        format!("Invalid authorization header {}", e),
+                    )
+                })?
             } else {
-                return Err(axum::http::StatusCode::UNAUTHORIZED);
+                return Err((
+                    StatusCode::UNAUTHORIZED,
+                    "Missing authorization header".to_string(),
+                ));
             };
 
             let Some((scheme, token)) = auth.split_once(" ") else {
-                return Err(axum::http::StatusCode::BAD_REQUEST);
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "Invalid authorization header".to_string(),
+                ));
             };
             if scheme != "Nostr" {
-                return Err(axum::http::StatusCode::BAD_REQUEST);
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("Invalid scheme {}", scheme),
+                ));
             }
 
             match Nip98Auth::try_from_token(token) {
                 Ok(auth) => {
                     if parts.method.as_str() != auth.method_tag {
-                        return Err(axum::http::StatusCode::BAD_REQUEST);
+                        return Err((
+                            StatusCode::BAD_REQUEST,
+                            format!(
+                                "Invalid auth method, {} != {}",
+                                parts.method.as_str(),
+                                auth.method_tag
+                            ),
+                        ));
                     }
-                    let Ok(auth_url) = axum::http::Uri::from_str(&auth.url_tag) else {
-                        return Err(axum::http::StatusCode::BAD_REQUEST);
+                    let Ok(auth_url) = Uri::from_str(&auth.url_tag) else {
+                        return Err((
+                            StatusCode::BAD_REQUEST,
+                            format!("Invalid auth url, {}", auth.url_tag),
+                        ));
                     };
-                    if parts.uri != auth_url {
-                        return Err(axum::http::StatusCode::BAD_REQUEST);
+                    if parts.uri.path() != auth_url.path() {
+                        return Err((
+                            StatusCode::BAD_REQUEST,
+                            format!(
+                                "Invalid auth url, {} != {}",
+                                parts.uri.path(),
+                                auth_url.path()
+                            ),
+                        ));
                     }
                     Ok(auth)
                 }
-                Err(_) => Err(axum::http::StatusCode::BAD_REQUEST),
+                Err(e) => Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("Could not parse authorization token {}", e),
+                )),
             }
         })
     }
@@ -144,5 +181,6 @@ impl From<anyhow::Error> for ApiError {
 #[derive(Deserialize)]
 pub(crate) struct PageQueryV1 {
     pub page: i32,
+    #[serde(alias = "pageSize")]
     pub limit: i32,
 }

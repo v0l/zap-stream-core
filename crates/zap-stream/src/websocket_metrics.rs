@@ -55,7 +55,7 @@ impl WebSocketMetricsServer {
     pub fn new(db: ZapStreamDb, stream_manager: StreamManager) -> Router {
         Router::new()
             .route(
-                "/v1/ws",
+                "/api/v1/ws",
                 any(async |ws: WebSocketUpgrade, State(this): State<Self>| {
                     ws.on_upgrade(async |w| {
                         if let Err(e) = Self::handle_websocket_connection(w, this).await {
