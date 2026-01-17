@@ -4,10 +4,11 @@ pub mod http;
 pub mod multitrack;
 pub mod nostr;
 pub mod payments;
+pub mod plugin;
 pub mod stream_manager;
 pub mod viewer;
-pub use payments_rs::lightning::setup_crypto_provider;
 
+pub use payments_rs::lightning::setup_crypto_provider;
 use zap_stream_api_common::HistoryEntry;
 use zap_stream_db::UserHistoryEntry;
 

@@ -13,6 +13,7 @@ hls = ["pipeline", "zap-stream-core/egress-hls"]
 moq = ["pipeline", "zap-stream-core/egress-moq", "dep:moq-native"]
 test-pattern = ["pipeline", "zap-stream-db/test-pattern", "zap-stream-core/ingress-test"]
 withdrawal = []
+chromaprint = ["chromaprint-sys-next"]
 
 tls-ring = ["payments-rs/tls-ring", "redis/tokio-rustls-comp", "moq-native/ring"]
 tls-aws-lc-rs = ["payments-rs/tls-aws", "redis/tokio-rustls-comp", "moq-native/aws-lc-rs"]
@@ -54,6 +55,9 @@ axum-extra = { version = "0.12", features = ["file-stream"] }
 #moq
 moq-native = { git = "https://github.com/kixelated/moq.git", rev = "b2abf685647f125486cbb40b44e1134f947c6583", optional = true, default-features = false }
 
+# track_id
+chromaprint-sys-next = { version = "1.6", optional = true }
+
 # direct deps
 config = { version = "0.15.6", features = ["yaml"] }
 payments-rs = { git = "https://github.com/v0l/payments-rs.git", rev = "da7c7f5c4f2566b2a33d6c0c40db5cbeed7517ee", default-features = false, features = ["method-lnd", "method-bitvora"] }
@@ -66,4 +70,4 @@ lnurl-rs = { git = "https://github.com/benthecarman/lnurl-rs", default-features 
 redis = { version = "0.32.5", features = ["cluster", "tokio-comp"] }
 libc = "0.2.175"
 nwc = { git = "https://github.com/rust-nostr/nostr.git", pacakge = "nwc", rev = "f14d869dd85e3355c756cc4fa355fd8c8318c642" }
-tokio-stream = "0.1.17"
+tokio-stream = "0.1"

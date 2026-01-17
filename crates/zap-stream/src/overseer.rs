@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 #[cfg(feature = "hls")]
 use tokio::fs::remove_dir_all;
 use tokio::sync::RwLock;
+use tokio::sync::mpsc::unbounded_channel;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
@@ -22,6 +23,7 @@ use url::Url;
 use uuid::Uuid;
 use zap_stream::nostr::N53Publisher;
 use zap_stream::payments::create_lightning;
+use zap_stream::plugin::TrackIdMatch;
 use zap_stream::stream_manager::StreamManager;
 use zap_stream_core::egress::{EgressSegment, EgressType};
 use zap_stream_core::endpoint::{
@@ -31,7 +33,7 @@ use zap_stream_core::ingress::{ConnectionInfo, IngressInfo};
 #[cfg(feature = "hls")]
 use zap_stream_core::mux::SegmentType;
 use zap_stream_core::overseer::{ConnectResult, Overseer, StatsType};
-use zap_stream_core::pipeline::PipelineConfig;
+use zap_stream_core::pipeline::{PipelineConfig, PipelinePlugin};
 use zap_stream_core_nostr::n94::{N94Publisher, N94Segment, N94StreamInfo};
 use zap_stream_db::{
     IngestEndpoint, Payment, StreamKeyType, User, UserStream, UserStreamState, ZapStreamDb,
@@ -45,7 +47,7 @@ use zap_stream_core::listen::ListenerEndpoint;
 #[cfg(feature = "hls")]
 use zap_stream_core::mux::HlsMuxer;
 use zap_stream_core::pipeline::PipelineRunner;
-use zap_stream_core::variant::VariantGroup;
+use zap_stream_core::variant::{VariantGroup, VariantStream};
 
 /// zap.stream NIP-53 overseer
 #[derive(Clone)]
@@ -705,6 +707,34 @@ impl Overseer for ZapStreamOverseer {
             })
             .await?;
         }
+        let (tx, mut rx) = unbounded_channel::<TrackIdMatch>();
+        tokio::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                info!("Received event: {:?}", event);
+            }
+        });
+
+        let mut plugins: Vec<Arc<dyn PipelinePlugin>> = Vec::new();
+        // enable some plugins
+        if let Some(a) = cfg.audio_src {
+            #[cfg(feature = "chromaprint")]
+            {
+                use zap_stream::plugin::TrackIdPlugin;
+                let chromaprint_id = Uuid::new_v4();
+                cfg.variants.push(VariantStream::Plugin {
+                    id: chromaprint_id,
+                    src_index: a.index,
+                    name: "chromaprint".to_string(),
+                });
+                plugins.push(Arc::new(TrackIdPlugin::new(
+                    chromaprint_id,
+                    a.sample_rate as _,
+                    a.channels as _,
+                    10.,
+                    tx.clone(),
+                )?));
+            }
+        }
         let egress_config = cfg.get_egress_configs();
         Ok(PipelineConfig {
             variants: cfg.variants,
@@ -712,7 +742,7 @@ impl Overseer for ZapStreamOverseer {
             ingress_info: stream_info.clone(),
             video_src: cfg.video_src.unwrap().index,
             audio_src: cfg.audio_src.map(|s| s.index),
-            plugins: Vec::new(),
+            plugins,
         })
     }
 

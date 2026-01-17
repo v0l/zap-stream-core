@@ -1,12 +1,11 @@
 use crate::egress::EgressSegment;
 use crate::ingress::{ConnectionInfo, IngressInfo};
 use crate::metrics::EndpointStats;
-use crate::pipeline::{PipelineConfig, PipelinePlugin};
+use crate::pipeline::PipelineConfig;
 use crate::pipeline::PipelineStats;
 use anyhow::Result;
 use async_trait::async_trait;
 use std::path::PathBuf;
-use std::sync::Arc;
 use uuid::Uuid;
 
 #[derive(Debug)]

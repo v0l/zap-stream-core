@@ -19,7 +19,7 @@ use crate::ingress::{ConnectionInfo, IngressInfo, IngressStream};
 use crate::mux::HlsMuxer;
 use crate::overseer::{Overseer, StatsType};
 use crate::pipeline::worker::{PipelineWorkerThreadBuilder, WorkerThreadCommand};
-use crate::pipeline::{ConfigurableEgress, PipelineConfig};
+use crate::pipeline::{ConfigurableEgress, PipelineConfig, PipelinePluginConfigurationResult};
 use crate::reorder::FrameReorderBuffer;
 use crate::variant::VariantStream;
 use anyhow::{Result, anyhow, bail};
@@ -267,7 +267,7 @@ impl PipelineRunner {
             && is_keyframe;
 
         // only process via decoder if we have encoders and (need transcoding OR thumbnail generation)
-        if config.is_transcoding() && (needs_transcode || needs_thumb_decode) {
+        if config.should_decode() && (needs_transcode || needs_thumb_decode) {
             trace!(
                 "PKT->DECODER: stream={}, pts={}, dts={}, duration={}, flags={}",
                 stream_index, packet.pts, packet.dts, packet.duration, packet.flags
@@ -401,13 +401,11 @@ impl PipelineRunner {
             bail!("Pipeline not configured, cant process frame")
         };
         for frame in frames {
-            for var in config.variants.iter().filter(|v| {
-                v.src_index() == stream_index
-                    && match v {
-                        VariantStream::Audio(_) | VariantStream::Video(_) => true,
-                        _ => false,
-                    }
-            }) {
+            for var in config
+                .variants
+                .iter()
+                .filter(|v| v.src_index() == stream_index)
+            {
                 self.send_work(
                     var.id(),
                     WorkerThreadCommand::EncodeFrame {
@@ -619,20 +617,36 @@ impl PipelineRunner {
         // setup worker thread for each variant
         let mut workers = HashMap::new();
         for var in &cfg.variants {
-            let w = PipelineWorkerThreadBuilder::try_from(var)?
+            let mut w = PipelineWorkerThreadBuilder::try_from(var)?
                 .with_egress(self.egress.clone())
                 .with_handle(self.handle.clone())
                 .with_overseer(self.overseer.clone())
                 .with_pipeline_id(self.connection.id);
+            // attach the plugin
+            match var {
+                VariantStream::Plugin { id, .. } => {
+                    let pl = cfg
+                        .plugins
+                        .iter()
+                        .find(|p| p.id() == *id)
+                        .ok_or(anyhow!("Plugin {} is missing from pipeline config", id))?;
+                    w.set_plugin(pl.clone());
+                }
+                _ => {}
+            }
             workers.insert(var.id(), w);
         }
 
-        let get_source_stream = |v: &VariantStream| -> Option<EncoderOrSourceStream<'_>> {
+        fn get_source_stream<'a>(
+            workers: &'a HashMap<Uuid, PipelineWorkerThreadBuilder>,
+            demuxer: &'a Demuxer,
+            v: &VariantStream,
+        ) -> Option<EncoderOrSourceStream<'a>> {
             if let Some(e) = workers.get(&v.id()).and_then(|e| e.encoder()) {
                 Some(EncoderOrSourceStream::Encoder(e))
             } else {
                 Some(EncoderOrSourceStream::SourceStream(unsafe {
-                    self.demuxer.get_stream(v.src_index()).ok()?
+                    demuxer.get_stream(v.src_index()).ok()?
                 }))
             }
         };
@@ -650,7 +664,7 @@ impl PipelineRunner {
                     };
                     if let Some(v) = v.video {
                         let var = cfg.variants.iter().find(|x| x.id() == v)?;
-                        let stream = get_source_stream(var)?;
+                        let stream = get_source_stream(&workers, &self.demuxer, var)?;
                         ret.streams.push(EncoderVariant {
                             variant: var,
                             stream,
@@ -658,7 +672,7 @@ impl PipelineRunner {
                     }
                     if let Some(a) = v.audio {
                         let var = cfg.variants.iter().find(|x| x.id() == a)?;
-                        let stream = get_source_stream(var)?;
+                        let stream = get_source_stream(&workers, &self.demuxer, var)?;
                         ret.streams.push(EncoderVariant {
                             variant: var,
                             stream,
@@ -666,7 +680,7 @@ impl PipelineRunner {
                     }
                     if let Some(s) = v.subtitle {
                         let var = cfg.variants.iter().find(|x| x.id() == s)?;
-                        let stream = get_source_stream(var)?;
+                        let stream = get_source_stream(&workers, &self.demuxer, var)?;
                         ret.streams.push(EncoderVariant {
                             variant: var,
                             stream,
@@ -688,9 +702,9 @@ impl PipelineRunner {
                         segment_type,
                         segment_length,
                     )?;
-                    for plugin in &cfg.plugins {
-                        for var in &mut hls.variants {
-                            plugin.configure_egress(ConfigurableEgress::Muxer {
+                    for var in &mut hls.variants {
+                        for p in &cfg.plugins {
+                            p.configure_egress(ConfigurableEgress::Muxer {
                                 muxer: var.mux(),
                                 egress_type: &e.kind,
                             })?;
@@ -710,12 +724,17 @@ impl PipelineRunner {
                     });
                     if let Some(a) = match_var {
                         let dst = self.out_dir.join(Self::RECORDING_PATH);
-                        let muxer = unsafe {
+                        let mut muxer = unsafe {
                             Muxer::builder()
                                 .with_output_path(dst.to_str().unwrap(), None)?
                                 .build()?
                         };
-
+                        for p in &cfg.plugins {
+                            p.configure_egress(ConfigurableEgress::Muxer {
+                                muxer: &mut muxer,
+                                egress_type: &e.kind,
+                            })?;
+                        }
                         let mut options = HashMap::new();
                         options.insert("movflags".to_string(), "faststart".to_string());
                         let rec = MuxerEgress::new("Recorder", muxer, a, Some(options), false)?;
@@ -734,12 +753,18 @@ impl PipelineRunner {
                         warn!("Could not configure RTMP forwarder, no variants configured");
                         continue;
                     };
-                    let muxer = unsafe {
+                    let mut muxer = unsafe {
                         let dest = destination.to_owned();
                         Muxer::builder()
                             .with_output_path(dest.as_str(), Some("flv"))?
                             .build()?
                     };
+                    for p in &cfg.plugins {
+                        p.configure_egress(ConfigurableEgress::Muxer {
+                            muxer: &mut muxer,
+                            egress_type: &e.kind,
+                        })?;
+                    }
                     let fwd = MuxerEgress::new("RTMP Forward", muxer, g, None, false)?;
                     setup_egress.push(Box::new(fwd));
                 }

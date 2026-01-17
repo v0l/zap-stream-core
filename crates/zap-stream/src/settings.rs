@@ -21,21 +21,18 @@ pub struct Settings {
     /// Public facing URL that maps to [output_dir]
     pub public_url: String,
 
-    #[serde(default)]
     /// Ignore the url check inNIP-98
     pub ignore_auth_url: Option<bool>,
 
     /// Binding address for http server serving files from [output_dir]
     pub listen_http: String,
 
-    #[serde(default)]
     /// Admin pubkey
     pub admin_pubkey: Option<String>,
 
     /// Overseer service see [Overseer] for more info
     pub overseer: OverseerConfig,
 
-    #[serde(default)]
     /// Redis config for horizonal-scaling
     pub redis: Option<RedisConfig>,
 
@@ -43,9 +40,11 @@ pub struct Settings {
     /// MoQ server config
     pub moq: Option<moq_native::ServerConfig>,
 
-    #[serde(default)]
     /// Twitch API configuration
     pub twitch: Option<TwitchConfig>,
+
+    /// MusicBrainz api for track id matching
+    pub music_brainz: Option<MusicBrainzConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,4 +84,10 @@ pub struct AdvertiseConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RedisConfig {
     pub url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MusicBrainzConfig {
+    pub client_id: String,
+    pub client_secret: String,
 }

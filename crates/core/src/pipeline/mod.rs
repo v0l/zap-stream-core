@@ -1,7 +1,7 @@
+use crate::endpoint::EndpointConfigurator;
 use crate::listen::ListenerEndpoint;
 use crate::overseer::Overseer;
-use anyhow::{Result, bail};
-use ffmpeg_rs_raw::{AvFrameRef, Muxer};
+use anyhow::bail;
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::task::JoinHandle;
@@ -14,9 +14,9 @@ pub use runner::*;
 pub(crate) mod worker;
 
 mod config;
-use crate::egress::EgressType;
-use crate::endpoint::EndpointConfigurator;
 pub use config::*;
+mod plugin;
+pub use plugin::*;
 
 pub fn try_create_listener(
     u: &str,
@@ -68,19 +68,4 @@ pub fn try_create_listener(
             bail!("Unknown endpoint config: {u}");
         }
     }
-}
-
-/// Trait for services which interact with the decoded input stream
-pub trait PipelinePlugin {
-    fn process_frame(&self, frame: AvFrameRef);
-    fn get_frame(&self) -> Option<AvFrameRef>;
-    fn configure_egress(&self, e: ConfigurableEgress) -> Result<()>;
-}
-
-pub enum ConfigurableEgress<'a> {
-    /// A muxer instance which can be configured with additional stream data by a plugin
-    Muxer {
-        egress_type: &'a EgressType,
-        muxer: &'a mut Muxer,
-    },
 }

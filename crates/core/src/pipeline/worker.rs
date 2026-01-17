@@ -1,5 +1,6 @@
 use crate::egress::{Egress, EgressResult};
 use crate::overseer::Overseer;
+use crate::pipeline::PipelinePlugin;
 use crate::variant::VariantStream;
 use anyhow::{Result, anyhow, bail};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_WEBP;
@@ -39,6 +40,7 @@ pub struct PipelineWorkerThread {
 
     egress: Arc<Mutex<Vec<Box<dyn Egress>>>>,
     overseer: Arc<dyn Overseer>,
+    plugin: Option<Arc<dyn PipelinePlugin>>,
 
     work_queue_tx: Option<Sender<WorkerThreadCommand>>,
     work_queue_rx: Receiver<WorkerThreadCommand>,
@@ -128,9 +130,9 @@ impl PipelineWorkerThread {
                         .overseer
                         .on_segments(&self.pipeline_id, &created, &deleted)
                         .await
-                    {
-                        error!("Failed to notify overseer of deleted segments: {e}");
-                    }
+                {
+                    error!("Failed to notify overseer of deleted segments: {e}");
+                }
             }
         });
         crate::metrics::record_block_on_egress_results(block_on_start.elapsed());
@@ -284,7 +286,12 @@ impl PipelineWorkerThread {
                 VariantStream::Audio(_) => {
                     self.resample_encode_frame(Some(frame))?;
                 }
-                _ => warn!("Got encode frame for copy variant!"),
+                VariantStream::Plugin { .. } => {
+                    if let Some(pl) = &self.plugin {
+                        pl.process_frame(frame)
+                    }
+                }
+                v => warn!("Unexpected encode frame {}", v),
             },
             WorkerThreadCommand::SaveThumbnail { frame, dst } => {
                 self.generate_thumbnail(frame, dst)?;
@@ -348,6 +355,8 @@ pub struct PipelineWorkerThreadBuilder {
     handle: Option<Handle>,
     egress: Option<Arc<Mutex<Vec<Box<dyn Egress>>>>>,
     overseer: Option<Arc<dyn Overseer>>,
+    plugin_name: Option<String>,
+    plugin: Option<Arc<dyn PipelinePlugin>>,
 
     variant: VariantStream,
     scaler: Option<Scaler>,
@@ -382,7 +391,13 @@ impl PipelineWorkerThreadBuilder {
         self
     }
 
+    pub fn set_plugin(&mut self, plugin: Arc<dyn PipelinePlugin>) {
+        self.plugin = Some(plugin);
+    }
+
     pub fn build(self) -> Result<PipelineWorkerThread> {
+        let overseer = self.overseer.ok_or(anyhow!("Overseer not set"))?;
+
         Ok(PipelineWorkerThread {
             pipeline_id: self.pipeline_id.ok_or(anyhow!("Pipeline ID not set"))?,
             handle: self.handle.ok_or(anyhow!("Handle not set"))?,
@@ -391,7 +406,12 @@ impl PipelineWorkerThreadBuilder {
             encoder: self.encoder,
             resampler: self.resampler,
             egress: self.egress.ok_or(anyhow!("Egress not set"))?,
-            overseer: self.overseer.ok_or(anyhow!("Overseer not set"))?,
+            plugin: if self.plugin_name.is_some() && self.plugin.is_none() {
+                bail!("Plugin is missing")
+            } else {
+                self.plugin
+            },
+            overseer,
             work_queue_tx: Some(self.work_queue_tx),
             work_queue_rx: self.work_queue_rx,
             did_flush: false,
@@ -411,6 +431,8 @@ impl TryFrom<&VariantStream> for PipelineWorkerThreadBuilder {
                     handle: None,
                     egress: None,
                     overseer: None,
+                    plugin: None,
+                    plugin_name: None,
                     variant: value.clone(),
                     scaler: if v.scale_mode.is_some() {
                         Some(Scaler::default())
@@ -434,6 +456,8 @@ impl TryFrom<&VariantStream> for PipelineWorkerThreadBuilder {
                     handle: None,
                     egress: None,
                     overseer: None,
+                    plugin: None,
+                    plugin_name: None,
                     variant: value.clone(),
                     scaler: None,
                     encoder: Some(enc),
@@ -450,6 +474,25 @@ impl TryFrom<&VariantStream> for PipelineWorkerThreadBuilder {
                     handle: None,
                     egress: None,
                     overseer: None,
+                    plugin: None,
+                    plugin_name: None,
+                    variant: value.clone(),
+                    scaler: None,
+                    encoder: None,
+                    resampler: None,
+                    work_queue_tx: tx,
+                    work_queue_rx: rx,
+                })
+            }
+            VariantStream::Plugin { name, .. } => {
+                let (tx, rx) = channel();
+                Ok(Self {
+                    pipeline_id: None,
+                    handle: None,
+                    egress: None,
+                    overseer: None,
+                    plugin: None,
+                    plugin_name: Some(name.to_string()),
                     variant: value.clone(),
                     scaler: None,
                     encoder: None,

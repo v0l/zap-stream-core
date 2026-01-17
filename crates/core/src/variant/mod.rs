@@ -24,6 +24,15 @@ pub enum VariantStream {
     CopyVideo(VideoVariant),
     /// Copy stream src<>dst stream
     CopyAudio(AudioVariant),
+    /// A variant created by a plugin
+    Plugin {
+        /// Unique ID of this variant
+        id: Uuid,
+        /// Name of the plugin
+        name: String,
+        /// Source video stream to use for this variant
+        src_index: usize,
+    },
 }
 
 impl VariantStream {
@@ -34,6 +43,7 @@ impl VariantStream {
             VariantStream::Subtitle { id, .. } => *id,
             VariantStream::CopyVideo(v) => v.id,
             VariantStream::CopyAudio(a) => a.id,
+            VariantStream::Plugin { id, .. } => *id,
         }
     }
 
@@ -44,6 +54,7 @@ impl VariantStream {
             VariantStream::Subtitle { src_index, .. } => *src_index,
             VariantStream::CopyVideo(v) => v.src_index,
             VariantStream::CopyAudio(v) => v.src_index,
+            VariantStream::Plugin { src_index, .. } => *src_index,
         }
     }
 
@@ -54,6 +65,7 @@ impl VariantStream {
             VariantStream::Subtitle { .. } => 0,
             VariantStream::CopyVideo(v) => v.bitrate as _,
             VariantStream::CopyAudio(a) => a.bitrate as _,
+            VariantStream::Plugin { .. } => 0,
         }
     }
 }
@@ -68,6 +80,11 @@ impl Display for VariantStream {
             }
             VariantStream::CopyVideo(c) => write!(f, "Copy {}", c),
             VariantStream::CopyAudio(c) => write!(f, "Copy {}", c),
+            VariantStream::Plugin {
+                name,
+                src_index,
+                id,
+            } => write!(f, "{}#{} ({})", src_index, name, id),
         }
     }
 }

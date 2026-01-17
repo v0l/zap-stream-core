@@ -110,7 +110,7 @@ impl MoqEgress {
                         });
                         audio_priority += 1;
                     }
-                    VariantStream::Subtitle { .. } => {}
+                    _ => {}
                 }
             }
         }

@@ -455,6 +455,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "bindgen"
+version = "0.72.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "993776b509cfb49c750f11b8f07a46fa23e0a1386ffc01fb1e7d343efc387895"
+dependencies = [
+ "bitflags 2.10.0",
+ "cexpr",
+ "clang-sys",
+ "itertools 0.12.1",
+ "log 0.4.28",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "rustc-hash 2.1.1",
+ "shlex",
+ "syn 2.0.111",
+]
+
+[[package]]
 name = "bip39"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -713,6 +733,20 @@ dependencies = [
  "cipher",
  "poly1305",
  "zeroize",
+]
+
+[[package]]
+name = "chromaprint-sys-next"
+version = "1.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "76fc5953dd0f119db6f40ab5ab03059e88bdb4b6ec9d23d3bf4fb46ecafca991"
+dependencies = [
+ "bindgen 0.72.1",
+ "cfg-if",
+ "cmake",
+ "libc",
+ "pkg-config",
+ "vcpkg",
 ]
 
 [[package]]
@@ -1457,7 +1491,7 @@ name = "ffmpeg-sys-the-third"
 version = "3.0.1+ffmpeg-7.1"
 source = "git+https://github.com/v0l/ffmpeg-the-third.git?rev=bf1d21071e92ad7d212f9129eaf13faabeb42920#bf1d21071e92ad7d212f9129eaf13faabeb42920"
 dependencies = [
- "bindgen",
+ "bindgen 0.69.5",
  "cc",
  "clang",
  "glob",
@@ -6983,6 +7017,7 @@ dependencies = [
  "async-trait",
  "axum",
  "axum-extra",
+ "chromaprint-sys-next",
  "chrono",
  "clap",
  "config",

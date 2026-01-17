@@ -22,18 +22,21 @@ pub struct PipelineConfig {
 }
 
 impl PipelineConfig {
-    /// Are we transcoding any video or audio variants
-    pub fn is_transcoding(&self) -> bool {
+    /// Is decoding the input stream required
+    pub fn should_decode(&self) -> bool {
         self.variants.iter().any(|v| match v {
-            VariantStream::Video(_) | VariantStream::Audio(_) => true,
+            VariantStream::Video(_) | VariantStream::Audio(_) | VariantStream::Plugin { .. } => {
+                true
+            }
             _ => false,
         })
     }
 
     pub fn is_transcoding_src(&self, src_index: usize) -> bool {
         self.variants.iter().any(|var| match var {
-            VariantStream::Video(v) if v.src_index == src_index => true,
-            VariantStream::Audio(v) if v.src_index == src_index => true,
+            VariantStream::Video(v) => v.src_index == src_index,
+            VariantStream::Audio(v) => v.src_index == src_index,
+            VariantStream::Plugin { src_index, .. } => src_index == src_index,
             _ => false,
         })
     }
