@@ -118,7 +118,9 @@ async fn main() -> Result<()> {
             db.clone(),
             client.clone(),
             node.clone(),
+            settings.public_url.clone(),
         );
+        api_impl.setup_webhook().await?;
         server = server
             .merge(AxumApi::new(api_impl.clone()))
             .merge(api_impl.make_router())

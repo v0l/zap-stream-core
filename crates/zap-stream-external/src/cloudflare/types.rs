@@ -158,4 +158,6 @@ pub struct VideoAssetStatus {
 pub enum WebhookPayload {
     LiveInput(LiveInputWebhook),
     VideoAsset(VideoAssetWebhook),
+    /// Catch-all
+    Unknown(serde_json::Value),
 }

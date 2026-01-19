@@ -1,12 +1,15 @@
-use crate::cloudflare::{CloudflareClient, CloudflareToken, LiveInput, WebhookPayload};
+use crate::cloudflare::{
+    CloudflareClient, CloudflareToken, LiveInput, WebhookPayload, WebhookResult,
+};
 use anyhow::{Result, bail};
 use async_trait::async_trait;
 use axum::extract::State;
-use axum::routing::post;
+use axum::http::{HeaderMap, StatusCode};
+use axum::routing::{any, post};
 use axum::{Json, Router};
 use nostr_sdk::{Client, PublicKey, ToBech32};
 use std::collections::HashMap;
-use std::sync::{Arc};
+use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use tracing::log::error;
 use tracing::{info, warn};
@@ -31,14 +34,21 @@ pub struct CfApiWrapper {
     tos_url: Option<String>,
     /// Simple mutex to prevent concurrent calls to create live endpoint
     create_input_lock: Arc<Mutex<()>>,
+    /// Public hostname which points to our HTTP server
+    public_url: String,
+    /// Details of the registered webhook
+    webhook_details: Arc<RwLock<Option<WebhookResult>>>,
 }
 
 impl CfApiWrapper {
+    pub const WEBHOOK_API_PATH: &'static str = "/api/v1/webhook/cloudflare";
+
     pub fn new(
         token: CloudflareToken,
         db: ZapStreamDb,
         client: Client,
         lightning: Arc<dyn LightningNode>,
+        public_url: String,
     ) -> Self {
         Self {
             client: CloudflareClient::new(token),
@@ -47,6 +57,8 @@ impl CfApiWrapper {
             live_input_cache: Default::default(),
             tos_url: None,
             create_input_lock: Default::default(),
+            public_url,
+            webhook_details: Default::default(),
         }
     }
 
@@ -129,20 +141,30 @@ impl CfApiWrapper {
     pub fn make_router(&self) -> Router {
         Router::new()
             .route(
-                "/api/v1/webhook/cloudflare",
-                post(
-                    async move |State(this): State<Self>, Json(payload): Json<WebhookPayload>| {
+                Self::WEBHOOK_API_PATH,
+                any(
+                    async move |headers: HeaderMap,
+                                State(this): State<Self>,
+                                Json(payload): Json<Option<WebhookPayload>>| {
+                        // todo: verify sig
+                        let Some(sig) = headers.get("Webhook-Signature") else {
+                            return Err(StatusCode::BAD_REQUEST);
+                        };
                         if let Err(e) = Self::handle_webhook(this, payload).await {
                             error!("Error handling webhook: {}", e);
                         }
+                        Ok(())
                     },
                 ),
             )
             .with_state(self.clone())
     }
 
-    async fn handle_webhook(this: Self, payload: WebhookPayload) -> Result<()> {
+    async fn handle_webhook(this: Self, payload: Option<WebhookPayload>) -> Result<()> {
         info!("Got webhook payload: {:?}", payload);
+        let Some(payload) = payload else {
+            return Ok(());
+        };
         match payload {
             WebhookPayload::LiveInput(i) => {
                 info!(
@@ -179,7 +201,29 @@ impl CfApiWrapper {
                     );
                 }
             }
+            _ => {}
         }
+        Ok(())
+    }
+
+    /// Register the webhook handler if it's not already set
+    pub async fn setup_webhook(&self) -> Result<()> {
+        let mut url = Url::parse(&self.public_url)?;
+        url.set_path(Self::WEBHOOK_API_PATH);
+
+        let webhooks = self.client.get_webhooks().await?;
+        if webhooks.success
+            && let Some(w) = webhooks.result
+            && w.notification_url == url.as_str()
+        {
+            info!("Webhook notification url already registered: {}", url);
+            self.webhook_details.write().await.replace(w);
+            return Ok(());
+        }
+
+        let wh = self.client.create_webhook(url.to_string().as_str()).await?;
+        info!("Webhook created for {}", wh.result.notification_url);
+        self.webhook_details.write().await.replace(wh.result);
         Ok(())
     }
 }

@@ -29,6 +29,27 @@ impl CloudflareClient {
         }
     }
 
+    async fn get_json<T>(&self, path: &str) -> Result<T>
+    where
+        for<'a> T: Deserialize<'a>,
+    {
+        let response = self
+            .http_client
+            .get(path)
+            .header("Authorization", format!("Bearer {}", self.api_token))
+            .send()
+            .await?;
+
+        let status = response.status();
+        let text = response.text().await?;
+        if !status.is_success() {
+            return Err(anyhow!("Cloudflare API error {}: {}", status, text));
+        }
+
+        Ok(serde_json::from_str(&text)
+            .map_err(|err| anyhow!("Error parsing response {}: {}", text, err))?)
+    }
+
     /// Create a new Live Input
     pub async fn create_live_input(&self, name: &str) -> Result<ApiResponse<LiveInput>> {
         let url = format!(
@@ -45,7 +66,6 @@ impl CloudflareClient {
             .http_client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_token))
-            .header("Content-Type", "application/json")
             .json(&body)
             .send()
             .await?;
@@ -68,23 +88,7 @@ impl CloudflareClient {
             self.base_url, self.account_id, uid
         );
 
-        let response = self
-            .http_client
-            .get(&url)
-            .header("Authorization", format!("Bearer {}", self.api_token))
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(anyhow!("Cloudflare API error {}: {}", status, error_text));
-        }
-
-        Ok(response.json().await?)
+        Ok(self.get_json(&url).await?)
     }
 
     /// Get details of an existing Live Input's outputs (forwards)
@@ -97,23 +101,7 @@ impl CloudflareClient {
             self.base_url, self.account_id, uid
         );
 
-        let response = self
-            .http_client
-            .get(&url)
-            .header("Authorization", format!("Bearer {}", self.api_token))
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(anyhow!("Cloudflare API error {}: {}", status, error_text));
-        }
-
-        Ok(response.json().await?)
+        Ok(self.get_json(&url).await?)
     }
 
     /// Create a new output (forward) for a live input
@@ -226,23 +214,7 @@ impl CloudflareClient {
             self.base_url, self.account_id, live_input_uid
         );
 
-        let response = self
-            .http_client
-            .get(&url)
-            .header("Authorization", format!("Bearer {}", self.api_token))
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(anyhow!("Cloudflare API error {}: {}", status, error_text));
-        }
-
-        Ok(response.json().await?)
+        Ok(self.get_json(&url).await?)
     }
 
     /// Delete a Live Input
@@ -271,8 +243,8 @@ impl CloudflareClient {
         Ok(())
     }
 
-    /// Setup webhook for Stream Live events
-    pub async fn setup_webhook(&self, webhook_url: &str) -> Result<ApiResponse<WebhookResult>> {
+    /// Create webhook to receive notifications
+    pub async fn create_webhook(&self, webhook_url: &str) -> Result<ApiResponse<WebhookResult>> {
         let url = format!(
             "{}/accounts/{}/stream/webhook",
             self.base_url, self.account_id
@@ -286,7 +258,6 @@ impl CloudflareClient {
             .http_client
             .put(&url)
             .header("Authorization", format!("Bearer {}", self.api_token))
-            .header("Content-Type", "application/json")
             .json(&body)
             .send()
             .await?;
@@ -301,6 +272,16 @@ impl CloudflareClient {
         }
 
         Ok(response.json().await?)
+    }
+
+    /// List stream webhooks on account
+    pub async fn get_webhooks(&self) -> Result<ApiResponse<Option<WebhookResult>>> {
+        let url = format!(
+            "{}/accounts/{}/stream/webhook",
+            self.base_url, self.account_id
+        );
+
+        Ok(self.get_json(&url).await?)
     }
 
     #[cfg(test)]
