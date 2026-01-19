@@ -247,36 +247,22 @@ impl RtmpClient {
                     if should_accept {
                         let mx = self.session.accept_request(request_id)?;
                         self.msg_queue.extend(mx);
-                        info!(
-                            "Published stream request: {app_name}/{stream_key} [{:?}]",
-                            mode
-                        );
                         self.published_stream = Some(RtmpPublishedStream(app_name, stream_key));
                     } else {
                         let msg = msg.unwrap_or("not allowed".to_string());
-                        info!("Publish request was rejected for {app_name}/{stream_key}: {msg}");
+                        info!("Publish request was rejected for: {msg}");
                         let mx = self.session.reject_request(request_id, "0", &msg)?;
                         self.msg_queue.extend(mx);
                         self.socket.shutdown(Shutdown::Read)?; //half-close
                     }
                 }
             }
-            ServerSessionEvent::PublishStreamFinished {
-                app_name,
-                stream_key,
-            } => {
+            ServerSessionEvent::PublishStreamFinished { .. } => {
                 self.tx.send(PipelineCommand::Shutdown)?;
-                info!("Stream ending: {app_name}/{stream_key}");
+                info!("Stream ending");
             }
-            ServerSessionEvent::StreamMetadataChanged {
-                app_name,
-                stream_key,
-                metadata,
-            } => {
-                info!(
-                    "Metadata configured: {}/{} {:?}",
-                    app_name, stream_key, metadata
-                );
+            ServerSessionEvent::StreamMetadataChanged { metadata, .. } => {
+                info!("Metadata configured: {:?}", metadata);
                 self.write_flv_header(&metadata)?;
             }
             ServerSessionEvent::AudioDataReceived {
