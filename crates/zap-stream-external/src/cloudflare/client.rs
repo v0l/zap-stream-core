@@ -154,11 +154,7 @@ impl CloudflareClient {
     }
 
     /// Delete a live input output
-    pub async fn delete_live_input_output(
-        &self,
-        uid: &str,
-        output_id: &str,
-    ) -> Result<ApiResponse<()>> {
+    pub async fn delete_live_input_output(&self, uid: &str, output_id: &str) -> Result<()> {
         let url = format!(
             "{}/accounts/{}/stream/live_inputs/{}/outputs/{}",
             self.base_url, self.account_id, uid, output_id
@@ -180,7 +176,7 @@ impl CloudflareClient {
             return Err(anyhow!("Cloudflare API error {}: {}", status, error_text));
         }
 
-        Ok(response.json().await?)
+        Ok(())
     }
 
     /// Update a live input output
@@ -250,7 +246,7 @@ impl CloudflareClient {
     }
 
     /// Delete a Live Input
-    pub async fn delete_live_input(&self, uid: &str) -> Result<ApiResponse<()>> {
+    pub async fn delete_live_input(&self, uid: &str) -> Result<()> {
         let url = format!(
             "{}/accounts/{}/stream/live_inputs/{}",
             self.base_url, self.account_id, uid
@@ -272,7 +268,7 @@ impl CloudflareClient {
             return Err(anyhow!("Cloudflare API error {}: {}", status, error_text));
         }
 
-        Ok(response.json().await?)
+        Ok(())
     }
 
     /// Setup webhook for Stream Live events
