@@ -47,7 +47,7 @@ impl Api {
         for setting_endpoint in &self.settings.endpoints {
             if let Ok(listener_endpoint) = ListenerEndpoint::from_str(setting_endpoint) {
                 for ingest in endpoints {
-                    if let Some(url) = listener_endpoint.to_public_url(
+                    if let Ok(url) = listener_endpoint.to_public_url(
                         &self.settings.endpoints_public_hostname,
                         &ingest.name.to_lowercase(),
                     ) {

@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use crate::endpoint::EndpointConfigurator;
 use crate::ingress::{ConnectionInfo, spawn_pipeline};
 use crate::overseer::Overseer;
@@ -12,7 +13,7 @@ use uuid::Uuid;
 
 pub async fn listen(
     out_dir: String,
-    addr: String,
+    addr: SocketAddr,
     overseer: Arc<dyn Overseer>,
     endpoint_config: Arc<dyn EndpointConfigurator>,
     shutdown_rx: CancellationToken,

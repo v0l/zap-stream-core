@@ -62,7 +62,7 @@ impl ZapStreamAdminApiImpl {
             .filter_map(|endpoint_url| {
                 ListenerEndpoint::from_str(endpoint_url)
                     .ok()
-                    .and_then(|e| e.to_public_url(&self.endpoints_public_hostname, name))
+                    .and_then(|e| e.to_public_url(&self.endpoints_public_hostname, name).ok())
             })
             .collect()
     }

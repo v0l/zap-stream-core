@@ -23,6 +23,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
+use url::Url;
 use uuid::Uuid;
 use xflv::errors::FlvMuxerError;
 use xflv::muxer::FlvMuxer;
@@ -332,12 +333,17 @@ impl Read for RtmpClient {
 
 pub async fn listen(
     out_dir: String,
-    addr: String,
+    addr: Url,
     overseer: Arc<dyn Overseer>,
     endpoint_config: Arc<dyn EndpointConfigurator>,
     shutdown: CancellationToken,
 ) -> Result<()> {
-    let listener = TcpListener::bind(&addr).await?;
+    let binder = addr
+        .socket_addrs(|| Some(3333))?
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow!("Could not parse bind address from {}", addr))?;
+    let listener = TcpListener::bind(&binder).await?;
 
     info!("RTMP listening on: {}", &addr);
     loop {

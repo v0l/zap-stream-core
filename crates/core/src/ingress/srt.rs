@@ -2,7 +2,7 @@ use crate::endpoint::EndpointConfigurator;
 use crate::ingress::{BufferedReader, ConnectionInfo, setup_term_handler, spawn_pipeline};
 use crate::overseer::{ConnectResult, Overseer};
 use crate::pipeline::PipelineCommand;
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use futures_util::StreamExt;
 use futures_util::stream::FusedStream;
 use srt_tokio::{SrtListener, SrtSocket};
@@ -15,18 +15,23 @@ use tokio::runtime::Handle;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
+use url::Url;
 use uuid::Uuid;
 
 const MAX_SRT_BUFFER_SIZE: usize = 10 * 1024 * 1024; // 10MB limit
 
 pub async fn listen(
     out_dir: String,
-    addr: String,
+    addr: Url,
     overseer: Arc<dyn Overseer>,
     endpoint_config: Arc<dyn EndpointConfigurator>,
     shutdown: CancellationToken,
 ) -> Result<()> {
-    let binder: SocketAddr = addr.parse()?;
+    let binder = addr
+        .socket_addrs(|| Some(3333))?
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow!("Could not parse bind address from {}", addr))?;
     let (_binding, mut packets) = SrtListener::builder().bind(binder).await?;
 
     let out_dir = PathBuf::from(out_dir);

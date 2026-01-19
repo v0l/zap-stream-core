@@ -205,7 +205,8 @@ impl MultiTrackEngine {
                             _ => return None,
                         },
                         url_template: c
-                            .to_public_url(&public_url.host()?.to_string(), "live/{stream_key}")?,
+                            .to_public_url(&public_url.host()?.to_string(), "live/{stream_key}")
+                            .ok()?,
                         authentication: None,
                     })
                 })
@@ -1187,7 +1188,7 @@ mod tests {
             .ok();
         let cfg = DummyEndpointConfigurator {
             ingress: vec![ListenerEndpoint::RTMP {
-                endpoint: "rtmp://0.0.0.0:1935".to_string(),
+                endpoint: Url::parse("rtmp://0.0.0.0:1935").unwrap(),
             }],
             caps: vec![
                 VariantType::SourceVariant,

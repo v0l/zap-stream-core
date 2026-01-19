@@ -44,9 +44,9 @@ pub fn try_create_listener(
             shutdown,
         ))),
         #[cfg(feature = "ingress-tcp")]
-        ListenerEndpoint::TCP { endpoint } => Ok(tokio::spawn(crate::ingress::tcp::listen(
+        ListenerEndpoint::TCP { addr } => Ok(tokio::spawn(crate::ingress::tcp::listen(
             out_dir.to_string(),
-            endpoint,
+            addr,
             overseer.clone(),
             endpoint_config.clone(),
             shutdown,
