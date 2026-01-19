@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
+use tower_http::cors::CorsLayer;
 use tracing::{error, info};
 use zap_stream::admin_api::ZapStreamAdminApiImpl;
 use zap_stream::http::IndexRouter;
@@ -132,7 +133,7 @@ async fn main() -> Result<()> {
     tasks.push(tokio::spawn(async move {
         let listener = TcpListener::bind(&http_addr).await?;
         info!("Listening on: {}", http_addr);
-        axum::serve(listener, server)
+        axum::serve(listener, server.layer(CorsLayer::very_permissive()))
             .with_graceful_shutdown(async move { shutdown_http.cancelled().await })
             .await?;
         info!("HTTP server shutdown.");

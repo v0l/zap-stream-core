@@ -7153,6 +7153,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-util 0.7.17",
+ "tower-http",
  "tracing",
  "tracing-subscriber",
  "url",
