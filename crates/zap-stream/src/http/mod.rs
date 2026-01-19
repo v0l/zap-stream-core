@@ -15,6 +15,11 @@ pub use zap::*;
 mod multitrack;
 pub use multitrack::*;
 
+#[cfg(feature = "pipeline")]
+mod thumb;
+#[cfg(feature = "pipeline")]
+pub use thumb::*;
+
 #[derive(Serialize, Clone)]
 pub struct StreamData {
     pub id: String,

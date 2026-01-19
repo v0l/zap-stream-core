@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 use tower_http::cors::CorsLayer;
 use tracing::{error, info, warn};
 use zap_stream::admin_api::ZapStreamAdminApiImpl;
-use zap_stream::http::{IndexRouter, MultiTrackRouter, ZapRouter};
+use zap_stream::http::{IndexRouter, MultiTrackRouter, ThumbServer, ZapRouter};
 use zap_stream::multitrack::{MultiTrackEngine, MultiTrackEngineConfig};
 use zap_stream::payments::PaymentHandler;
 use zap_stream_api_common::{AxumAdminApi, AxumApi};
@@ -197,15 +197,14 @@ async fn main() -> Result<()> {
             overseer.database(),
             api.clone(),
         ))
-        .merge(
-            MultiTrackRouter::new(MultiTrackEngine::new(
-                MultiTrackEngineConfig {
-                    public_url: settings.public_url.clone(),
-                    dashboard_url: None,
-                },
-                overseer.clone(),
-            )),
-        )
+        .merge(MultiTrackRouter::new(MultiTrackEngine::new(
+            MultiTrackEngineConfig {
+                public_url: settings.public_url.clone(),
+                dashboard_url: None,
+            },
+            overseer.clone(),
+        )))
+        .merge(ThumbServer::new(settings.output_dir.clone()))
         .layer(CorsLayer::very_permissive());
 
     #[cfg(feature = "hls")]

@@ -118,6 +118,7 @@ unsafe impl Send for PipelineRunner {}
 
 impl PipelineRunner {
     pub const RECORDING_PATH: &'static str = "recording.mp4";
+    pub const THUMB_PATH: &'static str = "thumb.webp";
 
     pub fn new(
         handle: Handle,
@@ -181,7 +182,7 @@ impl PipelineRunner {
         {
             self.last_thumb = Instant::now();
             let frame = frame.clone();
-            let dst_pic = self.out_dir.join("thumb.webp");
+            let dst_pic = self.out_dir.join(Self::THUMB_PATH);
 
             // send thumbnail on the first worker
             // TODO: pick one that has less work to do (copy streams / audio)
@@ -649,7 +650,7 @@ impl PipelineRunner {
                     demuxer.get_stream(v.src_index()).ok()?
                 }))
             }
-        };
+        }
 
         let mut setup_egress: Vec<Box<dyn Egress>> = vec![];
         // Setup egress
