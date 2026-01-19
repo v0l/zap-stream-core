@@ -23,6 +23,7 @@ pub fn user_history_to_api_model(entry: UserHistoryEntry) -> HistoryEntry {
             3 => Some("Withdrawal".to_string()), // PaymentType::Withdrawal = 3
             2 => Some("Admin Credit".to_string()), // PaymentType::Credit = 2
             1 => entry.nostr,                    // PaymentType::Zap = 1, use nostr content
+            0 => Some("Topup".to_string()),
             _ => None,
         };
         (entry_type, desc)
