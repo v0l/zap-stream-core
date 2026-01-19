@@ -1,6 +1,7 @@
 use crate::{ApiError, CreateStreamKeyRequest, PageQueryV1, PatchAccount};
 use crate::{ForwardRequest, Nip98Auth, PatchEvent, UpdateForwardRequest, ZapStreamApi};
 use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
 use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
@@ -27,7 +28,7 @@ where
                 get(async |auth: Nip98Auth, State(this): State<AxumApi<T>>| {
                     match this.handler.get_account(auth).await {
                         Ok(r) => Ok(Json(r)),
-                        Err(e) => Err(Json(ApiError::from(e))),
+                        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError::from(e)))),
                     }
                 })
                 .patch(
@@ -36,7 +37,7 @@ where
                            Json(req): Json<PatchAccount>| {
                         match this.handler.update_account(auth, req).await {
                             Ok(r) => Ok(Json(r)),
-                            Err(e) => Err(Json(ApiError::from(e))),
+                            Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError::from(e)))),
                         }
                     },
                 ),
@@ -49,7 +50,7 @@ where
                            Json(req): Json<PatchEvent>| {
                         match this.handler.update_event(auth, req).await {
                             Ok(r) => Ok(Json(r)),
-                            Err(e) => Err(Json(ApiError::from(e))),
+                            Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError::from(e)))),
                         }
                     },
                 ),
@@ -62,7 +63,7 @@ where
                            Json(req): Json<ForwardRequest>| {
                         match this.handler.create_forward(auth, req).await {
                             Ok(r) => Ok(Json(r)),
-                            Err(e) => Err(Json(ApiError::from(e))),
+                            Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError::from(e)))),
                         }
                     },
                 ),
@@ -73,7 +74,7 @@ where
                     async |auth: Nip98Auth, State(this): State<AxumApi<T>>, Path(id): Path<u64>| {
                         match this.handler.delete_forward(auth, id).await {
                             Ok(r) => Ok(Json(r)),
-                            Err(e) => Err(Json(ApiError::from(e))),
+                            Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError::from(e)))),
                         }
                     },
                 )
@@ -84,7 +85,7 @@ where
                            Json(req): Json<UpdateForwardRequest>| {
                         match this.handler.update_forward(auth, id, req).await {
                             Ok(r) => Ok(Json(r)),
-                            Err(e) => Err(Json(ApiError::from(e))),
+                            Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError::from(e)))),
                         }
                     },
                 ),
@@ -101,7 +102,7 @@ where
                             .await
                         {
                             Ok(r) => Ok(Json(r)),
-                            Err(e) => Err(Json(ApiError::from(e))),
+                            Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError::from(e)))),
                         }
                     },
                 ),
@@ -111,7 +112,7 @@ where
                 get(async |auth: Nip98Auth, State(this): State<AxumApi<T>>| {
                     match this.handler.get_stream_keys(auth).await {
                         Ok(r) => Ok(Json(r)),
-                        Err(e) => Err(Json(ApiError::from(e))),
+                        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError::from(e)))),
                     }
                 })
                 .post(
@@ -120,7 +121,7 @@ where
                            Json(req): Json<CreateStreamKeyRequest>| {
                         match this.handler.create_stream_key(auth, req).await {
                             Ok(r) => Ok(Json(r)),
-                            Err(e) => Err(Json(ApiError::from(e))),
+                            Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError::from(e)))),
                         }
                     },
                 ),
@@ -144,7 +145,7 @@ where
                            Path(id): Path<Uuid>| {
                         match this.handler.delete_event(auth, id).await {
                             Ok(r) => Ok(Json(r)),
-                            Err(e) => Err(Json(ApiError::from(e))),
+                            Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError::from(e)))),
                         }
                     },
                 ),
@@ -157,7 +158,7 @@ where
                            Query(q): Query<TopupV1Query>| {
                         match this.handler.topup(auth.pubkey, q.amount * 1000, None).await {
                             Ok(r) => Ok(Json(r)),
-                            Err(e) => Err(Json(ApiError::from(e))),
+                            Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError::from(e)))),
                         }
                     },
                 ),
@@ -168,7 +169,7 @@ where
                     async |State(this): State<AxumApi<T>>, Query(q): Query<SearchGamesV1Query>| {
                         match this.handler.search_games(q.q).await {
                             Ok(r) => Ok(Json(r)),
-                            Err(e) => Err(Json(ApiError::from(e))),
+                            Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError::from(e)))),
                         }
                     },
                 ),
@@ -182,7 +183,7 @@ where
                         .await
                     {
                         Ok(r) => Ok(Json(r)),
-                        Err(e) => Err(Json(ApiError::from(e))),
+                        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError::from(e)))),
                     },
                 ),
             )
