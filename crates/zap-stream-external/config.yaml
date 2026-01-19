@@ -1,10 +1,10 @@
 # MySQL connection string
 database: "mysql://root:root@localhost:3368/zap_stream?max_connections=2"
 
-# Public URL for serving files for [output_dir]
+# Public URL of the HTTP server
 public_url: "http://kieran.lan:8080"
 
-# Bind address for http server serving files from [output_dir]
+# Bind address for HTTP server
 listen_http: "127.0.0.1:8080"
 
 # Primary nsec key for publishing stream events

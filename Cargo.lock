@@ -7146,6 +7146,7 @@ dependencies = [
  "chrono",
  "config",
  "ctrlc",
+ "hex",
  "mockito",
  "nostr-sdk",
  "reqwest 0.13.1",

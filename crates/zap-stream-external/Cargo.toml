@@ -28,6 +28,7 @@ async-trait.workspace = true
 uuid.workspace = true
 chrono.workspace = true
 url.workspace = true
+hex.workspace = true
 
 config = { version = "0.15.6", features = ["yaml"] }
 reqwest = { version = "0.13", features = ["json"], optional = true }

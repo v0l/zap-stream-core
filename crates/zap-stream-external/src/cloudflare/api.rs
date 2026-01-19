@@ -6,8 +6,8 @@ use axum::routing::post;
 use axum::{Json, Router};
 use nostr_sdk::{Client, PublicKey, ToBech32};
 use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::RwLock;
+use std::sync::{Arc};
+use tokio::sync::{Mutex, RwLock};
 use tracing::log::error;
 use tracing::{info, warn};
 use url::Url;
@@ -29,6 +29,8 @@ pub struct CfApiWrapper {
     live_input_cache: Arc<RwLock<HashMap<u64, LiveInput>>>,
     /// Terms of Service URL to return in account info
     tos_url: Option<String>,
+    /// Simple mutex to prevent concurrent calls to create live endpoint
+    create_input_lock: Arc<Mutex<()>>,
 }
 
 impl CfApiWrapper {
@@ -44,10 +46,12 @@ impl CfApiWrapper {
             db,
             live_input_cache: Default::default(),
             tos_url: None,
+            create_input_lock: Default::default(),
         }
     }
 
     async fn create_user_live_input(&self, user: &User) -> Result<LiveInput> {
+        let _g = self.create_input_lock.lock().await;
         let pk = PublicKey::from_slice(&user.pubkey)?;
         let live_input_name = pk.to_bech32()?;
         let response = self.client.create_live_input(&live_input_name).await?;
@@ -87,7 +91,11 @@ impl CfApiWrapper {
             }
         }
 
-        warn!("Creating input for non-new user {}", user.id);
+        info!(
+            "Creating input for user {}={}",
+            user.id,
+            hex::encode(&user.pubkey)
+        );
         self.create_user_live_input(user).await
     }
 
@@ -179,14 +187,9 @@ impl CfApiWrapper {
 #[async_trait]
 impl ZapStreamApi for CfApiWrapper {
     async fn get_account(&self, auth: Nip98Auth) -> Result<AccountInfo> {
-        let (uid, is_new) = self.db.upsert_user_opt(&auth.pubkey).await?;
+        let uid = self.db.upsert_user(&auth.pubkey).await?;
         let user = self.db.get_user(uid).await?;
-        let input = if is_new {
-            info!("Creating input for new user: {}", uid);
-            self.create_user_live_input(&user).await?
-        } else {
-            self.get_user_live_input(&user).await?
-        };
+        let input = self.get_user_live_input(&user).await?;
 
         // Get user forwards
         let forwards = self.db.get_user_forwards(uid).await?;

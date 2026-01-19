@@ -107,22 +107,6 @@ impl ZapStreamDb {
         Ok(uid)
     }
 
-    /// Sames as [Self::upsert_user] except also includes if the user is new
-    pub async fn upsert_user_opt(&self, pubkey: &[u8; 32]) -> Result<(u64, bool)> {
-        let exec = sqlx::query(
-            r#"insert into user (pubkey) values(?)
-            on duplicate key update
-                id = id
-            returning id"#,
-        )
-        .bind(pubkey.as_slice())
-        .execute(&self.db)
-        .await?;
-        let new_user = exec.rows_affected() == 1;
-        let id = exec.last_insert_id();
-        Ok((id, new_user))
-    }
-
     pub async fn insert_stream(&self, user_stream: &UserStream) -> Result<()> {
         sqlx::query(
         "insert into user_stream (id, user_id, state, starts, ends, title, summary, image, thumb, tags, content_warning, goal, pinned, cost, duration, fee, event, endpoint_id, node_name, stream_key_id, external_id)
