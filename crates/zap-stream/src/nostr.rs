@@ -1,25 +1,36 @@
 use crate::stream_manager::StreamManager;
 use anyhow::Result;
 use nostr_sdk::prelude::Coordinate;
-use nostr_sdk::{Event, EventBuilder, JsonUtil, Kind, NostrSigner, Tag, Timestamp, ToBech32};
+use nostr_sdk::{
+    Client, Event, EventBuilder, JsonUtil, Kind, NostrSigner, Tag, Timestamp, ToBech32,
+};
 use std::ops::Add;
 use zap_stream_db::{UserStream, UserStreamState};
 
 #[derive(Clone)]
 pub struct N53Publisher {
+    client: Client,
     stream_manager: StreamManager,
 }
 
 impl N53Publisher {
-    pub fn new(stream_manager: StreamManager) -> Self {
-        Self { stream_manager }
+    pub fn new(stream_manager: StreamManager, client: Client) -> Self {
+        Self {
+            stream_manager,
+            client,
+        }
     }
 
-    pub async fn stream_to_event_builder(
+    pub async fn publish(&self, ev: &Event) -> Result<()> {
+        self.client.send_event(ev).await?;
+        Ok(())
+    }
+
+    pub async fn stream_to_event(
         &self,
         stream: &UserStream,
-        signer: impl NostrSigner,
-    ) -> Result<EventBuilder> {
+        extra_tags: Vec<Tag>,
+    ) -> Result<Event> {
         let mut tags = vec![
             Tag::parse(&["d".to_string(), stream.id.to_string()])?,
             Tag::parse(&["status".to_string(), stream.state.to_string()])?,
@@ -93,8 +104,8 @@ impl N53Publisher {
             ])?);
         }
 
-        let coord =
-            Coordinate::new(Kind::LiveEvent, signer.get_public_key().await?).identifier(&stream.id);
+        let pubkey = self.client.signer().await?.get_public_key().await?;
+        let coord = Coordinate::new(Kind::LiveEvent, pubkey).identifier(&stream.id);
         tags.push(Tag::parse([
             "alt",
             &format!(
@@ -107,7 +118,9 @@ impl N53Publisher {
             ),
         ])?);
 
-        let mut eb = EventBuilder::new(Kind::LiveEvent, "").tags(tags);
+        let mut eb = EventBuilder::new(Kind::LiveEvent, "")
+            .tags(tags)
+            .tags(extra_tags);
 
         // make sure this event is always newer
         if let Some(previous_event) = &stream.event
@@ -117,6 +130,6 @@ impl N53Publisher {
             eb = eb.custom_created_at(prev_event.created_at.add(Timestamp::from_secs(1)));
         }
 
-        Ok(eb)
+        Ok(self.client.sign_event_builder(eb).await?)
     }
 }

@@ -238,7 +238,6 @@ impl StreamManager {
         &self,
         pubkey: &str,
         user_id: u64,
-        pipeline_id: &str,
         target_fps: f32,
         input_resolution: &str,
         conn: &ConnectionInfo,
@@ -248,12 +247,12 @@ impl StreamManager {
         let now = Utc::now();
         let mut streams = self.active_streams.write().await;
         streams.insert(
-            pipeline_id.to_string(),
+            conn.id.to_string(),
             ActiveStreamInfo {
                 pubkey: pubkey.to_string(),
                 user_id,
                 node_name: self.node_name.clone(),
-                stream_id: pipeline_id.to_string(),
+                stream_id: conn.id.to_string(),
                 started_at: now,
                 last_update: None,
                 average_fps: 0.0,

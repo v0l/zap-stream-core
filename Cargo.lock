@@ -7161,6 +7161,7 @@ dependencies = [
  "uuid",
  "zap-stream",
  "zap-stream-api-common",
+ "zap-stream-core",
  "zap-stream-db",
 ]
 

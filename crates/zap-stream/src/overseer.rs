@@ -134,7 +134,7 @@ impl ZapStreamOverseer {
         let mut overseer = Self {
             db,
             lightning: payments,
-            n53: N53Publisher::new(stream_manager.clone()),
+            n53: N53Publisher::new(stream_manager.clone(), client.clone()),
             n94: if settings.overseer.blossom.is_empty() {
                 None
             } else {
@@ -256,14 +256,7 @@ impl ZapStreamOverseer {
             }
             _ => {}
         }
-        let signer = self.client.signer().await?;
-        let ev = self
-            .n53
-            .stream_to_event_builder(stream, signer.clone())
-            .await?
-            .tags(extra_tags)
-            .build(signer.get_public_key().await?);
-        let ev = signer.sign_event(ev).await?;
+        let ev = self.n53.stream_to_event(stream, extra_tags).await?;
         self.client.send_event(&ev).await?;
         info!("Published stream event {}", ev.id.to_hex());
         self.last_event_publish
@@ -666,7 +659,6 @@ impl Overseer for ZapStreamOverseer {
             .add_active_stream(
                 &hex_pubkey,
                 user.id,
-                new_stream.id.as_str(),
                 cfg.video_src.map(|s| s.fps).unwrap(),
                 cfg.video_src
                     .map(|s| format!("{}x{}", s.width, s.height))

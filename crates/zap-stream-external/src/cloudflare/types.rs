@@ -27,12 +27,60 @@ pub struct LiveInput {
     pub webrtc: Option<WebRtcEndpoint>,
     #[serde(rename = "webRTCPlayback")]
     pub webrtc_playback: Option<WebRtcEndpoint>,
-    pub status: Option<serde_json::Value>,
+    pub status: Option<LiveInputStatus>,
     pub created: String,
     pub modified: Option<String>,
     pub meta: Option<serde_json::Value>,
     pub recording: Option<RecordingSettings>,
     pub delete_recording_after_days: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(untagged)]
+pub enum LiveInputStatus {
+    Simple(LiveInputStatusSimple),
+    Complex(LiveInputStatusComplex),
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveInputStatusSimple {
+    Connected,
+    Reconnected,
+    Reconnecting,
+    ClientDisconnect,
+    TtlExceeded,
+    FailedToConnect,
+    FailedToReconnect,
+    NewConfigurationAccepted,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct LiveInputStatusComplex {
+    pub current: LiveInputStatusCurrent,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct LiveInputStatusCurrent {
+    pub state: LiveInputStatusSimple,
+}
+
+impl LiveInputStatus {
+    pub fn is_connected(&self) -> bool {
+        match self {
+            Self::Simple(s) => s.is_connected(),
+            Self::Complex(s) => s.current.state.is_connected(),
+        }
+    }
+}
+
+impl LiveInputStatusSimple {
+    pub fn is_connected(&self) -> bool {
+        match self {
+            Self::Connected | Self::Reconnected | Self::NewConfigurationAccepted => true,
+            _ => false,
+        }
+    }
 }
 
 /// RTMPS endpoint details
@@ -103,25 +151,15 @@ pub struct Playback {
 /// Cloudflare Live Input webhook payload
 /// Based on: https://developers.cloudflare.com/stream/stream-live/webhooks/
 #[derive(Debug, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
 pub struct LiveInputWebhook {
-    pub name: String,
-    pub text: String,
     pub data: LiveInputWebhookData,
-    pub ts: i64,
 }
 
 /// Live Input webhook data containing event information
 #[derive(Debug, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
 pub struct LiveInputWebhookData {
-    pub notification_name: String,
-    #[serde(rename = "input_id")]
     pub input_id: String,
-    #[serde(rename = "event_type")]
     pub event_type: String,
-    #[serde(rename = "updated_at")]
-    pub updated_at: String,
 }
 
 /// Webhook configuration result

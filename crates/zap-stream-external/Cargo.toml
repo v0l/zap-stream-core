@@ -12,6 +12,7 @@ cloudflare = ["reqwest"]
 [dependencies]
 zap-stream-db = { path = "../zap-stream-db", default-features = false }
 zap-stream = { path = "../zap-stream", default-features = false, features = ["tls-ring"] }
+zap-stream-core = { path = "../core", default-features = false }
 zap-stream-api-common = { path = "../zap-stream-api-common", default-features = false, features = ["axum", "admin"] }
 
 tokio.workspace = true

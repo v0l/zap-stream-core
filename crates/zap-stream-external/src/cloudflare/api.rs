@@ -1,24 +1,34 @@
 use crate::cloudflare::{
-    CloudflareClient, CloudflareToken, LiveInput, WebhookPayload, WebhookResult,
+    CloudflareClient, CloudflareToken, LiveInput, LiveInputWebhookData,
+    WebhookPayload, WebhookResult,
 };
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
+use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
-use axum::routing::{any, post};
-use axum::{Json, Router};
-use nostr_sdk::{Client, PublicKey, ToBech32};
+use axum::routing::{any};
+use axum::{Router};
+use chrono::Utc;
+use nostr_sdk::{Client, Event, JsonUtil, PublicKey, Tag, ToBech32};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::select;
 use tokio::sync::{Mutex, RwLock};
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use tracing::log::error;
 use tracing::{info, warn};
 use url::Url;
 use uuid::Uuid;
 use zap_stream::api_base::ApiBase;
+use zap_stream::nostr::N53Publisher;
 use zap_stream::payments::LightningNode;
+use zap_stream::stream_manager::StreamManager;
 use zap_stream_api_common::*;
-use zap_stream_db::{User, ZapStreamDb};
+use zap_stream_core::ingress::ConnectionInfo;
+use zap_stream_db::{IngestEndpoint, User, UserStream, UserStreamState, ZapStreamDb};
 
 #[derive(Clone)]
 pub struct CfApiWrapper {
@@ -38,6 +48,10 @@ pub struct CfApiWrapper {
     public_url: String,
     /// Details of the registered webhook
     webhook_details: Arc<RwLock<Option<WebhookResult>>>,
+    /// Stream manager tracking active streams
+    stream_manager: StreamManager,
+    /// Publisher util for nostr events
+    n53: N53Publisher,
 }
 
 impl CfApiWrapper {
@@ -48,17 +62,20 @@ impl CfApiWrapper {
         db: ZapStreamDb,
         client: Client,
         lightning: Arc<dyn LightningNode>,
+        stream_manager: StreamManager,
         public_url: String,
     ) -> Self {
         Self {
             client: CloudflareClient::new(token),
-            api_base: ApiBase::new(db.clone(), client, lightning),
+            api_base: ApiBase::new(db.clone(), client.clone(), lightning),
             db,
             live_input_cache: Default::default(),
             tos_url: None,
             create_input_lock: Default::default(),
             public_url,
             webhook_details: Default::default(),
+            n53: N53Publisher::new(stream_manager.clone(), client.clone()),
+            stream_manager,
         }
     }
 
@@ -83,6 +100,23 @@ impl CfApiWrapper {
         }
     }
 
+    async fn fetch_user_live_input(&self, user: &User) -> Result<LiveInput> {
+        let external_id = user.external_id.as_ref().unwrap_or(&user.stream_key);
+        let response = self.client.get_live_input(external_id).await?;
+        if response.success {
+            self.live_input_cache
+                .write()
+                .await
+                .insert(user.id, response.result.clone());
+            Ok(response.result)
+        } else {
+            bail!(
+                "Failed to fetch live input, error {:?}",
+                response.errors.first()
+            );
+        }
+    }
+
     async fn get_user_live_input(&self, user: &User) -> Result<LiveInput> {
         let cache = self.live_input_cache.read().await;
         if let Some(input) = cache.get(&user.id) {
@@ -92,15 +126,8 @@ impl CfApiWrapper {
 
         // try to load from API next
         // to maintain compat with the backend PR fallback to the stream key if not set
-        let external_id = user.external_id.as_ref().unwrap_or(&user.stream_key);
-        if let Ok(response) = self.client.get_live_input(external_id).await {
-            if response.success {
-                self.live_input_cache
-                    .write()
-                    .await
-                    .insert(user.id, response.result.clone());
-                return Ok(response.result);
-            }
+        if let Ok(i) = self.fetch_user_live_input(user).await {
+            return Ok(i);
         }
 
         info!(
@@ -137,21 +164,68 @@ impl CfApiWrapper {
         self.create_user_live_input(&user).await
     }
 
+    pub fn check_streams(self, token: CancellationToken) -> JoinHandle<Result<()>> {
+        tokio::spawn(async move {
+            let mut timer = tokio::time::interval(Duration::from_secs(30));
+            loop {
+                select! {
+                    _ = token.cancelled() => {
+                        info!("CF check_streams shutdown");
+                        return Ok(());
+                    },
+                    _ = timer.tick() => {
+                       let live_streams = self.db.list_live_streams().await?;
+                        info!("Checking {} live streams..", live_streams.len());
+                        for live_stream in live_streams {
+                            let user = self.db.get_user(live_stream.user_id).await?;
+                            let input = match self.fetch_user_live_input(&user).await {
+                                Ok(r) => r,
+                                Err(e) => {
+                                    warn!("Failed to fetch live input for user {}: {}", live_stream.user_id, e);
+                                    continue;
+                                }
+                            };
+                            if !input.status.as_ref().map(|s| s.is_connected()).unwrap_or(false) {
+                                warn!("Database sync issue, live stream is supposed to be live but cloudflare shows the status {:?}", input.status);
+                                if let Err(e) = self.publish_stream_end(input).await {
+                                    warn!("Failed to publish live input for user {}", e);
+                                }
+                            } else {
+                                self.ensure_tracking_live(&input, &user, &live_stream).await?;
+                            }
+                        }
+                    }
+                }
+            }
+        })
+    }
+
     /// Create a router to handle api requests internally
     pub fn make_router(&self) -> Router {
         Router::new()
             .route(
                 Self::WEBHOOK_API_PATH,
                 any(
-                    async move |headers: HeaderMap,
-                                State(this): State<Self>,
-                                Json(payload): Json<Option<WebhookPayload>>| {
+                    async move |headers: HeaderMap, State(this): State<Self>, body: Bytes| {
+                        info!(
+                            "Got webhook payload: {:?}",
+                            str::from_utf8(&body).unwrap_or(&format!("{:?}", body))
+                        );
+                        if str::from_utf8(&body)
+                            .map(|s| s.contains("test message"))
+                            .unwrap_or(false)
+                        {
+                            info!("Webhook test successful!");
+                            return Ok(());
+                        }
                         // todo: verify sig
-                        let Some(sig) = headers.get("Webhook-Signature") else {
-                            return Err(StatusCode::BAD_REQUEST);
-                        };
-                        if let Err(e) = Self::handle_webhook(this, payload).await {
+                        if headers.get("Webhook-Signature").is_none() {
+                            warn!("Webhook signature header missing");
+                            //return Err(StatusCode::BAD_REQUEST);
+                        }
+                        if let Err(e) = this.handle_webhook(body).await {
                             error!("Error handling webhook: {}", e);
+                            return Err(StatusCode::INTERNAL_SERVER_ERROR);
                         }
                         Ok(())
                     },
@@ -160,11 +234,8 @@ impl CfApiWrapper {
             .with_state(self.clone())
     }
 
-    async fn handle_webhook(this: Self, payload: Option<WebhookPayload>) -> Result<()> {
-        info!("Got webhook payload: {:?}", payload);
-        let Some(payload) = payload else {
-            return Ok(());
-        };
+    async fn handle_webhook(&self, payload: Bytes) -> Result<()> {
+        let payload = serde_json::from_slice(&payload)?;
         match payload {
             WebhookPayload::LiveInput(i) => {
                 info!(
@@ -175,10 +246,16 @@ impl CfApiWrapper {
                 // Map Cloudflare event types to our generic events
                 match i.data.event_type.as_str() {
                     "live_input.connected" => {
-                        // TODO: publish stream started
+                        let input = self
+                            .get_user_live_input_by_input_id(&i.data.input_id)
+                            .await?;
+                        self.publish_stream_start(input).await?;
                     }
-                    "live_input.disconnected" | "live_input.errored" => {
-                        // TODO: publish stream ended
+                    "live_input.disconnected" => {
+                        let input = self
+                            .get_user_live_input_by_input_id(&i.data.input_id)
+                            .await?;
+                        self.publish_stream_end(input).await?;
                     }
                     t => {
                         warn!("Unknown Cloudflare event type: {}", t);
@@ -193,7 +270,7 @@ impl CfApiWrapper {
                         v.live_input, v.playback.hls, v.thumbnail
                     );
                     // TODO: upstream stream recording
-                    let input = this.get_user_live_input_by_input_id(&v.live_input).await?;
+                    let input = self.get_user_live_input_by_input_id(&v.live_input).await?;
                 } else {
                     info!(
                         "Video Asset not ready yet (state: {}), ignoring",
@@ -201,9 +278,173 @@ impl CfApiWrapper {
                     );
                 }
             }
-            _ => {}
+            v => warn!("Unknown Webhook payload: {:?}", v),
         }
         Ok(())
+    }
+
+    async fn detect_endpoint(&self, connection: &ConnectionInfo) -> Result<IngestEndpoint> {
+        // TODO: allow user to select their default endpoint
+
+        let endpoints = self.db.get_ingest_endpoints().await?;
+
+        if endpoints.is_empty() {
+            bail!("No endpoints found, please configure endpoints first!");
+        }
+        let default = endpoints.iter().max_by_key(|e| e.cost);
+        Ok(endpoints
+            .iter()
+            .find(|e| e.name.eq_ignore_ascii_case(&connection.app_name))
+            .or(default)
+            .unwrap()
+            .clone())
+    }
+
+    async fn publish_stream_start(&self, input: LiveInput) -> Result<()> {
+        let user = self.db.get_user_by_external_id(&input.uid).await?;
+        let Some(user) = user else {
+            bail!("No user found with external_id {}", input.uid);
+        };
+        let new_id = Uuid::new_v4();
+        let conn = ConnectionInfo {
+            id: new_id,
+            endpoint: "RTMPS".to_string(),
+            ip_addr: "".to_string(),
+            app_name: "cloudflare".to_string(),
+            key: input.rtmps.stream_key.clone(),
+        };
+        let endpoint = self.detect_endpoint(&conn).await?;
+        // start a new stream
+        let mut new_stream = UserStream {
+            id: new_id.to_string(),
+            user_id: user.id,
+            starts: Utc::now(),
+            state: UserStreamState::Live,
+            endpoint_id: Some(endpoint.id),
+            title: user.title.clone(),
+            summary: user.summary.clone(),
+            image: user.image.clone(),
+            content_warning: user.content_warning.clone(),
+            goal: user.goal.clone(),
+            tags: user.tags.clone(),
+            ..Default::default()
+        };
+        self.db.insert_stream(&new_stream).await?;
+
+        let stream_event = self.publish_stream_event(&new_stream, &user).await?;
+        new_stream.event = Some(stream_event.as_json());
+        self.db.update_stream(&new_stream).await?;
+
+        Ok(())
+    }
+
+    async fn ensure_tracking_live(
+        &self,
+        input: &LiveInput,
+        user: &User,
+        stream: &UserStream,
+    ) -> Result<()> {
+        let conn = ConnectionInfo {
+            id: stream.id.parse()?,
+            endpoint: "RTMPS".to_string(),
+            ip_addr: "".to_string(),
+            app_name: "cloudflare".to_string(),
+            key: input.rtmps.stream_key.clone(),
+        };
+        let streaming = self.get_streaming_url(stream, input)?;
+        self.stream_manager
+            .add_active_stream(
+                &hex::encode(&user.pubkey),
+                user.id,
+                0.0,   // FPS is never known
+                "0x0", // Resolution is never known
+                &conn,
+                streaming.map(|s| vec![s]).unwrap_or_default(),
+                stream.title.as_ref().map(|s| s.as_str()),
+            )
+            .await;
+        Ok(())
+    }
+
+    async fn publish_stream_end(&self, input: LiveInput) -> Result<()> {
+        let user = self.db.get_user_by_external_id(&input.uid).await?;
+        let Some(user) = user else {
+            bail!("No user found with external_id {}", input.uid);
+        };
+
+        let streams = self.db.get_user_live_streams(user.id).await?;
+        let Some(mut stream) = streams.into_iter().next() else {
+            bail!("No live streams found for user {}", user.id);
+        };
+
+        self.stream_manager.remove_active_stream(&stream.id).await;
+        zap_stream_core::metrics::remove_playback_rate(&stream.id);
+
+        stream.state = UserStreamState::Ended;
+        stream.ends = Some(Utc::now());
+        let event = self.publish_stream_event(&stream, &user).await?;
+        stream.event = Some(event.as_json());
+        self.db.update_stream(&stream).await?;
+
+        info!("Stream ended {}", stream.id);
+        Ok(())
+    }
+
+    fn map_to_public_url(&self, path: &str) -> Result<Url> {
+        let u: Url = self.public_url.parse()?;
+        Ok(u.join(path)?)
+    }
+
+    pub fn get_streaming_url(
+        &self,
+        stream: &UserStream,
+        input: &LiveInput,
+    ) -> Result<Option<String>> {
+        // replace the webrtc url path with the hls/video path
+        // for some reason the hls path is not included in the live input details, and we
+        // don't have another way to get the hostname part without replacing it with a fixed value
+        let mut base_url: Url = input
+            .webrtc_playback
+            .as_ref()
+            .context("webrtc url is missing")?
+            .url
+            .parse()?;
+        match stream.state {
+            UserStreamState::Live => {
+                base_url.set_path(&format!("{}/manifest/video.m3u8", input.uid));
+                return Ok(Some(base_url.to_string()));
+            }
+            UserStreamState::Ended => {
+                // external_id will be the video id
+                if let Some(r) = &stream.external_id {
+                    base_url.set_path(&format!("{}/manifest/video.m3u8", r));
+                    return Ok(Some(base_url.to_string()));
+                }
+            }
+            _ => {}
+        }
+        Ok(None)
+    }
+
+    pub async fn publish_stream_event(&self, stream: &UserStream, user: &User) -> Result<Event> {
+        let mut extra_tags = vec![
+            Tag::parse(["p", hex::encode(&user.pubkey).as_str(), "", "host"])?,
+            Tag::parse(["service", self.map_to_public_url("api/v1")?.as_str()])?,
+        ];
+        let input = self.get_user_live_input(user).await?;
+        match (&stream.state, self.get_streaming_url(&stream, &input)?) {
+            (&UserStreamState::Live, Some(u)) => {
+                extra_tags.push(Tag::parse(["streaming", u.as_str()])?)
+            }
+            (&UserStreamState::Ended, Some(u)) => {
+                extra_tags.push(Tag::parse(["recording", u.as_str()])?)
+            }
+            _ => {}
+        }
+        let ev = self.n53.stream_to_event(stream, extra_tags).await?;
+        self.n53.publish(&ev).await?;
+        info!("Published stream event {}", ev.id.to_hex());
+        Ok(ev)
     }
 
     /// Register the webhook handler if it's not already set
