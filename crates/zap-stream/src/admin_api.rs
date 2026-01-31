@@ -112,6 +112,12 @@ impl ZapStreamAdminApi for ZapStreamAdminApiImpl {
         })
     }
 
+    async fn get_user(&self, auth: Nip98Auth, uid: u64) -> Result<AdminUserInfo> {
+        self.check_admin_access(&auth.pubkey).await?;
+        let user = self.db.get_user(uid).await?;
+        Ok(Self::map_user_to_admin_user(&user))
+    }
+
     async fn update_user(
         &self,
         auth: Nip98Auth,

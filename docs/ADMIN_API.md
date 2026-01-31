@@ -71,9 +71,51 @@ GET /api/v1/admin/users?search=02a1b2c3
 - `title`: User's default stream title
 - `summary`: User's default stream summary
 
-### 2. Manage User
+### 2. Get User
 
-**Endpoint**: `POST /api/v1/admin/users/{id}`
+**Endpoint**: `GET /api/v1/admin/users/{id}`
+
+**Description**: Retrieve detailed information about a specific user.
+
+**Path Parameters**:
+- `id`: User ID (numeric)
+
+**Example Requests**:
+```http
+GET /api/v1/admin/users/123
+```
+
+**Response Format**:
+```json
+{
+  "id": 123,
+  "pubkey": "02a1b2c3d4e5f6...",
+  "created": 1640995200,
+  "balance": 50000,
+  "is_admin": false,
+  "is_blocked": false,
+  "stream_dump_recording": false,
+  "tos_accepted": 1640995300,
+  "title": "User's Stream Title",
+  "summary": "Stream description"
+}
+```
+
+**Response Fields**:
+- `id`: Internal user ID
+- `pubkey`: User's Nostr public key (hex encoded)
+- `created`: Unix timestamp of account creation
+- `balance`: User's balance in millisatoshis
+- `is_admin`: Whether user has admin privileges
+- `is_blocked`: Whether user is blocked
+- `stream_dump_recording`: Whether stream dump recording is enabled
+- `tos_accepted`: Unix timestamp when ToS was accepted (null if not accepted)
+- `title`: User's default stream title
+- `summary`: User's default stream summary
+
+### 3. Update User
+
+**Endpoint**: `PATCH /api/v1/admin/users/{id}`
 
 **Description**: Perform administrative actions on a specific user account.
 
@@ -110,9 +152,21 @@ GET /api/v1/admin/users?search=02a1b2c3
 
 **Response**: 
 ```json
-{}
+{
+  "id": 123,
+  "pubkey": "02a1b2c3d4e5f6...",
+  "created": 1640995200,
+  "balance": 50000,
+  "is_admin": false,
+  "is_blocked": false,
+  "stream_dump_recording": false,
+  "tos_accepted": 1640995300,
+  "title": "User's Stream Title",
+  "summary": "Stream description"
+}
 ```
-Empty JSON object on success.
+
+Returns the updated user information.
 
 **Example Operations**:
 
@@ -216,7 +270,7 @@ When building a web UI for these endpoints:
 9. **Stream Key Management**: Include buttons to view and regenerate stream keys with proper confirmation
 10. **Stream Key Display**: Show stream keys in a copyable format with masking for security
 
-### 3. List User Streams
+### 4. List User Streams
 
 **Endpoint**: `GET /api/v1/admin/users/{id}/streams`
 
@@ -284,7 +338,7 @@ GET /api/v1/admin/users/123/streams?page=1&limit=25
 - `fee`: Stream fee in millisatoshis
 - `endpoint_id`: ID of the ingest endpoint used
 
-### 4. List User Balance History
+### 5. List User Balance History
 
 **Endpoint**: `GET /api/v1/admin/users/{id}/history`
 
@@ -334,7 +388,7 @@ GET /api/v1/admin/users/123/history?page=1&limit=25
 - `amount`: Amount in satoshis (converted from millisatoshis)
 - `desc`: Description of the transaction
 
-### 5. Get User Stream Key
+### 6. Get User Stream Key
 
 **Endpoint**: `GET /api/v1/admin/users/{id}/stream-key`
 
@@ -358,7 +412,7 @@ GET /api/v1/admin/users/123/stream-key
 **Response Fields**:
 - `stream_key`: The user's current stream key (UUID format)
 
-### 6. Regenerate User Stream Key
+### 7. Regenerate User Stream Key
 
 **Endpoint**: `POST /api/v1/admin/users/{id}/stream-key/regenerate`
 
@@ -388,7 +442,7 @@ POST /api/v1/admin/users/123/stream-key/regenerate
 
 **Audit Note**: Both stream key viewing and regeneration operations are logged in the audit system for security compliance.
 
-### 7. Get Audit Logs
+### 8. Get Audit Logs
 
 **Endpoint**: `GET /api/v1/admin/audit-log`
 
@@ -518,16 +572,21 @@ export NOSTR_SECRET_KEY="your-nsec-here"
 nak curl -X GET "https://api.zap.stream/api/v1/admin/users?page=0&limit=10"
 ```
 
-**Grant Admin Privileges**:
+**Get Specific User**:
 ```bash
-nak curl -X POST "https://api.zap.stream/api/v1/admin/users/123" \
+nak curl -X GET "https://api.zap.stream/api/v1/admin/users/123"
+```
+
+**Update User - Grant Admin Privileges**:
+```bash
+nak curl -X PATCH "https://api.zap.stream/api/v1/admin/users/123" \
   -H "Content-Type: application/json" \
   -d '{"set_admin": true}'
 ```
 
-**Add Credits**:
+**Update User - Add Credits**:
 ```bash
-nak curl -X POST "https://api.zap.stream/api/v1/admin/users/123" \
+nak curl -X PATCH "https://api.zap.stream/api/v1/admin/users/123" \
   -H "Content-Type: application/json" \
   -d '{"add_credit": 50000, "memo": "Welcome bonus"}'
 ```

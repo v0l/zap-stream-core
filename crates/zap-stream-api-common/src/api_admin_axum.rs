@@ -3,7 +3,7 @@ use crate::{
 };
 use crate::{ApiError, PageQueryV1};
 use axum::extract::{Path, Query, State};
-use axum::routing::{get, patch, post};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use uuid::Uuid;
@@ -42,7 +42,17 @@ where
             )
             .route(
                 "/api/v1/admin/users/{id}",
-                patch(
+                get(
+                    async |auth: Nip98Auth,
+                           State(this): State<AxumAdminApi<T>>,
+                           Path(id): Path<u64>| {
+                        match this.handler.get_user(auth, id).await {
+                            Ok(r) => Ok(Json(r)),
+                            Err(e) => Err(Json(ApiError::from(e))),
+                        }
+                    },
+                )
+                .patch(
                     async |auth: Nip98Auth,
                            State(this): State<AxumAdminApi<T>>,
                            Path(id): Path<u64>,

@@ -13,6 +13,8 @@ pub trait ZapStreamAdminApi: Clone + Send + Sync {
         search: Option<String>,
     ) -> Result<AdminUsersResponse>;
 
+    async fn get_user(&self, auth: Nip98Auth, uid: u64) -> Result<AdminUserInfo>;
+
     async fn update_user(&self, auth: Nip98Auth, uid: u64, req: AdminUserRequest) -> Result<AdminUserInfo>;
 
     async fn get_user_balance_history(
