@@ -204,8 +204,7 @@ async fn main() -> Result<()> {
             },
             overseer.clone(),
         )))
-        .merge(ThumbServer::new(settings.output_dir.clone()))
-        .layer(CorsLayer::very_permissive());
+        .merge(ThumbServer::new(settings.output_dir.clone()));
 
     #[cfg(feature = "hls")]
     {
@@ -219,7 +218,7 @@ async fn main() -> Result<()> {
     tasks.push(tokio::spawn(async move {
         let listener = TcpListener::bind(&http_addr).await?;
         info!("Listening on: {}", http_addr);
-        axum::serve(listener, server)
+        axum::serve(listener, server.layer(CorsLayer::very_permissive()))
             .with_graceful_shutdown(async move { shutdown_http.cancelled().await })
             .await?;
         info!("HTTP server shutdown.");
