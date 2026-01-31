@@ -1194,5 +1194,3 @@ GET /api/v1/admin/payments/summary
 3. **User Behavior**: Analyze payment patterns and types
 4. **Debt Monitoring**: Identify if total stream costs exceed total balance
 5. **Pending Payments**: Track unpaid invoices via total_pending_amount
-```
-```
