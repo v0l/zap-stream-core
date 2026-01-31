@@ -5,7 +5,7 @@ use crate::{
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rand::random;
-use sqlx::{MySqlPool, Row};
+use sqlx::{MySqlPool, Row, QueryBuilder};
 use std::ops::Add;
 use uuid::Uuid;
 
@@ -466,35 +466,27 @@ impl ZapStreamDb {
         payment_type: Option<PaymentType>,
         is_paid: Option<bool>,
     ) -> Result<Vec<Payment>> {
-        let mut query = String::from("select * from payment where 1=1");
-        
-        if user_id.is_some() {
-            query.push_str(" and user_id = ?");
-        }
-        if payment_type.is_some() {
-            query.push_str(" and payment_type = ?");
-        }
-        if is_paid.is_some() {
-            query.push_str(" and is_paid = ?");
-        }
-        
-        query.push_str(" order by created desc limit ? offset ?");
-        
-        let mut q = sqlx::query_as(&query);
+        let mut query_builder: QueryBuilder<sqlx::MySql> = QueryBuilder::new("SELECT * FROM payment WHERE 1=1");
         
         if let Some(uid) = user_id {
-            q = q.bind(uid);
+            query_builder.push(" AND user_id = ").push_bind(uid);
         }
         if let Some(pt) = payment_type {
-            q = q.bind(pt as u8);
+            query_builder.push(" AND payment_type = ").push_bind(pt as u8);
         }
         if let Some(paid) = is_paid {
-            q = q.bind(paid);
+            query_builder.push(" AND is_paid = ").push_bind(paid);
         }
         
-        q = q.bind(limit).bind(offset);
+        query_builder.push(" ORDER BY created DESC LIMIT ").push_bind(limit);
+        query_builder.push(" OFFSET ").push_bind(offset);
         
-        Ok(q.fetch_all(&self.db).await?)
+        let payments = query_builder
+            .build_query_as::<Payment>()
+            .fetch_all(&self.db)
+            .await?;
+        
+        Ok(payments)
     }
 
     /// Count all payments with filters for admin
@@ -504,31 +496,23 @@ impl ZapStreamDb {
         payment_type: Option<PaymentType>,
         is_paid: Option<bool>,
     ) -> Result<u32> {
-        let mut query = String::from("select count(*) as cnt from payment where 1=1");
-        
-        if user_id.is_some() {
-            query.push_str(" and user_id = ?");
-        }
-        if payment_type.is_some() {
-            query.push_str(" and payment_type = ?");
-        }
-        if is_paid.is_some() {
-            query.push_str(" and is_paid = ?");
-        }
-        
-        let mut q = sqlx::query(&query);
+        let mut query_builder: QueryBuilder<sqlx::MySql> = QueryBuilder::new("SELECT COUNT(*) as cnt FROM payment WHERE 1=1");
         
         if let Some(uid) = user_id {
-            q = q.bind(uid);
+            query_builder.push(" AND user_id = ").push_bind(uid);
         }
         if let Some(pt) = payment_type {
-            q = q.bind(pt as u8);
+            query_builder.push(" AND payment_type = ").push_bind(pt as u8);
         }
         if let Some(paid) = is_paid {
-            q = q.bind(paid);
+            query_builder.push(" AND is_paid = ").push_bind(paid);
         }
         
-        let row = q.fetch_one(&self.db).await?;
+        let row = query_builder
+            .build()
+            .fetch_one(&self.db)
+            .await?;
+        
         Ok(row.try_get::<i64, _>("cnt")? as u32)
     }
 
@@ -554,6 +538,69 @@ impl ZapStreamDb {
             .fetch_one(&self.db)
             .await?;
         Ok(row.try_get::<i64, _>("total")?)
+    }
+
+    /// Get comprehensive payment summary with all statistics in a single query
+    pub async fn get_payments_summary(&self) -> Result<PaymentsSummaryData> {
+        let row = sqlx::query(
+            "SELECT 
+                (SELECT COUNT(*) FROM user) as total_users,
+                (SELECT COALESCE(SUM(balance), 0) FROM user) as total_balance,
+                (SELECT COALESCE(SUM(cost), 0) FROM user_stream) as total_stream_costs,
+                -- TopUp stats
+                (SELECT COUNT(*) FROM payment WHERE payment_type = 0) as topup_count,
+                (SELECT COALESCE(SUM(amount), 0) FROM payment WHERE payment_type = 0) as topup_amount,
+                (SELECT COUNT(*) FROM payment WHERE payment_type = 0 AND is_paid = true) as topup_paid_count,
+                (SELECT COALESCE(SUM(amount), 0) FROM payment WHERE payment_type = 0 AND is_paid = true) as topup_paid_amount,
+                -- Zap stats
+                (SELECT COUNT(*) FROM payment WHERE payment_type = 1) as zap_count,
+                (SELECT COALESCE(SUM(amount), 0) FROM payment WHERE payment_type = 1) as zap_amount,
+                (SELECT COUNT(*) FROM payment WHERE payment_type = 1 AND is_paid = true) as zap_paid_count,
+                (SELECT COALESCE(SUM(amount), 0) FROM payment WHERE payment_type = 1 AND is_paid = true) as zap_paid_amount,
+                -- Credit stats
+                (SELECT COUNT(*) FROM payment WHERE payment_type = 2) as credit_count,
+                (SELECT COALESCE(SUM(amount), 0) FROM payment WHERE payment_type = 2) as credit_amount,
+                (SELECT COUNT(*) FROM payment WHERE payment_type = 2 AND is_paid = true) as credit_paid_count,
+                (SELECT COALESCE(SUM(amount), 0) FROM payment WHERE payment_type = 2 AND is_paid = true) as credit_paid_amount,
+                -- Withdrawal stats
+                (SELECT COUNT(*) FROM payment WHERE payment_type = 3) as withdrawal_count,
+                (SELECT COALESCE(SUM(amount), 0) FROM payment WHERE payment_type = 3) as withdrawal_amount,
+                (SELECT COUNT(*) FROM payment WHERE payment_type = 3 AND is_paid = true) as withdrawal_paid_count,
+                (SELECT COALESCE(SUM(amount), 0) FROM payment WHERE payment_type = 3 AND is_paid = true) as withdrawal_paid_amount,
+                -- AdmissionFee stats
+                (SELECT COUNT(*) FROM payment WHERE payment_type = 4) as admission_count,
+                (SELECT COALESCE(SUM(amount), 0) FROM payment WHERE payment_type = 4) as admission_amount,
+                (SELECT COUNT(*) FROM payment WHERE payment_type = 4 AND is_paid = true) as admission_paid_count,
+                (SELECT COALESCE(SUM(amount), 0) FROM payment WHERE payment_type = 4 AND is_paid = true) as admission_paid_amount"
+        )
+        .fetch_one(&self.db)
+        .await?;
+        
+        Ok(PaymentsSummaryData {
+            total_users: row.try_get::<i64, _>("total_users")? as u32,
+            total_balance: row.try_get::<i64, _>("total_balance")?,
+            total_stream_costs: row.try_get::<i64, _>("total_stream_costs")? as u64,
+            topup_count: row.try_get::<i64, _>("topup_count")? as u32,
+            topup_amount: row.try_get::<i64, _>("topup_amount")?,
+            topup_paid_count: row.try_get::<i64, _>("topup_paid_count")? as u32,
+            topup_paid_amount: row.try_get::<i64, _>("topup_paid_amount")?,
+            zap_count: row.try_get::<i64, _>("zap_count")? as u32,
+            zap_amount: row.try_get::<i64, _>("zap_amount")?,
+            zap_paid_count: row.try_get::<i64, _>("zap_paid_count")? as u32,
+            zap_paid_amount: row.try_get::<i64, _>("zap_paid_amount")?,
+            credit_count: row.try_get::<i64, _>("credit_count")? as u32,
+            credit_amount: row.try_get::<i64, _>("credit_amount")?,
+            credit_paid_count: row.try_get::<i64, _>("credit_paid_count")? as u32,
+            credit_paid_amount: row.try_get::<i64, _>("credit_paid_amount")?,
+            withdrawal_count: row.try_get::<i64, _>("withdrawal_count")? as u32,
+            withdrawal_amount: row.try_get::<i64, _>("withdrawal_amount")?,
+            withdrawal_paid_count: row.try_get::<i64, _>("withdrawal_paid_count")? as u32,
+            withdrawal_paid_amount: row.try_get::<i64, _>("withdrawal_paid_amount")?,
+            admission_count: row.try_get::<i64, _>("admission_count")? as u32,
+            admission_amount: row.try_get::<i64, _>("admission_amount")?,
+            admission_paid_count: row.try_get::<i64, _>("admission_paid_count")? as u32,
+            admission_paid_amount: row.try_get::<i64, _>("admission_paid_amount")?,
+        })
     }
 
     /// Get payment statistics by type
