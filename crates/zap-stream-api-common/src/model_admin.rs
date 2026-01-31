@@ -115,10 +115,6 @@ pub struct AdminPaymentsSummary {
     pub total_users: u32,
     pub total_balance: i64,
     pub total_stream_costs: u64,
-    pub balance_difference: i64,
-    pub total_payments: u32,
-    pub total_paid_amount: i64,
-    pub total_pending_amount: i64,
     pub payments_by_type: AdminPaymentsByType,
 }
 

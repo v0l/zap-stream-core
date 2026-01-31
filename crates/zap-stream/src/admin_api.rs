@@ -741,32 +741,10 @@ impl ZapStreamAdminApi for ZapStreamAdminApiImpl {
         // Get all data in a single optimized query
         let data = self.db.get_payments_summary().await?;
         
-        // Calculate balance difference (total balance - total stream costs)
-        let balance_difference = data.total_balance - data.total_stream_costs;
-        
-        // Calculate totals with saturating conversion to u32
-        let total_payments = (data.topup_count.saturating_add(data.zap_count)
-                                              .saturating_add(data.credit_count)
-                                              .saturating_add(data.withdrawal_count)
-                                              .saturating_add(data.admission_count))
-                                              .min(u32::MAX as i64) as u32;
-        let total_paid_amount = data.topup_paid_amount + data.zap_paid_amount + 
-                                data.credit_paid_amount + data.withdrawal_paid_amount + 
-                                data.admission_paid_amount;
-        let total_pending_amount = (data.topup_amount - data.topup_paid_amount) + 
-                                    (data.zap_amount - data.zap_paid_amount) + 
-                                    (data.credit_amount - data.credit_paid_amount) + 
-                                    (data.withdrawal_amount - data.withdrawal_paid_amount) + 
-                                    (data.admission_amount - data.admission_paid_amount);
-        
         Ok(AdminPaymentsSummary {
             total_users: data.total_users.min(u32::MAX as i64) as u32,
             total_balance: data.total_balance,
             total_stream_costs: data.total_stream_costs.max(0) as u64,
-            balance_difference,
-            total_payments,
-            total_paid_amount,
-            total_pending_amount,
             payments_by_type: AdminPaymentsByType {
                 top_up: AdminPaymentTypeStats {
                     count: data.topup_count.min(u32::MAX as i64) as u32,
