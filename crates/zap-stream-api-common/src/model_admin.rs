@@ -134,3 +134,15 @@ pub struct AdminPaymentTypeStats {
     pub paid_count: u32,
     pub paid_amount: i64,
 }
+
+#[derive(Deserialize, Serialize)]
+pub struct AdminBalanceOffsetInfo {
+    pub user_id: u64,
+    pub pubkey: String,
+    pub current_balance: i64,
+    pub total_payments: i64,
+    pub total_stream_costs: i64,
+    pub balance_offset: i64,
+}
+
+pub type AdminBalanceOffsetsResponse = AdminPageResponse<AdminBalanceOffsetInfo>;

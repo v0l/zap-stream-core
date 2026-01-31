@@ -265,3 +265,13 @@ pub struct PaymentsSummaryData {
     pub admission_paid_count: i64,
     pub admission_paid_amount: i64,
 }
+
+#[derive(Debug, Clone, FromRow)]
+pub struct BalanceOffset {
+    pub user_id: u64,
+    pub pubkey: Vec<u8>,
+    pub current_balance: i64,
+    pub total_payments: i64,
+    pub total_stream_costs: i64,
+    pub balance_offset: i64,
+}

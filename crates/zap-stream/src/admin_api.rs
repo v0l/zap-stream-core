@@ -779,4 +779,41 @@ impl ZapStreamAdminApi for ZapStreamAdminApiImpl {
             },
         })
     }
+
+    async fn get_balance_offsets(
+        &self,
+        auth: Nip98Auth,
+        page: u32,
+        page_size: u32,
+    ) -> Result<AdminBalanceOffsetsResponse> {
+        self.check_admin_access(&auth.pubkey).await?;
+        let offset = page * page_size;
+
+        let balance_offsets = self
+            .db
+            .get_balance_offsets(offset as _, page_size as _)
+            .await?;
+
+        // Get total count of users for pagination
+        let total = self.db.get_total_user_count().await?;
+
+        let offsets_info: Vec<AdminBalanceOffsetInfo> = balance_offsets
+            .into_iter()
+            .map(|offset| AdminBalanceOffsetInfo {
+                user_id: offset.user_id,
+                pubkey: hex::encode(&offset.pubkey),
+                current_balance: offset.current_balance,
+                total_payments: offset.total_payments,
+                total_stream_costs: offset.total_stream_costs,
+                balance_offset: offset.balance_offset,
+            })
+            .collect();
+
+        Ok(AdminBalanceOffsetsResponse {
+            data: offsets_info,
+            page,
+            limit: page_size,
+            total,
+        })
+    }
 }

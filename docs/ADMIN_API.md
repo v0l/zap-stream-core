@@ -1194,3 +1194,85 @@ GET /api/v1/admin/payments/summary
 3. **User Behavior**: Analyze payment patterns and types
 4. **Debt Monitoring**: Identify if total stream costs exceed total balance
 5. **Pending Payments**: Track unpaid invoices via total_pending_amount
+
+### 9.3 Get Balance Offsets
+
+**Endpoint**: `GET /api/v1/admin/balance-offsets`
+
+**Description**: Retrieve a list of users with the biggest balance discrepancies (offsets) between their current account balance and their calculated balance based on payment history and stream costs. This endpoint helps identify accounting inconsistencies and potential issues with balance synchronization.
+
+**Query Parameters**:
+- `page` (optional, default: 0): Page number for pagination
+- `limit` (optional, default: 50): Number of users per page
+
+**Example Requests**:
+```http
+GET /api/v1/admin/balance-offsets
+GET /api/v1/admin/balance-offsets?page=1&limit=25
+```
+
+**Response Format**:
+```json
+{
+  "data": [
+    {
+      "user_id": 123,
+      "pubkey": "02a1b2c3d4e5f6...",
+      "current_balance": 50000,
+      "total_payments": 100000,
+      "total_stream_costs": 45000,
+      "balance_offset": -5000
+    },
+    {
+      "user_id": 456,
+      "pubkey": "03b2c3d4e5f6a1...",
+      "current_balance": 80000,
+      "total_payments": 50000,
+      "total_stream_costs": 10000,
+      "balance_offset": 40000
+    }
+  ],
+  "page": 0,
+  "limit": 50,
+  "total": 1234
+}
+```
+
+**Response Fields**:
+- `data`: Array of user balance offset objects sorted by absolute offset (largest discrepancies first)
+- `page`: Current page number
+- `limit`: Number of users per page
+- `total`: Total count of users in the system
+- Balance offset object fields:
+  - `user_id`: User ID
+  - `pubkey`: User's Nostr public key (hex encoded)
+  - `current_balance`: User's current account balance in millisatoshis
+  - `total_payments`: Sum of all paid payments for this user in millisatoshis
+  - `total_stream_costs`: Sum of all stream costs for this user in millisatoshis
+  - `balance_offset`: Calculated discrepancy in millisatoshis (current_balance - (total_payments - total_stream_costs))
+
+**Understanding Balance Offset**:
+The `balance_offset` represents the difference between a user's actual balance and what it should be based on their transaction history:
+
+- **Calculation**: `balance_offset = current_balance - (total_payments - total_stream_costs)`
+- **Positive offset**: User has MORE balance than expected based on their history
+  - Could indicate: Admin credits not tracked in payments, manual balance adjustments, or system errors
+- **Negative offset**: User has LESS balance than expected based on their history
+  - Could indicate: Fees deducted, failed payment completions, or accounting bugs
+- **Zero offset**: User's balance matches their transaction history perfectly (expected state)
+
+**Use Cases**:
+1. **Audit Compliance**: Identify users with accounting discrepancies for investigation
+2. **System Health**: Monitor for systematic balance calculation errors
+3. **Fraud Detection**: Large positive offsets may indicate suspicious activity
+4. **Debt Collection**: Large negative offsets may indicate users streaming without payment
+5. **Data Migration**: Verify balance accuracy after system migrations or imports
+
+**Example Commands**:
+
+**Get Users with Balance Discrepancies**:
+```bash
+nak curl -X GET "https://api.zap.stream/api/v1/admin/balance-offsets?page=0&limit=50"
+```
+
+**Audit Log**: This operation is logged with action type `view_balance_offsets`.

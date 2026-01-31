@@ -1131,4 +1131,49 @@ impl ZapStreamDb {
         .await
         .map_err(anyhow::Error::new)
     }
+
+    /// Get users with biggest balance offsets (balance discrepancies)
+    /// Calculates: user.balance - (sum of paid payments - sum of stream costs)
+    /// Positive offset = user has more balance than they should
+    /// Negative offset = user has less balance than they should
+    pub async fn get_balance_offsets(
+        &self,
+        offset: u64,
+        limit: u64,
+    ) -> Result<Vec<crate::BalanceOffset>> {
+        let query = r#"
+            SELECT 
+                u.id as user_id,
+                u.pubkey,
+                u.balance as current_balance,
+                CAST(COALESCE(
+                    (SELECT SUM(amount) FROM payment WHERE user_id = u.id AND is_paid = true),
+                    0
+                ) AS SIGNED) as total_payments,
+                CAST(COALESCE(
+                    (SELECT SUM(cost) FROM user_stream WHERE user_id = u.id),
+                    0
+                ) AS SIGNED) as total_stream_costs,
+                CAST(
+                    u.balance - (
+                        COALESCE(
+                            (SELECT SUM(amount) FROM payment WHERE user_id = u.id AND is_paid = true),
+                            0
+                        ) - COALESCE(
+                            (SELECT SUM(cost) FROM user_stream WHERE user_id = u.id),
+                            0
+                        )
+                    )
+                AS SIGNED) as balance_offset
+            FROM user u
+            ORDER BY ABS(balance_offset) DESC
+            LIMIT ? OFFSET ?
+        "#;
+
+        Ok(sqlx::query_as(query)
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&self.db)
+            .await?)
+    }
 }

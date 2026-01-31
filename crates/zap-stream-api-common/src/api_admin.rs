@@ -1,4 +1,4 @@
-use crate::{AdminAuditLogResponse, AdminIngestEndpointRequest, AdminIngestEndpointResponse, AdminIngestEndpointsResponse, AdminPaymentsResponse, AdminPaymentsSummary, AdminStreamKeyResponse, AdminUserInfo, AdminUserRequest, AdminUserStreamsResponse, AdminUsersResponse, HistoryResponse, Nip98Auth};
+use crate::{AdminAuditLogResponse, AdminBalanceOffsetsResponse, AdminIngestEndpointRequest, AdminIngestEndpointResponse, AdminIngestEndpointsResponse, AdminPaymentsResponse, AdminPaymentsSummary, AdminStreamKeyResponse, AdminUserInfo, AdminUserRequest, AdminUserStreamsResponse, AdminUsersResponse, HistoryResponse, Nip98Auth};
 use anyhow::Result;
 use async_trait::async_trait;
 use uuid::Uuid;
@@ -91,4 +91,11 @@ pub trait ZapStreamAdminApi: Clone + Send + Sync {
     ) -> Result<AdminPaymentsResponse>;
 
     async fn get_payments_summary(&self, auth: Nip98Auth) -> Result<AdminPaymentsSummary>;
+
+    async fn get_balance_offsets(
+        &self,
+        auth: Nip98Auth,
+        page: u32,
+        page_size: u32,
+    ) -> Result<AdminBalanceOffsetsResponse>;
 }

@@ -236,6 +236,23 @@ where
                     },
                 ),
             )
+            .route(
+                "/api/v1/admin/balance-offsets",
+                get(
+                    async |auth: Nip98Auth,
+                           State(this): State<AxumAdminApi<T>>,
+                           Query(q): Query<PageQueryV1>| {
+                        match this
+                            .handler
+                            .get_balance_offsets(auth, q.page as _, q.limit as _)
+                            .await
+                        {
+                            Ok(r) => Ok(Json(r)),
+                            Err(e) => Err(Json(ApiError::from(e))),
+                        }
+                    },
+                ),
+            )
             .with_state(AxumAdminApi { handler })
     }
 }
