@@ -742,11 +742,11 @@ impl ZapStreamAdminApi for ZapStreamAdminApiImpl {
         let data = self.db.get_payments_summary().await?;
         
         // Calculate balance difference (total balance - total stream costs)
-        let balance_difference = data.total_balance - (data.total_stream_costs as i64);
+        let balance_difference = data.total_balance - data.total_stream_costs;
         
         // Calculate totals
-        let total_payments = data.topup_count + data.zap_count + data.credit_count + 
-                            data.withdrawal_count + data.admission_count;
+        let total_payments = (data.topup_count + data.zap_count + data.credit_count + 
+                             data.withdrawal_count + data.admission_count) as u32;
         let total_paid_amount = data.topup_paid_amount + data.zap_paid_amount + 
                                 data.credit_paid_amount + data.withdrawal_paid_amount + 
                                 data.admission_paid_amount;
@@ -757,42 +757,42 @@ impl ZapStreamAdminApi for ZapStreamAdminApiImpl {
                                     (data.admission_amount - data.admission_paid_amount);
         
         Ok(AdminPaymentsSummary {
-            total_users: data.total_users,
+            total_users: data.total_users as u32,
             total_balance: data.total_balance,
-            total_stream_costs: data.total_stream_costs,
+            total_stream_costs: data.total_stream_costs as u64,
             balance_difference,
             total_payments,
             total_paid_amount,
             total_pending_amount,
             payments_by_type: AdminPaymentsByType {
                 top_up: AdminPaymentTypeStats {
-                    count: data.topup_count,
+                    count: data.topup_count as u32,
                     total_amount: data.topup_amount,
-                    paid_count: data.topup_paid_count,
+                    paid_count: data.topup_paid_count as u32,
                     paid_amount: data.topup_paid_amount,
                 },
                 zap: AdminPaymentTypeStats {
-                    count: data.zap_count,
+                    count: data.zap_count as u32,
                     total_amount: data.zap_amount,
-                    paid_count: data.zap_paid_count,
+                    paid_count: data.zap_paid_count as u32,
                     paid_amount: data.zap_paid_amount,
                 },
                 credit: AdminPaymentTypeStats {
-                    count: data.credit_count,
+                    count: data.credit_count as u32,
                     total_amount: data.credit_amount,
-                    paid_count: data.credit_paid_count,
+                    paid_count: data.credit_paid_count as u32,
                     paid_amount: data.credit_paid_amount,
                 },
                 withdrawal: AdminPaymentTypeStats {
-                    count: data.withdrawal_count,
+                    count: data.withdrawal_count as u32,
                     total_amount: data.withdrawal_amount,
-                    paid_count: data.withdrawal_paid_count,
+                    paid_count: data.withdrawal_paid_count as u32,
                     paid_amount: data.withdrawal_paid_amount,
                 },
                 admission_fee: AdminPaymentTypeStats {
-                    count: data.admission_count,
+                    count: data.admission_count as u32,
                     total_amount: data.admission_amount,
-                    paid_count: data.admission_paid_count,
+                    paid_count: data.admission_paid_count as u32,
                     paid_amount: data.admission_paid_amount,
                 },
             },

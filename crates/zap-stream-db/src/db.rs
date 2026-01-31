@@ -564,7 +564,7 @@ impl ZapStreamDb {
 
     /// Get comprehensive payment summary with all statistics in a single query
     pub async fn get_payments_summary(&self) -> Result<PaymentsSummaryData> {
-        let row = sqlx::query(
+        Ok(sqlx::query_as(
             "SELECT 
                 (SELECT COUNT(*) FROM user) as total_users,
                 (SELECT COALESCE(SUM(balance), 0) FROM user) as total_balance,
@@ -596,33 +596,7 @@ impl ZapStreamDb {
                 (SELECT COALESCE(SUM(amount), 0) FROM payment WHERE payment_type = 4 AND is_paid = true) as admission_paid_amount"
         )
         .fetch_one(&self.db)
-        .await?;
-        
-        Ok(PaymentsSummaryData {
-            total_users: row.try_get::<i64, _>("total_users")? as u32,
-            total_balance: row.try_get::<i64, _>("total_balance")?,
-            total_stream_costs: row.try_get::<i64, _>("total_stream_costs")? as u64,
-            topup_count: row.try_get::<i64, _>("topup_count")? as u32,
-            topup_amount: row.try_get::<i64, _>("topup_amount")?,
-            topup_paid_count: row.try_get::<i64, _>("topup_paid_count")? as u32,
-            topup_paid_amount: row.try_get::<i64, _>("topup_paid_amount")?,
-            zap_count: row.try_get::<i64, _>("zap_count")? as u32,
-            zap_amount: row.try_get::<i64, _>("zap_amount")?,
-            zap_paid_count: row.try_get::<i64, _>("zap_paid_count")? as u32,
-            zap_paid_amount: row.try_get::<i64, _>("zap_paid_amount")?,
-            credit_count: row.try_get::<i64, _>("credit_count")? as u32,
-            credit_amount: row.try_get::<i64, _>("credit_amount")?,
-            credit_paid_count: row.try_get::<i64, _>("credit_paid_count")? as u32,
-            credit_paid_amount: row.try_get::<i64, _>("credit_paid_amount")?,
-            withdrawal_count: row.try_get::<i64, _>("withdrawal_count")? as u32,
-            withdrawal_amount: row.try_get::<i64, _>("withdrawal_amount")?,
-            withdrawal_paid_count: row.try_get::<i64, _>("withdrawal_paid_count")? as u32,
-            withdrawal_paid_amount: row.try_get::<i64, _>("withdrawal_paid_amount")?,
-            admission_count: row.try_get::<i64, _>("admission_count")? as u32,
-            admission_amount: row.try_get::<i64, _>("admission_amount")?,
-            admission_paid_count: row.try_get::<i64, _>("admission_paid_count")? as u32,
-            admission_paid_amount: row.try_get::<i64, _>("admission_paid_amount")?,
-        })
+        .await?)
     }
 
     /// Get payment statistics by type
