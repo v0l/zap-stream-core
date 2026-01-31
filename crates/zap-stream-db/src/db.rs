@@ -457,6 +457,125 @@ impl ZapStreamDb {
         .await?)
     }
 
+    /// Get all payments with pagination and filters for admin
+    pub async fn get_all_payments(
+        &self,
+        offset: u64,
+        limit: u64,
+        user_id: Option<u64>,
+        payment_type: Option<PaymentType>,
+        is_paid: Option<bool>,
+    ) -> Result<Vec<Payment>> {
+        let mut query = String::from("select * from payment where 1=1");
+        
+        if user_id.is_some() {
+            query.push_str(" and user_id = ?");
+        }
+        if payment_type.is_some() {
+            query.push_str(" and payment_type = ?");
+        }
+        if is_paid.is_some() {
+            query.push_str(" and is_paid = ?");
+        }
+        
+        query.push_str(" order by created desc limit ? offset ?");
+        
+        let mut q = sqlx::query_as(&query);
+        
+        if let Some(uid) = user_id {
+            q = q.bind(uid);
+        }
+        if let Some(pt) = payment_type {
+            q = q.bind(pt as u8);
+        }
+        if let Some(paid) = is_paid {
+            q = q.bind(paid);
+        }
+        
+        q = q.bind(limit).bind(offset);
+        
+        Ok(q.fetch_all(&self.db).await?)
+    }
+
+    /// Count all payments with filters for admin
+    pub async fn count_all_payments(
+        &self,
+        user_id: Option<u64>,
+        payment_type: Option<PaymentType>,
+        is_paid: Option<bool>,
+    ) -> Result<u32> {
+        let mut query = String::from("select count(*) as cnt from payment where 1=1");
+        
+        if user_id.is_some() {
+            query.push_str(" and user_id = ?");
+        }
+        if payment_type.is_some() {
+            query.push_str(" and payment_type = ?");
+        }
+        if is_paid.is_some() {
+            query.push_str(" and is_paid = ?");
+        }
+        
+        let mut q = sqlx::query(&query);
+        
+        if let Some(uid) = user_id {
+            q = q.bind(uid);
+        }
+        if let Some(pt) = payment_type {
+            q = q.bind(pt as u8);
+        }
+        if let Some(paid) = is_paid {
+            q = q.bind(paid);
+        }
+        
+        let row = q.fetch_one(&self.db).await?;
+        Ok(row.try_get::<i64, _>("cnt")? as u32)
+    }
+
+    /// Get total stream costs across all users
+    pub async fn get_total_stream_costs(&self) -> Result<u64> {
+        let row = sqlx::query("select coalesce(sum(cost), 0) as total from user_stream")
+            .fetch_one(&self.db)
+            .await?;
+        Ok(row.try_get::<i64, _>("total")? as u64)
+    }
+
+    /// Get total user count
+    pub async fn get_total_user_count(&self) -> Result<u32> {
+        let row = sqlx::query("select count(*) as cnt from user")
+            .fetch_one(&self.db)
+            .await?;
+        Ok(row.try_get::<i64, _>("cnt")? as u32)
+    }
+
+    /// Get total balance across all users
+    pub async fn get_total_balance(&self) -> Result<i64> {
+        let row = sqlx::query("select coalesce(sum(balance), 0) as total from user")
+            .fetch_one(&self.db)
+            .await?;
+        Ok(row.try_get::<i64, _>("total")?)
+    }
+
+    /// Get payment statistics by type
+    pub async fn get_payment_stats_by_type(&self, payment_type: PaymentType) -> Result<(u32, i64, u32, i64)> {
+        let row = sqlx::query(
+            "select count(*) as total_count, coalesce(sum(amount), 0) as total_amount, 
+             sum(case when is_paid = true then 1 else 0 end) as paid_count,
+             coalesce(sum(case when is_paid = true then amount else 0 end), 0) as paid_amount
+             from payment where payment_type = ?"
+        )
+        .bind(payment_type as u8)
+        .fetch_one(&self.db)
+        .await?;
+        
+        Ok((
+            row.try_get::<i64, _>("total_count")? as u32,
+            row.try_get::<i64, _>("total_amount")?,
+            row.try_get::<i64, _>("paid_count")? as u32,
+            row.try_get::<i64, _>("paid_amount")?,
+        ))
+    }
+
     /// Update user default stream info
     pub async fn update_user_defaults(
         &self,

@@ -665,4 +665,177 @@ impl ZapStreamAdminApi for ZapStreamAdminApiImpl {
 
         Ok(Some(log_content))
     }
+
+    async fn get_payments(
+        &self,
+        auth: Nip98Auth,
+        page: u32,
+        page_size: u32,
+        user_id: Option<u64>,
+        payment_type: Option<String>,
+        is_paid: Option<bool>,
+    ) -> Result<AdminPaymentsResponse> {
+        let admin_uid = self.check_admin_access(&auth.pubkey).await?;
+        
+        // Parse payment type
+        let payment_type_enum = payment_type.as_ref().and_then(|pt| {
+            match pt.to_lowercase().as_str() {
+                "topup" | "top_up" => Some(zap_stream_db::PaymentType::TopUp),
+                "zap" => Some(zap_stream_db::PaymentType::Zap),
+                "credit" => Some(zap_stream_db::PaymentType::Credit),
+                "withdrawal" => Some(zap_stream_db::PaymentType::Withdrawal),
+                "admissionfee" | "admission_fee" => Some(zap_stream_db::PaymentType::AdmissionFee),
+                _ => None,
+            }
+        });
+        
+        let offset = (page * page_size) as u64;
+        let limit = page_size as u64;
+        
+        let payments = self
+            .db
+            .get_all_payments(offset, limit, user_id, payment_type_enum, is_paid)
+            .await?;
+        
+        let total = self
+            .db
+            .count_all_payments(user_id, payment_type_enum, is_paid)
+            .await?;
+        
+        // Get user pubkeys for the payments
+        let mut payments_info = Vec::new();
+        for payment in payments {
+            let user = self.db.get_user(payment.user_id).await.ok();
+            let payment_type_str = match payment.payment_type {
+                zap_stream_db::PaymentType::TopUp => "TopUp",
+                zap_stream_db::PaymentType::Zap => "Zap",
+                zap_stream_db::PaymentType::Credit => "Credit",
+                zap_stream_db::PaymentType::Withdrawal => "Withdrawal",
+                zap_stream_db::PaymentType::AdmissionFee => "AdmissionFee",
+            };
+            
+            payments_info.push(AdminPaymentInfo {
+                payment_hash: hex::encode(&payment.payment_hash),
+                user_id: payment.user_id,
+                user_pubkey: user.map(|u| hex::encode(&u.pubkey)),
+                amount: payment.amount,
+                is_paid: payment.is_paid,
+                payment_type: payment_type_str.to_string(),
+                fee: payment.fee,
+                created: payment.created.timestamp() as u64,
+                expires: payment.expires.timestamp() as u64,
+            });
+        }
+        
+        // Log admin action
+        self.db
+            .log_admin_action(
+                admin_uid,
+                "list_payments",
+                Some("payment"),
+                None,
+                &format!("Admin listed payments (page: {}, limit: {})", page, page_size),
+                Some(&format!(
+                    r#"{{"page": {}, "limit": {}, "user_id": {:?}, "payment_type": {:?}, "is_paid": {:?}}}"#,
+                    page, page_size, user_id, payment_type, is_paid
+                )),
+            )
+            .await?;
+        
+        Ok(AdminPaymentsResponse {
+            data: payments_info,
+            page,
+            limit: page_size,
+            total,
+        })
+    }
+
+    async fn get_payments_summary(&self, auth: Nip98Auth) -> Result<AdminPaymentsSummary> {
+        let admin_uid = self.check_admin_access(&auth.pubkey).await?;
+        
+        // Get total users and balance
+        let total_users = self.db.get_total_user_count().await?;
+        let total_balance = self.db.get_total_balance().await?;
+        
+        // Get total stream costs
+        let total_stream_costs = self.db.get_total_stream_costs().await?;
+        
+        // Calculate balance difference (total balance - total stream costs)
+        let balance_difference = total_balance - (total_stream_costs as i64);
+        
+        // Get payment statistics by type
+        let (topup_count, topup_amount, topup_paid_count, topup_paid_amount) = 
+            self.db.get_payment_stats_by_type(zap_stream_db::PaymentType::TopUp).await?;
+        let (zap_count, zap_amount, zap_paid_count, zap_paid_amount) = 
+            self.db.get_payment_stats_by_type(zap_stream_db::PaymentType::Zap).await?;
+        let (credit_count, credit_amount, credit_paid_count, credit_paid_amount) = 
+            self.db.get_payment_stats_by_type(zap_stream_db::PaymentType::Credit).await?;
+        let (withdrawal_count, withdrawal_amount, withdrawal_paid_count, withdrawal_paid_amount) = 
+            self.db.get_payment_stats_by_type(zap_stream_db::PaymentType::Withdrawal).await?;
+        let (admission_count, admission_amount, admission_paid_count, admission_paid_amount) = 
+            self.db.get_payment_stats_by_type(zap_stream_db::PaymentType::AdmissionFee).await?;
+        
+        // Calculate totals
+        let total_payments = topup_count + zap_count + credit_count + withdrawal_count + admission_count;
+        let total_paid_amount = topup_paid_amount + zap_paid_amount + credit_paid_amount + withdrawal_paid_amount + admission_paid_amount;
+        let total_pending_amount = (topup_amount - topup_paid_amount) + 
+                                    (zap_amount - zap_paid_amount) + 
+                                    (credit_amount - credit_paid_amount) + 
+                                    (withdrawal_amount - withdrawal_paid_amount) + 
+                                    (admission_amount - admission_paid_amount);
+        
+        // Log admin action
+        self.db
+            .log_admin_action(
+                admin_uid,
+                "view_payments_summary",
+                Some("payment"),
+                None,
+                "Admin viewed payments summary",
+                None,
+            )
+            .await?;
+        
+        Ok(AdminPaymentsSummary {
+            total_users,
+            total_balance,
+            total_stream_costs,
+            balance_difference,
+            total_payments,
+            total_paid_amount,
+            total_pending_amount,
+            payments_by_type: AdminPaymentsByType {
+                top_up: AdminPaymentTypeStats {
+                    count: topup_count,
+                    total_amount: topup_amount,
+                    paid_count: topup_paid_count,
+                    paid_amount: topup_paid_amount,
+                },
+                zap: AdminPaymentTypeStats {
+                    count: zap_count,
+                    total_amount: zap_amount,
+                    paid_count: zap_paid_count,
+                    paid_amount: zap_paid_amount,
+                },
+                credit: AdminPaymentTypeStats {
+                    count: credit_count,
+                    total_amount: credit_amount,
+                    paid_count: credit_paid_count,
+                    paid_amount: credit_paid_amount,
+                },
+                withdrawal: AdminPaymentTypeStats {
+                    count: withdrawal_count,
+                    total_amount: withdrawal_amount,
+                    paid_count: withdrawal_paid_count,
+                    paid_amount: withdrawal_paid_amount,
+                },
+                admission_fee: AdminPaymentTypeStats {
+                    count: admission_count,
+                    total_amount: admission_amount,
+                    paid_count: admission_paid_count,
+                    paid_amount: admission_paid_amount,
+                },
+            },
+        })
+    }
 }

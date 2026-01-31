@@ -87,10 +87,54 @@ pub type AdminIngestEndpointsResponse = AdminPageResponse<AdminIngestEndpointRes
 pub type AdminAuditLogResponse = AdminPageResponse<AdminAuditLogEntry>;
 pub type AdminUserStreamsResponse = AdminPageResponse<AdminStreamInfo>;
 pub type AdminUsersResponse = AdminPageResponse<AdminUserInfo>;
+pub type AdminPaymentsResponse = AdminPageResponse<AdminPaymentInfo>;
+
 #[derive(Deserialize, Serialize)]
 pub struct AdminPageResponse<T> {
     pub data: Vec<T>,
     pub page: u32,
     pub limit: u32,
     pub total: u32,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct AdminPaymentInfo {
+    pub payment_hash: String,
+    pub user_id: u64,
+    pub user_pubkey: Option<String>,
+    pub amount: i64,
+    pub is_paid: bool,
+    pub payment_type: String,
+    pub fee: u64,
+    pub created: u64,
+    pub expires: u64,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct AdminPaymentsSummary {
+    pub total_users: u32,
+    pub total_balance: i64,
+    pub total_stream_costs: u64,
+    pub balance_difference: i64,
+    pub total_payments: u32,
+    pub total_paid_amount: i64,
+    pub total_pending_amount: i64,
+    pub payments_by_type: AdminPaymentsByType,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct AdminPaymentsByType {
+    pub top_up: AdminPaymentTypeStats,
+    pub zap: AdminPaymentTypeStats,
+    pub credit: AdminPaymentTypeStats,
+    pub withdrawal: AdminPaymentTypeStats,
+    pub admission_fee: AdminPaymentTypeStats,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct AdminPaymentTypeStats {
+    pub count: u32,
+    pub total_amount: i64,
+    pub paid_count: u32,
+    pub paid_amount: i64,
 }

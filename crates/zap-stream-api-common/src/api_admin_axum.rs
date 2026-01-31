@@ -207,6 +207,35 @@ where
                     },
                 ),
             )
+            .route(
+                "/api/v1/admin/payments",
+                get(
+                    async |auth: Nip98Auth,
+                           State(this): State<AxumAdminApi<T>>,
+                           Query(q): Query<GetPaymentsV1Query>| {
+                        match this
+                            .handler
+                            .get_payments(auth, q.page, q.limit, q.user_id, q.payment_type, q.is_paid)
+                            .await
+                        {
+                            Ok(r) => Ok(Json(r)),
+                            Err(e) => Err(Json(ApiError::from(e))),
+                        }
+                    },
+                ),
+            )
+            .route(
+                "/api/v1/admin/payments/summary",
+                get(
+                    async |auth: Nip98Auth,
+                           State(this): State<AxumAdminApi<T>>| {
+                        match this.handler.get_payments_summary(auth).await {
+                            Ok(r) => Ok(Json(r)),
+                            Err(e) => Err(Json(ApiError::from(e))),
+                        }
+                    },
+                ),
+            )
             .with_state(AxumAdminApi { handler })
     }
 }
@@ -216,4 +245,13 @@ struct GetUsersV1Query {
     page: u32,
     limit: u32,
     search: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct GetPaymentsV1Query {
+    page: u32,
+    limit: u32,
+    user_id: Option<u64>,
+    payment_type: Option<String>,
+    is_paid: Option<bool>,
 }

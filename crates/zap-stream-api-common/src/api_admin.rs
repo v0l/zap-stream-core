@@ -1,4 +1,4 @@
-use crate::{AdminAuditLogResponse, AdminIngestEndpointRequest, AdminIngestEndpointResponse, AdminIngestEndpointsResponse, AdminStreamKeyResponse, AdminUserInfo, AdminUserRequest, AdminUserStreamsResponse, AdminUsersResponse, HistoryResponse, Nip98Auth};
+use crate::{AdminAuditLogResponse, AdminIngestEndpointRequest, AdminIngestEndpointResponse, AdminIngestEndpointsResponse, AdminPaymentsResponse, AdminPaymentsSummary, AdminStreamKeyResponse, AdminUserInfo, AdminUserRequest, AdminUserStreamsResponse, AdminUsersResponse, HistoryResponse, Nip98Auth};
 use anyhow::Result;
 use async_trait::async_trait;
 use uuid::Uuid;
@@ -79,4 +79,16 @@ pub trait ZapStreamAdminApi: Clone + Send + Sync {
     async fn delete_ingest_endpoint(&self, auth: Nip98Auth, id: u64) -> Result<()>;
 
     async fn get_stream_logs(&self, auth: Nip98Auth, stream: Uuid) -> Result<Option<String>>;
+
+    async fn get_payments(
+        &self,
+        auth: Nip98Auth,
+        page: u32,
+        page_size: u32,
+        user_id: Option<u64>,
+        payment_type: Option<String>,
+        is_paid: Option<bool>,
+    ) -> Result<AdminPaymentsResponse>;
+
+    async fn get_payments_summary(&self, auth: Nip98Auth) -> Result<AdminPaymentsSummary>;
 }
