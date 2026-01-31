@@ -1133,7 +1133,14 @@ impl ZapStreamDb {
     }
 
     /// Get users with biggest balance offsets (balance discrepancies)
-    /// Calculates: user.balance - (sum of paid payments - sum of stream costs)
+    /// Calculates the difference between current balance and expected balance based on transaction history
+    /// 
+    /// Expected balance calculation:
+    /// - For all payment types: amount is added to balance when paid (includes negative amounts for withdrawals)
+    /// - For Withdrawal payments (type 3): additionally, the fee is subtracted from balance
+    /// - Stream costs are subtracted from balance
+    /// 
+    /// Balance offset = current_balance - expected_balance
     /// Positive offset = user has more balance than they should
     /// Negative offset = user has less balance than they should
     pub async fn get_balance_offsets(
@@ -1159,10 +1166,13 @@ impl ZapStreamDb {
                         COALESCE(
                             (SELECT SUM(amount) FROM payment WHERE user_id = u.id AND is_paid = true),
                             0
-                        ) - COALESCE(
+                        ) - CAST(COALESCE(
+                            (SELECT SUM(fee) FROM payment WHERE user_id = u.id AND is_paid = true AND payment_type = 3),
+                            0
+                        ) AS SIGNED) - CAST(COALESCE(
                             (SELECT SUM(cost) FROM user_stream WHERE user_id = u.id),
                             0
-                        )
+                        ) AS SIGNED)
                     )
                 AS SIGNED) as balance_offset
             FROM user u

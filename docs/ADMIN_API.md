@@ -1254,12 +1254,23 @@ GET /api/v1/admin/balance-offsets?page=1&limit=25
 **Understanding Balance Offset**:
 The `balance_offset` represents the difference between a user's actual balance and what it should be based on their transaction history:
 
-- **Calculation**: `balance_offset = current_balance - (total_payments - total_stream_costs)`
+- **Calculation**: `balance_offset = current_balance - expected_balance`
+- **Expected balance**: 
+  - Sum of all paid payment amounts (TopUp/Zap/Credit/Withdrawal/AdmissionFee)
+    - Note: Withdrawal amounts are negative, so they reduce the expected balance
+  - Minus sum of paid withdrawal fees (payment_type 3) - withdrawal fees are charged in addition to the withdrawal amount
+  - Minus sum of all stream costs
 - **Positive offset**: User has MORE balance than expected based on their history
-  - Could indicate: Admin credits not tracked in payments, manual balance adjustments, or system errors
+  - Could indicate: Manual database adjustments, missing payment records, or system errors
 - **Negative offset**: User has LESS balance than expected based on their history
-  - Could indicate: Fees deducted, failed payment completions, or accounting bugs
+  - Could indicate: Untracked fees, failed balance updates, or accounting bugs
 - **Zero offset**: User's balance matches their transaction history perfectly (expected state)
+
+**Important Notes**:
+- All payment amounts are included in the calculation (including negative withdrawal amounts)
+- Withdrawal fees are deducted separately (in addition to the withdrawal amount being negative)
+- Admin credits can be negative, which will reduce the expected balance accordingly
+- Stream costs are accumulated in real-time during streaming and reduce the balance
 
 **Use Cases**:
 1. **Audit Compliance**: Identify users with accounting discrepancies for investigation
