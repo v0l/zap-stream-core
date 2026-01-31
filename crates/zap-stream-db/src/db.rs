@@ -466,16 +466,27 @@ impl ZapStreamDb {
         payment_type: Option<PaymentType>,
         is_paid: Option<bool>,
     ) -> Result<Vec<Payment>> {
-        let mut query_builder: QueryBuilder<sqlx::MySql> = QueryBuilder::new("SELECT * FROM payment WHERE 1=1");
+        let mut query_builder: QueryBuilder<sqlx::MySql> = QueryBuilder::new("SELECT * FROM payment");
         
+        let mut has_where = false;
         if let Some(uid) = user_id {
-            query_builder.push(" AND user_id = ").push_bind(uid);
+            query_builder.push(" WHERE user_id = ").push_bind(uid);
+            has_where = true;
         }
         if let Some(pt) = payment_type {
-            query_builder.push(" AND payment_type = ").push_bind(pt as u8);
+            if has_where {
+                query_builder.push(" AND payment_type = ").push_bind(pt as u8);
+            } else {
+                query_builder.push(" WHERE payment_type = ").push_bind(pt as u8);
+                has_where = true;
+            }
         }
         if let Some(paid) = is_paid {
-            query_builder.push(" AND is_paid = ").push_bind(paid);
+            if has_where {
+                query_builder.push(" AND is_paid = ").push_bind(paid);
+            } else {
+                query_builder.push(" WHERE is_paid = ").push_bind(paid);
+            }
         }
         
         query_builder.push(" ORDER BY created DESC LIMIT ").push_bind(limit);
@@ -496,16 +507,27 @@ impl ZapStreamDb {
         payment_type: Option<PaymentType>,
         is_paid: Option<bool>,
     ) -> Result<u32> {
-        let mut query_builder: QueryBuilder<sqlx::MySql> = QueryBuilder::new("SELECT COUNT(*) as cnt FROM payment WHERE 1=1");
+        let mut query_builder: QueryBuilder<sqlx::MySql> = QueryBuilder::new("SELECT COUNT(*) as cnt FROM payment");
         
+        let mut has_where = false;
         if let Some(uid) = user_id {
-            query_builder.push(" AND user_id = ").push_bind(uid);
+            query_builder.push(" WHERE user_id = ").push_bind(uid);
+            has_where = true;
         }
         if let Some(pt) = payment_type {
-            query_builder.push(" AND payment_type = ").push_bind(pt as u8);
+            if has_where {
+                query_builder.push(" AND payment_type = ").push_bind(pt as u8);
+            } else {
+                query_builder.push(" WHERE payment_type = ").push_bind(pt as u8);
+                has_where = true;
+            }
         }
         if let Some(paid) = is_paid {
-            query_builder.push(" AND is_paid = ").push_bind(paid);
+            if has_where {
+                query_builder.push(" AND is_paid = ").push_bind(paid);
+            } else {
+                query_builder.push(" WHERE is_paid = ").push_bind(paid);
+            }
         }
         
         let row = query_builder
