@@ -665,4 +665,140 @@ impl ZapStreamAdminApi for ZapStreamAdminApiImpl {
 
         Ok(Some(log_content))
     }
+
+    async fn get_payments(
+        &self,
+        auth: Nip98Auth,
+        page: u32,
+        page_size: u32,
+        user_id: Option<u64>,
+        payment_type: Option<String>,
+        is_paid: Option<bool>,
+    ) -> Result<AdminPaymentsResponse> {
+        self.check_admin_access(&auth.pubkey).await?;
+        
+        // Parse payment type
+        let payment_type_enum = payment_type.as_ref().and_then(|pt| {
+            match pt.to_lowercase().as_str() {
+                "topup" | "top_up" => Some(zap_stream_db::PaymentType::TopUp),
+                "zap" => Some(zap_stream_db::PaymentType::Zap),
+                "credit" => Some(zap_stream_db::PaymentType::Credit),
+                "withdrawal" => Some(zap_stream_db::PaymentType::Withdrawal),
+                "admissionfee" | "admission_fee" => Some(zap_stream_db::PaymentType::AdmissionFee),
+                _ => None,
+            }
+        });
+        
+        let offset = (page * page_size) as u64;
+        let limit = page_size as u64;
+        
+        let payments = self
+            .db
+            .get_all_payments(offset, limit, user_id, payment_type_enum, is_paid)
+            .await?;
+        
+        let total = self
+            .db
+            .count_all_payments(user_id, payment_type_enum, is_paid)
+            .await?;
+        
+        // Get user pubkeys for the payments
+        let mut payments_info = Vec::new();
+        for payment in payments {
+            let user = self.db.get_user(payment.user_id).await.ok();
+            let payment_type_str = match payment.payment_type {
+                zap_stream_db::PaymentType::TopUp => "TopUp",
+                zap_stream_db::PaymentType::Zap => "Zap",
+                zap_stream_db::PaymentType::Credit => "Credit",
+                zap_stream_db::PaymentType::Withdrawal => "Withdrawal",
+                zap_stream_db::PaymentType::AdmissionFee => "AdmissionFee",
+            };
+            
+            payments_info.push(AdminPaymentInfo {
+                payment_hash: hex::encode(&payment.payment_hash),
+                user_id: payment.user_id,
+                user_pubkey: user.map(|u| hex::encode(&u.pubkey)),
+                amount: payment.amount,
+                is_paid: payment.is_paid,
+                payment_type: payment_type_str.to_string(),
+                fee: payment.fee,
+                created: payment.created.timestamp() as u64,
+                expires: payment.expires.timestamp() as u64,
+            });
+        }
+        
+        Ok(AdminPaymentsResponse {
+            data: payments_info,
+            page,
+            limit: page_size,
+            total,
+        })
+    }
+
+    async fn get_payments_summary(&self, auth: Nip98Auth) -> Result<AdminPaymentsSummary> {
+        self.check_admin_access(&auth.pubkey).await?;
+        
+        // Get all data in a single optimized query
+        let data = self.db.get_payments_summary().await?;
+        
+        // Calculate balance difference (total balance - total stream costs)
+        let balance_difference = data.total_balance - data.total_stream_costs;
+        
+        // Calculate totals with saturating conversion to u32
+        let total_payments = (data.topup_count.saturating_add(data.zap_count)
+                                              .saturating_add(data.credit_count)
+                                              .saturating_add(data.withdrawal_count)
+                                              .saturating_add(data.admission_count))
+                                              .min(u32::MAX as i64) as u32;
+        let total_paid_amount = data.topup_paid_amount + data.zap_paid_amount + 
+                                data.credit_paid_amount + data.withdrawal_paid_amount + 
+                                data.admission_paid_amount;
+        let total_pending_amount = (data.topup_amount - data.topup_paid_amount) + 
+                                    (data.zap_amount - data.zap_paid_amount) + 
+                                    (data.credit_amount - data.credit_paid_amount) + 
+                                    (data.withdrawal_amount - data.withdrawal_paid_amount) + 
+                                    (data.admission_amount - data.admission_paid_amount);
+        
+        Ok(AdminPaymentsSummary {
+            total_users: data.total_users.min(u32::MAX as i64) as u32,
+            total_balance: data.total_balance,
+            total_stream_costs: data.total_stream_costs.max(0) as u64,
+            balance_difference,
+            total_payments,
+            total_paid_amount,
+            total_pending_amount,
+            payments_by_type: AdminPaymentsByType {
+                top_up: AdminPaymentTypeStats {
+                    count: data.topup_count.min(u32::MAX as i64) as u32,
+                    total_amount: data.topup_amount,
+                    paid_count: data.topup_paid_count.min(u32::MAX as i64) as u32,
+                    paid_amount: data.topup_paid_amount,
+                },
+                zap: AdminPaymentTypeStats {
+                    count: data.zap_count.min(u32::MAX as i64) as u32,
+                    total_amount: data.zap_amount,
+                    paid_count: data.zap_paid_count.min(u32::MAX as i64) as u32,
+                    paid_amount: data.zap_paid_amount,
+                },
+                credit: AdminPaymentTypeStats {
+                    count: data.credit_count.min(u32::MAX as i64) as u32,
+                    total_amount: data.credit_amount,
+                    paid_count: data.credit_paid_count.min(u32::MAX as i64) as u32,
+                    paid_amount: data.credit_paid_amount,
+                },
+                withdrawal: AdminPaymentTypeStats {
+                    count: data.withdrawal_count.min(u32::MAX as i64) as u32,
+                    total_amount: data.withdrawal_amount,
+                    paid_count: data.withdrawal_paid_count.min(u32::MAX as i64) as u32,
+                    paid_amount: data.withdrawal_paid_amount,
+                },
+                admission_fee: AdminPaymentTypeStats {
+                    count: data.admission_count.min(u32::MAX as i64) as u32,
+                    total_amount: data.admission_amount,
+                    paid_count: data.admission_paid_count.min(u32::MAX as i64) as u32,
+                    paid_amount: data.admission_paid_amount,
+                },
+            },
+        })
+    }
 }

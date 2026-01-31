@@ -238,3 +238,30 @@ pub struct UserPreviousStreams {
     /// ID of the last primary key stream that ended
     pub last_stream_id: Option<String>,
 }
+
+#[derive(Debug, Clone, FromRow)]
+pub struct PaymentsSummaryData {
+    pub total_users: i64,
+    pub total_balance: i64,
+    pub total_stream_costs: i64,
+    pub topup_count: i64,
+    pub topup_amount: i64,
+    pub topup_paid_count: i64,
+    pub topup_paid_amount: i64,
+    pub zap_count: i64,
+    pub zap_amount: i64,
+    pub zap_paid_count: i64,
+    pub zap_paid_amount: i64,
+    pub credit_count: i64,
+    pub credit_amount: i64,
+    pub credit_paid_count: i64,
+    pub credit_paid_amount: i64,
+    pub withdrawal_count: i64,
+    pub withdrawal_amount: i64,
+    pub withdrawal_paid_count: i64,
+    pub withdrawal_paid_amount: i64,
+    pub admission_count: i64,
+    pub admission_amount: i64,
+    pub admission_paid_count: i64,
+    pub admission_paid_amount: i64,
+}

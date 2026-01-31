@@ -1032,3 +1032,165 @@ ws.onmessage = function(event) {
   }
 };
 ```
+
+---
+
+## 9. Payments Management
+
+### 9.1 List Payments
+
+**Endpoint**: `GET /api/v1/admin/payments`
+
+**Description**: Retrieve a paginated list of all payments in the system with optional filtering.
+
+**Query Parameters**:
+- `page` (optional, default: 0): Page number for pagination
+- `limit` (optional, default: 50): Number of payments per page
+- `user_id` (optional): Filter payments by specific user ID
+- `payment_type` (optional): Filter by payment type. Valid values:
+  - `topup` or `top_up`: Top-up payments
+  - `zap`: Zap payments
+  - `credit`: Admin credit adjustments
+  - `withdrawal`: Withdrawal payments
+  - `admissionfee` or `admission_fee`: Admission fee payments
+- `is_paid` (optional): Filter by payment status (true for paid, false for pending)
+
+**Example Requests**:
+```http
+GET /api/v1/admin/payments
+GET /api/v1/admin/payments?page=1&limit=25
+GET /api/v1/admin/payments?user_id=123
+GET /api/v1/admin/payments?payment_type=topup&is_paid=true
+GET /api/v1/admin/payments?is_paid=false
+```
+
+**Response Format**:
+```json
+{
+  "data": [
+    {
+      "payment_hash": "a1b2c3d4e5f6...",
+      "user_id": 123,
+      "user_pubkey": "02a1b2c3d4e5f6...",
+      "amount": 50000,
+      "is_paid": true,
+      "payment_type": "TopUp",
+      "fee": 100,
+      "created": 1640995200,
+      "expires": 1640998800
+    }
+  ],
+  "page": 0,
+  "limit": 50,
+  "total": 150
+}
+```
+
+**Response Fields**:
+- `data`: Array of payment objects
+- `page`: Current page number
+- `limit`: Number of payments per page
+- `total`: Total count of payments matching filters
+- Payment object fields:
+  - `payment_hash`: Unique payment identifier (hex encoded)
+  - `user_id`: User ID associated with the payment
+  - `user_pubkey`: User's Nostr public key (hex encoded, null if user deleted)
+  - `amount`: Payment amount in millisatoshis (can be negative for withdrawals)
+  - `is_paid`: Payment completion status
+  - `payment_type`: Type of payment (TopUp, Zap, Credit, Withdrawal, AdmissionFee)
+  - `fee`: Fee amount in millisatoshis
+  - `created`: Unix timestamp when payment was created
+  - `expires`: Unix timestamp when payment expires
+
+**Audit Log**: This operation is logged with action type `list_payments`.
+
+### 9.2 Get Payments Summary
+
+**Endpoint**: `GET /api/v1/admin/payments/summary`
+
+**Description**: Retrieve a comprehensive summary of all payments, balances, and stream costs in the system. This endpoint provides key financial metrics including the difference between total user balances and accumulated stream costs.
+
+**Example Requests**:
+```http
+GET /api/v1/admin/payments/summary
+```
+
+**Response Format**:
+```json
+{
+  "total_users": 1234,
+  "total_balance": 5000000,
+  "total_stream_costs": 4500000,
+  "balance_difference": 500000,
+  "total_payments": 3500,
+  "total_paid_amount": 6000000,
+  "total_pending_amount": 250000,
+  "payments_by_type": {
+    "top_up": {
+      "count": 1500,
+      "total_amount": 5500000,
+      "paid_count": 1450,
+      "paid_amount": 5400000
+    },
+    "zap": {
+      "count": 1000,
+      "total_amount": 500000,
+      "paid_count": 950,
+      "paid_amount": 450000
+    },
+    "credit": {
+      "count": 800,
+      "total_amount": 200000,
+      "paid_count": 800,
+      "paid_amount": 200000
+    },
+    "withdrawal": {
+      "count": 150,
+      "total_amount": -100000,
+      "paid_count": 140,
+      "paid_amount": -95000
+    },
+    "admission_fee": {
+      "count": 50,
+      "total_amount": 25000,
+      "paid_count": 45,
+      "paid_amount": 20000
+    }
+  }
+}
+```
+
+**Response Fields**:
+- `total_users`: Total number of users in the system
+- `total_balance`: Sum of all user balances in millisatoshis
+- `total_stream_costs`: Total accumulated streaming costs across all user streams in millisatoshis
+- `balance_difference`: Difference between total balance and total stream costs (balance - costs). A positive value indicates surplus, negative indicates deficit.
+- `total_payments`: Total count of all payments
+- `total_paid_amount`: Sum of all completed payment amounts in millisatoshis
+- `total_pending_amount`: Sum of all pending payment amounts in millisatoshis
+- `payments_by_type`: Breakdown of payment statistics by type
+  - Each payment type contains:
+    - `count`: Total number of payments of this type
+    - `total_amount`: Sum of all payment amounts (including unpaid)
+    - `paid_count`: Number of completed payments
+    - `paid_amount`: Sum of completed payment amounts
+
+**Financial Insights**:
+- **Balance Difference**: This is the key metric showing if the platform has surplus funds or a deficit
+  - Positive: More funds in user balances than have been spent on streams
+  - Negative: Users have streamed more than they have paid (could indicate credits or unpaid costs)
+- **Payment Type Breakdown**: Helps understand revenue sources and user behavior
+  - Top-ups: Main revenue source from user deposits
+  - Zaps: Tips or donations from viewers
+  - Credits: Admin-granted balances (no actual income)
+  - Withdrawals: Funds leaving the platform (negative amounts)
+  - Admission Fees: Revenue from stream entry fees
+
+**Audit Log**: This operation is logged with action type `view_payments_summary`.
+
+**Use Cases**:
+1. **Financial Health Check**: Monitor the balance_difference to ensure platform sustainability
+2. **Revenue Analysis**: Track total_paid_amount and breakdown by type
+3. **User Behavior**: Analyze payment patterns and types
+4. **Debt Monitoring**: Identify if total stream costs exceed total balance
+5. **Pending Payments**: Track unpaid invoices via total_pending_amount

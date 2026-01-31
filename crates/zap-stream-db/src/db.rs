@@ -5,7 +5,7 @@ use crate::{
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rand::random;
-use sqlx::{MySqlPool, Row};
+use sqlx::{MySqlPool, Row, QueryBuilder};
 use std::ops::Add;
 use uuid::Uuid;
 
@@ -455,6 +455,168 @@ impl ZapStreamDb {
     )
         .fetch_optional(&self.db)
         .await?)
+    }
+
+    /// Get all payments with pagination and filters for admin
+    pub async fn get_all_payments(
+        &self,
+        offset: u64,
+        limit: u64,
+        user_id: Option<u64>,
+        payment_type: Option<PaymentType>,
+        is_paid: Option<bool>,
+    ) -> Result<Vec<Payment>> {
+        let mut query_builder: QueryBuilder<sqlx::MySql> = QueryBuilder::new("SELECT * FROM payment");
+        
+        let mut has_where = false;
+        if let Some(uid) = user_id {
+            query_builder.push(" WHERE user_id = ").push_bind(uid);
+            has_where = true;
+        }
+        if let Some(pt) = payment_type {
+            if has_where {
+                query_builder.push(" AND payment_type = ").push_bind(pt as u8);
+            } else {
+                query_builder.push(" WHERE payment_type = ").push_bind(pt as u8);
+                has_where = true;
+            }
+        }
+        if let Some(paid) = is_paid {
+            if has_where {
+                query_builder.push(" AND is_paid = ").push_bind(paid);
+            } else {
+                query_builder.push(" WHERE is_paid = ").push_bind(paid);
+            }
+        }
+        
+        query_builder.push(" ORDER BY created DESC LIMIT ").push_bind(limit);
+        query_builder.push(" OFFSET ").push_bind(offset);
+        
+        let payments = query_builder
+            .build_query_as::<Payment>()
+            .fetch_all(&self.db)
+            .await?;
+        
+        Ok(payments)
+    }
+
+    /// Count all payments with filters for admin
+    pub async fn count_all_payments(
+        &self,
+        user_id: Option<u64>,
+        payment_type: Option<PaymentType>,
+        is_paid: Option<bool>,
+    ) -> Result<u32> {
+        let mut query_builder: QueryBuilder<sqlx::MySql> = QueryBuilder::new("SELECT COUNT(*) as cnt FROM payment");
+        
+        let mut has_where = false;
+        if let Some(uid) = user_id {
+            query_builder.push(" WHERE user_id = ").push_bind(uid);
+            has_where = true;
+        }
+        if let Some(pt) = payment_type {
+            if has_where {
+                query_builder.push(" AND payment_type = ").push_bind(pt as u8);
+            } else {
+                query_builder.push(" WHERE payment_type = ").push_bind(pt as u8);
+                has_where = true;
+            }
+        }
+        if let Some(paid) = is_paid {
+            if has_where {
+                query_builder.push(" AND is_paid = ").push_bind(paid);
+            } else {
+                query_builder.push(" WHERE is_paid = ").push_bind(paid);
+            }
+        }
+        
+        let row = query_builder
+            .build()
+            .fetch_one(&self.db)
+            .await?;
+        
+        Ok(row.try_get::<i64, _>("cnt")? as u32)
+    }
+
+    /// Get total stream costs across all users
+    pub async fn get_total_stream_costs(&self) -> Result<u64> {
+        let row = sqlx::query("select coalesce(sum(cost), 0) as total from user_stream")
+            .fetch_one(&self.db)
+            .await?;
+        Ok(row.try_get::<i64, _>("total")? as u64)
+    }
+
+    /// Get total user count
+    pub async fn get_total_user_count(&self) -> Result<u32> {
+        let row = sqlx::query("select count(*) as cnt from user")
+            .fetch_one(&self.db)
+            .await?;
+        Ok(row.try_get::<i64, _>("cnt")? as u32)
+    }
+
+    /// Get total balance across all users
+    pub async fn get_total_balance(&self) -> Result<i64> {
+        let row = sqlx::query("select coalesce(sum(balance), 0) as total from user")
+            .fetch_one(&self.db)
+            .await?;
+        Ok(row.try_get::<i64, _>("total")?)
+    }
+
+    /// Get comprehensive payment summary with all statistics in a single query
+    pub async fn get_payments_summary(&self) -> Result<PaymentsSummaryData> {
+        Ok(sqlx::query_as(
+            "SELECT 
+                (SELECT COUNT(*) FROM user) as total_users,
+                (SELECT COALESCE(SUM(balance), 0) FROM user) as total_balance,
+                (SELECT COALESCE(SUM(cost), 0) FROM user_stream) as total_stream_costs,
+                -- TopUp stats
+                (SELECT COUNT(*) FROM payment WHERE payment_type = 0) as topup_count,
+                (SELECT COALESCE(SUM(amount), 0) FROM payment WHERE payment_type = 0) as topup_amount,
+                (SELECT COUNT(*) FROM payment WHERE payment_type = 0 AND is_paid = true) as topup_paid_count,
+                (SELECT COALESCE(SUM(amount), 0) FROM payment WHERE payment_type = 0 AND is_paid = true) as topup_paid_amount,
+                -- Zap stats
+                (SELECT COUNT(*) FROM payment WHERE payment_type = 1) as zap_count,
+                (SELECT COALESCE(SUM(amount), 0) FROM payment WHERE payment_type = 1) as zap_amount,
+                (SELECT COUNT(*) FROM payment WHERE payment_type = 1 AND is_paid = true) as zap_paid_count,
+                (SELECT COALESCE(SUM(amount), 0) FROM payment WHERE payment_type = 1 AND is_paid = true) as zap_paid_amount,
+                -- Credit stats
+                (SELECT COUNT(*) FROM payment WHERE payment_type = 2) as credit_count,
+                (SELECT COALESCE(SUM(amount), 0) FROM payment WHERE payment_type = 2) as credit_amount,
+                (SELECT COUNT(*) FROM payment WHERE payment_type = 2 AND is_paid = true) as credit_paid_count,
+                (SELECT COALESCE(SUM(amount), 0) FROM payment WHERE payment_type = 2 AND is_paid = true) as credit_paid_amount,
+                -- Withdrawal stats
+                (SELECT COUNT(*) FROM payment WHERE payment_type = 3) as withdrawal_count,
+                (SELECT COALESCE(SUM(amount), 0) FROM payment WHERE payment_type = 3) as withdrawal_amount,
+                (SELECT COUNT(*) FROM payment WHERE payment_type = 3 AND is_paid = true) as withdrawal_paid_count,
+                (SELECT COALESCE(SUM(amount), 0) FROM payment WHERE payment_type = 3 AND is_paid = true) as withdrawal_paid_amount,
+                -- AdmissionFee stats
+                (SELECT COUNT(*) FROM payment WHERE payment_type = 4) as admission_count,
+                (SELECT COALESCE(SUM(amount), 0) FROM payment WHERE payment_type = 4) as admission_amount,
+                (SELECT COUNT(*) FROM payment WHERE payment_type = 4 AND is_paid = true) as admission_paid_count,
+                (SELECT COALESCE(SUM(amount), 0) FROM payment WHERE payment_type = 4 AND is_paid = true) as admission_paid_amount"
+        )
+        .fetch_one(&self.db)
+        .await?)
+    }
+
+    /// Get payment statistics by type
+    pub async fn get_payment_stats_by_type(&self, payment_type: PaymentType) -> Result<(u32, i64, u32, i64)> {
+        let row = sqlx::query(
+            "select count(*) as total_count, coalesce(sum(amount), 0) as total_amount, 
+             sum(case when is_paid = true then 1 else 0 end) as paid_count,
+             coalesce(sum(case when is_paid = true then amount else 0 end), 0) as paid_amount
+             from payment where payment_type = ?"
+        )
+        .bind(payment_type as u8)
+        .fetch_one(&self.db)
+        .await?;
+        
+        Ok((
+            row.try_get::<i64, _>("total_count")? as u32,
+            row.try_get::<i64, _>("total_amount")?,
+            row.try_get::<i64, _>("paid_count")? as u32,
+            row.try_get::<i64, _>("paid_amount")?,
+        ))
     }
 
     /// Update user default stream info
