@@ -694,7 +694,7 @@ impl ZapStreamAdminApi for ZapStreamAdminApiImpl {
         
         let payments = self
             .db
-            .get_all_payments(offset, limit, user_id, payment_type_enum, is_paid)
+            .get_all_payments(offset, limit, user_id, payment_type_enum.clone(), is_paid)
             .await?;
         
         let total = self

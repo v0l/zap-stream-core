@@ -1,11 +1,12 @@
 use crate::{
-    AuditLog, AuditLogWithPubkeys, IngestEndpoint, Payment, PaymentType, StreamKeyType, User,
-    UserHistoryEntry, UserPreviousStreams, UserStream, UserStreamForward, UserStreamKey,
+    AuditLog, AuditLogWithPubkeys, IngestEndpoint, Payment, PaymentType, PaymentsSummaryData,
+    StreamKeyType, User, UserHistoryEntry, UserPreviousStreams, UserStream, UserStreamForward,
+    UserStreamKey,
 };
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rand::random;
-use sqlx::{MySqlPool, Row, QueryBuilder};
+use sqlx::{MySqlPool, QueryBuilder, Row};
 use std::ops::Add;
 use uuid::Uuid;
 
@@ -466,8 +467,9 @@ impl ZapStreamDb {
         payment_type: Option<PaymentType>,
         is_paid: Option<bool>,
     ) -> Result<Vec<Payment>> {
-        let mut query_builder: QueryBuilder<sqlx::MySql> = QueryBuilder::new("SELECT * FROM payment");
-        
+        let mut query_builder: QueryBuilder<sqlx::MySql> =
+            QueryBuilder::new("SELECT * FROM payment");
+
         let mut has_where = false;
         if let Some(uid) = user_id {
             query_builder.push(" WHERE user_id = ").push_bind(uid);
@@ -475,9 +477,13 @@ impl ZapStreamDb {
         }
         if let Some(pt) = payment_type {
             if has_where {
-                query_builder.push(" AND payment_type = ").push_bind(pt as u8);
+                query_builder
+                    .push(" AND payment_type = ")
+                    .push_bind(pt as u8);
             } else {
-                query_builder.push(" WHERE payment_type = ").push_bind(pt as u8);
+                query_builder
+                    .push(" WHERE payment_type = ")
+                    .push_bind(pt as u8);
                 has_where = true;
             }
         }
@@ -488,15 +494,17 @@ impl ZapStreamDb {
                 query_builder.push(" WHERE is_paid = ").push_bind(paid);
             }
         }
-        
-        query_builder.push(" ORDER BY created DESC LIMIT ").push_bind(limit);
+
+        query_builder
+            .push(" ORDER BY created DESC LIMIT ")
+            .push_bind(limit);
         query_builder.push(" OFFSET ").push_bind(offset);
-        
+
         let payments = query_builder
             .build_query_as::<Payment>()
             .fetch_all(&self.db)
             .await?;
-        
+
         Ok(payments)
     }
 
@@ -507,8 +515,9 @@ impl ZapStreamDb {
         payment_type: Option<PaymentType>,
         is_paid: Option<bool>,
     ) -> Result<u32> {
-        let mut query_builder: QueryBuilder<sqlx::MySql> = QueryBuilder::new("SELECT COUNT(*) as cnt FROM payment");
-        
+        let mut query_builder: QueryBuilder<sqlx::MySql> =
+            QueryBuilder::new("SELECT COUNT(*) as cnt FROM payment");
+
         let mut has_where = false;
         if let Some(uid) = user_id {
             query_builder.push(" WHERE user_id = ").push_bind(uid);
@@ -516,9 +525,13 @@ impl ZapStreamDb {
         }
         if let Some(pt) = payment_type {
             if has_where {
-                query_builder.push(" AND payment_type = ").push_bind(pt as u8);
+                query_builder
+                    .push(" AND payment_type = ")
+                    .push_bind(pt as u8);
             } else {
-                query_builder.push(" WHERE payment_type = ").push_bind(pt as u8);
+                query_builder
+                    .push(" WHERE payment_type = ")
+                    .push_bind(pt as u8);
                 has_where = true;
             }
         }
@@ -529,12 +542,9 @@ impl ZapStreamDb {
                 query_builder.push(" WHERE is_paid = ").push_bind(paid);
             }
         }
-        
-        let row = query_builder
-            .build()
-            .fetch_one(&self.db)
-            .await?;
-        
+
+        let row = query_builder.build().fetch_one(&self.db).await?;
+
         Ok(row.try_get::<i64, _>("cnt")? as u32)
     }
 
@@ -600,17 +610,20 @@ impl ZapStreamDb {
     }
 
     /// Get payment statistics by type
-    pub async fn get_payment_stats_by_type(&self, payment_type: PaymentType) -> Result<(u32, i64, u32, i64)> {
+    pub async fn get_payment_stats_by_type(
+        &self,
+        payment_type: PaymentType,
+    ) -> Result<(u32, i64, u32, i64)> {
         let row = sqlx::query(
             "select count(*) as total_count, coalesce(sum(amount), 0) as total_amount, 
              sum(case when is_paid = true then 1 else 0 end) as paid_count,
              coalesce(sum(case when is_paid = true then amount else 0 end), 0) as paid_amount
-             from payment where payment_type = ?"
+             from payment where payment_type = ?",
         )
         .bind(payment_type as u8)
         .fetch_one(&self.db)
         .await?;
-        
+
         Ok((
             row.try_get::<i64, _>("total_count")? as u32,
             row.try_get::<i64, _>("total_amount")?,
