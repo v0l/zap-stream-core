@@ -1,0 +1,66 @@
+name: Build and Push Docker Images
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-zap-stream-core:
+    name: Build zap-stream-core
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: voidic
+          password: ${{ secrets.DOCKER_TOKEN }}
+
+      - name: Build and push zap-stream-core
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./crates/zap-stream/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: voidic/zap-stream-core:latest
+
+  build-n94-bridge:
+    name: Build n94-bridge
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: voidic
+          password: ${{ secrets.DOCKER_TOKEN }}
+
+      - name: Build and push n94-bridge
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./crates/n94-bridge/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: voidic/n94-bridge:latest
