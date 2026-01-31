@@ -550,7 +550,7 @@ impl ZapStreamDb {
 
     /// Get total stream costs across all users
     pub async fn get_total_stream_costs(&self) -> Result<u64> {
-        let row = sqlx::query("select coalesce(sum(cost), 0) as total from user_stream")
+        let row = sqlx::query("select CAST(coalesce(sum(cost), 0) AS SIGNED) as total from user_stream")
             .fetch_one(&self.db)
             .await?;
         Ok(row.try_get::<i64, _>("total")? as u64)
@@ -566,7 +566,7 @@ impl ZapStreamDb {
 
     /// Get total balance across all users
     pub async fn get_total_balance(&self) -> Result<i64> {
-        let row = sqlx::query("select coalesce(sum(balance), 0) as total from user")
+        let row = sqlx::query("select CAST(coalesce(sum(balance), 0) AS SIGNED) as total from user")
             .fetch_one(&self.db)
             .await?;
         Ok(row.try_get::<i64, _>("total")?)
@@ -577,33 +577,33 @@ impl ZapStreamDb {
         Ok(sqlx::query_as(
             "SELECT 
                 (SELECT COUNT(*) FROM user) as total_users,
-                (SELECT COALESCE(SUM(balance), 0) FROM user) as total_balance,
-                (SELECT COALESCE(SUM(cost), 0) FROM user_stream) as total_stream_costs,
+                CAST(COALESCE((SELECT SUM(balance) FROM user), 0) AS SIGNED) as total_balance,
+                CAST(COALESCE((SELECT SUM(cost) FROM user_stream), 0) AS SIGNED) as total_stream_costs,
                 -- TopUp stats
                 (SELECT COUNT(*) FROM payment WHERE payment_type = 0) as topup_count,
-                (SELECT COALESCE(SUM(amount), 0) FROM payment WHERE payment_type = 0) as topup_amount,
+                CAST(COALESCE((SELECT SUM(amount) FROM payment WHERE payment_type = 0), 0) AS SIGNED) as topup_amount,
                 (SELECT COUNT(*) FROM payment WHERE payment_type = 0 AND is_paid = true) as topup_paid_count,
-                (SELECT COALESCE(SUM(amount), 0) FROM payment WHERE payment_type = 0 AND is_paid = true) as topup_paid_amount,
+                CAST(COALESCE((SELECT SUM(amount) FROM payment WHERE payment_type = 0 AND is_paid = true), 0) AS SIGNED) as topup_paid_amount,
                 -- Zap stats
                 (SELECT COUNT(*) FROM payment WHERE payment_type = 1) as zap_count,
-                (SELECT COALESCE(SUM(amount), 0) FROM payment WHERE payment_type = 1) as zap_amount,
+                CAST(COALESCE((SELECT SUM(amount) FROM payment WHERE payment_type = 1), 0) AS SIGNED) as zap_amount,
                 (SELECT COUNT(*) FROM payment WHERE payment_type = 1 AND is_paid = true) as zap_paid_count,
-                (SELECT COALESCE(SUM(amount), 0) FROM payment WHERE payment_type = 1 AND is_paid = true) as zap_paid_amount,
+                CAST(COALESCE((SELECT SUM(amount) FROM payment WHERE payment_type = 1 AND is_paid = true), 0) AS SIGNED) as zap_paid_amount,
                 -- Credit stats
                 (SELECT COUNT(*) FROM payment WHERE payment_type = 2) as credit_count,
-                (SELECT COALESCE(SUM(amount), 0) FROM payment WHERE payment_type = 2) as credit_amount,
+                CAST(COALESCE((SELECT SUM(amount) FROM payment WHERE payment_type = 2), 0) AS SIGNED) as credit_amount,
                 (SELECT COUNT(*) FROM payment WHERE payment_type = 2 AND is_paid = true) as credit_paid_count,
-                (SELECT COALESCE(SUM(amount), 0) FROM payment WHERE payment_type = 2 AND is_paid = true) as credit_paid_amount,
+                CAST(COALESCE((SELECT SUM(amount) FROM payment WHERE payment_type = 2 AND is_paid = true), 0) AS SIGNED) as credit_paid_amount,
                 -- Withdrawal stats
                 (SELECT COUNT(*) FROM payment WHERE payment_type = 3) as withdrawal_count,
-                (SELECT COALESCE(SUM(amount), 0) FROM payment WHERE payment_type = 3) as withdrawal_amount,
+                CAST(COALESCE((SELECT SUM(amount) FROM payment WHERE payment_type = 3), 0) AS SIGNED) as withdrawal_amount,
                 (SELECT COUNT(*) FROM payment WHERE payment_type = 3 AND is_paid = true) as withdrawal_paid_count,
-                (SELECT COALESCE(SUM(amount), 0) FROM payment WHERE payment_type = 3 AND is_paid = true) as withdrawal_paid_amount,
+                CAST(COALESCE((SELECT SUM(amount) FROM payment WHERE payment_type = 3 AND is_paid = true), 0) AS SIGNED) as withdrawal_paid_amount,
                 -- AdmissionFee stats
                 (SELECT COUNT(*) FROM payment WHERE payment_type = 4) as admission_count,
-                (SELECT COALESCE(SUM(amount), 0) FROM payment WHERE payment_type = 4) as admission_amount,
+                CAST(COALESCE((SELECT SUM(amount) FROM payment WHERE payment_type = 4), 0) AS SIGNED) as admission_amount,
                 (SELECT COUNT(*) FROM payment WHERE payment_type = 4 AND is_paid = true) as admission_paid_count,
-                (SELECT COALESCE(SUM(amount), 0) FROM payment WHERE payment_type = 4 AND is_paid = true) as admission_paid_amount"
+                CAST(COALESCE((SELECT SUM(amount) FROM payment WHERE payment_type = 4 AND is_paid = true), 0) AS SIGNED) as admission_paid_amount"
         )
         .fetch_one(&self.db)
         .await?)
@@ -615,9 +615,10 @@ impl ZapStreamDb {
         payment_type: PaymentType,
     ) -> Result<(u32, i64, u32, i64)> {
         let row = sqlx::query(
-            "select count(*) as total_count, coalesce(sum(amount), 0) as total_amount, 
+            "select count(*) as total_count, 
+             CAST(coalesce(sum(amount), 0) AS SIGNED) as total_amount, 
              sum(case when is_paid = true then 1 else 0 end) as paid_count,
-             coalesce(sum(case when is_paid = true then amount else 0 end), 0) as paid_amount
+             CAST(coalesce(sum(case when is_paid = true then amount else 0 end), 0) AS SIGNED) as paid_amount
              from payment where payment_type = ?",
         )
         .bind(payment_type as u8)
