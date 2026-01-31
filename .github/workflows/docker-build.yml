@@ -14,6 +14,8 @@ jobs:
   build-zap-stream-core:
     name: Build zap-stream-core
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -39,6 +41,8 @@ jobs:
   build-n94-bridge:
     name: Build n94-bridge
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
