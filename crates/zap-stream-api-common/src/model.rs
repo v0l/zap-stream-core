@@ -148,6 +148,7 @@ pub struct GameInfo {
     pub name: String,
     pub summary: Option<String>,
     pub genres: Vec<GameGenre>,
+    pub cover: GameCover,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -160,5 +161,4 @@ pub struct GameGenre {
 pub struct GameCover {
     pub id: u64,
     pub image_id: String,
-    pub url: String,
 }
