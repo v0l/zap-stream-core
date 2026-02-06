@@ -304,8 +304,8 @@ impl PaymentHandler {
                                     error!("Invoice update error: {}", error);
                                 }
                                 None => {
-                                    warn!("Invoice update stream ended!");
-                                    continue;
+                                    warn!("Invoice update stream ended, reconnecting...");
+                                    break;
                                 }
                                 _ => {}
                             }
