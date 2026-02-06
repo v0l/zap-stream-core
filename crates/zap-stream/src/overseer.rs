@@ -42,7 +42,7 @@ use zap_stream_db::{
 #[cfg(feature = "hls")]
 use zap_stream_core::egress::hls::HLS_EGRESS_PATH;
 #[cfg(feature = "moq")]
-use zap_stream_core::hang::moq_lite::{OriginConsumer, OriginProducer, Produce};
+use zap_stream_core::hang::moq_lite::OriginProducer;
 use zap_stream_core::listen::ListenerEndpoint;
 #[cfg(feature = "hls")]
 use zap_stream_core::mux::HlsMuxer;
@@ -78,7 +78,7 @@ pub struct ZapStreamOverseer {
     last_view_counter: Arc<AtomicU32>,
     /// MoQ origin to push streams to
     #[cfg(feature = "moq")]
-    moq_origin: Option<Arc<Produce<OriginProducer, OriginConsumer>>>,
+    moq_origin: Option<Arc<OriginProducer>>,
     /// MoQ socket address
     #[cfg(feature = "moq")]
     moq_bind: Option<std::net::SocketAddr>,
@@ -212,7 +212,7 @@ impl ZapStreamOverseer {
     #[cfg(feature = "moq")]
     pub fn set_moq_origin(
         &mut self,
-        origin: Arc<Produce<OriginProducer, OriginConsumer>>,
+        origin: Arc<OriginProducer>,
         bind: Option<std::net::SocketAddr>,
     ) {
         self.moq_origin = Some(origin);
@@ -986,7 +986,7 @@ impl EndpointConfigurator for ZapStreamOverseer {
         let Some(prod) = &self.moq_origin else {
             bail!("MoQ not configured")
         };
-        Ok(prod.producer.clone())
+        Ok((*prod).clone())
     }
 }
 
