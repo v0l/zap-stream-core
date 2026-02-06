@@ -241,12 +241,11 @@ async fn main() -> Result<()> {
                     }
                 };
 
-                match zap_stream_core::hang::moq_lite::Session::accept(
-                    session,
-                    moq_origin.producer.consume(),
-                    moq_origin.producer.clone(),
-                )
-                .await
+                match zap_stream_core::hang::moq_lite::Server::new()
+                    .with_publish(moq_origin.consume())
+                    .with_consume((*moq_origin).clone())
+                    .accept(session)
+                    .await
                 {
                     Ok(session) => {
                         tokio::spawn(async move {

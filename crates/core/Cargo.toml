@@ -53,7 +53,7 @@ bytes = { version = "1.9.0", optional = true }
 xflv = { version = "0.4.4", optional = true }
 
 # moq
-hang = { git = "https://github.com/kixelated/moq.git", rev = "b2abf685647f125486cbb40b44e1134f947c6583", optional = true }
+hang = { git = "https://github.com/kixelated/moq.git", optional = true }
 
 [dev-dependencies]
 tempfile = "3.8.1"
