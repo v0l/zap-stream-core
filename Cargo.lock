@@ -1885,7 +1885,7 @@ dependencies = [
 [[package]]
 name = "hang"
 version = "0.13.0"
-source = "git+https://github.com/kixelated/moq.git#b100eeaf1264057e9c770e56569d6ffb7a975af4"
+source = "git+https://github.com/kixelated/moq.git?rev=b100eeaf1264057e9c770e56569d6ffb7a975af4#b100eeaf1264057e9c770e56569d6ffb7a975af4"
 dependencies = [
  "buf-list",
  "bytes",
@@ -2836,7 +2836,7 @@ dependencies = [
 [[package]]
 name = "moq-lite"
 version = "0.13.0"
-source = "git+https://github.com/kixelated/moq.git#b100eeaf1264057e9c770e56569d6ffb7a975af4"
+source = "git+https://github.com/kixelated/moq.git?rev=b100eeaf1264057e9c770e56569d6ffb7a975af4#b100eeaf1264057e9c770e56569d6ffb7a975af4"
 dependencies = [
  "async-channel",
  "bytes",
@@ -2855,7 +2855,7 @@ dependencies = [
 [[package]]
 name = "moq-native"
 version = "0.12.1"
-source = "git+https://github.com/kixelated/moq.git#b100eeaf1264057e9c770e56569d6ffb7a975af4"
+source = "git+https://github.com/kixelated/moq.git?rev=b100eeaf1264057e9c770e56569d6ffb7a975af4#b100eeaf1264057e9c770e56569d6ffb7a975af4"
 dependencies = [
  "anyhow",
  "clap",

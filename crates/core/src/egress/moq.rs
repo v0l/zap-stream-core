@@ -6,6 +6,7 @@ use ffmpeg_rs_raw::AvPacketRef;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{AV_PKT_FLAG_KEY, av_q2d};
 use hang::catalog::{AAC, Audio, AudioCodec, H264, H265, VP9, Video, VideoCodec};
 use hang::moq_lite::{Broadcast, OriginProducer};
+use hang::catalog::Container;
 use hang::{Catalog, Frame, Timestamp, TrackProducer, catalog};
 use std::collections::HashMap;
 use std::slice;
@@ -40,6 +41,11 @@ fn get_extradata(stream: &EncoderOrSourceStream) -> Option<Bytes> {
         if extradata.is_null() || extradata_size <= 0 {
             return None;
         }
+        // Cap at 10KB to guard against corrupted/malicious extradata_size
+        if extradata_size > 10 * 1024 {
+            warn!("extradata_size {} exceeds 10KB cap, ignoring", extradata_size);
+            return None;
+        }
         let data = slice::from_raw_parts(extradata as *const u8, extradata_size as usize);
         Some(Bytes::copy_from_slice(data))
     }
@@ -48,7 +54,8 @@ fn get_extradata(stream: &EncoderOrSourceStream) -> Option<Bytes> {
 /// Extract H.264 profile, constraints, and level from extradata (AVCC format).
 /// AVCC box layout: [version(1), profile(1), constraints(1), level(1), ...]
 fn get_h264_params(extradata: &Bytes) -> (u8, u8, u8) {
-    if extradata.len() >= 4 {
+    // AVCC box starts with version=1; skip non-AVCC extradata (e.g. Annex-B)
+    if extradata.len() >= 4 && extradata[0] == 1 {
         (extradata[1], extradata[2], extradata[3])
     } else {
         (0, 0, 0)
@@ -139,7 +146,7 @@ impl MoqEgress {
                             bitrate: Some(var.bitrate as _),
                             framerate: Some(var.fps as _),
                             optimize_for_latency: Some(true),
-                            container: Default::default(),
+                            container: Container::Legacy,
                             jitter: None,
                         };
                         video_tracks.insert(var.id.to_string(), cfg);
@@ -151,25 +158,8 @@ impl MoqEgress {
                     }
                     VariantStream::Audio(var) | VariantStream::CopyAudio(var) => {
                         let description = get_extradata(&stream.stream);
-                        let (sample_rate, channel_count) = unsafe {
-                            match &stream.stream {
-                                EncoderOrSourceStream::Encoder(enc) => {
-                                    let ctx = enc.codec_context();
-                                    ((*ctx).sample_rate as u32, (*ctx).ch_layout.nb_channels as u32)
-                                }
-                                EncoderOrSourceStream::SourceStream(avstream) => {
-                                    let par = (**avstream).codecpar;
-                                    if par.is_null() {
-                                        (0, 0)
-                                    } else {
-                                        (
-                                            (*par).sample_rate as u32,
-                                            (*par).ch_layout.nb_channels as u32,
-                                        )
-                                    }
-                                }
-                            }
-                        };
+                        let sample_rate = var.sample_rate;
+                        let channel_count = var.channels as u32;
                         let cfg = catalog::AudioConfig {
                             codec: match var.codec.as_str() {
                                 "aac" | "libfdk_aac" => AAC { profile: 0 }.into(),
@@ -180,7 +170,7 @@ impl MoqEgress {
                             channel_count,
                             bitrate: Some(var.bitrate as _),
                             description,
-                            container: Default::default(),
+                            container: Container::Legacy,
                             jitter: None,
                         };
                         audio_tracks.insert(var.id.to_string(), cfg);
