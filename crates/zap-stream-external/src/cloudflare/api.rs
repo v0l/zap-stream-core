@@ -50,7 +50,7 @@ fn select_ingest_endpoint<'a>(
     {
         return Ok(selected);
     }
-    let default = endpoints.iter().max_by_key(|endpoint| endpoint.cost).unwrap();
+    let default = endpoints.iter().min_by_key(|endpoint| endpoint.cost).unwrap();
     Ok(default)
 }
 
@@ -741,8 +741,8 @@ mod tests {
         let matched = select_ingest_endpoint(&endpoints, Some(2), "basic").unwrap();
         assert_eq!(matched.id, 2);
 
-        let fallback = select_ingest_endpoint(&endpoints, None, "good").unwrap();
-        assert_eq!(fallback.id, 1);
+        let fallback = select_ingest_endpoint(&endpoints, None, "cloudflare").unwrap();
+        assert_eq!(fallback.id, 2);
     }
 
     #[test]
