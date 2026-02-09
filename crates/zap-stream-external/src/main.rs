@@ -34,6 +34,10 @@ struct Settings {
     /// Public URL which points to this http server
     public_url: String,
 
+    /// Public hostname for ingest endpoints (custom RTMPS domain)
+    #[serde(default)]
+    endpoints_public_hostname: Option<String>,
+
     /// Payment backend config
     payments: PaymentBackend,
 
@@ -120,6 +124,7 @@ async fn main() -> Result<()> {
             node.clone(),
             stream_manager.clone(),
             settings.public_url.clone(),
+            settings.endpoints_public_hostname.clone(),
         );
         api_impl.setup_webhook().await?;
         tasks.push(api_impl.clone().check_streams(shutdown.clone()));
