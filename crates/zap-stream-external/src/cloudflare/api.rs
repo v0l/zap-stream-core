@@ -80,6 +80,13 @@ fn apply_video_asset_to_stream(stream: &mut UserStream, asset: &VideoAssetWebhoo
     changed
 }
 
+fn select_stream_for_video_asset(
+    matched: Option<UserStream>,
+    fallback: Option<UserStream>,
+) -> Option<UserStream> {
+    matched.or(fallback)
+}
+
 #[derive(Clone)]
 pub struct CfApiWrapper {
     /// Cloudflare API client
@@ -324,14 +331,21 @@ impl CfApiWrapper {
                     let Some(user) = user else {
                         bail!("No user found with external_id {}", input.uid);
                     };
+                    let matched = self.db.get_stream_by_input_uid(&v.live_input).await?;
+                    let fallback = self.db.get_user_latest_ended_stream(user.id).await?;
                     let Some(mut stream) =
-                        self.db.get_user_latest_ended_stream(user.id).await?
+                        select_stream_for_video_asset(matched, fallback)
                     else {
                         warn!(
                             "No ended streams found for user {}, skipping Video Asset update",
                             user.id
                         );
                         return Ok(());
+                    };
+                    let user = if stream.user_id == user.id {
+                        user
+                    } else {
+                        self.db.get_user(stream.user_id).await?
                     };
                     if apply_video_asset_to_stream(&mut stream, &v) {
                         let event = self.publish_stream_event(&stream, &user).await?;
@@ -389,6 +403,7 @@ impl CfApiWrapper {
             content_warning: user.content_warning.clone(),
             goal: user.goal.clone(),
             tags: user.tags.clone(),
+            input_uid: Some(input.uid.clone()),
             ..Default::default()
         };
         self.db.insert_stream(&new_stream).await?;
@@ -721,7 +736,10 @@ impl ZapStreamApi for CfApiWrapper {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_video_asset_to_stream, build_account_endpoint, select_ingest_endpoint};
+    use super::{
+        apply_video_asset_to_stream, build_account_endpoint, select_ingest_endpoint,
+        select_stream_for_video_asset,
+    };
     use crate::cloudflare::{LiveInput, Playback, RtmpsEndpoint, VideoAssetStatus, VideoAssetWebhook};
     use zap_stream_db::IngestEndpoint;
     use zap_stream_db::UserStream;
@@ -895,5 +913,31 @@ mod tests {
             stream.thumb.as_deref(),
             Some("https://example.com/thumb.jpg")
         );
+    }
+
+    #[test]
+    fn select_stream_for_video_asset_prefers_matched() {
+        let matched = UserStream {
+            id: "matched".to_string(),
+            ..Default::default()
+        };
+        let fallback = UserStream {
+            id: "fallback".to_string(),
+            ..Default::default()
+        };
+
+        let selected = select_stream_for_video_asset(Some(matched), Some(fallback)).unwrap();
+        assert_eq!(selected.id, "matched");
+    }
+
+    #[test]
+    fn select_stream_for_video_asset_uses_fallback_when_missing() {
+        let fallback = UserStream {
+            id: "fallback".to_string(),
+            ..Default::default()
+        };
+
+        let selected = select_stream_for_video_asset(None, Some(fallback)).unwrap();
+        assert_eq!(selected.id, "fallback");
     }
 }

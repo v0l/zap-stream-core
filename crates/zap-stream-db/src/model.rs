@@ -110,6 +110,8 @@ pub struct UserStream {
     pub stream_key_id: Option<u64>,
     /// An external ID used to identify this stream in an external system
     pub external_id: Option<String>,
+    /// External input UID used to map incoming assets to a stream
+    pub input_uid: Option<String>,
 }
 
 #[derive(Debug, Clone, FromRow)]

@@ -110,8 +110,8 @@ impl ZapStreamDb {
 
     pub async fn insert_stream(&self, user_stream: &UserStream) -> Result<()> {
         sqlx::query(
-        "insert into user_stream (id, user_id, state, starts, ends, title, summary, image, thumb, tags, content_warning, goal, pinned, cost, duration, fee, event, endpoint_id, node_name, stream_key_id, external_id)
-             values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        "insert into user_stream (id, user_id, state, starts, ends, title, summary, image, thumb, tags, content_warning, goal, pinned, cost, duration, fee, event, endpoint_id, node_name, stream_key_id, external_id, input_uid)
+             values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
         .bind(&user_stream.id)
         .bind(user_stream.user_id)
@@ -134,6 +134,7 @@ impl ZapStreamDb {
         .bind(&user_stream.node_name)
         .bind(user_stream.stream_key_id)
         .bind(&user_stream.external_id)
+        .bind(&user_stream.input_uid)
         .execute(&self.db)
         .await?;
 
@@ -142,7 +143,7 @@ impl ZapStreamDb {
 
     pub async fn update_stream(&self, user_stream: &UserStream) -> Result<()> {
         sqlx::query(
-        "update user_stream set state = ?, starts = ?, ends = ?, title = ?, summary = ?, image = ?, thumb = ?, tags = ?, content_warning = ?, goal = ?, pinned = ?, cost = ?, duration = ?, fee = ?, event = ?, endpoint_id = ?, node_name = ?, stream_key_id = ?, external_id = ? where id = ?",
+        "update user_stream set state = ?, starts = ?, ends = ?, title = ?, summary = ?, image = ?, thumb = ?, tags = ?, content_warning = ?, goal = ?, pinned = ?, cost = ?, duration = ?, fee = ?, event = ?, endpoint_id = ?, node_name = ?, stream_key_id = ?, external_id = ?, input_uid = ? where id = ?",
     )
         .bind(&user_stream.state)
         .bind(user_stream.starts)
@@ -163,6 +164,7 @@ impl ZapStreamDb {
         .bind(&user_stream.node_name)
         .bind(user_stream.stream_key_id)
         .bind(&user_stream.external_id)
+        .bind(&user_stream.input_uid)
         .bind(&user_stream.id)
         .execute(&self.db)
         .await
@@ -927,6 +929,14 @@ impl ZapStreamDb {
                 .fetch_all(&self.db)
                 .await?,
         )
+    }
+
+    /// Find a stream by external input UID
+    pub async fn get_stream_by_input_uid(&self, input_uid: &str) -> Result<Option<UserStream>> {
+        Ok(sqlx::query_as("select * from user_stream where input_uid = ?")
+            .bind(input_uid)
+            .fetch_optional(&self.db)
+            .await?)
     }
 
     /// Get unified user history combining payments and completed streams with proper pagination
