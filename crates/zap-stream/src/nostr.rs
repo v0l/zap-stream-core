@@ -31,16 +31,6 @@ impl N53Publisher {
         stream: &UserStream,
         extra_tags: Vec<Tag>,
     ) -> Result<Event> {
-        self.stream_to_event_with_viewer_count(stream, extra_tags, None)
-            .await
-    }
-
-    pub async fn stream_to_event_with_viewer_count(
-        &self,
-        stream: &UserStream,
-        extra_tags: Vec<Tag>,
-        viewer_count: Option<u32>,
-    ) -> Result<Event> {
         let mut tags = vec![
             Tag::parse(&["d".to_string(), stream.id.to_string()])?,
             Tag::parse(&["status".to_string(), stream.state.to_string()])?,
@@ -106,11 +96,15 @@ impl N53Publisher {
         }
 
         // Add current viewer count for live streams
-        if stream.state == UserStreamState::Live {
-            let viewer_count = match viewer_count {
-                Some(count) => count as usize,
-                None => self.stream_manager.get_viewer_count(&stream.id).await,
-            };
+        if stream.state == UserStreamState::Live
+            && !extra_tags.iter().any(|tag| {
+                matches!(
+                    tag.as_slice().first(),
+                    Some(value) if value == "current_participants"
+                )
+            })
+        {
+            let viewer_count = self.stream_manager.get_viewer_count(&stream.id).await;
             tags.push(Tag::parse(&[
                 "current_participants".to_string(),
                 viewer_count.to_string(),

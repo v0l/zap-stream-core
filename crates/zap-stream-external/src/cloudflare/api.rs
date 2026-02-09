@@ -663,10 +663,11 @@ impl CfApiWrapper {
             }
             _ => {}
         }
-        let ev = self
-            .n53
-            .stream_to_event_with_viewer_count(stream, extra_tags, viewer_count)
-            .await?;
+        if let Some(count) = viewer_count {
+            let count_str = count.to_string();
+            extra_tags.push(Tag::parse(["current_participants", count_str.as_str()])?);
+        }
+        let ev = self.n53.stream_to_event(stream, extra_tags).await?;
         self.n53.publish(&ev).await?;
         info!("Published stream event {}", ev.id.to_hex());
         Ok(ev)
