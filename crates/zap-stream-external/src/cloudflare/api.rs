@@ -87,6 +87,76 @@ fn select_stream_for_video_asset(
     matched.or(fallback)
 }
 
+#[derive(Clone, Debug)]
+struct ViewerCountCache {
+    count: u32,
+    timestamp: Instant,
+}
+
+#[derive(Clone, Debug)]
+struct ViewerCountState {
+    last_published_count: u32,
+    last_update_time: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Clone, Debug)]
+struct ViewerCountTracker {
+    cache: Arc<RwLock<HashMap<String, ViewerCountCache>>>,
+    cache_duration: Duration,
+}
+
+impl ViewerCountTracker {
+    fn new(cache_duration: Duration) -> Self {
+        Self {
+            cache: Arc::new(RwLock::new(HashMap::new())),
+            cache_duration,
+        }
+    }
+
+    async fn get_viewer_count(&self, stream_id: &str, hls_url: &str) -> u32 {
+        {
+            let cache = self.cache.read().await;
+            if let Some(cached) = cache.get(stream_id) {
+                if cached.timestamp.elapsed() < self.cache_duration {
+                    return cached.count;
+                }
+            }
+        }
+
+        let viewer_url = hls_url.replace("/manifest/video.m3u8", "/views");
+        let response = match reqwest::get(&viewer_url).await {
+            Ok(resp) => resp,
+            Err(e) => {
+                warn!("Failed to fetch viewer count from Cloudflare: {}", e);
+                return 0;
+            }
+        };
+
+        let json: serde_json::Value = match response.json().await {
+            Ok(j) => j,
+            Err(e) => {
+                warn!("Failed to parse viewer count JSON: {}", e);
+                return 0;
+            }
+        };
+
+        let count = json["liveViewers"].as_u64().unwrap_or(0) as u32;
+        info!(
+            "Cloudflare API call: viewer count for stream {}: {}",
+            stream_id, count
+        );
+        let mut cache = self.cache.write().await;
+        cache.insert(
+            stream_id.to_string(),
+            ViewerCountCache {
+                count,
+                timestamp: Instant::now(),
+            },
+        );
+        count
+    }
+}
+
 #[derive(Clone)]
 pub struct CfApiWrapper {
     /// Cloudflare API client
@@ -111,6 +181,12 @@ pub struct CfApiWrapper {
     stream_manager: StreamManager,
     /// Publisher util for nostr events
     n53: N53Publisher,
+    /// Viewer count cache with 30-second TTL
+    viewer_count_tracker: ViewerCountTracker,
+    /// Track viewer count states for change detection
+    viewer_count_states: Arc<RwLock<HashMap<String, ViewerCountState>>>,
+    /// Minimum update interval in minutes (matches core behavior)
+    min_update_minutes: i64,
 }
 
 impl CfApiWrapper {
@@ -136,6 +212,9 @@ impl CfApiWrapper {
             webhook_details: Default::default(),
             n53: N53Publisher::new(stream_manager.clone(), client.clone()),
             stream_manager,
+            viewer_count_tracker: ViewerCountTracker::new(Duration::from_secs(30)),
+            viewer_count_states: Default::default(),
+            min_update_minutes: 5,
         }
     }
 
@@ -288,6 +367,27 @@ impl CfApiWrapper {
                                 }
                             } else {
                                 self.ensure_tracking_live(&input, &user, &live_stream).await?;
+                                if let Some(hls_url) = self.get_streaming_url(&live_stream, &input)? {
+                                    let viewer_count = self
+                                        .viewer_count_tracker
+                                        .get_viewer_count(&live_stream.id, &hls_url)
+                                        .await;
+                                    if self
+                                        .should_publish_viewer_count(&live_stream.id, viewer_count)
+                                        .await
+                                    {
+                                        let event = self
+                                            .publish_stream_event_with_viewer_count(
+                                                &live_stream,
+                                                &user,
+                                                Some(viewer_count),
+                                            )
+                                            .await?;
+                                        let mut updated_stream = live_stream.clone();
+                                        updated_stream.event = Some(event.as_json());
+                                        self.db.update_stream(&updated_stream).await?;
+                                    }
+                                }
                             }
                         }
                     }
@@ -543,7 +643,12 @@ impl CfApiWrapper {
         Ok(None)
     }
 
-    pub async fn publish_stream_event(&self, stream: &UserStream, user: &User) -> Result<Event> {
+    async fn publish_stream_event_with_viewer_count(
+        &self,
+        stream: &UserStream,
+        user: &User,
+        viewer_count: Option<u32>,
+    ) -> Result<Event> {
         let mut extra_tags = vec![
             Tag::parse(["p", hex::encode(&user.pubkey).as_str(), "", "host"])?,
             Tag::parse(["service", self.map_to_public_url("api/v1")?.as_str()])?,
@@ -558,10 +663,47 @@ impl CfApiWrapper {
             }
             _ => {}
         }
-        let ev = self.n53.stream_to_event(stream, extra_tags).await?;
+        let ev = self
+            .n53
+            .stream_to_event_with_viewer_count(stream, extra_tags, viewer_count)
+            .await?;
         self.n53.publish(&ev).await?;
         info!("Published stream event {}", ev.id.to_hex());
         Ok(ev)
+    }
+
+    pub async fn publish_stream_event(&self, stream: &UserStream, user: &User) -> Result<Event> {
+        self.publish_stream_event_with_viewer_count(stream, user, None)
+            .await
+    }
+
+    async fn should_publish_viewer_count(&self, stream_id: &str, count: u32) -> bool {
+        let mut states = self.viewer_count_states.write().await;
+        let now = Utc::now();
+        let min_update = chrono::Duration::minutes(self.min_update_minutes);
+        match states.get_mut(stream_id) {
+            Some(state) => {
+                if count == state.last_published_count {
+                    return false;
+                }
+                if now - state.last_update_time < min_update {
+                    return false;
+                }
+                state.last_published_count = count;
+                state.last_update_time = now;
+                true
+            }
+            None => {
+                states.insert(
+                    stream_id.to_string(),
+                    ViewerCountState {
+                        last_published_count: count,
+                        last_update_time: now,
+                    },
+                );
+                true
+            }
+        }
     }
 
     /// Register the webhook handler if it's not already set
@@ -778,9 +920,11 @@ impl ZapStreamApi for CfApiWrapper {
 mod tests {
     use super::{
         apply_video_asset_to_stream, build_account_endpoint, select_ingest_endpoint,
-        select_stream_for_video_asset,
+        select_stream_for_video_asset, ViewerCountTracker,
     };
     use crate::cloudflare::{LiveInput, Playback, RtmpsEndpoint, VideoAssetStatus, VideoAssetWebhook};
+    use mockito::Server;
+    use std::time::Duration;
     use zap_stream_db::IngestEndpoint;
     use zap_stream_db::UserStream;
 
@@ -979,5 +1123,28 @@ mod tests {
 
         let selected = select_stream_for_video_asset(None, Some(fallback)).unwrap();
         assert_eq!(selected.id, "fallback");
+    }
+
+    #[tokio::test]
+    async fn viewer_count_cache() {
+        let mut server = Server::new_async().await;
+        let views_path = "/stream-uid/views";
+        let mock = server
+            .mock("GET", views_path)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"liveViewers": 12}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let hls_url = format!("{}/stream-uid/manifest/video.m3u8", server.url());
+        let tracker = ViewerCountTracker::new(Duration::from_secs(30));
+
+        let first = tracker.get_viewer_count("stream-1", &hls_url).await;
+        let second = tracker.get_viewer_count("stream-1", &hls_url).await;
+
+        assert!(first > 0);
+        assert_eq!(first, second);
+        mock.assert_async().await;
     }
 }
