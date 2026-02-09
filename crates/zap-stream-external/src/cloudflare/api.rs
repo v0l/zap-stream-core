@@ -140,7 +140,7 @@ impl CfApiWrapper {
     }
 
     fn input_map_ttl() -> Duration {
-        Duration::from_secs(60)
+        Duration::from_secs(120)
     }
 
     async fn register_input_mapping(&self, input_uid: &str, stream_id: &str) {
