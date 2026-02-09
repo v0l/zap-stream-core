@@ -322,8 +322,11 @@ mod tests {
             .create_async()
             .await;
 
-        let client = CloudflareClient::new("test-token".to_string(), "test-account".to_string())
-            .with_base_url(server.url());
+        let client = CloudflareClient::new(CloudflareToken {
+            token: "test-token".to_string(),
+            account_id: "test-account".to_string(),
+        })
+        .with_base_url(server.url());
 
         let result = client.create_live_input("test-stream").await;
         assert!(result.is_ok(), "create_live_input should succeed");
@@ -349,8 +352,11 @@ mod tests {
             .create_async()
             .await;
 
-        let client = CloudflareClient::new("invalid-token".to_string(), "test-account".to_string())
-            .with_base_url(server.url());
+        let client = CloudflareClient::new(CloudflareToken {
+            token: "invalid-token".to_string(),
+            account_id: "test-account".to_string(),
+        })
+        .with_base_url(server.url());
 
         let result = client.create_live_input("test-stream").await;
         assert!(result.is_err(), "create_live_input should fail with 401");
@@ -381,14 +387,23 @@ mod tests {
             .create_async()
             .await;
 
-        let client = CloudflareClient::new("test-token".to_string(), "test-account".to_string())
-            .with_base_url(server.url());
+        let client = CloudflareClient::new(CloudflareToken {
+            token: "test-token".to_string(),
+            account_id: "test-account".to_string(),
+        })
+        .with_base_url(server.url());
 
         let result = client.get_live_input("test-uid").await;
         assert!(result.is_ok());
 
         let response = result.unwrap();
-        assert_eq!(response.result.status, Some(serde_json::json!("connected")));
+        assert!(
+            response
+                .result
+                .status
+                .as_ref()
+                .is_some_and(|status| status.is_connected())
+        );
 
         mock.assert_async().await;
     }
@@ -415,8 +430,11 @@ mod tests {
             .create_async()
             .await;
 
-        let client = CloudflareClient::new("test-token".to_string(), "test-account".to_string())
-            .with_base_url(server.url());
+        let client = CloudflareClient::new(CloudflareToken {
+            token: "test-token".to_string(),
+            account_id: "test-account".to_string(),
+        })
+        .with_base_url(server.url());
 
         let result = client.get_video_assets("test-live-input-uid").await;
         assert!(result.is_ok());
@@ -442,8 +460,11 @@ mod tests {
             .create_async()
             .await;
 
-        let client = CloudflareClient::new("test-token".to_string(), "test-account".to_string())
-            .with_base_url(server.url());
+        let client = CloudflareClient::new(CloudflareToken {
+            token: "test-token".to_string(),
+            account_id: "test-account".to_string(),
+        })
+        .with_base_url(server.url());
 
         let result = client.delete_live_input("test-uid").await;
         assert!(result.is_ok());
