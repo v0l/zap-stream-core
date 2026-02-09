@@ -221,6 +221,8 @@ impl CfApiWrapper {
         stream_manager: StreamManager,
         public_url: String,
         endpoints_public_hostname: Option<String>,
+        tos_url: Option<String>,
+        client_url: Option<String>,
     ) -> Self {
         Self {
             client: CloudflareClient::new(token),
@@ -228,11 +230,11 @@ impl CfApiWrapper {
             db,
             live_input_cache: Default::default(),
             input_stream_map: Default::default(),
-            tos_url: None,
+            tos_url,
             create_input_lock: Default::default(),
             public_url,
             webhook_details: Default::default(),
-            n53: N53Publisher::new(stream_manager.clone(), client.clone()),
+            n53: N53Publisher::new_with_client_url(stream_manager.clone(), client.clone(), client_url),
             stream_manager,
             viewer_count_tracker: ViewerCountTracker::new(Duration::from_secs(30)),
             viewer_count_states: Default::default(),
@@ -774,12 +776,7 @@ impl ZapStreamApi for CfApiWrapper {
             balance: user.balance / 1000,
             tos: AccountTos {
                 accepted: user.tos_accepted.is_some(),
-                link: self
-                    .tos_url
-                    .as_ref()
-                    .map(|s| s.as_str())
-                    .unwrap_or("https://zap.stream/tos")
-                    .to_string(),
+                link: resolve_tos_url(self.tos_url.as_deref()),
             },
             forwards: forwards
                 .into_iter()
@@ -944,11 +941,18 @@ impl ZapStreamApi for CfApiWrapper {
     }
 }
 
+fn resolve_tos_url(tos_url: Option<&str>) -> String {
+    match tos_url {
+        Some(url) if !url.trim().is_empty() => url.to_string(),
+        _ => "https://zap.stream/tos".to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         apply_custom_ingest_domain, apply_video_asset_to_stream, build_account_endpoint,
-        select_ingest_endpoint,
+        resolve_tos_url, select_ingest_endpoint,
         select_stream_for_video_asset, ViewerCountTracker,
     };
     use crate::cloudflare::{LiveInput, Playback, RtmpsEndpoint, VideoAssetStatus, VideoAssetWebhook};
@@ -1039,6 +1043,18 @@ mod tests {
         assert_eq!(
             apply_custom_ingest_domain(&input.rtmps.url, Some("localhost")),
             "rtmps://live.cloudflare.com:443/live/"
+        );
+    }
+
+    #[test]
+    fn resolve_tos_url_prefers_configured_value() {
+        assert_eq!(
+            resolve_tos_url(Some("https://tos.example")),
+            "https://tos.example"
+        );
+        assert_eq!(
+            resolve_tos_url(None),
+            "https://zap.stream/tos"
         );
     }
 
