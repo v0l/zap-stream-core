@@ -54,10 +54,29 @@ fn select_ingest_endpoint<'a>(
     Ok(default)
 }
 
-fn build_account_endpoint(input: &LiveInput, ingest: &IngestEndpoint) -> Endpoint {
+fn apply_custom_ingest_domain(base_url: &str, custom_domain: Option<&str>) -> String {
+    let Some(domain) = custom_domain else {
+        return base_url.to_string();
+    };
+    if domain.is_empty() || domain == "localhost" {
+        return base_url.to_string();
+    }
+    if let Ok(mut url) = Url::parse(base_url) {
+        if url.set_host(Some(domain)).is_ok() {
+            return url.to_string();
+        }
+    }
+    base_url.to_string()
+}
+
+fn build_account_endpoint(
+    input: &LiveInput,
+    ingest: &IngestEndpoint,
+    custom_domain: Option<&str>,
+) -> Endpoint {
     Endpoint {
         name: "RTMPS".to_string(),
-        url: input.rtmps.url.clone(),
+        url: apply_custom_ingest_domain(&input.rtmps.url, custom_domain),
         key: input.rtmps.stream_key.clone(),
         capabilities: vec![],
         cost: EndpointCost {
@@ -187,6 +206,8 @@ pub struct CfApiWrapper {
     viewer_count_states: Arc<RwLock<HashMap<String, ViewerCountState>>>,
     /// Minimum update interval in minutes (matches core behavior)
     min_update_minutes: i64,
+    /// Custom ingest domain (if configured)
+    custom_ingest_domain: Option<String>,
 }
 
 impl CfApiWrapper {
@@ -199,6 +220,7 @@ impl CfApiWrapper {
         lightning: Arc<dyn LightningNode>,
         stream_manager: StreamManager,
         public_url: String,
+        endpoints_public_hostname: Option<String>,
     ) -> Self {
         Self {
             client: CloudflareClient::new(token),
@@ -215,6 +237,7 @@ impl CfApiWrapper {
             viewer_count_tracker: ViewerCountTracker::new(Duration::from_secs(30)),
             viewer_count_states: Default::default(),
             min_update_minutes: 5,
+            custom_ingest_domain: endpoints_public_hostname,
         }
     }
 
@@ -740,7 +763,11 @@ impl ZapStreamApi for CfApiWrapper {
         let forwards = self.db.get_user_forwards(uid).await?;
         let ingests = self.db.get_ingest_endpoints().await?;
         let ingest_endpoint = select_ingest_endpoint(&ingests, user.ingest_id, "")?;
-        let endpoints = vec![build_account_endpoint(&input, ingest_endpoint)];
+        let endpoints = vec![build_account_endpoint(
+            &input,
+            ingest_endpoint,
+            self.custom_ingest_domain.as_deref(),
+        )];
 
         Ok(AccountInfo {
             endpoints,
@@ -920,7 +947,8 @@ impl ZapStreamApi for CfApiWrapper {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_video_asset_to_stream, build_account_endpoint, select_ingest_endpoint,
+        apply_custom_ingest_domain, apply_video_asset_to_stream, build_account_endpoint,
+        select_ingest_endpoint,
         select_stream_for_video_asset, ViewerCountTracker,
     };
     use crate::cloudflare::{LiveInput, Playback, RtmpsEndpoint, VideoAssetStatus, VideoAssetWebhook};
@@ -982,11 +1010,36 @@ mod tests {
     #[test]
     fn build_account_endpoint_uses_ingest_cost() {
         let ingest = sample_ingests().into_iter().find(|e| e.id == 2).unwrap();
-        let endpoint = build_account_endpoint(&sample_input(), &ingest);
+        let endpoint = build_account_endpoint(&sample_input(), &ingest, None);
 
         assert_eq!(endpoint.name, "RTMPS");
         assert_eq!(endpoint.cost.rate, 0.0);
         assert_eq!(endpoint.key, "stream-key");
+    }
+
+    #[test]
+    fn build_account_endpoint_applies_custom_ingest_domain() {
+        let ingest = sample_ingests().into_iter().find(|e| e.id == 2).unwrap();
+        let endpoint = build_account_endpoint(&sample_input(), &ingest, Some("custom.domain"));
+
+        assert_eq!(endpoint.url, "rtmps://custom.domain:443/live/");
+    }
+
+    #[test]
+    fn apply_custom_ingest_domain_ignores_empty_or_localhost() {
+        let input = sample_input();
+        assert_eq!(
+            apply_custom_ingest_domain(&input.rtmps.url, None),
+            "rtmps://live.cloudflare.com:443/live/"
+        );
+        assert_eq!(
+            apply_custom_ingest_domain(&input.rtmps.url, Some("")),
+            "rtmps://live.cloudflare.com:443/live/"
+        );
+        assert_eq!(
+            apply_custom_ingest_domain(&input.rtmps.url, Some("localhost")),
+            "rtmps://live.cloudflare.com:443/live/"
+        );
     }
 
     #[test]
