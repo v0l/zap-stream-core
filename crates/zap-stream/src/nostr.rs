@@ -96,7 +96,14 @@ impl N53Publisher {
         }
 
         // Add current viewer count for live streams
-        if stream.state == UserStreamState::Live {
+        if stream.state == UserStreamState::Live
+            && !extra_tags.iter().any(|tag| {
+                matches!(
+                    tag.as_slice().first(),
+                    Some(value) if value == "current_participants"
+                )
+            })
+        {
             let viewer_count = self.stream_manager.get_viewer_count(&stream.id).await;
             tags.push(Tag::parse(&[
                 "current_participants".to_string(),
