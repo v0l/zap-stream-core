@@ -836,4 +836,64 @@ mod tests {
         let changed = apply_video_asset_to_stream(&mut stream, &asset);
         assert!(!changed);
     }
+
+    #[test]
+    fn apply_video_asset_to_stream_updates_only_external_id() {
+        let mut stream = UserStream {
+            external_id: Some("old-uid".to_string()),
+            thumb: Some("https://example.com/thumb.jpg".to_string()),
+            ..Default::default()
+        };
+        let asset = VideoAssetWebhook {
+            uid: "video-uid".to_string(),
+            thumbnail: "https://example.com/thumb.jpg".to_string(),
+            duration: 12.0,
+            playback: Playback {
+                hls: "https://example.com/video.m3u8".to_string(),
+                dash: "https://example.com/video.mpd".to_string(),
+            },
+            live_input: "input-uid".to_string(),
+            status: VideoAssetStatus {
+                state: "ready".to_string(),
+            },
+        };
+
+        let changed = apply_video_asset_to_stream(&mut stream, &asset);
+        assert!(changed);
+        assert_eq!(stream.external_id.as_deref(), Some("video-uid"));
+        assert_eq!(
+            stream.thumb.as_deref(),
+            Some("https://example.com/thumb.jpg")
+        );
+    }
+
+    #[test]
+    fn apply_video_asset_to_stream_updates_only_thumb() {
+        let mut stream = UserStream {
+            external_id: Some("video-uid".to_string()),
+            thumb: Some("https://example.com/old.jpg".to_string()),
+            ..Default::default()
+        };
+        let asset = VideoAssetWebhook {
+            uid: "video-uid".to_string(),
+            thumbnail: "https://example.com/thumb.jpg".to_string(),
+            duration: 12.0,
+            playback: Playback {
+                hls: "https://example.com/video.m3u8".to_string(),
+                dash: "https://example.com/video.mpd".to_string(),
+            },
+            live_input: "input-uid".to_string(),
+            status: VideoAssetStatus {
+                state: "ready".to_string(),
+            },
+        };
+
+        let changed = apply_video_asset_to_stream(&mut stream, &asset);
+        assert!(changed);
+        assert_eq!(stream.external_id.as_deref(), Some("video-uid"));
+        assert_eq!(
+            stream.thumb.as_deref(),
+            Some("https://example.com/thumb.jpg")
+        );
+    }
 }
