@@ -1,5 +1,5 @@
 use crate::cloudflare::{
-    CloudflareClient, CloudflareToken, LiveInput, LiveInputWebhookData,
+    CloudflareClient, CloudflareToken, LiveInput, LiveInputWebhookData, VideoAssetWebhook,
     WebhookPayload, WebhookResult,
 };
 use anyhow::{Context, Result, bail};
@@ -13,7 +13,7 @@ use chrono::Utc;
 use nostr_sdk::{Client, Event, JsonUtil, PublicKey, Tag, ToBech32};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::select;
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
@@ -67,6 +67,26 @@ fn build_account_endpoint(input: &LiveInput, ingest: &IngestEndpoint) -> Endpoin
     }
 }
 
+fn apply_video_asset_to_stream(stream: &mut UserStream, asset: &VideoAssetWebhook) -> bool {
+    let mut changed = false;
+    if stream.external_id.as_deref() != Some(asset.uid.as_str()) {
+        stream.external_id = Some(asset.uid.clone());
+        changed = true;
+    }
+    if stream.thumb.as_deref() != Some(asset.thumbnail.as_str()) {
+        stream.thumb = Some(asset.thumbnail.clone());
+        changed = true;
+    }
+    changed
+}
+
+fn select_stream_for_video_asset(
+    matched: Option<UserStream>,
+    fallback: Option<UserStream>,
+) -> Option<UserStream> {
+    matched.or(fallback)
+}
+
 #[derive(Clone)]
 pub struct CfApiWrapper {
     /// Cloudflare API client
@@ -77,6 +97,8 @@ pub struct CfApiWrapper {
     db: ZapStreamDb,
     /// Cache of live input data for users
     live_input_cache: Arc<RwLock<HashMap<u64, LiveInput>>>,
+    /// Map input uid to stream id with TTL
+    input_stream_map: Arc<RwLock<HashMap<String, (String, Instant)>>>,
     /// Terms of Service URL to return in account info
     tos_url: Option<String>,
     /// Simple mutex to prevent concurrent calls to create live endpoint
@@ -107,6 +129,7 @@ impl CfApiWrapper {
             api_base: ApiBase::new(db.clone(), client.clone(), lightning),
             db,
             live_input_cache: Default::default(),
+            input_stream_map: Default::default(),
             tos_url: None,
             create_input_lock: Default::default(),
             public_url,
@@ -114,6 +137,42 @@ impl CfApiWrapper {
             n53: N53Publisher::new(stream_manager.clone(), client.clone()),
             stream_manager,
         }
+    }
+
+    fn input_map_ttl() -> Duration {
+        Duration::from_secs(120)
+    }
+
+    async fn register_input_mapping(&self, input_uid: &str, stream_id: &str) {
+        let mut map = self.input_stream_map.write().await;
+        map.insert(input_uid.to_string(), (stream_id.to_string(), Instant::now()));
+    }
+
+    async fn remove_input_mapping(&self, input_uid: &str) {
+        let mut map = self.input_stream_map.write().await;
+        map.remove(input_uid);
+    }
+
+    async fn get_mapped_stream(&self, input_uid: &str) -> Result<Option<UserStream>> {
+        let mut map = self.input_stream_map.write().await;
+        let now = Instant::now();
+        let ttl = Self::input_map_ttl();
+        map.retain(|_, (_, created)| now.duration_since(*created) <= ttl);
+        let Some((stream_id, _)) = map.get(input_uid).cloned() else {
+            return Ok(None);
+        };
+        let stream_uuid = match Uuid::parse_str(&stream_id) {
+            Ok(id) => id,
+            Err(_) => {
+                map.remove(input_uid);
+                return Ok(None);
+            }
+        };
+        let stream = self.db.try_get_stream(&stream_uuid).await?;
+        if stream.is_none() {
+            map.remove(input_uid);
+        }
+        Ok(stream)
     }
 
     async fn create_user_live_input(&self, user: &User) -> Result<LiveInput> {
@@ -306,8 +365,32 @@ impl CfApiWrapper {
                         "Cloudflare Video Asset ready for input_uid {}, recording: {} thumbnail: {}",
                         v.live_input, v.playback.hls, v.thumbnail
                     );
-                    // TODO: upstream stream recording
                     let input = self.get_user_live_input_by_input_id(&v.live_input).await?;
+                    let user = self.db.get_user_by_external_id(&input.uid).await?;
+                    let Some(user) = user else {
+                        bail!("No user found with external_id {}", input.uid);
+                    };
+                    let matched = self.get_mapped_stream(&v.live_input).await?;
+                    let fallback = self.db.get_user_latest_ended_stream(user.id).await?;
+                    let Some(mut stream) =
+                        select_stream_for_video_asset(matched, fallback)
+                    else {
+                        warn!(
+                            "No ended streams found for user {}, skipping Video Asset update",
+                            user.id
+                        );
+                        return Ok(());
+                    };
+                    let user = if stream.user_id == user.id {
+                        user
+                    } else {
+                        self.db.get_user(stream.user_id).await?
+                    };
+                    if apply_video_asset_to_stream(&mut stream, &v) {
+                        let event = self.publish_stream_event(&stream, &user).await?;
+                        stream.event = Some(event.as_json());
+                        self.db.update_stream(&stream).await?;
+                    }
                 } else {
                     info!(
                         "Video Asset not ready yet (state: {}), ignoring",
@@ -362,6 +445,7 @@ impl CfApiWrapper {
             ..Default::default()
         };
         self.db.insert_stream(&new_stream).await?;
+        self.register_input_mapping(&input.uid, &new_stream.id).await;
 
         let stream_event = self.publish_stream_event(&new_stream, &user).await?;
         new_stream.event = Some(stream_event.as_json());
@@ -419,6 +503,7 @@ impl CfApiWrapper {
         self.db.update_stream(&stream).await?;
 
         info!("Stream ended {}", stream.id);
+        self.remove_input_mapping(&input.uid).await;
         Ok(())
     }
 
@@ -691,9 +776,13 @@ impl ZapStreamApi for CfApiWrapper {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_account_endpoint, select_ingest_endpoint};
-    use crate::cloudflare::{LiveInput, RtmpsEndpoint};
+    use super::{
+        apply_video_asset_to_stream, build_account_endpoint, select_ingest_endpoint,
+        select_stream_for_video_asset,
+    };
+    use crate::cloudflare::{LiveInput, Playback, RtmpsEndpoint, VideoAssetStatus, VideoAssetWebhook};
     use zap_stream_db::IngestEndpoint;
+    use zap_stream_db::UserStream;
 
     fn sample_ingests() -> Vec<IngestEndpoint> {
         vec![
@@ -753,5 +842,142 @@ mod tests {
         assert_eq!(endpoint.name, "RTMPS");
         assert_eq!(endpoint.cost.rate, 0.0);
         assert_eq!(endpoint.key, "stream-key");
+    }
+
+    #[test]
+    fn apply_video_asset_to_stream_updates_fields() {
+        let mut stream = UserStream::default();
+        let asset = VideoAssetWebhook {
+            uid: "video-uid".to_string(),
+            thumbnail: "https://example.com/thumb.jpg".to_string(),
+            duration: 12.0,
+            playback: Playback {
+                hls: "https://example.com/video.m3u8".to_string(),
+                dash: "https://example.com/video.mpd".to_string(),
+            },
+            live_input: "input-uid".to_string(),
+            status: VideoAssetStatus {
+                state: "ready".to_string(),
+            },
+        };
+
+        let changed = apply_video_asset_to_stream(&mut stream, &asset);
+        assert!(changed);
+        assert_eq!(stream.external_id.as_deref(), Some("video-uid"));
+        assert_eq!(
+            stream.thumb.as_deref(),
+            Some("https://example.com/thumb.jpg")
+        );
+    }
+
+    #[test]
+    fn apply_video_asset_to_stream_is_idempotent() {
+        let mut stream = UserStream {
+            external_id: Some("video-uid".to_string()),
+            thumb: Some("https://example.com/thumb.jpg".to_string()),
+            ..Default::default()
+        };
+        let asset = VideoAssetWebhook {
+            uid: "video-uid".to_string(),
+            thumbnail: "https://example.com/thumb.jpg".to_string(),
+            duration: 12.0,
+            playback: Playback {
+                hls: "https://example.com/video.m3u8".to_string(),
+                dash: "https://example.com/video.mpd".to_string(),
+            },
+            live_input: "input-uid".to_string(),
+            status: VideoAssetStatus {
+                state: "ready".to_string(),
+            },
+        };
+
+        let changed = apply_video_asset_to_stream(&mut stream, &asset);
+        assert!(!changed);
+    }
+
+    #[test]
+    fn apply_video_asset_to_stream_updates_only_external_id() {
+        let mut stream = UserStream {
+            external_id: Some("old-uid".to_string()),
+            thumb: Some("https://example.com/thumb.jpg".to_string()),
+            ..Default::default()
+        };
+        let asset = VideoAssetWebhook {
+            uid: "video-uid".to_string(),
+            thumbnail: "https://example.com/thumb.jpg".to_string(),
+            duration: 12.0,
+            playback: Playback {
+                hls: "https://example.com/video.m3u8".to_string(),
+                dash: "https://example.com/video.mpd".to_string(),
+            },
+            live_input: "input-uid".to_string(),
+            status: VideoAssetStatus {
+                state: "ready".to_string(),
+            },
+        };
+
+        let changed = apply_video_asset_to_stream(&mut stream, &asset);
+        assert!(changed);
+        assert_eq!(stream.external_id.as_deref(), Some("video-uid"));
+        assert_eq!(
+            stream.thumb.as_deref(),
+            Some("https://example.com/thumb.jpg")
+        );
+    }
+
+    #[test]
+    fn apply_video_asset_to_stream_updates_only_thumb() {
+        let mut stream = UserStream {
+            external_id: Some("video-uid".to_string()),
+            thumb: Some("https://example.com/old.jpg".to_string()),
+            ..Default::default()
+        };
+        let asset = VideoAssetWebhook {
+            uid: "video-uid".to_string(),
+            thumbnail: "https://example.com/thumb.jpg".to_string(),
+            duration: 12.0,
+            playback: Playback {
+                hls: "https://example.com/video.m3u8".to_string(),
+                dash: "https://example.com/video.mpd".to_string(),
+            },
+            live_input: "input-uid".to_string(),
+            status: VideoAssetStatus {
+                state: "ready".to_string(),
+            },
+        };
+
+        let changed = apply_video_asset_to_stream(&mut stream, &asset);
+        assert!(changed);
+        assert_eq!(stream.external_id.as_deref(), Some("video-uid"));
+        assert_eq!(
+            stream.thumb.as_deref(),
+            Some("https://example.com/thumb.jpg")
+        );
+    }
+
+    #[test]
+    fn select_stream_for_video_asset_prefers_matched() {
+        let matched = UserStream {
+            id: "matched".to_string(),
+            ..Default::default()
+        };
+        let fallback = UserStream {
+            id: "fallback".to_string(),
+            ..Default::default()
+        };
+
+        let selected = select_stream_for_video_asset(Some(matched), Some(fallback)).unwrap();
+        assert_eq!(selected.id, "matched");
+    }
+
+    #[test]
+    fn select_stream_for_video_asset_uses_fallback_when_missing() {
+        let fallback = UserStream {
+            id: "fallback".to_string(),
+            ..Default::default()
+        };
+
+        let selected = select_stream_for_video_asset(None, Some(fallback)).unwrap();
+        assert_eq!(selected.id, "fallback");
     }
 }
