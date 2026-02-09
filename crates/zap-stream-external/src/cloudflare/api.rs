@@ -13,7 +13,7 @@ use chrono::Utc;
 use nostr_sdk::{Client, Event, JsonUtil, PublicKey, Tag, ToBech32};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::select;
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
@@ -97,6 +97,8 @@ pub struct CfApiWrapper {
     db: ZapStreamDb,
     /// Cache of live input data for users
     live_input_cache: Arc<RwLock<HashMap<u64, LiveInput>>>,
+    /// Map input uid to stream id with TTL
+    input_stream_map: Arc<RwLock<HashMap<String, (String, Instant)>>>,
     /// Terms of Service URL to return in account info
     tos_url: Option<String>,
     /// Simple mutex to prevent concurrent calls to create live endpoint
@@ -127,6 +129,7 @@ impl CfApiWrapper {
             api_base: ApiBase::new(db.clone(), client.clone(), lightning),
             db,
             live_input_cache: Default::default(),
+            input_stream_map: Default::default(),
             tos_url: None,
             create_input_lock: Default::default(),
             public_url,
@@ -134,6 +137,42 @@ impl CfApiWrapper {
             n53: N53Publisher::new(stream_manager.clone(), client.clone()),
             stream_manager,
         }
+    }
+
+    fn input_map_ttl() -> Duration {
+        Duration::from_secs(60)
+    }
+
+    async fn register_input_mapping(&self, input_uid: &str, stream_id: &str) {
+        let mut map = self.input_stream_map.write().await;
+        map.insert(input_uid.to_string(), (stream_id.to_string(), Instant::now()));
+    }
+
+    async fn remove_input_mapping(&self, input_uid: &str) {
+        let mut map = self.input_stream_map.write().await;
+        map.remove(input_uid);
+    }
+
+    async fn get_mapped_stream(&self, input_uid: &str) -> Result<Option<UserStream>> {
+        let mut map = self.input_stream_map.write().await;
+        let now = Instant::now();
+        let ttl = Self::input_map_ttl();
+        map.retain(|_, (_, created)| now.duration_since(*created) <= ttl);
+        let Some((stream_id, _)) = map.get(input_uid).cloned() else {
+            return Ok(None);
+        };
+        let stream_uuid = match Uuid::parse_str(&stream_id) {
+            Ok(id) => id,
+            Err(_) => {
+                map.remove(input_uid);
+                return Ok(None);
+            }
+        };
+        let stream = self.db.try_get_stream(&stream_uuid).await?;
+        if stream.is_none() {
+            map.remove(input_uid);
+        }
+        Ok(stream)
     }
 
     async fn create_user_live_input(&self, user: &User) -> Result<LiveInput> {
@@ -331,7 +370,7 @@ impl CfApiWrapper {
                     let Some(user) = user else {
                         bail!("No user found with external_id {}", input.uid);
                     };
-                    let matched = self.db.get_stream_by_input_uid(&v.live_input).await?;
+                    let matched = self.get_mapped_stream(&v.live_input).await?;
                     let fallback = self.db.get_user_latest_ended_stream(user.id).await?;
                     let Some(mut stream) =
                         select_stream_for_video_asset(matched, fallback)
@@ -403,10 +442,10 @@ impl CfApiWrapper {
             content_warning: user.content_warning.clone(),
             goal: user.goal.clone(),
             tags: user.tags.clone(),
-            input_uid: Some(input.uid.clone()),
             ..Default::default()
         };
         self.db.insert_stream(&new_stream).await?;
+        self.register_input_mapping(&input.uid, &new_stream.id).await;
 
         let stream_event = self.publish_stream_event(&new_stream, &user).await?;
         new_stream.event = Some(stream_event.as_json());
@@ -464,6 +503,7 @@ impl CfApiWrapper {
         self.db.update_stream(&stream).await?;
 
         info!("Stream ended {}", stream.id);
+        self.remove_input_mapping(&input.uid).await;
         Ok(())
     }
 
