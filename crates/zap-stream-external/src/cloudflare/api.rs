@@ -32,10 +32,17 @@ use zap_stream_db::{IngestEndpoint, User, UserStream, UserStreamState, ZapStream
 
 fn select_ingest_endpoint<'a>(
     endpoints: &'a [IngestEndpoint],
+    ingest_id: Option<u64>,
     app_name: &str,
 ) -> Result<&'a IngestEndpoint> {
     if endpoints.is_empty() {
         bail!("No endpoints found, please configure endpoints first!");
+    }
+    if let Some(id) = ingest_id {
+        let Some(endpoint) = endpoints.iter().find(|endpoint| endpoint.id == id) else {
+            bail!("Ingest endpoint not found for user");
+        };
+        return Ok(endpoint);
     }
     if let Some(selected) = endpoints
         .iter()
@@ -43,35 +50,21 @@ fn select_ingest_endpoint<'a>(
     {
         return Ok(selected);
     }
-    let default = endpoints.iter().min_by_key(|endpoint| endpoint.cost).unwrap();
+    let default = endpoints.iter().max_by_key(|endpoint| endpoint.cost).unwrap();
     Ok(default)
 }
 
-fn build_account_endpoints(
-    input: &LiveInput,
-    ingests: &[IngestEndpoint],
-) -> Result<Vec<Endpoint>> {
-    if ingests.is_empty() {
-        bail!("No ingest endpoints found");
+fn build_account_endpoint(input: &LiveInput, ingest: &IngestEndpoint) -> Endpoint {
+    Endpoint {
+        name: "RTMPS".to_string(),
+        url: input.rtmps.url.clone(),
+        key: input.rtmps.stream_key.clone(),
+        capabilities: vec![],
+        cost: EndpointCost {
+            unit: "min".to_string(),
+            rate: ingest.cost as f32 / 1000.0,
+        },
     }
-    let mut endpoints = Vec::with_capacity(ingests.len());
-    for ingest in ingests {
-        endpoints.push(Endpoint {
-            name: ingest.name.clone(),
-            url: input.rtmps.url.clone(),
-            key: input.rtmps.stream_key.clone(),
-            capabilities: ingest
-                .capabilities
-                .as_ref()
-                .map(|c| c.split(',').map(|s| s.trim().to_string()).collect())
-                .unwrap_or_else(Vec::new),
-            cost: EndpointCost {
-                unit: "min".to_string(),
-                rate: ingest.cost as f32 / 1000.0,
-            },
-        });
-    }
-    Ok(endpoints)
 }
 
 #[derive(Clone)]
@@ -327,11 +320,15 @@ impl CfApiWrapper {
         Ok(())
     }
 
-    async fn detect_endpoint(&self, connection: &ConnectionInfo) -> Result<IngestEndpoint> {
+    async fn detect_endpoint(
+        &self,
+        connection: &ConnectionInfo,
+        ingest_id: Option<u64>,
+    ) -> Result<IngestEndpoint> {
         // TODO: allow user to select their default endpoint
 
         let endpoints = self.db.get_ingest_endpoints().await?;
-        let selected = select_ingest_endpoint(&endpoints, &connection.app_name)?;
+        let selected = select_ingest_endpoint(&endpoints, ingest_id, &connection.app_name)?;
         Ok(selected.clone())
     }
 
@@ -348,7 +345,7 @@ impl CfApiWrapper {
             app_name: "cloudflare".to_string(),
             key: input.rtmps.stream_key.clone(),
         };
-        let endpoint = self.detect_endpoint(&conn).await?;
+        let endpoint = self.detect_endpoint(&conn, user.ingest_id).await?;
         // start a new stream
         let mut new_stream = UserStream {
             id: new_id.to_string(),
@@ -514,7 +511,8 @@ impl ZapStreamApi for CfApiWrapper {
         // Get user forwards
         let forwards = self.db.get_user_forwards(uid).await?;
         let ingests = self.db.get_ingest_endpoints().await?;
-        let endpoints = build_account_endpoints(&input, &ingests)?;
+        let ingest_endpoint = select_ingest_endpoint(&ingests, user.ingest_id, "")?;
+        let endpoints = vec![build_account_endpoint(&input, ingest_endpoint)];
 
         Ok(AccountInfo {
             endpoints,
@@ -693,7 +691,7 @@ impl ZapStreamApi for CfApiWrapper {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_account_endpoints, select_ingest_endpoint};
+    use super::{build_account_endpoint, select_ingest_endpoint};
     use crate::cloudflare::{LiveInput, RtmpsEndpoint};
     use zap_stream_db::IngestEndpoint;
 
@@ -738,23 +736,22 @@ mod tests {
     }
 
     #[test]
-    fn select_ingest_endpoint_prefers_match_then_lowest_cost() {
+    fn select_ingest_endpoint_prefers_ingest_id_then_app_name() {
         let endpoints = sample_ingests();
-        let matched = select_ingest_endpoint(&endpoints, "basic").unwrap();
+        let matched = select_ingest_endpoint(&endpoints, Some(2), "basic").unwrap();
         assert_eq!(matched.id, 2);
 
-        let fallback = select_ingest_endpoint(&endpoints, "cloudflare").unwrap();
-        assert_eq!(fallback.id, 2);
+        let fallback = select_ingest_endpoint(&endpoints, None, "good").unwrap();
+        assert_eq!(fallback.id, 1);
     }
 
     #[test]
-    fn build_account_endpoints_uses_ingest_costs() {
-        let endpoints = build_account_endpoints(&sample_input(), &sample_ingests()).unwrap();
-        let basic = endpoints.iter().find(|e| e.name == "Basic").unwrap();
-        let good = endpoints.iter().find(|e| e.name == "Good").unwrap();
+    fn build_account_endpoint_uses_ingest_cost() {
+        let ingest = sample_ingests().into_iter().find(|e| e.id == 2).unwrap();
+        let endpoint = build_account_endpoint(&sample_input(), &ingest);
 
-        assert_eq!(basic.cost.rate, 0.0);
-        assert_eq!(good.cost.rate, 2.5);
-        assert_eq!(basic.key, "stream-key");
+        assert_eq!(endpoint.name, "RTMPS");
+        assert_eq!(endpoint.cost.rate, 0.0);
+        assert_eq!(endpoint.key, "stream-key");
     }
 }
