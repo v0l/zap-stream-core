@@ -1,5 +1,5 @@
 use crate::cloudflare::{
-    CloudflareClient, CloudflareToken, LiveInput, LiveInputWebhookData,
+    CloudflareClient, CloudflareToken, LiveInput, LiveInputWebhookData, VideoAssetWebhook,
     WebhookPayload, WebhookResult,
 };
 use anyhow::{Context, Result, bail};
@@ -65,6 +65,19 @@ fn build_account_endpoint(input: &LiveInput, ingest: &IngestEndpoint) -> Endpoin
             rate: ingest.cost as f32 / 1000.0,
         },
     }
+}
+
+fn apply_video_asset_to_stream(stream: &mut UserStream, asset: &VideoAssetWebhook) -> bool {
+    let mut changed = false;
+    if stream.external_id.as_deref() != Some(asset.uid.as_str()) {
+        stream.external_id = Some(asset.uid.clone());
+        changed = true;
+    }
+    if stream.thumb.as_deref() != Some(asset.thumbnail.as_str()) {
+        stream.thumb = Some(asset.thumbnail.clone());
+        changed = true;
+    }
+    changed
 }
 
 #[derive(Clone)]
@@ -306,8 +319,25 @@ impl CfApiWrapper {
                         "Cloudflare Video Asset ready for input_uid {}, recording: {} thumbnail: {}",
                         v.live_input, v.playback.hls, v.thumbnail
                     );
-                    // TODO: upstream stream recording
                     let input = self.get_user_live_input_by_input_id(&v.live_input).await?;
+                    let user = self.db.get_user_by_external_id(&input.uid).await?;
+                    let Some(user) = user else {
+                        bail!("No user found with external_id {}", input.uid);
+                    };
+                    let Some(mut stream) =
+                        self.db.get_user_latest_ended_stream(user.id).await?
+                    else {
+                        warn!(
+                            "No ended streams found for user {}, skipping Video Asset update",
+                            user.id
+                        );
+                        return Ok(());
+                    };
+                    if apply_video_asset_to_stream(&mut stream, &v) {
+                        let event = self.publish_stream_event(&stream, &user).await?;
+                        stream.event = Some(event.as_json());
+                        self.db.update_stream(&stream).await?;
+                    }
                 } else {
                     info!(
                         "Video Asset not ready yet (state: {}), ignoring",
@@ -691,9 +721,10 @@ impl ZapStreamApi for CfApiWrapper {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_account_endpoint, select_ingest_endpoint};
-    use crate::cloudflare::{LiveInput, RtmpsEndpoint};
+    use super::{apply_video_asset_to_stream, build_account_endpoint, select_ingest_endpoint};
+    use crate::cloudflare::{LiveInput, Playback, RtmpsEndpoint, VideoAssetStatus, VideoAssetWebhook};
     use zap_stream_db::IngestEndpoint;
+    use zap_stream_db::UserStream;
 
     fn sample_ingests() -> Vec<IngestEndpoint> {
         vec![
@@ -753,5 +784,56 @@ mod tests {
         assert_eq!(endpoint.name, "RTMPS");
         assert_eq!(endpoint.cost.rate, 0.0);
         assert_eq!(endpoint.key, "stream-key");
+    }
+
+    #[test]
+    fn apply_video_asset_to_stream_updates_fields() {
+        let mut stream = UserStream::default();
+        let asset = VideoAssetWebhook {
+            uid: "video-uid".to_string(),
+            thumbnail: "https://example.com/thumb.jpg".to_string(),
+            duration: 12.0,
+            playback: Playback {
+                hls: "https://example.com/video.m3u8".to_string(),
+                dash: "https://example.com/video.mpd".to_string(),
+            },
+            live_input: "input-uid".to_string(),
+            status: VideoAssetStatus {
+                state: "ready".to_string(),
+            },
+        };
+
+        let changed = apply_video_asset_to_stream(&mut stream, &asset);
+        assert!(changed);
+        assert_eq!(stream.external_id.as_deref(), Some("video-uid"));
+        assert_eq!(
+            stream.thumb.as_deref(),
+            Some("https://example.com/thumb.jpg")
+        );
+    }
+
+    #[test]
+    fn apply_video_asset_to_stream_is_idempotent() {
+        let mut stream = UserStream {
+            external_id: Some("video-uid".to_string()),
+            thumb: Some("https://example.com/thumb.jpg".to_string()),
+            ..Default::default()
+        };
+        let asset = VideoAssetWebhook {
+            uid: "video-uid".to_string(),
+            thumbnail: "https://example.com/thumb.jpg".to_string(),
+            duration: 12.0,
+            playback: Playback {
+                hls: "https://example.com/video.m3u8".to_string(),
+                dash: "https://example.com/video.mpd".to_string(),
+            },
+            live_input: "input-uid".to_string(),
+            status: VideoAssetStatus {
+                state: "ready".to_string(),
+            },
+        };
+
+        let changed = apply_video_asset_to_stream(&mut stream, &asset);
+        assert!(!changed);
     }
 }
