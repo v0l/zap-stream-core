@@ -30,6 +30,50 @@ use zap_stream_api_common::*;
 use zap_stream_core::ingress::ConnectionInfo;
 use zap_stream_db::{IngestEndpoint, User, UserStream, UserStreamState, ZapStreamDb};
 
+fn select_ingest_endpoint<'a>(
+    endpoints: &'a [IngestEndpoint],
+    app_name: &str,
+) -> Result<&'a IngestEndpoint> {
+    if endpoints.is_empty() {
+        bail!("No endpoints found, please configure endpoints first!");
+    }
+    if let Some(selected) = endpoints
+        .iter()
+        .find(|endpoint| endpoint.name.eq_ignore_ascii_case(app_name))
+    {
+        return Ok(selected);
+    }
+    let default = endpoints.iter().min_by_key(|endpoint| endpoint.cost).unwrap();
+    Ok(default)
+}
+
+fn build_account_endpoints(
+    input: &LiveInput,
+    ingests: &[IngestEndpoint],
+) -> Result<Vec<Endpoint>> {
+    if ingests.is_empty() {
+        bail!("No ingest endpoints found");
+    }
+    let mut endpoints = Vec::with_capacity(ingests.len());
+    for ingest in ingests {
+        endpoints.push(Endpoint {
+            name: ingest.name.clone(),
+            url: input.rtmps.url.clone(),
+            key: input.rtmps.stream_key.clone(),
+            capabilities: ingest
+                .capabilities
+                .as_ref()
+                .map(|c| c.split(',').map(|s| s.trim().to_string()).collect())
+                .unwrap_or_else(Vec::new),
+            cost: EndpointCost {
+                unit: "min".to_string(),
+                rate: ingest.cost as f32 / 1000.0,
+            },
+        });
+    }
+    Ok(endpoints)
+}
+
 #[derive(Clone)]
 pub struct CfApiWrapper {
     /// Cloudflare API client
@@ -287,17 +331,8 @@ impl CfApiWrapper {
         // TODO: allow user to select their default endpoint
 
         let endpoints = self.db.get_ingest_endpoints().await?;
-
-        if endpoints.is_empty() {
-            bail!("No endpoints found, please configure endpoints first!");
-        }
-        let default = endpoints.iter().max_by_key(|e| e.cost);
-        Ok(endpoints
-            .iter()
-            .find(|e| e.name.eq_ignore_ascii_case(&connection.app_name))
-            .or(default)
-            .unwrap()
-            .clone())
+        let selected = select_ingest_endpoint(&endpoints, &connection.app_name)?;
+        Ok(selected.clone())
     }
 
     async fn publish_stream_start(&self, input: LiveInput) -> Result<()> {
@@ -479,21 +514,10 @@ impl ZapStreamApi for CfApiWrapper {
         // Get user forwards
         let forwards = self.db.get_user_forwards(uid).await?;
         let ingests = self.db.get_ingest_endpoints().await?;
-        let Some(ingest_endpoint) = ingests.iter().max_by_key(|k| k.cost) else {
-            bail!("No ingest endpoints found");
-        };
+        let endpoints = build_account_endpoints(&input, &ingests)?;
 
         Ok(AccountInfo {
-            endpoints: vec![Endpoint {
-                name: "RTMPS".to_string(),
-                url: input.rtmps.url.clone(),
-                key: input.rtmps.stream_key.clone(),
-                capabilities: vec![],
-                cost: EndpointCost {
-                    unit: "min".to_string(),
-                    rate: ingest_endpoint.cost as f32 / 1000.,
-                },
-            }],
+            endpoints,
             balance: user.balance / 1000,
             tos: AccountTos {
                 accepted: user.tos_accepted.is_some(),
@@ -664,5 +688,73 @@ impl ZapStreamApi for CfApiWrapper {
 
     async fn get_game(&self, _id: String) -> Result<GameInfo> {
         todo!()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_account_endpoints, select_ingest_endpoint};
+    use crate::cloudflare::{LiveInput, RtmpsEndpoint};
+    use zap_stream_db::IngestEndpoint;
+
+    fn sample_ingests() -> Vec<IngestEndpoint> {
+        vec![
+            IngestEndpoint {
+                id: 1,
+                name: "Good".to_string(),
+                cost: 2500,
+                capabilities: Some(
+                    "variant:2160:20000000,variant:1440:12000000".to_string(),
+                ),
+            },
+            IngestEndpoint {
+                id: 2,
+                name: "Basic".to_string(),
+                cost: 0,
+                capabilities: Some("variant:source".to_string()),
+            },
+        ]
+    }
+
+    fn sample_input() -> LiveInput {
+        LiveInput {
+            uid: "input-uid".to_string(),
+            rtmps: RtmpsEndpoint {
+                url: "rtmps://live.cloudflare.com:443/live/".to_string(),
+                stream_key: "stream-key".to_string(),
+            },
+            rtmps_playback: None,
+            srt: None,
+            srt_playback: None,
+            webrtc: None,
+            webrtc_playback: None,
+            status: None,
+            created: "2025-01-01T00:00:00Z".to_string(),
+            modified: None,
+            meta: None,
+            recording: None,
+            delete_recording_after_days: None,
+        }
+    }
+
+    #[test]
+    fn select_ingest_endpoint_prefers_match_then_lowest_cost() {
+        let endpoints = sample_ingests();
+        let matched = select_ingest_endpoint(&endpoints, "basic").unwrap();
+        assert_eq!(matched.id, 2);
+
+        let fallback = select_ingest_endpoint(&endpoints, "cloudflare").unwrap();
+        assert_eq!(fallback.id, 2);
+    }
+
+    #[test]
+    fn build_account_endpoints_uses_ingest_costs() {
+        let endpoints = build_account_endpoints(&sample_input(), &sample_ingests()).unwrap();
+        let basic = endpoints.iter().find(|e| e.name == "Basic").unwrap();
+        let good = endpoints.iter().find(|e| e.name == "Good").unwrap();
+
+        assert_eq!(basic.cost.rate, 0.0);
+        assert_eq!(good.cost.rate, 2.5);
+        assert_eq!(basic.key, "stream-key");
     }
 }
