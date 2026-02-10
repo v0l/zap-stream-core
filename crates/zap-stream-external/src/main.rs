@@ -34,6 +34,14 @@ struct Settings {
     /// Public URL which points to this http server
     public_url: String,
 
+    /// Terms of Service URL (defaults to https://zap.stream/tos)
+    #[serde(default)]
+    tos_url: Option<String>,
+
+    /// Client URL for "Watch live on" alt tag (defaults to https://zap.stream)
+    #[serde(default)]
+    client_url: Option<String>,
+
     /// Public hostname for ingest endpoints (custom RTMPS domain)
     #[serde(default)]
     endpoints_public_hostname: Option<String>,
@@ -125,6 +133,8 @@ async fn main() -> Result<()> {
             stream_manager.clone(),
             settings.public_url.clone(),
             settings.endpoints_public_hostname.clone(),
+            settings.tos_url.clone(),
+            settings.client_url.clone(),
         );
         api_impl.setup_webhook().await?;
         tasks.push(api_impl.clone().check_streams(shutdown.clone()));

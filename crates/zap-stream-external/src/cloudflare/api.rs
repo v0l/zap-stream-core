@@ -10,7 +10,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{any};
 use axum::{Router};
 use chrono::Utc;
-use nostr_sdk::{Client, Event, JsonUtil, PublicKey, Tag, ToBech32};
+use nostr_sdk::{Client, Event, JsonUtil, Kind, NostrSigner, PublicKey, Tag, ToBech32};
+use nostr_sdk::prelude::Coordinate;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -180,6 +181,8 @@ impl ViewerCountTracker {
 pub struct CfApiWrapper {
     /// Cloudflare API client
     client: CloudflareClient,
+    /// Nostr client
+    nostr_client: Client,
     /// Internal shared api implementation
     api_base: ApiBase,
     /// Database instance
@@ -190,6 +193,8 @@ pub struct CfApiWrapper {
     input_stream_map: Arc<RwLock<HashMap<String, (String, Instant)>>>,
     /// Terms of Service URL to return in account info
     tos_url: Option<String>,
+    /// Client URL for "Watch live on" alt tag
+    client_url: String,
     /// Simple mutex to prevent concurrent calls to create live endpoint
     create_input_lock: Arc<Mutex<()>>,
     /// Public hostname which points to our HTTP server
@@ -221,14 +226,18 @@ impl CfApiWrapper {
         stream_manager: StreamManager,
         public_url: String,
         endpoints_public_hostname: Option<String>,
+        tos_url: Option<String>,
+        client_url: Option<String>,
     ) -> Self {
         Self {
             client: CloudflareClient::new(token),
+            nostr_client: client.clone(),
             api_base: ApiBase::new(db.clone(), client.clone(), lightning),
             db,
             live_input_cache: Default::default(),
             input_stream_map: Default::default(),
-            tos_url: None,
+            tos_url,
+            client_url: resolve_client_url(client_url.as_deref()),
             create_input_lock: Default::default(),
             public_url,
             webhook_details: Default::default(),
@@ -690,6 +699,8 @@ impl CfApiWrapper {
             let count_str = count.to_string();
             extra_tags.push(Tag::parse(["current_participants", count_str.as_str()])?);
         }
+        let alt_tag = build_alt_tag(&self.nostr_client, stream, &self.client_url).await?;
+        extra_tags.push(alt_tag);
         let ev = self.n53.stream_to_event(stream, extra_tags).await?;
         self.n53.publish(&ev).await?;
         info!("Published stream event {}", ev.id.to_hex());
@@ -774,12 +785,7 @@ impl ZapStreamApi for CfApiWrapper {
             balance: user.balance / 1000,
             tos: AccountTos {
                 accepted: user.tos_accepted.is_some(),
-                link: self
-                    .tos_url
-                    .as_ref()
-                    .map(|s| s.as_str())
-                    .unwrap_or("https://zap.stream/tos")
-                    .to_string(),
+                link: resolve_tos_url(self.tos_url.as_deref()),
             },
             forwards: forwards
                 .into_iter()
@@ -944,18 +950,52 @@ impl ZapStreamApi for CfApiWrapper {
     }
 }
 
+fn resolve_tos_url(tos_url: Option<&str>) -> String {
+    match tos_url {
+        Some(url) if !url.trim().is_empty() => url.to_string(),
+        _ => "https://zap.stream/tos".to_string(),
+    }
+}
+
+fn resolve_client_url(client_url: Option<&str>) -> String {
+    match client_url {
+        Some(url) if !url.trim().is_empty() => url.to_string(),
+        _ => "https://zap.stream".to_string(),
+    }
+}
+
+async fn build_alt_tag(client: &Client, stream: &UserStream, client_url: &str) -> Result<Tag> {
+    let pubkey = client.signer().await?.get_public_key().await?;
+    let coord = Coordinate::new(Kind::LiveEvent, pubkey).identifier(&stream.id);
+    Tag::parse([
+        "alt",
+        &format!(
+            "Watch live on {}/{}",
+            client_url,
+            nostr_sdk::nips::nip19::Nip19Coordinate {
+                coordinate: coord,
+                relays: vec![]
+            }
+            .to_bech32()?
+        ),
+    ])
+    .map_err(Into::into)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         apply_custom_ingest_domain, apply_video_asset_to_stream, build_account_endpoint,
-        select_ingest_endpoint,
+        build_alt_tag, resolve_client_url, resolve_tos_url, select_ingest_endpoint,
         select_stream_for_video_asset, ViewerCountTracker,
     };
     use crate::cloudflare::{LiveInput, Playback, RtmpsEndpoint, VideoAssetStatus, VideoAssetWebhook};
     use mockito::Server;
     use std::time::Duration;
+    use nostr_sdk::Keys;
     use zap_stream_db::IngestEndpoint;
     use zap_stream_db::UserStream;
+    use zap_stream_db::UserStreamState;
 
     fn sample_ingests() -> Vec<IngestEndpoint> {
         vec![
@@ -994,6 +1034,32 @@ mod tests {
             meta: None,
             recording: None,
             delete_recording_after_days: None,
+        }
+    }
+
+    fn sample_stream() -> UserStream {
+        UserStream {
+            id: "stream-id".to_string(),
+            user_id: 1,
+            starts: chrono::Utc::now(),
+            ends: None,
+            state: UserStreamState::Planned,
+            title: None,
+            summary: None,
+            image: None,
+            thumb: None,
+            tags: None,
+            content_warning: None,
+            goal: None,
+            pinned: None,
+            cost: 0,
+            duration: 0.0,
+            fee: None,
+            event: None,
+            endpoint_id: None,
+            node_name: None,
+            stream_key_id: None,
+            external_id: None,
         }
     }
 
@@ -1040,6 +1106,46 @@ mod tests {
             apply_custom_ingest_domain(&input.rtmps.url, Some("localhost")),
             "rtmps://live.cloudflare.com:443/live/"
         );
+    }
+
+    #[test]
+    fn resolve_tos_url_prefers_configured_value() {
+        assert_eq!(
+            resolve_tos_url(Some("https://tos.example")),
+            "https://tos.example"
+        );
+        assert_eq!(
+            resolve_tos_url(None),
+            "https://zap.stream/tos"
+        );
+    }
+
+    #[test]
+    fn resolve_client_url_prefers_configured_value() {
+        assert_eq!(
+            resolve_client_url(Some("https://client.example")),
+            "https://client.example"
+        );
+        assert_eq!(
+            resolve_client_url(None),
+            "https://zap.stream"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_nostr_event_uses_configured_client_url() {
+        let keys = Keys::generate();
+        let client = nostr_sdk::ClientBuilder::new().signer(keys).build();
+        let alt_tag = build_alt_tag(&client, &sample_stream(), "https://client.example")
+            .await
+            .unwrap();
+        let alt_value = alt_tag
+            .as_slice()
+            .get(1)
+            .map(|v| v.as_str())
+            .unwrap();
+
+        assert!(alt_value.starts_with("Watch live on https://client.example/"));
     }
 
     #[test]

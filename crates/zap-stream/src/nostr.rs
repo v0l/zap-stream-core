@@ -111,19 +111,23 @@ impl N53Publisher {
             ])?);
         }
 
-        let pubkey = self.client.signer().await?.get_public_key().await?;
-        let coord = Coordinate::new(Kind::LiveEvent, pubkey).identifier(&stream.id);
-        tags.push(Tag::parse([
-            "alt",
-            &format!(
-                "Watch live on https://zap.stream/{}",
-                nostr_sdk::nips::nip19::Nip19Coordinate {
-                    coordinate: coord,
-                    relays: vec![]
-                }
-                .to_bech32()?
-            ),
-        ])?);
+        if !extra_tags.iter().any(|tag| {
+            matches!(tag.as_slice().first(), Some(value) if value == "alt")
+        }) {
+            let pubkey = self.client.signer().await?.get_public_key().await?;
+            let coord = Coordinate::new(Kind::LiveEvent, pubkey).identifier(&stream.id);
+            tags.push(Tag::parse([
+                "alt",
+                &format!(
+                    "Watch live on https://zap.stream/{}",
+                    nostr_sdk::nips::nip19::Nip19Coordinate {
+                        coordinate: coord,
+                        relays: vec![]
+                    }
+                    .to_bech32()?
+                ),
+            ])?);
+        }
 
         let mut eb = EventBuilder::new(Kind::LiveEvent, "")
             .tags(tags)

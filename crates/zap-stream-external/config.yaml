@@ -4,6 +4,12 @@ database: "mysql://root:root@localhost:3368/zap_stream?max_connections=2"
 # Public URL of the HTTP server
 public_url: "http://kieran.lan:8080"
 
+# Terms URL (defaults to https://zap.stream/tos)
+# tos_url: "https://zap.stream/tos"
+
+# Client URL for "alt" tag "Watch live on" (defaults to https://zap.stream)
+# client_url: "https://zap.stream"
+
 # Public hostname for ingest endpoints (custom RTMPS domain)
 # endpoints_public_hostname: "ingest.example.com"
 
