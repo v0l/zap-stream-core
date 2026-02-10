@@ -11,7 +11,6 @@ use zap_stream_db::{UserStream, UserStreamState};
 pub struct N53Publisher {
     client: Client,
     stream_manager: StreamManager,
-    client_url: String,
 }
 
 impl N53Publisher {
@@ -19,19 +18,6 @@ impl N53Publisher {
         Self {
             stream_manager,
             client,
-            client_url: "https://zap.stream".to_string(),
-        }
-    }
-
-    pub fn new_with_client_url(
-        stream_manager: StreamManager,
-        client: Client,
-        client_url: Option<String>,
-    ) -> Self {
-        Self {
-            stream_manager,
-            client,
-            client_url: resolve_client_url(client_url),
         }
     }
 
@@ -130,8 +116,7 @@ impl N53Publisher {
         tags.push(Tag::parse([
             "alt",
             &format!(
-                "Watch live on {}/{}",
-                self.client_url,
+                "Watch live on https://zap.stream/{}",
                 nostr_sdk::nips::nip19::Nip19Coordinate {
                     coordinate: coord,
                     relays: vec![]
@@ -153,70 +138,5 @@ impl N53Publisher {
         }
 
         Ok(self.client.sign_event_builder(eb).await?)
-    }
-}
-
-fn resolve_client_url(client_url: Option<String>) -> String {
-    match client_url {
-        Some(value) if !value.trim().is_empty() => value,
-        _ => "https://zap.stream".to_string(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::N53Publisher;
-    use chrono::Utc;
-    use nostr_sdk::{JsonUtil, Keys};
-    use zap_stream_db::{UserStream, UserStreamState};
-
-    fn sample_stream() -> UserStream {
-        UserStream {
-            id: "stream-id".to_string(),
-            user_id: 1,
-            starts: Utc::now(),
-            ends: None,
-            state: UserStreamState::Planned,
-            title: None,
-            summary: None,
-            image: None,
-            thumb: None,
-            tags: None,
-            content_warning: None,
-            goal: None,
-            pinned: None,
-            cost: 0,
-            duration: 0.0,
-            fee: None,
-            event: None,
-            endpoint_id: None,
-            node_name: None,
-            stream_key_id: None,
-            external_id: None,
-        }
-    }
-
-    #[tokio::test]
-    async fn stream_to_event_uses_configured_client_url() {
-        let keys = Keys::generate();
-        let client = nostr_sdk::ClientBuilder::new().signer(keys).build();
-        let stream_manager = crate::stream_manager::StreamManager::new("test-node".to_string());
-        let publisher = N53Publisher::new_with_client_url(
-            stream_manager,
-            client,
-            Some("https://client.example".to_string()),
-        );
-
-        let event = publisher.stream_to_event(&sample_stream(), Vec::new()).await.unwrap();
-        let json: serde_json::Value = serde_json::from_str(&event.as_json()).unwrap();
-        let tags = json["tags"].as_array().unwrap();
-        let alt_tag = tags
-            .iter()
-            .find(|tag| tag.as_array().and_then(|v| v.first()).and_then(|v| v.as_str()) == Some("alt"))
-            .and_then(|tag| tag.get(1))
-            .and_then(|v| v.as_str())
-            .unwrap();
-
-        assert!(alt_tag.starts_with("Watch live on https://client.example/"));
     }
 }
