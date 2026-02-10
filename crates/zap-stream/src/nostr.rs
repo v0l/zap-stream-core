@@ -144,3 +144,58 @@ impl N53Publisher {
         Ok(self.client.sign_event_builder(eb).await?)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::N53Publisher;
+    use crate::stream_manager::StreamManager;
+    use chrono::Utc;
+    use nostr_sdk::{ClientBuilder, Keys, Tag};
+    use zap_stream_db::{UserStream, UserStreamState};
+
+    fn sample_stream(state: UserStreamState) -> UserStream {
+        let mut stream = UserStream::default();
+        stream.id = "stream-id".to_string();
+        stream.user_id = 1;
+        stream.starts = Utc::now();
+        stream.state = state;
+        stream
+    }
+
+    fn count_tag<'a>(tags: impl Iterator<Item = &'a Tag>, name: &str) -> usize {
+        tags.filter(|tag| tag.as_slice().first().map(|v| v.as_str()) == Some(name))
+            .count()
+    }
+
+    #[tokio::test]
+    async fn stream_to_event_skips_current_participants_when_provided() {
+        let keys = Keys::generate();
+        let client = ClientBuilder::new().signer(keys).build();
+        let publisher = N53Publisher::new(
+            StreamManager::new("test-node".to_string()),
+            client,
+        );
+
+        let stream = sample_stream(UserStreamState::Live);
+        let extra_tags = vec![Tag::parse(["current_participants", "7"]).unwrap()];
+        let event = publisher.stream_to_event(&stream, extra_tags).await.unwrap();
+
+        assert_eq!(count_tag(event.tags.iter(), "current_participants"), 1);
+    }
+
+    #[tokio::test]
+    async fn stream_to_event_skips_alt_when_provided() {
+        let keys = Keys::generate();
+        let client = ClientBuilder::new().signer(keys).build();
+        let publisher = N53Publisher::new(
+            StreamManager::new("test-node".to_string()),
+            client,
+        );
+
+        let stream = sample_stream(UserStreamState::Planned);
+        let extra_tags = vec![Tag::parse(["alt", "custom-alt"]).unwrap()];
+        let event = publisher.stream_to_event(&stream, extra_tags).await.unwrap();
+
+        assert_eq!(count_tag(event.tags.iter(), "alt"), 1);
+    }
+}

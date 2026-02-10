@@ -959,7 +959,7 @@ fn resolve_tos_url(tos_url: Option<&str>) -> String {
 
 fn resolve_client_url(client_url: Option<&str>) -> String {
     match client_url {
-        Some(url) if !url.trim().is_empty() => url.to_string(),
+        Some(url) if !url.trim().is_empty() => url.trim_end_matches('/').to_string(),
         _ => "https://zap.stream".to_string(),
     }
 }
@@ -1124,6 +1124,10 @@ mod tests {
     fn resolve_client_url_prefers_configured_value() {
         assert_eq!(
             resolve_client_url(Some("https://client.example")),
+            "https://client.example"
+        );
+        assert_eq!(
+            resolve_client_url(Some("https://client.example/")),
             "https://client.example"
         );
         assert_eq!(
