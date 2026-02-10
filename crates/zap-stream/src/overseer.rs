@@ -450,7 +450,7 @@ impl Overseer for ZapStreamOverseer {
                 {
                     self.publish_stream_event(&stream, &user.pubkey).await?;
                     self.last_view_counter
-                        .store(last_view_counter, Ordering::Relaxed);
+                        .store(current_viewers as u32, Ordering::Relaxed);
                 }
             }
         }
