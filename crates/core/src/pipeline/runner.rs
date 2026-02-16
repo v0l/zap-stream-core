@@ -318,8 +318,8 @@ impl PipelineRunner {
                 let counter = self.dropped_frames.entry(variant).or_insert(0);
                 *counter += 1;
                 
-                // Log every 100 dropped frames to avoid spam
-                if *counter % 100 == 1 {
+                // Log at first drop and then every 100 dropped frames
+                if *counter == 1 || *counter % 100 == 0 {
                     warn!(
                         "Worker queue full for variant {}, dropped {} frames total",
                         variant, counter
