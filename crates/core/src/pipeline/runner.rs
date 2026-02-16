@@ -305,7 +305,7 @@ impl PipelineRunner {
         Ok(())
     }
 
-    fn send_work(&mut self, variant: Uuid, job: WorkerThreadCommand) -> Result<()> {
+    fn send_work(&self, variant: Uuid, job: WorkerThreadCommand) -> Result<()> {
         let Some(q) = self.worker_channels.get(&variant) else {
             bail!("No worker channel setup for variant: {}", variant);
         };
@@ -314,14 +314,14 @@ impl PipelineRunner {
         match q.try_send(job) {
             Ok(()) => Ok(()),
             Err(std::sync::mpsc::TrySendError::Full(_)) => {
-                // Track dropped frames
+                // Track dropped work items
                 let counter = self.dropped_frames.entry(variant).or_insert(0);
                 *counter += 1;
                 
-                // Log at first drop and then every 100 dropped frames
+                // Log at first drop and then every 100 dropped items
                 if *counter == 1 || *counter % 100 == 0 {
                     warn!(
-                        "Worker queue full for variant {}, dropped {} frames total",
+                        "Worker queue full for variant {}, dropped {} work items total",
                         variant, counter
                     );
                 }

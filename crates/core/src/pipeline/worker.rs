@@ -16,9 +16,9 @@ use tokio::runtime::Handle;
 use tracing::{error, info, trace, warn};
 use uuid::Uuid;
 
-/// Maximum number of frames to buffer per worker thread
-/// At 30fps, this represents approximately 1 second of buffering
-const WORKER_QUEUE_CAPACITY: usize = 30;
+/// Maximum number of work items to buffer per worker thread
+/// At 60fps, this represents approximately 2 seconds of buffering
+const WORKER_QUEUE_CAPACITY: usize = 120;
 
 #[derive(Clone)]
 pub enum WorkerThreadCommand {
