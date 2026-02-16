@@ -9,12 +9,16 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{AV_NOPTS_VALUE, av_get_pix_fmt_name, av_rescale_q};
 use ffmpeg_rs_raw::{AudioFifo, AvFrameRef, AvPacketRef, Encoder, Resample, Scaler, rstr};
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::runtime::Handle;
 use tracing::{error, info, trace, warn};
 use uuid::Uuid;
+
+/// Maximum number of frames to buffer per worker thread
+/// At 30fps, this represents approximately 1 second of buffering
+const WORKER_QUEUE_CAPACITY: usize = 30;
 
 #[derive(Clone)]
 pub enum WorkerThreadCommand {
@@ -42,14 +46,14 @@ pub struct PipelineWorkerThread {
     overseer: Arc<dyn Overseer>,
     plugin: Option<Arc<dyn PipelinePlugin>>,
 
-    work_queue_tx: Option<Sender<WorkerThreadCommand>>,
+    work_queue_tx: Option<SyncSender<WorkerThreadCommand>>,
     work_queue_rx: Receiver<WorkerThreadCommand>,
 
     did_flush: bool,
 }
 
 impl PipelineWorkerThread {
-    pub fn sender(&mut self) -> Option<Sender<WorkerThreadCommand>> {
+    pub fn sender(&mut self) -> Option<SyncSender<WorkerThreadCommand>> {
         self.work_queue_tx.take()
     }
 
@@ -362,7 +366,7 @@ pub struct PipelineWorkerThreadBuilder {
     scaler: Option<Scaler>,
     encoder: Option<Encoder>,
     resampler: Option<(Resample, AudioFifo)>,
-    work_queue_tx: Sender<WorkerThreadCommand>,
+    work_queue_tx: SyncSender<WorkerThreadCommand>,
     work_queue_rx: Receiver<WorkerThreadCommand>,
 }
 
@@ -425,7 +429,7 @@ impl TryFrom<&VariantStream> for PipelineWorkerThreadBuilder {
         match value {
             VariantStream::Video(v) => {
                 let enc = v.create_encoder(true)?;
-                let (tx, rx) = channel();
+                let (tx, rx) = sync_channel(WORKER_QUEUE_CAPACITY);
                 Ok(Self {
                     pipeline_id: None,
                     handle: None,
@@ -450,7 +454,7 @@ impl TryFrom<&VariantStream> for PipelineWorkerThreadBuilder {
                 let fmt = unsafe { std::mem::transmute(a.sample_format_id()?) };
                 let rs = Resample::new(fmt, a.sample_rate as _, a.channels as _);
                 let f = AudioFifo::new(fmt, a.channels as _)?;
-                let (tx, rx) = channel();
+                let (tx, rx) = sync_channel(WORKER_QUEUE_CAPACITY);
                 Ok(Self {
                     pipeline_id: None,
                     handle: None,
@@ -468,7 +472,7 @@ impl TryFrom<&VariantStream> for PipelineWorkerThreadBuilder {
             }
             VariantStream::Subtitle { .. } => todo!(),
             VariantStream::CopyVideo(_) | VariantStream::CopyAudio(_) => {
-                let (tx, rx) = channel();
+                let (tx, rx) = sync_channel(WORKER_QUEUE_CAPACITY);
                 Ok(Self {
                     pipeline_id: None,
                     handle: None,
@@ -485,7 +489,7 @@ impl TryFrom<&VariantStream> for PipelineWorkerThreadBuilder {
                 })
             }
             VariantStream::Plugin { name, .. } => {
-                let (tx, rx) = channel();
+                let (tx, rx) = sync_channel(WORKER_QUEUE_CAPACITY);
                 Ok(Self {
                     pipeline_id: None,
                     handle: None,

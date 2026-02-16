@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{Read, stdout};
 use std::ops::Sub;
 use std::path::PathBuf;
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -76,7 +76,7 @@ pub struct PipelineRunner {
     decoder: Decoder,
 
     /// Channels for sending work to each thread by variant id
-    worker_channels: HashMap<Uuid, Sender<WorkerThreadCommand>>,
+    worker_channels: HashMap<Uuid, SyncSender<WorkerThreadCommand>>,
 
     /// All configured egress'
     egress: Arc<Mutex<Vec<Box<dyn Egress>>>>,
@@ -112,6 +112,9 @@ pub struct PipelineRunner {
     /// PTS offset per source stream to fix duplicate PTS values
     /// Key is the stream index, value is (last_pts, offset)
     pts_offsets: HashMap<usize, (i64, i64)>,
+
+    /// Counter for dropped frames per variant
+    dropped_frames: HashMap<Uuid, u64>,
 }
 
 unsafe impl Send for PipelineRunner {}
@@ -153,6 +156,7 @@ impl PipelineRunner {
             cmd_channel: command,
             frame_reorder_buffers: Default::default(),
             pts_offsets: Default::default(),
+            dropped_frames: Default::default(),
         })
     }
 
@@ -301,14 +305,32 @@ impl PipelineRunner {
         Ok(())
     }
 
-    fn send_work(&self, variant: Uuid, job: WorkerThreadCommand) -> Result<()> {
+    fn send_work(&mut self, variant: Uuid, job: WorkerThreadCommand) -> Result<()> {
         let Some(q) = self.worker_channels.get(&variant) else {
             bail!("No worker channel setup for variant: {}", variant);
         };
 
-        q.send(job)
-            .map_err(|e| anyhow!("Error sending work: {}", e))?;
-        Ok(())
+        // Try to send work, if channel is full, drop the frame
+        match q.try_send(job) {
+            Ok(()) => Ok(()),
+            Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                // Track dropped frames
+                let counter = self.dropped_frames.entry(variant).or_insert(0);
+                *counter += 1;
+                
+                // Log every 100 dropped frames to avoid spam
+                if *counter % 100 == 1 {
+                    warn!(
+                        "Worker queue full for variant {}, dropped {} frames total",
+                        variant, counter
+                    );
+                }
+                Ok(())
+            }
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                bail!("Worker channel disconnected for variant: {}", variant)
+            }
+        }
     }
 
     fn transcode_pkt(&mut self, pkt: Option<&AvPacketRef>) -> Result<()> {
