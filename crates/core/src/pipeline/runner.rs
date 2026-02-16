@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{Read, stdout};
 use std::ops::Sub;
 use std::path::PathBuf;
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -76,7 +76,7 @@ pub struct PipelineRunner {
     decoder: Decoder,
 
     /// Channels for sending work to each thread by variant id
-    worker_channels: HashMap<Uuid, Sender<WorkerThreadCommand>>,
+    worker_channels: HashMap<Uuid, SyncSender<WorkerThreadCommand>>,
 
     /// All configured egress'
     egress: Arc<Mutex<Vec<Box<dyn Egress>>>>,
@@ -306,6 +306,9 @@ impl PipelineRunner {
             bail!("No worker channel setup for variant: {}", variant);
         };
 
+        // Use blocking send() on bounded channel - this provides natural backpressure
+        // When worker queue is full, this blocks the pipeline thread, which prevents
+        // reading more packets from demuxer, creating backpressure on RTMP ingress
         q.send(job)
             .map_err(|e| anyhow!("Error sending work: {}", e))?;
         Ok(())
