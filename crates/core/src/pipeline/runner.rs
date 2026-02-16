@@ -115,6 +115,9 @@ pub struct PipelineRunner {
 
     /// Counter for dropped frames per variant
     dropped_frames: HashMap<Uuid, u64>,
+
+    /// Track if we're experiencing backpressure (worker queues full)
+    backpressure_detected: bool,
 }
 
 unsafe impl Send for PipelineRunner {}
@@ -157,6 +160,7 @@ impl PipelineRunner {
             frame_reorder_buffers: Default::default(),
             pts_offsets: Default::default(),
             dropped_frames: Default::default(),
+            backpressure_detected: false,
         })
     }
 
@@ -305,15 +309,18 @@ impl PipelineRunner {
         Ok(())
     }
 
-    fn send_work(&self, variant: Uuid, job: WorkerThreadCommand) -> Result<()> {
+    fn send_work(&mut self, variant: Uuid, job: WorkerThreadCommand) -> Result<()> {
         let Some(q) = self.worker_channels.get(&variant) else {
             bail!("No worker channel setup for variant: {}", variant);
         };
 
-        // Try to send work, if channel is full, drop the frame
-        match q.try_send(job) {
-            Ok(()) => Ok(()),
-            Err(std::sync::mpsc::TrySendError::Full(_)) => {
+        // Try to send work, if channel is full, apply backpressure by blocking
+        match q.try_send(job.clone()) {
+            Ok(()) => {
+                self.backpressure_detected = false;
+                Ok(())
+            }
+            Err(std::sync::mpsc::TrySendError::Full(job)) => {
                 // Track dropped work items
                 let counter = self.dropped_frames.entry(variant).or_insert(0);
                 *counter += 1;
@@ -321,10 +328,15 @@ impl PipelineRunner {
                 // Log at first drop and then every 100 dropped items
                 if *counter == 1 || *counter % 100 == 0 {
                     warn!(
-                        "Worker queue full for variant {}, dropped {} work items total",
+                        "Worker queue full for variant {}, applying backpressure ({} work items dropped so far)",
                         variant, counter
                     );
                 }
+                
+                // Apply backpressure by blocking on send
+                self.backpressure_detected = true;
+                q.send(job)
+                    .map_err(|e| anyhow!("Error sending work with backpressure: {}", e))?;
                 Ok(())
             }
             Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
