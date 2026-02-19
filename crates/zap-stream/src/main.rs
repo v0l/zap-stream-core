@@ -142,7 +142,7 @@ async fn main() -> Result<()> {
     let shutdown = CancellationToken::new();
 
     #[cfg(feature = "moq")]
-    let moq_origin = Arc::new(zap_stream_core::hang::moq_lite::Origin::produce());
+    let moq_origin = zap_stream_core::hang::moq_lite::Origin::produce();
 
     let settings: Settings = builder.try_deserialize()?;
 
@@ -233,32 +233,24 @@ async fn main() -> Result<()> {
             info!("MoQ server started..");
 
             while let Some(req) = server.accept().await {
-                let session = match req.ok().await {
+                let session = match req
+                    .with_publish(moq_origin.consume())
+                    .with_consume(moq_origin.clone())
+                    .accept()
+                    .await
+                {
                     Ok(s) => s,
                     Err(e) => {
                         error!("Failed to accept QUIC/WebTransport session {}", e);
                         continue;
                     }
                 };
-
-                match zap_stream_core::hang::moq_lite::Server::new()
-                    .with_publish(moq_origin.consume())
-                    .with_consume((*moq_origin).clone())
-                    .accept(session)
-                    .await
-                {
-                    Ok(session) => {
-                        tokio::spawn(async move {
-                            if let Err(e) = session.closed().await {
-                                error!("MoQ session closed with error {}", e);
-                            }
-                            info!("MoQ session closed.");
-                        });
+                tokio::spawn(async move {
+                    if let Err(e) = session.closed().await {
+                        error!("MoQ session closed with error {}", e);
                     }
-                    Err(e) => {
-                        error!("Failed to create MoQ session {}", e);
-                    }
-                }
+                    info!("MoQ session closed.");
+                });
             }
             Ok(())
         }));

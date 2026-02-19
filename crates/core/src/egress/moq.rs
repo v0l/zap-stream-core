@@ -4,11 +4,11 @@ use anyhow::{Result, bail};
 use bytes::Bytes;
 use ffmpeg_rs_raw::AvPacketRef;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{AV_PKT_FLAG_KEY, av_q2d};
-use hang::catalog::{AAC, Audio, AudioCodec, H264, H265, VP9, Video, VideoCodec};
-use hang::moq_lite::{Broadcast, OriginProducer};
 use hang::catalog::Container;
-use hang::{Catalog, Frame, Timestamp, TrackProducer, catalog};
-use std::collections::HashMap;
+use hang::catalog::{AAC, Audio, AudioCodec, H264, H265, VP9, Video, VideoCodec};
+use hang::moq_lite::{Broadcast, OriginProducer, TrackProducer};
+use hang::{Catalog, catalog};
+use std::collections::{BTreeMap, HashMap};
 use std::slice;
 use tokio::runtime::Handle;
 use tracing::{info, warn};
@@ -43,7 +43,10 @@ fn get_extradata(stream: &EncoderOrSourceStream) -> Option<Bytes> {
         }
         // Cap at 10KB to guard against corrupted/malicious extradata_size
         if extradata_size > 10 * 1024 {
-            warn!("extradata_size {} exceeds 10KB cap, ignoring", extradata_size);
+            warn!(
+                "extradata_size {} exceeds 10KB cap, ignoring",
+                extradata_size
+            );
             return None;
         }
         let data = slice::from_raw_parts(extradata as *const u8, extradata_size as usize);
@@ -73,8 +76,8 @@ impl MoqEgress {
     ) -> Result<Self> {
         // create a Catalog which contains all the video / audio tracks
         let mut catalog = Catalog::default();
-        let mut video_tracks = HashMap::new();
-        let mut audio_tracks = HashMap::new();
+        let mut video_tracks = BTreeMap::new();
+        let mut audio_tracks = BTreeMap::new();
         let mut track_handles = Vec::new();
         let mut video_priority = 100;
         let mut audio_priority = 1;
@@ -189,32 +192,32 @@ impl MoqEgress {
             bail!("Must have at least 1 video or audio track")
         }
         if !video_tracks.is_empty() {
-            catalog.video = Some(Video {
+            catalog.video = Video {
                 renditions: video_tracks,
                 display: None,
                 rotation: None,
                 flip: None,
-            })
+            }
         }
         if !audio_tracks.is_empty() {
-            catalog.audio = Some(Audio {
+            catalog.audio = Audio {
                 renditions: audio_tracks,
-            })
+            }
         }
         let mut broadcast = Broadcast::produce();
 
         let catalog = catalog.produce();
-        broadcast.producer.insert_track(catalog.consumer.track);
+        broadcast.insert_track(catalog.track);
 
         // create the tracks
         let mut tracks = HashMap::new();
         for track in track_handles {
             let id = track.name.clone();
-            tracks.insert(id, broadcast.producer.create_track(track).into());
+            tracks.insert(id, broadcast.create_track(track).into());
         }
 
         let g = handle.enter();
-        if !origin.publish_broadcast(id, broadcast.consumer) {
+        if !origin.publish_broadcast(id, broadcast.consume()) {
             bail!("Failed to publish, not allowed")
         }
         drop(g);
@@ -229,20 +232,8 @@ impl MoqEgress {
 impl Egress for MoqEgress {
     fn process_pkt(&mut self, packet: AvPacketRef, variant: &Uuid) -> Result<EgressResult> {
         if let Some(track) = self.tracks.get_mut(variant.to_string().as_str()) {
-            let is_keyframe = packet.flags & AV_PKT_FLAG_KEY != 0;
             let data_slice = unsafe { slice::from_raw_parts(packet.data, packet.size as _) };
-            let mut pts_secs = packet.pts as f64 * unsafe { av_q2d(packet.time_base) };
-            pts_secs += self.pts_offset;
-            if pts_secs < 0.0 {
-                self.pts_offset += pts_secs.abs();
-                warn!("PTS was negative, new offset {:.4}s", self.pts_offset);
-                pts_secs += self.pts_offset;
-            }
-            track.write(Frame {
-                timestamp: Timestamp::from_secs_f64(pts_secs),
-                keyframe: is_keyframe,
-                payload: Bytes::copy_from_slice(data_slice),
-            })
+            track.write_frame(data_slice)
         }
 
         Ok(EgressResult::None)

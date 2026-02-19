@@ -78,7 +78,7 @@ pub struct ZapStreamOverseer {
     last_view_counter: Arc<AtomicU32>,
     /// MoQ origin to push streams to
     #[cfg(feature = "moq")]
-    moq_origin: Option<Arc<OriginProducer>>,
+    moq_origin: Option<OriginProducer>,
     /// MoQ socket address
     #[cfg(feature = "moq")]
     moq_bind: Option<std::net::SocketAddr>,
@@ -210,11 +210,7 @@ impl ZapStreamOverseer {
     }
 
     #[cfg(feature = "moq")]
-    pub fn set_moq_origin(
-        &mut self,
-        origin: Arc<OriginProducer>,
-        bind: Option<std::net::SocketAddr>,
-    ) {
+    pub fn set_moq_origin(&mut self, origin: OriginProducer, bind: Option<std::net::SocketAddr>) {
         self.moq_origin = Some(origin);
         self.moq_bind = bind;
     }
@@ -977,7 +973,9 @@ impl EndpointConfigurator for ZapStreamOverseer {
         }
 
         #[cfg(feature = "moq")]
-        egress.push(EgressType::Moq { id: Uuid::new_v4() });
+        if self.moq_origin.is_some() {
+            egress.push(EgressType::Moq { id: Uuid::new_v4() });
+        }
         Ok(egress)
     }
 
@@ -986,7 +984,7 @@ impl EndpointConfigurator for ZapStreamOverseer {
         let Some(prod) = &self.moq_origin else {
             bail!("MoQ not configured")
         };
-        Ok((*prod).clone())
+        Ok(prod.clone())
     }
 }
 
