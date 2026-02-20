@@ -72,5 +72,11 @@ Use the admin UI to remove extra endpoints and keep one matching Cloudflare capa
 
 ## Example external compose
 
-See `docs/deploy/external-compose.yaml` for a working example.
+See `docs/deploy/docker-compose.external.yaml` for a working example.
 
+To use local overrides (recommended), create your own `docker-compose.override.yml`
+in your project folder and run:
+
+```bash
+docker compose -f docs/deploy/docker-compose.external.yaml -f docker-compose.override.yml up -d
+```
