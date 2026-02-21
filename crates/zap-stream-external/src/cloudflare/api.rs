@@ -70,21 +70,38 @@ fn apply_custom_ingest_domain(base_url: &str, custom_domain: Option<&str>) -> St
     base_url.to_string()
 }
 
-fn build_account_endpoint(
+fn build_account_endpoints(
     input: &LiveInput,
     ingest: &IngestEndpoint,
     custom_domain: Option<&str>,
-) -> Endpoint {
-    Endpoint {
-        name: "RTMPS".to_string(),
+) -> Vec<Endpoint> {
+    let cost = EndpointCost {
+        unit: "min".to_string(),
+        rate: ingest.cost as f32 / 1000.0,
+    };
+
+    let mut endpoints = vec![Endpoint {
+        name: format!("RTMPS-{}", ingest.name),
         url: apply_custom_ingest_domain(&input.rtmps.url, custom_domain),
         key: input.rtmps.stream_key.clone(),
         capabilities: vec![],
-        cost: EndpointCost {
-            unit: "min".to_string(),
-            rate: ingest.cost as f32 / 1000.0,
-        },
+        cost,
+    }];
+
+    if let Some(srt) = &input.srt {
+        endpoints.push(Endpoint {
+            name: format!("SRT-{}", ingest.name),
+            url: apply_custom_ingest_domain(&srt.url, custom_domain),
+            key: format!("streamid={}&passphrase={}", srt.stream_id, srt.passphrase),
+            capabilities: vec![],
+            cost: EndpointCost {
+                unit: "min".to_string(),
+                rate: ingest.cost as f32 / 1000.0,
+            },
+        });
     }
+
+    endpoints
 }
 
 fn apply_video_asset_to_stream(stream: &mut UserStream, asset: &VideoAssetWebhook) -> bool {
@@ -774,11 +791,11 @@ impl ZapStreamApi for CfApiWrapper {
         let forwards = self.db.get_user_forwards(uid).await?;
         let ingests = self.db.get_ingest_endpoints().await?;
         let ingest_endpoint = select_ingest_endpoint(&ingests, user.ingest_id, "")?;
-        let endpoints = vec![build_account_endpoint(
+        let endpoints = build_account_endpoints(
             &input,
             ingest_endpoint,
             self.custom_ingest_domain.as_deref(),
-        )];
+        );
 
         Ok(AccountInfo {
             endpoints,
@@ -985,11 +1002,11 @@ async fn build_alt_tag(client: &Client, stream: &UserStream, client_url: &str) -
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_custom_ingest_domain, apply_video_asset_to_stream, build_account_endpoint,
+        apply_custom_ingest_domain, apply_video_asset_to_stream, build_account_endpoints,
         build_alt_tag, resolve_client_url, resolve_tos_url, select_ingest_endpoint,
         select_stream_for_video_asset, ViewerCountTracker,
     };
-    use crate::cloudflare::{LiveInput, Playback, RtmpsEndpoint, VideoAssetStatus, VideoAssetWebhook};
+    use crate::cloudflare::{LiveInput, Playback, RtmpsEndpoint, SrtEndpoint, VideoAssetStatus, VideoAssetWebhook};
     use mockito::Server;
     use std::time::Duration;
     use nostr_sdk::Keys;
@@ -1074,21 +1091,70 @@ mod tests {
     }
 
     #[test]
-    fn build_account_endpoint_uses_ingest_cost() {
+    fn build_account_endpoints_uses_ingest_cost() {
         let ingest = sample_ingests().into_iter().find(|e| e.id == 2).unwrap();
-        let endpoint = build_account_endpoint(&sample_input(), &ingest, None);
+        let endpoints = build_account_endpoints(&sample_input(), &ingest, None);
 
-        assert_eq!(endpoint.name, "RTMPS");
-        assert_eq!(endpoint.cost.rate, 0.0);
-        assert_eq!(endpoint.key, "stream-key");
+        assert_eq!(endpoints.len(), 1);
+        assert_eq!(endpoints[0].name, "RTMPS-Basic");
+        assert_eq!(endpoints[0].cost.rate, 0.0);
+        assert_eq!(endpoints[0].key, "stream-key");
     }
 
     #[test]
-    fn build_account_endpoint_applies_custom_ingest_domain() {
+    fn build_account_endpoints_applies_custom_ingest_domain() {
         let ingest = sample_ingests().into_iter().find(|e| e.id == 2).unwrap();
-        let endpoint = build_account_endpoint(&sample_input(), &ingest, Some("custom.domain"));
+        let endpoints = build_account_endpoints(&sample_input(), &ingest, Some("custom.domain"));
 
-        assert_eq!(endpoint.url, "rtmps://custom.domain:443/live/");
+        assert_eq!(endpoints[0].url, "rtmps://custom.domain:443/live/");
+    }
+
+    #[test]
+    fn build_account_endpoints_includes_srt_when_available() {
+        let ingest = sample_ingests().into_iter().find(|e| e.id == 2).unwrap();
+        let mut input = sample_input();
+        input.srt = Some(SrtEndpoint {
+            url: "srt://live.cloudflare.com:778".to_string(),
+            stream_id: "test-stream-id".to_string(),
+            passphrase: "test-passphrase".to_string(),
+        });
+
+        let endpoints = build_account_endpoints(&input, &ingest, None);
+
+        assert_eq!(endpoints.len(), 2);
+        assert_eq!(endpoints[0].name, "RTMPS-Basic");
+        assert_eq!(endpoints[1].name, "SRT-Basic");
+        assert_eq!(endpoints[1].url, "srt://live.cloudflare.com:778");
+        assert_eq!(
+            endpoints[1].key,
+            "streamid=test-stream-id&passphrase=test-passphrase"
+        );
+        assert_eq!(endpoints[0].cost.rate, endpoints[1].cost.rate);
+    }
+
+    #[test]
+    fn build_account_endpoints_omits_srt_when_absent() {
+        let ingest = sample_ingests().into_iter().find(|e| e.id == 2).unwrap();
+        let endpoints = build_account_endpoints(&sample_input(), &ingest, None);
+
+        assert_eq!(endpoints.len(), 1);
+        assert_eq!(endpoints[0].name, "RTMPS-Basic");
+    }
+
+    #[test]
+    fn build_account_endpoints_applies_custom_domain_to_srt() {
+        let ingest = sample_ingests().into_iter().find(|e| e.id == 2).unwrap();
+        let mut input = sample_input();
+        input.srt = Some(SrtEndpoint {
+            url: "srt://live.cloudflare.com:778".to_string(),
+            stream_id: "test-stream-id".to_string(),
+            passphrase: "test-passphrase".to_string(),
+        });
+
+        let endpoints = build_account_endpoints(&input, &ingest, Some("custom.domain"));
+
+        assert_eq!(endpoints[0].url, "rtmps://custom.domain:443/live/");
+        assert_eq!(endpoints[1].url, "srt://custom.domain:778");
     }
 
     #[test]
