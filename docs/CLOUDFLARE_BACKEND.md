@@ -62,6 +62,12 @@ Cloudflare allows custom RTMPS domains. If you use this:
 
 This will update the RTMPS ingest URL returned by `/api/v1/account`.
 
+## SRT ingest (if enabled in Cloudflare)
+
+If your Cloudflare Live Input includes SRT details, the external backend will return
+both RTMPS and SRT endpoints in `/api/v1/account`. Clients can choose transport
+based on the URL scheme.
+
 ## Ingest endpoint configuration (recommended)
 
 Cloudflare streams have a fixed capability set. We recommend a single ingest endpoint:
