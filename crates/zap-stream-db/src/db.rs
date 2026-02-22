@@ -326,14 +326,16 @@ impl ZapStreamDb {
         &self,
         user_id: u64,
         key: &str,
+        external_id: Option<&str>,
         expires: Option<DateTime<Utc>>,
         stream_id: &str,
     ) -> Result<u64> {
         let result = sqlx::query(
-            "insert into user_stream_key (user_id, `key`, expires, stream_id) values (?, ?, ?, ?)",
+            "insert into user_stream_key (user_id, `key`, external_id, expires, stream_id) values (?, ?, ?, ?, ?)",
         )
         .bind(user_id)
         .bind(key)
+        .bind(external_id)
         .bind(expires)
         .bind(stream_id)
         .execute(&self.db)
@@ -348,6 +350,20 @@ impl ZapStreamDb {
                 .bind(user_id)
                 .fetch_all(&self.db)
                 .await?,
+        )
+    }
+
+    pub async fn get_user_stream_key_by_external_id(
+        &self,
+        external_id: &str,
+    ) -> Result<Option<UserStreamKey>> {
+        Ok(
+            sqlx::query_as(
+                "select * from user_stream_key where external_id = ? and (expires is null or expires > now())",
+            )
+            .bind(external_id)
+            .fetch_optional(&self.db)
+            .await?,
         )
     }
 
