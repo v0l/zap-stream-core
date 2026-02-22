@@ -29,7 +29,7 @@ use zap_stream::payments::LightningNode;
 use zap_stream::stream_manager::StreamManager;
 use zap_stream_api_common::*;
 use zap_stream_core::ingress::ConnectionInfo;
-use zap_stream_db::{IngestEndpoint, User, UserStream, UserStreamState, ZapStreamDb};
+use zap_stream_db::{IngestEndpoint, StreamKeyType, User, UserStream, UserStreamState, ZapStreamDb};
 
 fn select_ingest_endpoint<'a>(
     endpoints: &'a [IngestEndpoint],
@@ -102,6 +102,19 @@ fn build_account_endpoints(
     }
 
     endpoints
+}
+
+fn map_live_input_to_stream_key(
+    row: &zap_stream_db::UserStreamKey,
+    input: &LiveInput,
+) -> StreamKey {
+    StreamKey {
+        id: row.id,
+        key: input.rtmps.stream_key.clone(),
+        created: row.created.timestamp(),
+        expires: row.expires.map(|e| e.timestamp()),
+        stream_id: row.stream_id.clone(),
+    }
 }
 
 fn apply_video_asset_to_stream(stream: &mut UserStream, asset: &VideoAssetWebhook) -> bool {
@@ -566,41 +579,103 @@ impl CfApiWrapper {
 
     async fn publish_stream_start(&self, input: LiveInput) -> Result<()> {
         let user = self.db.get_user_by_external_id(&input.uid).await?;
-        let Some(user) = user else {
+        if let Some(user) = user {
+            let new_id = Uuid::new_v4();
+            let conn = ConnectionInfo {
+                id: new_id,
+                endpoint: "RTMPS".to_string(),
+                ip_addr: "".to_string(),
+                app_name: "cloudflare".to_string(),
+                key: input.rtmps.stream_key.clone(),
+            };
+            let endpoint = self.detect_endpoint(&conn, user.ingest_id).await?;
+            // start a new stream
+            let mut new_stream = UserStream {
+                id: new_id.to_string(),
+                user_id: user.id,
+                starts: Utc::now(),
+                state: UserStreamState::Live,
+                endpoint_id: Some(endpoint.id),
+                title: user.title.clone(),
+                summary: user.summary.clone(),
+                image: user.image.clone(),
+                content_warning: user.content_warning.clone(),
+                goal: user.goal.clone(),
+                tags: user.tags.clone(),
+                ..Default::default()
+            };
+            self.db.insert_stream(&new_stream).await?;
+            self.register_input_mapping(&input.uid, &new_stream.id).await;
+
+            let stream_event = self.publish_stream_event(&new_stream, &user).await?;
+            new_stream.event = Some(stream_event.as_json());
+            self.db.update_stream(&new_stream).await?;
+            return Ok(());
+        }
+
+        let Some(user_key) = self.db.find_user_stream_key(&input.uid).await? else {
             bail!("No user found with external_id {}", input.uid);
         };
-        let new_id = Uuid::new_v4();
-        let conn = ConnectionInfo {
-            id: new_id,
-            endpoint: "RTMPS".to_string(),
-            ip_addr: "".to_string(),
-            app_name: "cloudflare".to_string(),
-            key: input.rtmps.stream_key.clone(),
-        };
-        let endpoint = self.detect_endpoint(&conn, user.ingest_id).await?;
-        // start a new stream
-        let mut new_stream = UserStream {
-            id: new_id.to_string(),
-            user_id: user.id,
-            starts: Utc::now(),
-            state: UserStreamState::Live,
-            endpoint_id: Some(endpoint.id),
-            title: user.title.clone(),
-            summary: user.summary.clone(),
-            image: user.image.clone(),
-            content_warning: user.content_warning.clone(),
-            goal: user.goal.clone(),
-            tags: user.tags.clone(),
-            ..Default::default()
-        };
-        self.db.insert_stream(&new_stream).await?;
-        self.register_input_mapping(&input.uid, &new_stream.id).await;
 
-        let stream_event = self.publish_stream_event(&new_stream, &user).await?;
-        new_stream.event = Some(stream_event.as_json());
-        self.db.update_stream(&new_stream).await?;
+        match user_key {
+            StreamKeyType::Primary(id) => {
+                let user = self.db.get_user(id).await?;
+                let new_id = Uuid::new_v4();
+                let conn = ConnectionInfo {
+                    id: new_id,
+                    endpoint: "RTMPS".to_string(),
+                    ip_addr: "".to_string(),
+                    app_name: "cloudflare".to_string(),
+                    key: input.rtmps.stream_key.clone(),
+                };
+                let endpoint = self.detect_endpoint(&conn, user.ingest_id).await?;
+                let mut new_stream = UserStream {
+                    id: new_id.to_string(),
+                    user_id: user.id,
+                    starts: Utc::now(),
+                    state: UserStreamState::Live,
+                    endpoint_id: Some(endpoint.id),
+                    title: user.title.clone(),
+                    summary: user.summary.clone(),
+                    image: user.image.clone(),
+                    content_warning: user.content_warning.clone(),
+                    goal: user.goal.clone(),
+                    tags: user.tags.clone(),
+                    ..Default::default()
+                };
+                self.db.insert_stream(&new_stream).await?;
+                self.register_input_mapping(&input.uid, &new_stream.id).await;
 
-        Ok(())
+                let stream_event = self.publish_stream_event(&new_stream, &user).await?;
+                new_stream.event = Some(stream_event.as_json());
+                self.db.update_stream(&new_stream).await?;
+                Ok(())
+            }
+            StreamKeyType::FixedEventKey { id, stream_id } => {
+                let user = self.db.get_user(id).await?;
+                let stream_uuid = Uuid::parse_str(&stream_id)?;
+                let mut stream = self.db.get_stream(&stream_uuid).await?;
+                let conn = ConnectionInfo {
+                    id: stream_uuid,
+                    endpoint: "RTMPS".to_string(),
+                    ip_addr: "".to_string(),
+                    app_name: "cloudflare".to_string(),
+                    key: input.rtmps.stream_key.clone(),
+                };
+                let endpoint = self.detect_endpoint(&conn, user.ingest_id).await?;
+
+                stream.state = UserStreamState::Live;
+                stream.endpoint_id = Some(endpoint.id);
+                stream.ends = None;
+                self.db.update_stream(&stream).await?;
+                self.register_input_mapping(&input.uid, &stream.id).await;
+
+                let stream_event = self.publish_stream_event(&stream, &user).await?;
+                stream.event = Some(stream_event.as_json());
+                self.db.update_stream(&stream).await?;
+                Ok(())
+            }
+        }
     }
 
     async fn ensure_tracking_live(
@@ -633,27 +708,70 @@ impl CfApiWrapper {
 
     async fn publish_stream_end(&self, input: LiveInput) -> Result<()> {
         let user = self.db.get_user_by_external_id(&input.uid).await?;
-        let Some(user) = user else {
+        if let Some(user) = user {
+            let streams = self.db.get_user_live_streams(user.id).await?;
+            let Some(mut stream) = streams.into_iter().next() else {
+                bail!("No live streams found for user {}", user.id);
+            };
+
+            self.stream_manager.remove_active_stream(&stream.id).await;
+            zap_stream_core::metrics::remove_playback_rate(&stream.id);
+
+            stream.state = UserStreamState::Ended;
+            stream.ends = Some(Utc::now());
+            let event = self.publish_stream_event(&stream, &user).await?;
+            stream.event = Some(event.as_json());
+            self.db.update_stream(&stream).await?;
+
+            info!("Stream ended {}", stream.id);
+            self.remove_input_mapping(&input.uid).await;
+            return Ok(());
+        }
+
+        let Some(user_key) = self.db.find_user_stream_key(&input.uid).await? else {
             bail!("No user found with external_id {}", input.uid);
         };
 
-        let streams = self.db.get_user_live_streams(user.id).await?;
-        let Some(mut stream) = streams.into_iter().next() else {
-            bail!("No live streams found for user {}", user.id);
-        };
+        match user_key {
+            StreamKeyType::Primary(id) => {
+                let user = self.db.get_user(id).await?;
+                let streams = self.db.get_user_live_streams(user.id).await?;
+                let Some(mut stream) = streams.into_iter().next() else {
+                    bail!("No live streams found for user {}", user.id);
+                };
 
-        self.stream_manager.remove_active_stream(&stream.id).await;
-        zap_stream_core::metrics::remove_playback_rate(&stream.id);
+                self.stream_manager.remove_active_stream(&stream.id).await;
+                zap_stream_core::metrics::remove_playback_rate(&stream.id);
 
-        stream.state = UserStreamState::Ended;
-        stream.ends = Some(Utc::now());
-        let event = self.publish_stream_event(&stream, &user).await?;
-        stream.event = Some(event.as_json());
-        self.db.update_stream(&stream).await?;
+                stream.state = UserStreamState::Ended;
+                stream.ends = Some(Utc::now());
+                let event = self.publish_stream_event(&stream, &user).await?;
+                stream.event = Some(event.as_json());
+                self.db.update_stream(&stream).await?;
 
-        info!("Stream ended {}", stream.id);
-        self.remove_input_mapping(&input.uid).await;
-        Ok(())
+                info!("Stream ended {}", stream.id);
+                self.remove_input_mapping(&input.uid).await;
+                Ok(())
+            }
+            StreamKeyType::FixedEventKey { id, stream_id } => {
+                let user = self.db.get_user(id).await?;
+                let stream_uuid = Uuid::parse_str(&stream_id)?;
+                let mut stream = self.db.get_stream(&stream_uuid).await?;
+
+                self.stream_manager.remove_active_stream(&stream.id).await;
+                zap_stream_core::metrics::remove_playback_rate(&stream.id);
+
+                stream.state = UserStreamState::Ended;
+                stream.ends = Some(Utc::now());
+                let event = self.publish_stream_event(&stream, &user).await?;
+                stream.event = Some(event.as_json());
+                self.db.update_stream(&stream).await?;
+
+                info!("Stream ended {}", stream.id);
+                self.remove_input_mapping(&input.uid).await;
+                Ok(())
+            }
+        }
     }
 
     fn map_to_public_url(&self, path: &str) -> Result<Url> {
@@ -933,16 +1051,57 @@ impl ZapStreamApi for CfApiWrapper {
             .await
     }
 
-    async fn get_stream_keys(&self, _auth: Nip98Auth) -> Result<Vec<StreamKey>> {
-        Ok(Vec::new())
+    async fn get_stream_keys(&self, auth: Nip98Auth) -> Result<Vec<StreamKey>> {
+        let uid = self.db.upsert_user(&auth.pubkey).await?;
+        let keys = self.db.get_user_stream_keys(uid).await?;
+        let mut out = Vec::with_capacity(keys.len());
+        for key in keys {
+            let input = self.client.get_live_input(&key.key).await?.result;
+            out.push(map_live_input_to_stream_key(&key, &input));
+        }
+        Ok(out)
     }
 
     async fn create_stream_key(
         &self,
-        _auth: Nip98Auth,
-        _req: CreateStreamKeyRequest,
+        auth: Nip98Auth,
+        req: CreateStreamKeyRequest,
     ) -> Result<CreateStreamKeyResponse> {
-        bail!("Not supported");
+        let uid = self.db.upsert_user(&auth.pubkey).await?;
+        let stream_id = Uuid::new_v4();
+        let pk = PublicKey::from_slice(&auth.pubkey)?;
+        let live_input_name = format!("{}-{}", pk.to_bech32()?, stream_id);
+        let response = self.client.create_live_input(&live_input_name).await?;
+        let input = response.result;
+
+        let mut new_stream = zap_stream_db::UserStream {
+            id: stream_id.to_string(),
+            user_id: uid,
+            starts: Utc::now(),
+            state: zap_stream_db::UserStreamState::Planned,
+            title: req.event.title,
+            summary: req.event.summary,
+            image: req.event.image,
+            tags: req.event.tags.map(|t| t.join(",")),
+            content_warning: req.event.content_warning,
+            goal: req.event.goal,
+            ..Default::default()
+        };
+
+        self.db.insert_stream(&new_stream).await?;
+
+        let key_id = self
+            .db
+            .create_stream_key(uid, &input.uid, req.expires, &stream_id.to_string())
+            .await?;
+
+        new_stream.stream_key_id = Some(key_id);
+        self.db.update_stream(&new_stream).await?;
+
+        Ok(CreateStreamKeyResponse {
+            key: input.rtmps.stream_key,
+            event: None,
+        })
     }
 
     async fn delete_stream_key(&self, _auth: Nip98Auth, _key_id: u64) -> Result<()> {
@@ -1003,14 +1162,16 @@ async fn build_alt_tag(client: &Client, stream: &UserStream, client_url: &str) -
 mod tests {
     use super::{
         apply_custom_ingest_domain, apply_video_asset_to_stream, build_account_endpoints,
-        build_alt_tag, resolve_client_url, resolve_tos_url, select_ingest_endpoint,
-        select_stream_for_video_asset, ViewerCountTracker,
+        build_alt_tag, map_live_input_to_stream_key, resolve_client_url, resolve_tos_url,
+        select_ingest_endpoint, select_stream_for_video_asset, ViewerCountTracker,
     };
     use crate::cloudflare::{LiveInput, Playback, RtmpsEndpoint, SrtEndpoint, VideoAssetStatus, VideoAssetWebhook};
     use mockito::Server;
     use std::time::Duration;
     use nostr_sdk::Keys;
+    use chrono::Utc;
     use zap_stream_db::IngestEndpoint;
+    use zap_stream_db::UserStreamKey;
     use zap_stream_db::UserStream;
     use zap_stream_db::UserStreamState;
 
@@ -1155,6 +1316,29 @@ mod tests {
 
         assert_eq!(endpoints[0].url, "rtmps://custom.domain:443/live/");
         assert_eq!(endpoints[1].url, "srt://custom.domain:778");
+    }
+
+    #[test]
+    fn map_live_input_to_stream_key_prefers_rtmps_key() {
+        let created = Utc::now();
+        let expires = created + chrono::Duration::hours(1);
+        let row = UserStreamKey {
+            id: 10,
+            user_id: 1,
+            key: "input-uid".to_string(),
+            created,
+            expires: Some(expires),
+            stream_id: "stream-id".to_string(),
+        };
+        let input = sample_input();
+
+        let mapped = map_live_input_to_stream_key(&row, &input);
+
+        assert_eq!(mapped.id, 10);
+        assert_eq!(mapped.key, "stream-key");
+        assert_eq!(mapped.created, created.timestamp());
+        assert_eq!(mapped.expires, Some(expires.timestamp()));
+        assert_eq!(mapped.stream_id, "stream-id");
     }
 
     #[test]
