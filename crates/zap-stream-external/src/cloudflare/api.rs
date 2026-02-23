@@ -379,8 +379,13 @@ impl CfApiWrapper {
         }
         drop(cache);
 
-        let Some(user) = self.db.get_user_by_external_id(input_id).await? else {
-            bail!("No user found with external_id {}", input_id);
+        // Check primary user external_id first, then fall back to custom key external_id
+        let user = if let Some(user) = self.db.get_user_by_external_id(input_id).await? {
+            user
+        } else if let Some(key) = self.db.get_user_stream_key_by_external_id(input_id).await? {
+            self.db.get_user(key.user_id).await?
+        } else {
+            bail!("No user or stream key found with external_id {}", input_id);
         };
 
         // try to load from API next
@@ -525,9 +530,12 @@ impl CfApiWrapper {
                         v.live_input, v.playback.hls, v.thumbnail
                     );
                     let input = self.get_user_live_input_by_input_id(&v.live_input).await?;
-                    let user = self.db.get_user_by_external_id(&input.uid).await?;
-                    let Some(user) = user else {
-                        bail!("No user found with external_id {}", input.uid);
+                    let user = if let Some(user) = self.db.get_user_by_external_id(&input.uid).await? {
+                        user
+                    } else if let Some(key) = self.db.get_user_stream_key_by_external_id(&input.uid).await? {
+                        self.db.get_user(key.user_id).await?
+                    } else {
+                        bail!("No user or stream key found with external_id {}", input.uid);
                     };
                     let matched = self.get_mapped_stream(&v.live_input).await?;
                     let fallback = self.db.get_user_latest_ended_stream(user.id).await?;

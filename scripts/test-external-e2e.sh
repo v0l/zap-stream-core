@@ -415,6 +415,17 @@ else
         echo "✓ Custom key found in list, stream_id: $CUSTOM_KEY_STREAM_ID"
     fi
 
+    # Look up the custom key's Cloudflare external_id from the DB
+    if [ -n "$CUSTOM_KEY_STREAM_ID" ] && [ "$CUSTOM_KEY_STREAM_ID" != "null" ]; then
+        CUSTOM_KEY_EXTERNAL_ID=$(docker exec "$DB_CONTAINER" mariadb -u root -p"$DB_PASSWORD" "$DB_NAME" \
+            -N -e "SELECT external_id FROM user_stream_key WHERE stream_id = '$CUSTOM_KEY_STREAM_ID' LIMIT 1;" 2>/dev/null | tr -d '[:space:]')
+        if [ -n "$CUSTOM_KEY_EXTERNAL_ID" ]; then
+            echo "✓ Custom key external_id (CF Live Input UID): $CUSTOM_KEY_EXTERNAL_ID"
+        else
+            echo "⚠ Could not resolve custom key external_id from DB"
+        fi
+    fi
+
     if [ "$T8_OK" == "true" ]; then
         pass_test "TEST 8: Custom keys"
     else
@@ -686,18 +697,43 @@ if [ "$CUSTOM_KEY_AVAILABLE" == "true" ]; then
         T14_CHECKS=0
         T14_TOTAL=2
 
-        if echo "$LOGS" | grep -q "Received Cloudflare webhook event: live_input.connected"; then
-            echo "✓ Webhook: live_input.connected for custom key"
-            T14_CHECKS=$((T14_CHECKS + 1))
+        # Match webhook to the specific custom key input_id (not the primary key's)
+        if [ -n "$CUSTOM_KEY_EXTERNAL_ID" ]; then
+            if echo "$LOGS" | grep -q "live_input.connected for input_id: $CUSTOM_KEY_EXTERNAL_ID"; then
+                echo "✓ Webhook: live_input.connected for custom key ($CUSTOM_KEY_EXTERNAL_ID)"
+                T14_CHECKS=$((T14_CHECKS + 1))
+            else
+                echo "✗ Missing: live_input.connected webhook for input_id $CUSTOM_KEY_EXTERNAL_ID"
+            fi
         else
-            echo "✗ Missing: live_input.connected webhook for custom key"
+            # Fallback: match any live_input.connected (less precise)
+            if echo "$LOGS" | grep -q "Received Cloudflare webhook event: live_input.connected"; then
+                echo "✓ Webhook: live_input.connected (unverified input_id)"
+                T14_CHECKS=$((T14_CHECKS + 1))
+            else
+                echo "✗ Missing: live_input.connected webhook for custom key"
+            fi
         fi
 
-        if echo "$LOGS" | grep -q "Published stream event"; then
-            echo "✓ Stream event published for custom key"
-            T14_CHECKS=$((T14_CHECKS + 1))
+        # Verify the custom key stream was published (not just any stream event)
+        if [ -n "$CUSTOM_KEY_STREAM_ID" ]; then
+            # Check that the stream was actually started (state changed from Planned to Live)
+            CK_STREAM_STATE=$(docker exec "$DB_CONTAINER" mariadb -u root -p"$DB_PASSWORD" "$DB_NAME" \
+                -N -e "SELECT state FROM user_stream WHERE id = '$CUSTOM_KEY_STREAM_ID';" 2>/dev/null | tr -d '[:space:]')
+            if [ "$CK_STREAM_STATE" == "2" ] || [ "$CK_STREAM_STATE" == "3" ]; then
+                echo "✓ Custom key stream activated (state: $CK_STREAM_STATE)"
+                T14_CHECKS=$((T14_CHECKS + 1))
+            else
+                echo "✗ Custom key stream not activated (state: ${CK_STREAM_STATE:-unknown}, expected 2=Live or 3=Ended)"
+            fi
         else
-            echo "✗ Missing: Published stream event for custom key"
+            # Fallback: match any Published stream event
+            if echo "$LOGS" | grep -q "Published stream event"; then
+                echo "✓ Stream event published (unverified stream_id)"
+                T14_CHECKS=$((T14_CHECKS + 1))
+            else
+                echo "✗ Missing: Published stream event for custom key"
+            fi
         fi
 
         if [ $T14_CHECKS -eq $T14_TOTAL ]; then
