@@ -70,7 +70,8 @@ make_auth_token() {
     echo "$auth_json" | base64
 }
 
-query_latest_30311() {
+# Helper: query all kind 30311 events since a timestamp, return as JSON array
+query_all_30311() {
     local since="$1"
     local tmp_file
     tmp_file=$(mktemp)
@@ -93,12 +94,23 @@ query_latest_30311() {
     if grep -q '"kind": 30311' "$tmp_file" 2>/dev/null; then
         awk '/^{$/,/^}$/ {print} /^}$/ {print "---SPLIT---"}' "$tmp_file" | \
             awk 'BEGIN{RS="---SPLIT---"} /"kind": 30311/ {print}' | \
-            jq -s 'sort_by(.created_at) | reverse | .[0]' 2>/dev/null
+            jq -s 'sort_by(.created_at) | reverse' 2>/dev/null
     else
-        echo "null"
+        echo "[]"
     fi
 
     rm -f "$tmp_file"
+}
+
+# Helper: extract event for a specific user pubkey (p tag host) and status
+# Usage: get_user_event "$ALL_EVENTS_JSON" "$USER_HEX" "$STATUS"
+get_user_event() {
+    local events="$1" pubkey="$2" status="$3"
+    echo "$events" | jq --arg pk "$pubkey" --arg st "$status" \
+        '[.[] | select(
+            (.tags[]? | select(.[0] == "p" and .[1] == $pk)) and
+            (.tags[]? | select(.[0] == "status" and .[1] == $st))
+        )] | .[0]' 2>/dev/null
 }
 
 # Cleanup handler
@@ -320,7 +332,7 @@ echo ""
 # ── TEST 6: User A webhook START ──────────────────────────────────
 
 echo "========================================"
-echo "TEST 6: User A webhook START"
+echo "TEST 6: User A webhook START (input_id isolation)"
 echo "========================================"
 
 echo "Waiting 20 seconds for User A webhooks..."
@@ -330,11 +342,11 @@ LOGS=$(docker logs --tail 200 "$EXTERNAL_CONTAINER" 2>&1)
 
 T6_CHECKS=0
 
-if echo "$LOGS" | grep -q "Received Cloudflare webhook event: live_input.connected"; then
-    echo "✓ Webhook: live_input.connected received"
+if echo "$LOGS" | grep -q "live_input.connected for input_id: $EXT_ID_A"; then
+    echo "✓ Webhook: live_input.connected for User A input ($EXT_ID_A)"
     T6_CHECKS=$((T6_CHECKS + 1))
 else
-    echo "✗ Missing: live_input.connected"
+    echo "✗ Missing: live_input.connected for User A input_id $EXT_ID_A"
 fi
 
 if echo "$LOGS" | grep -q "Published stream event"; then
@@ -342,6 +354,14 @@ if echo "$LOGS" | grep -q "Published stream event"; then
     T6_CHECKS=$((T6_CHECKS + 1))
 else
     echo "✗ Missing: Published stream event"
+fi
+
+# Verify no webhook arrived for User B yet (they haven't started)
+if echo "$LOGS" | grep -q "live_input.connected for input_id: $EXT_ID_B"; then
+    echo "✗ UNEXPECTED: Webhook for User B input_id $EXT_ID_B before User B started!"
+    T6_CHECKS=$((T6_CHECKS - 1))
+else
+    echo "✓ No premature webhook for User B (correct)"
 fi
 
 if [ $T6_CHECKS -eq 2 ]; then
@@ -397,7 +417,7 @@ echo ""
 # ── TEST 8: User B webhook START ──────────────────────────────────
 
 echo "========================================"
-echo "TEST 8: User B webhook START"
+echo "TEST 8: User B webhook START (input_id isolation)"
 echo "========================================"
 
 echo "Waiting 20 seconds for User B webhooks..."
@@ -405,56 +425,85 @@ sleep 20
 
 LOGS=$(docker logs --tail 200 "$EXTERNAL_CONTAINER" 2>&1)
 
-# Count total connected events (should be >= 2)
-CONNECTED_COUNT=$(echo "$LOGS" | grep -c "Received Cloudflare webhook event: live_input.connected" || true)
-echo "✓ Total connected webhooks received: $CONNECTED_COUNT"
+T8_CHECKS=0
 
-if [ "$CONNECTED_COUNT" -ge 2 ]; then
+# Verify User B's specific webhook arrived
+if echo "$LOGS" | grep -q "live_input.connected for input_id: $EXT_ID_B"; then
+    echo "✓ Webhook: live_input.connected for User B input ($EXT_ID_B)"
+    T8_CHECKS=$((T8_CHECKS + 1))
+else
+    echo "✗ Missing: live_input.connected for User B input_id $EXT_ID_B"
+fi
+
+# Verify both users have distinct webhooks (User A's should also still be present)
+if echo "$LOGS" | grep -q "live_input.connected for input_id: $EXT_ID_A"; then
+    echo "✓ User A webhook also present (both users have distinct connected events)"
+    T8_CHECKS=$((T8_CHECKS + 1))
+else
+    echo "✗ User A webhook missing from logs"
+fi
+
+# Total count should be >= 2
+CONNECTED_COUNT=$(echo "$LOGS" | grep -c "live_input.connected for input_id:" || true)
+echo "  Total connected webhooks with input_id: $CONNECTED_COUNT"
+
+if [ $T8_CHECKS -eq 2 ]; then
     pass_test "TEST 8: User B webhook START"
 else
-    fail_test "TEST 8: User B webhook START" "Expected >= 2 connected events, got $CONNECTED_COUNT"
+    fail_test "TEST 8: User B webhook START" "$T8_CHECKS/2 checks passed"
 fi
 echo ""
 
 # ── TEST 9: Verify both LIVE on Nostr relay ────────────────────────
 
 echo "========================================"
-echo "TEST 9: Verify LIVE Nostr events"
+echo "TEST 9: Verify per-user LIVE Nostr events"
 echo "========================================"
 
 SINCE_TIME=$(($(date +%s) - 600))
 
-# Query all recent events
-TMP_NOSTR=$(mktemp)
-set +e
-node "$SCRIPT_DIR/query_nostr_events_auth.js" 30311 --since "$SINCE_TIME" --relay "$NOSTR_RELAY_URL" > "$TMP_NOSTR" 2>&1 &
-QPID=$!
-COUNTER=0
-while [ $COUNTER -lt 15 ]; do
-    if ! ps -p $QPID > /dev/null 2>&1; then break; fi
-    sleep 1
-    COUNTER=$((COUNTER + 1))
-done
-if ps -p $QPID > /dev/null 2>&1; then kill -9 $QPID 2>/dev/null || true; fi
-set -e
+ALL_EVENTS=$(query_all_30311 "$SINCE_TIME")
+TOTAL_EVENTS=$(echo "$ALL_EVENTS" | jq 'length' 2>/dev/null || echo 0)
+echo "Total kind 30311 events on relay: $TOTAL_EVENTS"
 
-# Count live events
-LIVE_COUNT=0
-if grep -q '"kind": 30311' "$TMP_NOSTR" 2>/dev/null; then
-    LIVE_COUNT=$(awk '/^{$/,/^}$/ {print} /^}$/ {print "---SPLIT---"}' "$TMP_NOSTR" | \
-        awk 'BEGIN{RS="---SPLIT---"} /"kind": 30311/ {print}' | \
-        jq 'select(.tags[]? | select(.[0] == "status") | .[1] == "live")' 2>/dev/null | \
-        jq -s 'length' 2>/dev/null)
-fi
-rm -f "$TMP_NOSTR"
+T9_CHECKS=0
 
-echo "Found $LIVE_COUNT live events on relay"
-
-if [ "$LIVE_COUNT" -ge 2 ]; then
-    echo "✓ At least 2 LIVE events found"
-    pass_test "TEST 9: LIVE Nostr events"
+# Check User A has a LIVE event with correct p tag
+EVENT_A_LIVE=$(get_user_event "$ALL_EVENTS" "$USER_A_HEX" "live")
+if [ -n "$EVENT_A_LIVE" ] && [ "$EVENT_A_LIVE" != "null" ]; then
+    echo "✓ User A has LIVE event (p tag matches $USER_A_HEX)"
+    T9_CHECKS=$((T9_CHECKS + 1))
 else
-    fail_test "TEST 9: LIVE Nostr events" "Expected >= 2 live events, got $LIVE_COUNT"
+    echo "✗ No LIVE event found for User A (p=$USER_A_HEX)"
+fi
+
+# Check User B has a LIVE event with correct p tag
+EVENT_B_LIVE=$(get_user_event "$ALL_EVENTS" "$USER_B_HEX" "live")
+if [ -n "$EVENT_B_LIVE" ] && [ "$EVENT_B_LIVE" != "null" ]; then
+    echo "✓ User B has LIVE event (p tag matches $USER_B_HEX)"
+    T9_CHECKS=$((T9_CHECKS + 1))
+else
+    echo "✗ No LIVE event found for User B (p=$USER_B_HEX)"
+fi
+
+# Verify the d tags (stream IDs) are different
+if [ -n "$EVENT_A_LIVE" ] && [ "$EVENT_A_LIVE" != "null" ] && [ -n "$EVENT_B_LIVE" ] && [ "$EVENT_B_LIVE" != "null" ]; then
+    D_TAG_A=$(echo "$EVENT_A_LIVE" | jq -r '[.tags[]? | select(.[0] == "d")] | .[0][1]' 2>/dev/null)
+    D_TAG_B=$(echo "$EVENT_B_LIVE" | jq -r '[.tags[]? | select(.[0] == "d")] | .[0][1]' 2>/dev/null)
+    if [ "$D_TAG_A" != "$D_TAG_B" ] && [ -n "$D_TAG_A" ] && [ -n "$D_TAG_B" ]; then
+        echo "✓ Stream IDs are distinct (A: $D_TAG_A, B: $D_TAG_B)"
+        T9_CHECKS=$((T9_CHECKS + 1))
+    else
+        echo "✗ Stream IDs not distinct (A: $D_TAG_A, B: $D_TAG_B)"
+    fi
+else
+    echo "✗ Cannot compare stream IDs (missing events)"
+fi
+
+if [ $T9_CHECKS -eq 3 ]; then
+    pass_test "TEST 9: Per-user LIVE Nostr events"
+else
+    fail_test "TEST 9: Per-user LIVE Nostr events" "$T9_CHECKS/3 checks passed"
 fi
 echo ""
 
@@ -480,7 +529,7 @@ echo ""
 # ── TEST 11: User A disconnect webhook ─────────────────────────────
 
 echo "========================================"
-echo "TEST 11: User A disconnect webhook"
+echo "TEST 11: User A disconnect webhook (isolation)"
 echo "========================================"
 
 echo "Waiting 15 seconds for User A disconnect webhook..."
@@ -490,39 +539,62 @@ LOGS=$(docker logs --tail 200 "$EXTERNAL_CONTAINER" 2>&1)
 
 T11_CHECKS=0
 
-if echo "$LOGS" | grep -q "Received Cloudflare webhook event: live_input.disconnected"; then
-    echo "✓ Webhook: live_input.disconnected received"
+# Verify User A's specific disconnect webhook
+if echo "$LOGS" | grep -q "live_input.disconnected for input_id: $EXT_ID_A"; then
+    echo "✓ Webhook: live_input.disconnected for User A input ($EXT_ID_A)"
     T11_CHECKS=$((T11_CHECKS + 1))
 else
-    echo "✗ Missing: live_input.disconnected"
+    echo "✗ Missing: live_input.disconnected for User A input_id $EXT_ID_A"
 fi
 
-if echo "$LOGS" | grep -q "Stream ended"; then
-    echo "✓ Stream ended"
-    T11_CHECKS=$((T11_CHECKS + 1))
+# Verify User B did NOT get a disconnected webhook
+if echo "$LOGS" | grep -q "live_input.disconnected for input_id: $EXT_ID_B"; then
+    echo "✗ ISOLATION FAILURE: User B got disconnected webhook when only User A stopped!"
 else
-    echo "✗ Missing: Stream ended"
+    echo "✓ No disconnected webhook for User B (correct - isolation holds)"
+    T11_CHECKS=$((T11_CHECKS + 1))
 fi
 
-# Confirm User B still alive
+# Confirm User B FFmpeg still alive
 if ps -p $PID_B > /dev/null 2>&1; then
-    echo "✓ User B still streaming (confirmed isolation)"
+    echo "✓ User B still streaming (FFmpeg alive)"
     T11_CHECKS=$((T11_CHECKS + 1))
 else
-    echo "✗ User B died unexpectedly"
+    echo "✗ User B FFmpeg died unexpectedly"
 fi
 
-if [ $T11_CHECKS -eq 3 ]; then
-    pass_test "TEST 11: User A disconnect"
+# Verify User B's Nostr event is still LIVE (not ended by User A's disconnect)
+SINCE_TIME=$(($(date +%s) - 600))
+ALL_EVENTS_POST_A=$(query_all_30311 "$SINCE_TIME")
+
+EVENT_B_STILL_LIVE=$(get_user_event "$ALL_EVENTS_POST_A" "$USER_B_HEX" "live")
+EVENT_A_ENDED=$(get_user_event "$ALL_EVENTS_POST_A" "$USER_A_HEX" "ended")
+
+if [ -n "$EVENT_B_STILL_LIVE" ] && [ "$EVENT_B_STILL_LIVE" != "null" ]; then
+    echo "✓ User B Nostr event still LIVE (not affected by User A disconnect)"
+    T11_CHECKS=$((T11_CHECKS + 1))
 else
-    fail_test "TEST 11: User A disconnect" "$T11_CHECKS/3 checks passed"
+    echo "✗ User B Nostr event is NOT live - isolation may have failed!"
+fi
+
+if [ -n "$EVENT_A_ENDED" ] && [ "$EVENT_A_ENDED" != "null" ]; then
+    echo "✓ User A Nostr event correctly ENDED"
+    T11_CHECKS=$((T11_CHECKS + 1))
+else
+    echo "✗ User A Nostr event not yet ended (may need more time)"
+fi
+
+if [ $T11_CHECKS -ge 4 ]; then
+    pass_test "TEST 11: User A disconnect (isolation)"
+else
+    fail_test "TEST 11: User A disconnect (isolation)" "$T11_CHECKS/5 checks passed"
 fi
 echo ""
 
 # ── TEST 12: Stop User B ──────────────────────────────────────────
 
 echo "========================================"
-echo "TEST 12: Stop User B"
+echo "TEST 12: Stop User B (input_id isolation)"
 echo "========================================"
 
 echo "Stopping User B stream..."
@@ -533,53 +605,84 @@ sleep 15
 
 LOGS=$(docker logs --tail 200 "$EXTERNAL_CONTAINER" 2>&1)
 
-DISCONNECTED_COUNT=$(echo "$LOGS" | grep -c "Received Cloudflare webhook event: live_input.disconnected" || true)
-echo "✓ Total disconnected webhooks received: $DISCONNECTED_COUNT"
+T12_CHECKS=0
 
-if [ "$DISCONNECTED_COUNT" -ge 2 ]; then
+# Verify User B's specific disconnect webhook
+if echo "$LOGS" | grep -q "live_input.disconnected for input_id: $EXT_ID_B"; then
+    echo "✓ Webhook: live_input.disconnected for User B input ($EXT_ID_B)"
+    T12_CHECKS=$((T12_CHECKS + 1))
+else
+    echo "✗ Missing: live_input.disconnected for User B input_id $EXT_ID_B"
+fi
+
+# Verify both users now have distinct disconnect webhooks
+if echo "$LOGS" | grep -q "live_input.disconnected for input_id: $EXT_ID_A"; then
+    echo "✓ User A disconnect webhook also present (both users have distinct disconnected events)"
+    T12_CHECKS=$((T12_CHECKS + 1))
+else
+    echo "✗ User A disconnect webhook missing from logs"
+fi
+
+if [ $T12_CHECKS -eq 2 ]; then
     pass_test "TEST 12: Stop User B"
 else
-    fail_test "TEST 12: Stop User B" "Expected >= 2 disconnected events, got $DISCONNECTED_COUNT"
+    fail_test "TEST 12: Stop User B" "$T12_CHECKS/2 checks passed"
 fi
 echo ""
 
 # ── TEST 13: Verify ENDED Nostr events ─────────────────────────────
 
 echo "========================================"
-echo "TEST 13: Verify ENDED Nostr events"
+echo "TEST 13: Verify per-user ENDED Nostr events"
 echo "========================================"
 
 SINCE_TIME=$(($(date +%s) - 600))
 
-TMP_NOSTR=$(mktemp)
-set +e
-node "$SCRIPT_DIR/query_nostr_events_auth.js" 30311 --since "$SINCE_TIME" --relay "$NOSTR_RELAY_URL" > "$TMP_NOSTR" 2>&1 &
-QPID=$!
-COUNTER=0
-while [ $COUNTER -lt 15 ]; do
-    if ! ps -p $QPID > /dev/null 2>&1; then break; fi
-    sleep 1
-    COUNTER=$((COUNTER + 1))
-done
-if ps -p $QPID > /dev/null 2>&1; then kill -9 $QPID 2>/dev/null || true; fi
-set -e
+ALL_EVENTS_FINAL=$(query_all_30311 "$SINCE_TIME")
+TOTAL_EVENTS_FINAL=$(echo "$ALL_EVENTS_FINAL" | jq 'length' 2>/dev/null || echo 0)
+echo "Total kind 30311 events on relay: $TOTAL_EVENTS_FINAL"
 
-ENDED_COUNT=0
-if grep -q '"kind": 30311' "$TMP_NOSTR" 2>/dev/null; then
-    ENDED_COUNT=$(awk '/^{$/,/^}$/ {print} /^}$/ {print "---SPLIT---"}' "$TMP_NOSTR" | \
-        awk 'BEGIN{RS="---SPLIT---"} /"kind": 30311/ {print}' | \
-        jq 'select(.tags[]? | select(.[0] == "status") | .[1] == "ended")' 2>/dev/null | \
-        jq -s 'length' 2>/dev/null)
-fi
-rm -f "$TMP_NOSTR"
+T13_CHECKS=0
 
-echo "Found $ENDED_COUNT ended events on relay"
-
-if [ "$ENDED_COUNT" -ge 2 ]; then
-    echo "✓ At least 2 ENDED events found"
-    pass_test "TEST 13: ENDED Nostr events"
+# Check User A has an ENDED event with correct p tag
+EVENT_A_ENDED_FINAL=$(get_user_event "$ALL_EVENTS_FINAL" "$USER_A_HEX" "ended")
+if [ -n "$EVENT_A_ENDED_FINAL" ] && [ "$EVENT_A_ENDED_FINAL" != "null" ]; then
+    ENDS_TAG_A=$(echo "$EVENT_A_ENDED_FINAL" | jq -r '[.tags[]? | select(.[0] == "ends")] | .[0][1] // "missing"' 2>/dev/null)
+    echo "✓ User A has ENDED event (p tag matches $USER_A_HEX, ends=$ENDS_TAG_A)"
+    T13_CHECKS=$((T13_CHECKS + 1))
 else
-    fail_test "TEST 13: ENDED Nostr events" "Expected >= 2 ended events, got $ENDED_COUNT"
+    echo "✗ No ENDED event found for User A (p=$USER_A_HEX)"
+fi
+
+# Check User B has an ENDED event with correct p tag
+EVENT_B_ENDED_FINAL=$(get_user_event "$ALL_EVENTS_FINAL" "$USER_B_HEX" "ended")
+if [ -n "$EVENT_B_ENDED_FINAL" ] && [ "$EVENT_B_ENDED_FINAL" != "null" ]; then
+    ENDS_TAG_B=$(echo "$EVENT_B_ENDED_FINAL" | jq -r '[.tags[]? | select(.[0] == "ends")] | .[0][1] // "missing"' 2>/dev/null)
+    echo "✓ User B has ENDED event (p tag matches $USER_B_HEX, ends=$ENDS_TAG_B)"
+    T13_CHECKS=$((T13_CHECKS + 1))
+else
+    echo "✗ No ENDED event found for User B (p=$USER_B_HEX)"
+fi
+
+# Verify the d tags (stream IDs) are different
+if [ -n "$EVENT_A_ENDED_FINAL" ] && [ "$EVENT_A_ENDED_FINAL" != "null" ] && \
+   [ -n "$EVENT_B_ENDED_FINAL" ] && [ "$EVENT_B_ENDED_FINAL" != "null" ]; then
+    D_TAG_A_END=$(echo "$EVENT_A_ENDED_FINAL" | jq -r '[.tags[]? | select(.[0] == "d")] | .[0][1]' 2>/dev/null)
+    D_TAG_B_END=$(echo "$EVENT_B_ENDED_FINAL" | jq -r '[.tags[]? | select(.[0] == "d")] | .[0][1]' 2>/dev/null)
+    if [ "$D_TAG_A_END" != "$D_TAG_B_END" ] && [ -n "$D_TAG_A_END" ] && [ -n "$D_TAG_B_END" ]; then
+        echo "✓ Ended stream IDs are distinct (A: $D_TAG_A_END, B: $D_TAG_B_END)"
+        T13_CHECKS=$((T13_CHECKS + 1))
+    else
+        echo "✗ Ended stream IDs not distinct (A: $D_TAG_A_END, B: $D_TAG_B_END)"
+    fi
+else
+    echo "✗ Cannot compare ended stream IDs (missing events)"
+fi
+
+if [ $T13_CHECKS -eq 3 ]; then
+    pass_test "TEST 13: Per-user ENDED Nostr events"
+else
+    fail_test "TEST 13: Per-user ENDED Nostr events" "$T13_CHECKS/3 checks passed"
 fi
 echo ""
 
@@ -643,7 +746,9 @@ echo ""
 echo "Key Findings:"
 echo "  - Unique external_ids: Users have different Cloudflare Live Inputs"
 echo "  - UID Persistence: External IDs remained constant throughout test"
-echo "  - Stream Isolation: User B continued when User A stopped"
+echo "  - Webhook Isolation: Each webhook matched its user's input_id (no cross-contamination)"
+echo "  - Stream Isolation: User B continued streaming when User A stopped"
+echo "  - Nostr Isolation: User B Nostr event stayed LIVE when User A ended"
 echo ""
 echo "To review logs:"
 echo "  docker logs --tail 300 $EXTERNAL_CONTAINER"
