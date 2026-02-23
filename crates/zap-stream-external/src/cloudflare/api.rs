@@ -88,18 +88,19 @@ fn build_account_endpoints(
         cost,
     }];
 
-    if let Some(srt) = &input.srt {
-        endpoints.push(Endpoint {
-            name: format!("SRT-{}", ingest.name),
-            url: apply_custom_ingest_domain(&srt.url, custom_domain),
-            key: format!("streamid={}&passphrase={}", srt.stream_id, srt.passphrase),
-            capabilities: vec![],
-            cost: EndpointCost {
-                unit: "min".to_string(),
-                rate: ingest.cost as f32 / 1000.0,
-            },
-        });
-    }
+    // TODO: Re-enable SRT endpoint when app-side SRT support is ready
+    // if let Some(srt) = &input.srt {
+    //     endpoints.push(Endpoint {
+    //         name: format!("SRT-{}", ingest.name),
+    //         url: apply_custom_ingest_domain(&srt.url, custom_domain),
+    //         key: format!("streamid={}&passphrase={}", srt.stream_id, srt.passphrase),
+    //         capabilities: vec![],
+    //         cost: EndpointCost {
+    //             unit: "min".to_string(),
+    //             rate: ingest.cost as f32 / 1000.0,
+    //         },
+    //     });
+    // }
 
     endpoints
 }
