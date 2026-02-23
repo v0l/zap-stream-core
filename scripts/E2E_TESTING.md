@@ -71,7 +71,34 @@ docker compose -f docker-compose.external.yaml -f docker-compose.override.yml do
 docker compose -f docker-compose.external.yaml -f docker-compose.override.yml down -v
 ```
 
-### Step 3: Build and start the external stack
+### Step 3: Establish a cloudflared tunnel (if using quick tunnels)
+
+Cloudflare sends webhooks to the `APP__PUBLIC_URL` configured in the external service. In local dev, this URL must be reachable from the internet. The simplest way is a cloudflared quick tunnel.
+
+```bash
+# Check if cloudflared is already running
+ps aux | grep cloudflared | grep -v grep
+
+# If a tunnel is running, verify it's still alive (should return HTTP 200)
+curl -s -o /dev/null -w "%{http_code}" https://<your-tunnel-url>/api/v1/time
+
+# If the tunnel is stale or not running, kill the old one and start fresh
+kill <old-pid>  # only if an old process exists
+cloudflared tunnel --url http://localhost:8090 &
+
+# cloudflared will print a line like:
+#   | https://something-something.trycloudflare.com
+# Copy this URL - you need it for the docker override
+```
+
+**Important:** Quick tunnel URLs are ephemeral. They change every time you restart cloudflared. After getting a new URL:
+
+1. Update `APP__PUBLIC_URL` in `docs/deploy/docker-compose.override.yml` with the new tunnel URL
+2. Restart the external service so it re-registers the Cloudflare webhook at the new URL (Step 4)
+
+If the `APP__PUBLIC_URL` doesn't match the active tunnel, Cloudflare webhooks will not reach the service, and stream start/end events will never fire.
+
+### Step 4: Build and start the external stack
 
 The deployment uses two compose files: the base `docker-compose.external.yaml` and a `docker-compose.override.yml` that builds from source and configures environment variables (Cloudflare credentials, public URL for webhooks, relay config, etc).
 
@@ -92,17 +119,17 @@ docker compose -f docker-compose.external.yaml -f docker-compose.override.yml lo
 
 If the override file does not exist yet, create one from the template in `docker-compose.override.yml`. It must contain:
 - `APP__CLOUDFLARE__TOKEN` and `APP__CLOUDFLARE__ACCOUNT_ID` - your Cloudflare Stream API credentials
-- `APP__PUBLIC_URL` - a URL reachable from Cloudflare's servers (e.g. a cloudflared tunnel URL)
+- `APP__PUBLIC_URL` - a URL reachable from Cloudflare's servers (must match the active cloudflared tunnel URL)
 - `APP__NSEC` - a Nostr secret key for event signing
 - `APP__DATABASE` - MySQL connection string pointing to the `db` service
 
-### Step 4: Install Node.js dependencies
+### Step 5: Install Node.js dependencies
 
 ```bash
 cd scripts && npm install && cd ..
 ```
 
-### Step 5: (Optional) Set up .env for Cloudflare API direct validation
+### Step 6: (Optional) Set up .env for Cloudflare API direct validation
 
 The `test-external-custom-keys-e2e.sh` script can validate custom keys directly against the Cloudflare API. This requires credentials in `scripts/.env`:
 
@@ -111,7 +138,7 @@ cp scripts/.env.example scripts/.env
 # Edit scripts/.env with your CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN
 ```
 
-### Step 6: Verify everything is ready
+### Step 7: Verify everything is ready
 
 ```bash
 # Confirm containers are running
@@ -323,5 +350,7 @@ Tests validate kind 30311 (NIP-53 Live Event) tags published to the relay:
 **Nostr events not found**: Verify the relay URL matches what's configured in the external service's `config.yaml` under `relays:`. Check logs for `Published stream event`.
 
 **FFmpeg fails immediately**: Verify Cloudflare credentials are valid and the Live Input exists. The RTMPS URL and key come from Cloudflare's API via the external service.
+
+**Stale cloudflared tunnel**: Quick tunnel URLs are ephemeral and expire when cloudflared restarts (or sometimes after extended periods). If webhook tests fail but non-webhook tests pass, the tunnel is likely dead. Verify with `curl -s -o /dev/null -w "%{http_code}" https://<tunnel-url>/api/v1/time` - if it returns `000` or times out, kill the old process, start a new tunnel, update `APP__PUBLIC_URL` in `docker-compose.override.yml`, and restart the external service.
 
 **Timing issues**: Cloudflare webhooks can take 5-30 seconds. If tests fail intermittently on webhook checks, the wait times (20s for start, 15s for end) may need increasing for your network.
