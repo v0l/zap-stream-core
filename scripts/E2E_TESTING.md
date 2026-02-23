@@ -38,20 +38,90 @@ The test harness validates the full lifecycle: API authentication, Cloudflare Li
 - **Nostr relay**: A relay accessible at `$NOSTR_RELAY_URL` that the external service publishes to
 - **Webhook reachability**: The external service's `public_url` must be reachable from Cloudflare's servers (use cloudflared tunnel or similar for local dev)
 
-## Setup
+## Preparation
+
+Before running any tests, follow these steps in order. The external service must be rebuilt whenever the code changes (new commits, branch updates, etc).
+
+### Step 1: Check current Docker state
 
 ```bash
-# 1. Install Node.js dependencies (one-time)
-cd scripts && npm install && cd ..
+# See what's running
+docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | grep -E '(zap-stream|db|relay)'
 
-# 2. (Optional) Copy .env for Cloudflare API direct validation
+# Check logs for errors if the external service is already running
+docker logs --tail 50 <external-container-name> 2>&1 | tail -20
+```
+
+Look for:
+- `zap-stream-external` container (the API service)
+- `db` container (MariaDB)
+- A Nostr relay container (e.g. `sw2-relay`, `strfry`) on the port matching `$NOSTR_RELAY_URL`
+
+### Step 2: Clean up if needed
+
+If the external service is running stale code, or you need a fresh state:
+
+```bash
+cd docs/deploy
+
+# Stop and remove containers (preserves DB volume)
+docker compose -f docker-compose.external.yaml -f docker-compose.override.yml down
+
+# To also wipe the database for a fully clean slate:
+docker compose -f docker-compose.external.yaml -f docker-compose.override.yml down -v
+```
+
+### Step 3: Build and start the external stack
+
+The deployment uses two compose files: the base `docker-compose.external.yaml` and a `docker-compose.override.yml` that builds from source and configures environment variables (Cloudflare credentials, public URL for webhooks, relay config, etc).
+
+```bash
+cd docs/deploy
+
+# Build from source and start (use this whenever code has changed)
+docker compose -f docker-compose.external.yaml -f docker-compose.override.yml up -d --build
+
+# Watch logs to confirm startup is healthy
+docker compose -f docker-compose.external.yaml -f docker-compose.override.yml logs -f
+```
+
+**What to look for in startup logs:**
+- `Webhook created for <url>` or `Webhook notification url already registered` - confirms Cloudflare webhook is set up
+- `listening on 0.0.0.0:8080` - HTTP server ready
+- No database connection errors
+
+If the override file does not exist yet, create one from the template in `docker-compose.override.yml`. It must contain:
+- `APP__CLOUDFLARE__TOKEN` and `APP__CLOUDFLARE__ACCOUNT_ID` - your Cloudflare Stream API credentials
+- `APP__PUBLIC_URL` - a URL reachable from Cloudflare's servers (e.g. a cloudflared tunnel URL)
+- `APP__NSEC` - a Nostr secret key for event signing
+- `APP__DATABASE` - MySQL connection string pointing to the `db` service
+
+### Step 4: Install Node.js dependencies
+
+```bash
+cd scripts && npm install && cd ..
+```
+
+### Step 5: (Optional) Set up .env for Cloudflare API direct validation
+
+The `test-external-custom-keys-e2e.sh` script can validate custom keys directly against the Cloudflare API. This requires credentials in `scripts/.env`:
+
+```bash
 cp scripts/.env.example scripts/.env
 # Edit scripts/.env with your CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN
+```
 
-# 3. Ensure the external stack is running
-cd docs/deploy
-docker-compose -f docker-compose.external.yaml up -d
-cd ../..
+### Step 6: Verify everything is ready
+
+```bash
+# Confirm containers are running
+docker ps | grep -E '(zap-stream-external|db)'
+
+# Confirm API is responding (should return JSON)
+curl -s http://localhost:${ZS_API_PORT:-8080}/api/v1/time
+
+# Confirm relay is reachable (should connect and close)
+node -e "const ws = new (require('ws'))('${NOSTR_RELAY_URL:-ws://localhost:3334}'); ws.on('open', () => { console.log('relay OK'); ws.close(); }); ws.on('error', (e) => { console.log('relay FAIL:', e.message); process.exit(1); });"
 ```
 
 ## Environment Variables
