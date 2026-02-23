@@ -66,8 +66,10 @@ make_auth_token() {
 }
 
 # Helper: query Nostr relay for most recent kind 30311 event
+# Usage: query_latest_30311 <since_timestamp> [d_tag_filter]
 query_latest_30311() {
     local since="$1"
+    local d_filter="${2:-}"
     local tmp_file
     tmp_file=$(mktemp)
 
@@ -88,9 +90,16 @@ query_latest_30311() {
 
     # Parse all events and return most recent by created_at
     if grep -q '"kind": 30311' "$tmp_file" 2>/dev/null; then
-        awk '/^{$/,/^}$/ {print} /^}$/ {print "---SPLIT---"}' "$tmp_file" | \
+        local all_events
+        all_events=$(awk '/^{$/,/^}$/ {print} /^}$/ {print "---SPLIT---"}' "$tmp_file" | \
             awk 'BEGIN{RS="---SPLIT---"} /"kind": 30311/ {print}' | \
-            jq -s 'sort_by(.created_at) | reverse | .[0]' 2>/dev/null
+            jq -s 'sort_by(.created_at) | reverse' 2>/dev/null)
+
+        if [ -n "$d_filter" ]; then
+            echo "$all_events" | jq --arg d "$d_filter" '[.[] | select(.tags[]? | select(.[0] == "d" and .[1] == $d))] | .[0]' 2>/dev/null
+        else
+            echo "$all_events" | jq '.[0]' 2>/dev/null
+        fi
     else
         echo "null"
     fi
@@ -705,13 +714,14 @@ if [ "$CUSTOM_KEY_AVAILABLE" == "true" ]; then
         echo "========================================"
 
         SINCE_TIME=$(($(date +%s) - 600))
-        CK_EVENT_JSON=$(query_latest_30311 "$SINCE_TIME")
+        # Filter by custom key's stream_id (d tag) to avoid picking up the primary stream's event
+        CK_EVENT_JSON=$(query_latest_30311 "$SINCE_TIME" "$CUSTOM_KEY_STREAM_ID")
 
         T15_CHECKS=0
         T15_TOTAL=4
 
         if [ "$CK_EVENT_JSON" == "null" ] || [ -z "$CK_EVENT_JSON" ]; then
-            fail_test "TEST 15: Custom key Nostr metadata" "No kind 30311 event found"
+            fail_test "TEST 15: Custom key Nostr metadata" "No kind 30311 event found for d=$CUSTOM_KEY_STREAM_ID"
         else
             # Check title
             TITLE=$(echo "$CK_EVENT_JSON" | jq -r '.tags[]? | select(.[0] == "title")? | .[1]?' 2>/dev/null | head -n 1)
@@ -731,13 +741,13 @@ if [ "$CUSTOM_KEY_AVAILABLE" == "true" ]; then
                 echo "✗ Expected summary 'External backend custom key test', got: '$SUMMARY'"
             fi
 
-            # Check status = live
+            # Check status (accept both 'live' and 'ended' - short test streams may complete before query)
             STATUS=$(echo "$CK_EVENT_JSON" | jq -r '.tags[]? | select(.[0] == "status")? | .[1]?' 2>/dev/null | head -n 1)
-            if [ "$STATUS" == "live" ]; then
-                echo "✓ Event status: live"
+            if [ "$STATUS" == "live" ] || [ "$STATUS" == "ended" ]; then
+                echo "✓ Event status: $STATUS"
                 T15_CHECKS=$((T15_CHECKS + 1))
             else
-                echo "✗ Expected status 'live', got: '$STATUS'"
+                echo "✗ Expected status 'live' or 'ended', got: '$STATUS'"
             fi
 
             # Check 't' tags
@@ -774,13 +784,13 @@ if [ "$CUSTOM_KEY_AVAILABLE" == "true" ]; then
         echo "========================================"
 
         SINCE_TIME=$(($(date +%s) - 600))
-        CK_END_EVENT=$(query_latest_30311 "$SINCE_TIME")
+        CK_END_EVENT=$(query_latest_30311 "$SINCE_TIME" "$CUSTOM_KEY_STREAM_ID")
 
         T16_CHECKS=0
         T16_TOTAL=2
 
         if [ "$CK_END_EVENT" == "null" ] || [ -z "$CK_END_EVENT" ]; then
-            fail_test "TEST 16: Custom key ENDED event" "No kind 30311 event found"
+            fail_test "TEST 16: Custom key ENDED event" "No kind 30311 event found for d=$CUSTOM_KEY_STREAM_ID"
         else
             STATUS=$(echo "$CK_END_EVENT" | jq -r '.tags[]? | select(.[0] == "status")? | .[1]?' 2>/dev/null | head -n 1)
             if [ "$STATUS" == "ended" ]; then
