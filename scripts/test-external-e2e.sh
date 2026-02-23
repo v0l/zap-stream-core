@@ -417,7 +417,7 @@ else
 
     # Look up the custom key's Cloudflare external_id from the DB
     if [ -n "$CUSTOM_KEY_STREAM_ID" ] && [ "$CUSTOM_KEY_STREAM_ID" != "null" ]; then
-        CUSTOM_KEY_EXTERNAL_ID=$(docker exec "$DB_CONTAINER" mariadb -u root -p"$DB_PASSWORD" "$DB_NAME" \
+        CUSTOM_KEY_EXTERNAL_ID=$(docker exec "$DB_CONTAINER" mariadb -u root -p"$DB_PASSWORD" zap_stream \
             -N -e "SELECT external_id FROM user_stream_key WHERE stream_id = '$CUSTOM_KEY_STREAM_ID' LIMIT 1;" 2>/dev/null | tr -d '[:space:]')
         if [ -n "$CUSTOM_KEY_EXTERNAL_ID" ]; then
             echo "✓ Custom key external_id (CF Live Input UID): $CUSTOM_KEY_EXTERNAL_ID"
@@ -718,7 +718,7 @@ if [ "$CUSTOM_KEY_AVAILABLE" == "true" ]; then
         # Verify the custom key stream was published (not just any stream event)
         if [ -n "$CUSTOM_KEY_STREAM_ID" ]; then
             # Check that the stream was actually started (state changed from Planned to Live)
-            CK_STREAM_STATE=$(docker exec "$DB_CONTAINER" mariadb -u root -p"$DB_PASSWORD" "$DB_NAME" \
+            CK_STREAM_STATE=$(docker exec "$DB_CONTAINER" mariadb -u root -p"$DB_PASSWORD" zap_stream \
                 -N -e "SELECT state FROM user_stream WHERE id = '$CUSTOM_KEY_STREAM_ID';" 2>/dev/null | tr -d '[:space:]')
             if [ "$CK_STREAM_STATE" == "2" ] || [ "$CK_STREAM_STATE" == "3" ]; then
                 echo "✓ Custom key stream activated (state: $CK_STREAM_STATE)"
