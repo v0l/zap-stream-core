@@ -59,7 +59,8 @@ impl CloudflareClient {
 
         let body = serde_json::json!({
             "meta": {"name": name},
-            "recording": {"mode": "automatic"}
+            "recording": {"mode": "automatic"},
+            "deleteRecordingAfterDays": 90
         });
 
         let response = self
@@ -274,6 +275,32 @@ impl CloudflareClient {
         Ok(response.json().await?)
     }
 
+    /// Enable MP4 download for a video asset
+    pub async fn create_download(&self, video_uid: &str) -> Result<()> {
+        let url = format!(
+            "{}/accounts/{}/stream/{}/downloads",
+            self.base_url, self.account_id, video_uid
+        );
+
+        let response = self
+            .http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_token))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            return Err(anyhow!("Cloudflare API error {}: {}", status, error_text));
+        }
+
+        Ok(())
+    }
+
     /// List stream webhooks on account
     pub async fn get_webhooks(&self) -> Result<ApiResponse<Option<WebhookResult>>> {
         let url = format!(
@@ -338,6 +365,52 @@ mod tests {
             response.result.rtmps.url,
             "rtmps://live.cloudflare.com:443/live/"
         );
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_create_live_input_includes_delete_recording_after_days() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/accounts/test-account/stream/live_inputs")
+            .match_header("authorization", "Bearer test-token")
+            .match_body(mockito::Matcher::Json(serde_json::json!({
+                "meta": {"name": "test-stream"},
+                "recording": {"mode": "automatic"},
+                "deleteRecordingAfterDays": 90
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                "success": true,
+                "result": {
+                    "uid": "test-uid",
+                    "rtmps": {
+                        "url": "rtmps://live.cloudflare.com:443/live/",
+                        "streamKey": "test-key"
+                    },
+                    "created": "2025-01-12T00:00:00Z",
+                    "status": null,
+                    "deleteRecordingAfterDays": 90
+                }
+            }"#,
+            )
+            .create_async()
+            .await;
+
+        let client = CloudflareClient::new(CloudflareToken {
+            token: "test-token".to_string(),
+            account_id: "test-account".to_string(),
+        })
+        .with_base_url(server.url());
+
+        let result = client.create_live_input("test-stream").await;
+        assert!(result.is_ok());
+
+        let response = result.unwrap();
+        assert_eq!(response.result.delete_recording_after_days, Some(90));
 
         mock.assert_async().await;
     }
@@ -470,5 +543,60 @@ mod tests {
         assert!(result.is_ok());
 
         mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_create_download_success() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/accounts/test-account/stream/video-uid-123/downloads")
+            .match_header("authorization", "Bearer test-token")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                "success": true,
+                "result": {
+                    "default": {
+                        "status": "inprogress",
+                        "url": "https://customer-test.cloudflarestream.com/video-uid-123/downloads/default.mp4",
+                        "percentComplete": 0.0
+                    }
+                }
+            }"#,
+            )
+            .create_async()
+            .await;
+
+        let client = CloudflareClient::new(CloudflareToken {
+            token: "test-token".to_string(),
+            account_id: "test-account".to_string(),
+        })
+        .with_base_url(server.url());
+
+        let result = client.create_download("video-uid-123").await;
+        assert!(result.is_ok());
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_create_download_api_error() {
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/accounts/test-account/stream/video-uid-123/downloads")
+            .with_status(500)
+            .with_body("Internal Server Error")
+            .create_async()
+            .await;
+
+        let client = CloudflareClient::new(CloudflareToken {
+            token: "test-token".to_string(),
+            account_id: "test-account".to_string(),
+        })
+        .with_base_url(server.url());
+
+        let result = client.create_download("video-uid-123").await;
+        assert!(result.is_err());
     }
 }

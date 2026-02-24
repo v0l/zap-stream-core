@@ -128,6 +128,22 @@ fn apply_video_asset_to_stream(stream: &mut UserStream, asset: &VideoAssetWebhoo
     changed
 }
 
+/// Build the deterministic MP4 download URL from a video asset webhook.
+/// Returns None if the recording exceeds 4 hours (CloudFlare limit for MP4 downloads).
+fn get_download_url(asset: &VideoAssetWebhook) -> Option<String> {
+    const MAX_DOWNLOAD_DURATION_SECS: f32 = 4.0 * 60.0 * 60.0; // 4 hours
+    if asset.duration > MAX_DOWNLOAD_DURATION_SECS {
+        return None;
+    }
+    // Derive base URL from the HLS playback URL by replacing the path
+    if let Ok(mut url) = Url::parse(&asset.playback.hls) {
+        url.set_path(&format!("{}/downloads/default.mp4", asset.uid));
+        Some(url.to_string())
+    } else {
+        None
+    }
+}
+
 fn select_stream_for_video_asset(
     matched: Option<UserStream>,
     fallback: Option<UserStream>,
@@ -560,8 +576,18 @@ impl CfApiWrapper {
                     } else {
                         self.db.get_user(stream.user_id).await?
                     };
+                    let download_url = get_download_url(&v);
+                    if let Some(ref url) = download_url {
+                        if let Err(e) = self.client.create_download(&v.uid).await {
+                            warn!("Failed to enable MP4 download for {}: {}", v.uid, e);
+                        } else {
+                            info!("Enabled MP4 download for video {}: {}", v.uid, url);
+                        }
+                    }
                     if apply_video_asset_to_stream(&mut stream, &v) {
-                        let event = self.publish_stream_event(&stream, &user).await?;
+                        let event = self
+                            .publish_stream_event_with_download(&stream, &user, download_url.as_deref())
+                            .await?;
                         stream.event = Some(event.as_json());
                         self.db.update_stream(&stream).await?;
                     }
@@ -852,6 +878,17 @@ impl CfApiWrapper {
         user: &User,
         viewer_count: Option<u32>,
     ) -> Result<Event> {
+        self.publish_stream_event_full(stream, user, viewer_count, None)
+            .await
+    }
+
+    async fn publish_stream_event_full(
+        &self,
+        stream: &UserStream,
+        user: &User,
+        viewer_count: Option<u32>,
+        download_url: Option<&str>,
+    ) -> Result<Event> {
         let mut extra_tags = vec![
             Tag::parse(["p", hex::encode(&user.pubkey).as_str(), "", "host"])?,
             Tag::parse(["service", self.map_to_public_url("api/v1")?.as_str()])?,
@@ -866,6 +903,9 @@ impl CfApiWrapper {
             }
             _ => {}
         }
+        if let Some(url) = download_url {
+            extra_tags.push(Tag::parse(["download", url])?);
+        }
         if let Some(count) = viewer_count {
             let count_str = count.to_string();
             extra_tags.push(Tag::parse(["current_participants", count_str.as_str()])?);
@@ -879,7 +919,17 @@ impl CfApiWrapper {
     }
 
     pub async fn publish_stream_event(&self, stream: &UserStream, user: &User) -> Result<Event> {
-        self.publish_stream_event_with_viewer_count(stream, user, None)
+        self.publish_stream_event_full(stream, user, None, None)
+            .await
+    }
+
+    async fn publish_stream_event_with_download(
+        &self,
+        stream: &UserStream,
+        user: &User,
+        download_url: Option<&str>,
+    ) -> Result<Event> {
+        self.publish_stream_event_full(stream, user, None, download_url)
             .await
     }
 
@@ -1218,7 +1268,7 @@ async fn build_alt_tag(client: &Client, stream: &UserStream, client_url: &str) -
 mod tests {
     use super::{
         apply_custom_ingest_domain, apply_video_asset_to_stream, build_account_endpoints,
-        build_alt_tag, build_stream_key, resolve_client_url, resolve_tos_url,
+        build_alt_tag, build_stream_key, get_download_url, resolve_client_url, resolve_tos_url,
         select_ingest_endpoint, select_stream_for_video_asset, ViewerCountTracker,
     };
     use crate::cloudflare::{LiveInput, Playback, RtmpsEndpoint, SrtEndpoint, VideoAssetStatus, VideoAssetWebhook};
@@ -1560,6 +1610,72 @@ mod tests {
         assert_eq!(
             stream.thumb.as_deref(),
             Some("https://example.com/thumb.jpg")
+        );
+    }
+
+    #[test]
+    fn get_download_url_constructs_mp4_path() {
+        let asset = VideoAssetWebhook {
+            uid: "video-uid-abc".to_string(),
+            thumbnail: "https://example.com/thumb.jpg".to_string(),
+            duration: 600.0, // 10 minutes
+            playback: Playback {
+                hls: "https://customer-test.cloudflarestream.com/video-uid-abc/manifest/video.m3u8".to_string(),
+                dash: "https://customer-test.cloudflarestream.com/video-uid-abc/manifest/video.mpd".to_string(),
+            },
+            live_input: "input-uid".to_string(),
+            status: VideoAssetStatus {
+                state: "ready".to_string(),
+            },
+        };
+
+        let url = get_download_url(&asset);
+        assert_eq!(
+            url,
+            Some("https://customer-test.cloudflarestream.com/video-uid-abc/downloads/default.mp4".to_string())
+        );
+    }
+
+    #[test]
+    fn get_download_url_skips_recordings_over_4_hours() {
+        let asset = VideoAssetWebhook {
+            uid: "video-uid-long".to_string(),
+            thumbnail: "https://example.com/thumb.jpg".to_string(),
+            duration: 14401.0, // just over 4 hours
+            playback: Playback {
+                hls: "https://customer-test.cloudflarestream.com/video-uid-long/manifest/video.m3u8".to_string(),
+                dash: "https://customer-test.cloudflarestream.com/video-uid-long/manifest/video.mpd".to_string(),
+            },
+            live_input: "input-uid".to_string(),
+            status: VideoAssetStatus {
+                state: "ready".to_string(),
+            },
+        };
+
+        let url = get_download_url(&asset);
+        assert_eq!(url, None);
+    }
+
+    #[test]
+    fn get_download_url_allows_exactly_4_hours() {
+        let asset = VideoAssetWebhook {
+            uid: "video-uid-exact".to_string(),
+            thumbnail: "https://example.com/thumb.jpg".to_string(),
+            duration: 14400.0, // exactly 4 hours
+            playback: Playback {
+                hls: "https://customer-test.cloudflarestream.com/video-uid-exact/manifest/video.m3u8".to_string(),
+                dash: "https://customer-test.cloudflarestream.com/video-uid-exact/manifest/video.mpd".to_string(),
+            },
+            live_input: "input-uid".to_string(),
+            status: VideoAssetStatus {
+                state: "ready".to_string(),
+            },
+        };
+
+        let url = get_download_url(&asset);
+        assert_eq!(
+            url,
+            Some("https://customer-test.cloudflarestream.com/video-uid-exact/downloads/default.mp4".to_string())
         );
     }
 
