@@ -516,7 +516,13 @@ impl CfApiWrapper {
                         let input = self
                             .get_user_live_input_by_input_id(&i.data.input_id)
                             .await?;
-                        self.publish_stream_end(input).await?;
+                        match self.publish_stream_end(input).await {
+                            Ok(()) => {}
+                            Err(e) if e.to_string().contains("No live streams found") => {
+                                info!("Disconnect webhook received but stream already ended (likely ended by poller): {}", e);
+                            }
+                            Err(e) => return Err(e),
+                        }
                     }
                     t => {
                         warn!("Unknown Cloudflare event type: {}", t);
