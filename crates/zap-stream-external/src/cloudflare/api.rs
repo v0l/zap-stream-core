@@ -1327,7 +1327,7 @@ mod tests {
     }
 
     #[test]
-    fn build_account_endpoints_includes_srt_when_available() {
+    fn build_account_endpoints_ignores_srt_when_disabled() {
         let ingest = sample_ingests().into_iter().find(|e| e.id == 2).unwrap();
         let mut input = sample_input();
         input.srt = Some(SrtEndpoint {
@@ -1338,15 +1338,9 @@ mod tests {
 
         let endpoints = build_account_endpoints(&input, &ingest, None);
 
-        assert_eq!(endpoints.len(), 2);
+        // SRT endpoint is currently disabled (commented out in build_account_endpoints)
+        assert_eq!(endpoints.len(), 1);
         assert_eq!(endpoints[0].name, "RTMPS-Basic");
-        assert_eq!(endpoints[1].name, "SRT-Basic");
-        assert_eq!(endpoints[1].url, "srt://live.cloudflare.com:778");
-        assert_eq!(
-            endpoints[1].key,
-            "streamid=test-stream-id&passphrase=test-passphrase"
-        );
-        assert_eq!(endpoints[0].cost.rate, endpoints[1].cost.rate);
     }
 
     #[test]
@@ -1359,7 +1353,7 @@ mod tests {
     }
 
     #[test]
-    fn build_account_endpoints_applies_custom_domain_to_srt() {
+    fn build_account_endpoints_applies_custom_domain_to_rtmps() {
         let ingest = sample_ingests().into_iter().find(|e| e.id == 2).unwrap();
         let mut input = sample_input();
         input.srt = Some(SrtEndpoint {
@@ -1370,8 +1364,9 @@ mod tests {
 
         let endpoints = build_account_endpoints(&input, &ingest, Some("custom.domain"));
 
+        // SRT endpoint is currently disabled, only RTMPS with custom domain
+        assert_eq!(endpoints.len(), 1);
         assert_eq!(endpoints[0].url, "rtmps://custom.domain:443/live/");
-        assert_eq!(endpoints[1].url, "srt://custom.domain:778");
     }
 
     #[test]
