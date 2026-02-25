@@ -76,8 +76,10 @@ make_auth_token() {
     echo "$auth_json" | base64
 }
 
+# Usage: query_latest_30311 <since_timestamp> [d_tag_filter]
 query_latest_30311() {
     local since="$1"
+    local d_filter="${2:-}"
     local tmp_file
     tmp_file=$(mktemp)
 
@@ -96,10 +98,18 @@ query_latest_30311() {
     fi
     set -e
 
+    # Parse all events and return most recent by created_at
     if grep -q '"kind": 30311' "$tmp_file" 2>/dev/null; then
-        awk '/^{$/,/^}$/ {print} /^}$/ {print "---SPLIT---"}' "$tmp_file" | \
+        local all_events
+        all_events=$(awk '/^{$/,/^}$/ {print} /^}$/ {print "---SPLIT---"}' "$tmp_file" | \
             awk 'BEGIN{RS="---SPLIT---"} /"kind": 30311/ {print}' | \
-            jq -s 'sort_by(.created_at) | reverse | .[0]' 2>/dev/null
+            jq -s 'sort_by(.created_at) | reverse' 2>/dev/null)
+
+        if [ -n "$d_filter" ]; then
+            echo "$all_events" | jq --arg d "$d_filter" '[.[] | select(.tags[]? | select(.[0] == "d" and .[1] == $d))] | .[0]' 2>/dev/null
+        else
+            echo "$all_events" | jq '.[0]' 2>/dev/null
+        fi
     else
         echo "null"
     fi
@@ -465,7 +475,7 @@ echo "TEST 8: LIVE Nostr event with custom metadata"
 echo "========================================"
 
 SINCE_TIME=$(($(date +%s) - 600))
-EVENT_JSON=$(query_latest_30311 "$SINCE_TIME")
+EVENT_JSON=$(query_latest_30311 "$SINCE_TIME" "$KEY_1_STREAM_ID")
 
 T8_CHECKS=0
 T8_TOTAL=6
@@ -582,7 +592,7 @@ echo "TEST 10: ENDED Nostr event for custom key"
 echo "========================================"
 
 SINCE_TIME=$(($(date +%s) - 600))
-END_EVENT_JSON=$(query_latest_30311 "$SINCE_TIME")
+END_EVENT_JSON=$(query_latest_30311 "$SINCE_TIME" "$KEY_1_STREAM_ID")
 
 T10_CHECKS=0
 T10_TOTAL=3
