@@ -128,9 +128,32 @@ fn apply_video_asset_to_stream(stream: &mut UserStream, asset: &VideoAssetWebhoo
     changed
 }
 
+/// Slugify a string for use as a download filename.
+/// Keeps alphanumeric, hyphens, and underscores; replaces spaces with hyphens;
+/// collapses consecutive hyphens; truncates to 120 characters.
+fn slugify_title(title: &str) -> String {
+    let slug: String = title
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .collect();
+    let collapsed = slug
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    if collapsed.len() > 120 {
+        collapsed[..120].trim_end_matches('-').to_string()
+    } else {
+        collapsed
+    }
+}
+
 /// Build the deterministic MP4 download URL from a video asset webhook.
 /// Returns None if the recording exceeds 4 hours (CloudFlare limit for MP4 downloads).
-fn get_download_url(asset: &VideoAssetWebhook) -> Option<String> {
+/// When a stream title is provided, appends `?filename=<slugified-title>` so the
+/// downloaded file has a meaningful name instead of `default.mp4`.
+fn get_download_url(asset: &VideoAssetWebhook, title: Option<&str>) -> Option<String> {
     const MAX_DOWNLOAD_DURATION_SECS: f32 = 4.0 * 60.0 * 60.0; // 4 hours
     if asset.duration > MAX_DOWNLOAD_DURATION_SECS {
         return None;
@@ -138,6 +161,12 @@ fn get_download_url(asset: &VideoAssetWebhook) -> Option<String> {
     // Derive base URL from the HLS playback URL by replacing the path
     if let Ok(mut url) = Url::parse(&asset.playback.hls) {
         url.set_path(&format!("{}/downloads/default.mp4", asset.uid));
+        if let Some(t) = title {
+            let slug = slugify_title(t);
+            if !slug.is_empty() {
+                url.set_query(Some(&format!("filename={}", slug)));
+            }
+        }
         Some(url.to_string())
     } else {
         None
@@ -576,7 +605,7 @@ impl CfApiWrapper {
                     } else {
                         self.db.get_user(stream.user_id).await?
                     };
-                    let download_url = get_download_url(&v);
+                    let download_url = get_download_url(&v, stream.title.as_deref());
                     if let Some(ref url) = download_url {
                         if let Err(e) = self.client.create_download(&v.uid).await {
                             warn!("Failed to enable MP4 download for {}: {}", v.uid, e);
@@ -1269,7 +1298,7 @@ mod tests {
     use super::{
         apply_custom_ingest_domain, apply_video_asset_to_stream, build_account_endpoints,
         build_alt_tag, build_stream_key, get_download_url, resolve_client_url, resolve_tos_url,
-        select_ingest_endpoint, select_stream_for_video_asset, ViewerCountTracker,
+        select_ingest_endpoint, select_stream_for_video_asset, slugify_title, ViewerCountTracker,
     };
     use crate::cloudflare::{LiveInput, Playback, RtmpsEndpoint, SrtEndpoint, VideoAssetStatus, VideoAssetWebhook};
     use mockito::Server;
@@ -1629,10 +1658,33 @@ mod tests {
             },
         };
 
-        let url = get_download_url(&asset);
+        let url = get_download_url(&asset, None);
         assert_eq!(
             url,
             Some("https://customer-test.cloudflarestream.com/video-uid-abc/downloads/default.mp4".to_string())
+        );
+    }
+
+    #[test]
+    fn get_download_url_with_title_appends_filename() {
+        let asset = VideoAssetWebhook {
+            uid: "video-uid-abc".to_string(),
+            thumbnail: "https://example.com/thumb.jpg".to_string(),
+            duration: 600.0,
+            playback: Playback {
+                hls: "https://customer-test.cloudflarestream.com/video-uid-abc/manifest/video.m3u8".to_string(),
+                dash: "https://customer-test.cloudflarestream.com/video-uid-abc/manifest/video.mpd".to_string(),
+            },
+            live_input: "input-uid".to_string(),
+            status: VideoAssetStatus {
+                state: "ready".to_string(),
+            },
+        };
+
+        let url = get_download_url(&asset, Some("My Cool Stream!"));
+        assert_eq!(
+            url,
+            Some("https://customer-test.cloudflarestream.com/video-uid-abc/downloads/default.mp4?filename=my-cool-stream".to_string())
         );
     }
 
@@ -1652,7 +1704,7 @@ mod tests {
             },
         };
 
-        let url = get_download_url(&asset);
+        let url = get_download_url(&asset, None);
         assert_eq!(url, None);
     }
 
@@ -1672,11 +1724,21 @@ mod tests {
             },
         };
 
-        let url = get_download_url(&asset);
+        let url = get_download_url(&asset, Some("Exactly 4h Stream"));
         assert_eq!(
             url,
-            Some("https://customer-test.cloudflarestream.com/video-uid-exact/downloads/default.mp4".to_string())
+            Some("https://customer-test.cloudflarestream.com/video-uid-exact/downloads/default.mp4?filename=exactly-4h-stream".to_string())
         );
+    }
+
+    #[test]
+    fn slugify_title_handles_special_characters() {
+        assert_eq!(slugify_title("Hello World!"), "hello-world");
+        assert_eq!(slugify_title("My  Stream -- Live"), "my-stream-live");
+        assert_eq!(slugify_title("test"), "test");
+        assert_eq!(slugify_title(""), "");
+        assert_eq!(slugify_title("café & más"), "caf-m-s");
+        assert_eq!(slugify_title("under_score test"), "under_score-test");
     }
 
     #[test]
