@@ -10,9 +10,9 @@ The test harness validates the full lifecycle: API authentication, Cloudflare Li
 
 ```
 ┌──────────────┐     NIP-98 auth      ┌─────────────────────────┐
-│  Test Script  │ ──────────────────── │  zap-stream-external    │
-│  (bash+node)  │     curl requests    │  (Docker container)     │
-│               │ ◄─────────────────── │                         │
+│  Rust E2E     │ ──────────────────── │  zap-stream-external    │
+│  Tests        │     HTTP requests    │  (Docker container)     │
+│  (cargo test) │ ◄─────────────────── │                         │
 │               │     JSON responses   │  Port: $ZS_API_PORT     │
 └──────┬───────┘                       └────────┬────────────────┘
        │                                        │
@@ -21,19 +21,17 @@ The test harness validates the full lifecycle: API authentication, Cloudflare Li
        │                                   Webhooks (connected/
        │                                    disconnected)
        │                                        │
-       │  Nostr query ─────────────────── Nostr Relay ($NOSTR_RELAY_URL)
+       │  nostr-sdk ─────────────────── Nostr Relay ($NOSTR_RELAY_URL)
        │                                        │
-       │  MariaDB query ──────────────── MariaDB ($ZS_DB_CONTAINER)
+       │  sqlx (MariaDB) ──────────────── MariaDB (localhost:3306)
        └────────────────────────────────────────┘
 ```
 
 ## Prerequisites
 
-- **Node.js** (for NIP-98 signing and Nostr relay queries)
-- **jq** (JSON parsing)
+- **Rust/Cargo** (for running both unit tests and e2e tests)
 - **ffmpeg** (test stream generation)
 - **Docker** (container access for logs and DB queries)
-- **Rust/Cargo** (for running unit tests)
 - **Running external stack**: `zap-stream-external` and `db` containers must be up
 - **Cloudflare credentials**: Real Cloudflare account with Stream enabled (configured in the external service's `config.yaml`)
 - **Nostr relay**: A relay accessible at `$NOSTR_RELAY_URL` that the external service publishes to
@@ -43,17 +41,17 @@ The test harness validates the full lifecycle: API authentication, Cloudflare Li
 
 | Step | Action | Who |
 |------|--------|-----|
-| 1 | Run cargo tests | AI Agent |
+| 1 | Run cargo unit tests | AI Agent |
 | 2 | Check cloudflared tunnel liveness | AI Agent |
 | 3 | Update docker override with tunnel URL | AI Agent |
 | 4 | Restart docker stack | AI Agent |
 | 5 | Update Cloudflare webhook notification URL | Developer (in CF dashboard) |
-| 6 | Run e2e test scripts | AI Agent |
+| 6 | Run Rust e2e tests | AI Agent |
 | 7 | Manual smoke test | Developer |
 
 ---
 
-## Step 1: Run Cargo Tests
+## Step 1: Run Cargo Unit Tests
 
 Before anything else, confirm the code compiles and all unit tests pass.
 
@@ -61,7 +59,7 @@ Before anything else, confirm the code compiles and all unit tests pass.
 cargo test -p zap-stream-external
 ```
 
-**Expected result:** All tests pass (0 failed). Pre-existing warnings are OK. If any tests fail, fix them before proceeding — there is no point running e2e tests against broken code.
+**Expected result:** All unit tests pass (0 failed). The 3 e2e tests will show as "ignored" — this is correct. Pre-existing warnings are OK. If any tests fail, fix them before proceeding.
 
 ---
 
@@ -133,17 +131,11 @@ Look for:
 - `db` container (MariaDB)
 - A Nostr relay container (e.g. `sw2-relay`, `strfry`) on the port matching `$NOSTR_RELAY_URL`
 
-**Ensure the Nostr relay is running.** The relay (e.g. `sw2-relay`) is managed separately from the external stack's docker compose. If it shows as `Exited`, start it:
+**Ensure the Nostr relay is running.** The relay is managed separately from the external stack's docker compose. If it shows as `Exited`, start it:
 
 ```bash
-# Check relay status
-docker ps -a | grep -E '(relay|sw2|strfry)'
-
-# Start if stopped
 docker start sw2-relay
 ```
-
-The relay must be running before proceeding — the external service publishes Nostr events to it, and the e2e tests query it to verify events were published. Note: the relay uses NIP-42 authentication, which is handled by the `query_nostr_events_auth.js` helper script.
 
 Take down and rebuild the stack so the service picks up the new tunnel URL and any code changes.
 
@@ -153,9 +145,6 @@ cd docs/deploy
 # Stop existing containers
 docker compose -f docker-compose.external.yaml -f docker-compose.override.yml down
 
-# To also wipe the database for a fully clean slate:
-# docker compose -f docker-compose.external.yaml -f docker-compose.override.yml down -v
-
 # Build from source and start
 docker compose -f docker-compose.external.yaml -f docker-compose.override.yml up -d --build
 
@@ -164,24 +153,9 @@ docker compose -f docker-compose.external.yaml -f docker-compose.override.yml lo
 ```
 
 **What to look for in startup logs:**
-- `Webhook created for <url>` or `Webhook notification url already registered` — confirms the service's own webhook endpoint is registered with Cloudflare
+- `Webhook created for <url>` or `Webhook notification url already registered`
 - `listening on 0.0.0.0:8080` — HTTP server ready
 - No database connection errors
-
-Press Ctrl+C to stop following logs once startup looks healthy.
-
-**Verify everything is ready before proceeding:**
-
-```bash
-# Confirm containers are running
-docker ps | grep -E '(zap-stream-external|db)'
-
-# Confirm API is responding (should return JSON)
-curl -s http://localhost:${ZS_API_PORT:-8080}/api/v1/time
-
-# Confirm relay is reachable (uses NIP-42 auth; should return events or empty array)
-node scripts/query_nostr_events_auth.js 30311 --since $(date +%s) --relay ${NOSTR_RELAY_URL:-ws://localhost:3334}
-```
 
 ---
 
@@ -195,21 +169,15 @@ This is a separate configuration from the service's self-registered webhook. Clo
 4. Save the webhook destination
 5. Go to **Notification Policies** and ensure the "Stream Live Input" notification policy is **enabled** and using this webhook destination
 
-**Verify the tunnel is reachable** by hitting a known endpoint:
-
-```bash
-curl -s -o /dev/null -w "%{http_code}" https://<your-tunnel-url>/api/v1/time
-```
-
-Should return `200`. (Note: the webhook endpoint itself only accepts POST with a valid body, so don't use it as a health check.)
-
 Without this step, stream start/end lifecycle events will not fire — the e2e tests will hang waiting for webhooks.
 
 ---
 
-## Step 6: Run E2E Test Scripts
+## Step 6: Run E2E Tests
 
-**Check environment overrides** before running tests. The test scripts default to `DB_ROOT_PASSWORD=root` and `ZS_API_PORT=8080`, but your docker override may differ:
+The e2e tests are Rust integration tests in `crates/zap-stream-external/tests/`. They are gated with `#[ignore]` and only run when explicitly requested.
+
+**Check environment overrides** before running tests:
 
 ```bash
 # Check DB password and port mapping from the override
@@ -223,31 +191,21 @@ export DB_ROOT_PASSWORD=<password-from-override>
 export ZS_API_PORT=<host-port-from-override>   # e.g. 8090 if override maps "8090:8080"
 ```
 
-Install Node.js dependencies if not already done:
+**(Optional) Set Cloudflare credentials for direct API validation:**
 
 ```bash
-cd scripts && npm install && cd ..
+export CLOUDFLARE_API_TOKEN=<your-token>
+export CLOUDFLARE_ACCOUNT_ID=<your-account-id>
 ```
 
-**(Optional) Set up `.env` for Cloudflare API direct validation:**
-
-The `test-external-custom-keys-e2e.sh` script can validate custom keys directly against the Cloudflare API. This requires credentials in `scripts/.env`:
+### 6a. Single-user lifecycle (16 steps, ~3-4 min)
 
 ```bash
-cp scripts/.env.example scripts/.env
-# Edit scripts/.env with your CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN
+cargo test --test e2e_single_user -- --ignored --nocapture
 ```
 
-Run the test scripts in this order. Each script is self-contained and exits with the number of failed tests as the exit code (0 = all passed). This makes them suitable for CI pipelines: `./scripts/test-external-e2e.sh || echo "Tests failed"`.
-
-### 6a. Single-user lifecycle (16 tests, ~3-4 min)
-
-```bash
-./scripts/test-external-e2e.sh
-```
-
-**Tests:**
-1. Prerequisites (node, jq, ffmpeg, Docker, containers)
+**Steps:**
+1. Prerequisites (ffmpeg, Docker, containers)
 2. Initial DB state (`external_id` column check)
 3. API call with NIP-98 auth creates/reuses Live Input
 4. Database contains valid `external_id` (32 hex chars)
@@ -264,46 +222,52 @@ Run the test scripts in this order. Each script is self-contained and exits with
 15. Custom key Nostr metadata (title, summary, content tags from creation request)
 16. Custom key ENDED Nostr event
 
-### 6b. Multi-user concurrent streaming (14 tests, ~4-5 min)
+### 6b. Multi-user concurrent streaming (14 steps, ~4-5 min)
 
 ```bash
-./scripts/test-external-multi-user-e2e.sh
+cargo test --test e2e_multi_user -- --ignored --nocapture
 ```
 
-**Tests:**
+**Steps:**
 1. Prerequisites
 2. Database setup (two test users)
 3. API credentials for both users
 4. Unique `external_id` per user (different Cloudflare Live Inputs)
 5. User A starts streaming
-6. User A webhook START
+6. User A webhook START (isolation: User B not triggered)
 7. User B starts streaming (concurrent with User A)
-8. User B webhook START (>= 2 total connected events)
-9. Both users have LIVE Nostr events on relay
+8. User B webhook START (both present)
+9. Both users have LIVE Nostr events with distinct d-tags
 10. Stream isolation: stop User A, User B continues
-11. User A disconnect webhook + User B still alive
-12. Stop User B (>= 2 total disconnected events)
-13. Both users have ENDED Nostr events
+11. User A disconnect webhook + User B still alive + Nostr verification
+12. Stop User B
+13. Both users have ENDED Nostr events with ends tags
 14. UID persistence (external_ids unchanged after full lifecycle)
 
-### 6c. Custom stream keys (11 tests, ~2-3 min)
+### 6c. Custom stream keys (11 steps, ~2-3 min)
 
 ```bash
-./scripts/test-external-custom-keys-e2e.sh
+cargo test --test e2e_custom_keys -- --ignored --nocapture
 ```
 
-**Tests:**
+**Steps:**
 1. Prerequisites
 2. Create custom key with metadata (title, summary, tags)
 3. Create second custom key (verifies uniqueness)
 4. List all keys (both present, unique stream_ids)
-5. Cloudflare API direct validation (optional — requires `.env` with CF credentials)
+5. Cloudflare API direct validation (optional — requires CLOUDFLARE_API_TOKEN env var)
 6. Stream using custom key via RTMPS
 7. Webhook START for custom key stream
 8. LIVE Nostr 30311 event carries custom metadata (title, summary, tags, status, streaming URL)
 9. End stream + webhook END
 10. ENDED Nostr 30311 event (status=ended, ends tag, streaming removed)
 11. Keys persist after stream lifecycle
+
+### Run all e2e tests at once
+
+```bash
+cargo test -p zap-stream-external -- --ignored --nocapture
+```
 
 **If any e2e tests fail**, check:
 - Is the tunnel still alive? (repeat Step 2)
@@ -339,33 +303,28 @@ After automated tests pass, do a manual test with a real streaming app to verify
 4. Let the stream run for at least 2-3 minutes
 5. Stop the stream
 6. Confirm in the logs:
-   - Stream ended (either via poller detecting `Disconnected` status or via `live_input.disconnected` webhook)
+   - Stream ended (either via poller or `live_input.disconnected` webhook)
    - Recording webhook received (`Video Asset ready`)
    - Final Nostr event published with `status=ended`
 7. Confirm in the viewer:
    - Stream shows as ended
    - Replay/recording is available
 
-### What to watch for
-
-- Only **one** stream record created per connection (not duplicates)
-- Only **one** Nostr event published at stream start (not repeated every 30s)
-- No `ERROR` lines in logs (warnings are OK)
-- Recording/replay saves correctly after stream ends
-
 ---
 
 ## Environment Variables
 
-All e2e scripts accept configuration via environment variables:
+All e2e tests accept configuration via environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ZS_API_PORT` | `8080` | Port the external API listens on |
 | `ZS_EXTERNAL_CONTAINER` | auto-detect | Docker container name for `zap-stream-external` |
 | `ZS_DB_CONTAINER` | auto-detect | Docker container name for MariaDB |
-| `DB_ROOT_PASSWORD` | `root` | MariaDB root password (must match the value in `docker-compose.override.yml`) |
+| `DB_ROOT_PASSWORD` | `root` | MariaDB root password |
 | `NOSTR_RELAY_URL` | `ws://localhost:3334` | WebSocket URL of the Nostr relay |
+| `CLOUDFLARE_API_TOKEN` | (none) | Optional: for direct CF API validation in custom keys test |
+| `CLOUDFLARE_ACCOUNT_ID` | (none) | Optional: for direct CF API validation in custom keys test |
 
 Example with overrides:
 
@@ -374,63 +333,16 @@ ZS_API_PORT=8090 \
 ZS_EXTERNAL_CONTAINER=my-stack-zap-stream-external-1 \
 ZS_DB_CONTAINER=my-stack-db-1 \
 NOSTR_RELAY_URL=ws://relay.example.com:7766 \
-./scripts/test-external-e2e.sh
-```
-
----
-
-## Helper Scripts
-
-These are used internally by the test scripts. You can also use them standalone for debugging.
-
-### `sign_nip98.js` — NIP-98 Authentication
-
-Creates a signed Nostr event (kind 27235) for HTTP authentication.
-
-```bash
-node scripts/sign_nip98.js <nsec> <url> <method>
-
-# Example:
-node scripts/sign_nip98.js nsec1... http://localhost:8080/api/v1/account GET
-# Outputs JSON event, pipe through `base64` for Authorization header
-```
-
-### `decode_npub.js` — npub to Hex Conversion
-
-```bash
-node scripts/decode_npub.js <npub>
-
-# Example:
-node scripts/decode_npub.js npub1u0mm82x7muct7cy8y7urztyctgm0r6k27gdax04fa4q28x7q0shq6slmah
-# Outputs: e3f7b3a8de...
-```
-
-### `query_nostr_events_auth.js` — Nostr Relay Query
-
-Queries a Nostr relay for events with NIP-42 authentication support.
-
-```bash
-node scripts/query_nostr_events_auth.js [kind] [--since TIMESTAMP] [--relay URL]
-
-# Examples:
-node scripts/query_nostr_events_auth.js 30311
-node scripts/query_nostr_events_auth.js 30311 --since 1700000000
-node scripts/query_nostr_events_auth.js 30311 --since 1700000000 --relay ws://localhost:7766
-```
-
-### `test-srt-ingest.sh` — Interactive SRT Ingest Test
-
-Interactive script for testing SRT ingest directly with the Cloudflare API. Requires Cloudflare credentials via environment or interactive prompt.
-
-```bash
-CF_TOKEN=xxx CF_ACCOUNT=yyy ./scripts/test-srt-ingest.sh
+cargo test -p zap-stream-external -- --ignored --nocapture
 ```
 
 ---
 
 ## Troubleshooting
 
-**Docker daemon is not running:** If `docker ps` fails with "failed to connect to the docker API", start Docker Desktop with `open -a Docker` (macOS) and wait for it to be ready before proceeding.
+These are steps for the AI agent to take autonomously — do not ask the user to perform them.
+
+**Docker daemon is not running:** If `docker ps` fails, start Docker Desktop with `open -a Docker` (macOS), then poll `docker info` every 5 seconds until it succeeds before proceeding.
 
 **Cargo tests fail:** Fix before proceeding. E2e tests will not produce useful results against broken code.
 
@@ -450,13 +362,13 @@ CF_TOKEN=xxx CF_ACCOUNT=yyy ./scripts/test-srt-ingest.sh
 
 ## Database Reference
 
-Tests interact with MariaDB `zap_stream` database via `docker exec`. Key tables:
+Tests interact with MariaDB `zap_stream` database via `sqlx`. Key tables:
 
 | Table | Key Columns | Purpose |
 |-------|-------------|---------|
 | `user` | `pubkey`, `external_id`, `balance` | User accounts; `external_id` = CF Live Input UID |
 | `user_stream` | `id` (UUID), `user_id`, `state`, `starts`, `ends` | Stream records |
-| `user_stream_key` | `user_id`, `key`, `external_id`, `stream_id` | Custom stream keys; `external_id` = CF Live Input UID (used for webhook matching) |
+| `user_stream_key` | `user_id`, `key`, `external_id`, `stream_id` | Custom stream keys; `external_id` = CF Live Input UID |
 
 ## Nostr Event Reference
 
