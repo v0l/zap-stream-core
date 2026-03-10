@@ -15,6 +15,21 @@ use zap_stream_api_common::{
 };
 use zap_stream_db::ZapStreamDb;
 
+/// Convert a list of tags into a comma-separated CSV string.
+/// Filters out empty/whitespace-only tags, and returns None if no tags remain.
+pub(crate) fn tags_to_csv(tags: Vec<String>) -> Option<String> {
+    let filtered: Vec<String> = tags
+        .into_iter()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .collect();
+    if filtered.is_empty() {
+        None
+    } else {
+        Some(filtered.join(","))
+    }
+}
+
 /// Basic API implementation which covers the simple database updates
 #[derive(Clone)]
 pub struct ApiBase {
@@ -95,7 +110,7 @@ impl ApiBase {
                 stream.image = Some(image);
             }
             if let Some(tags) = patch.tags {
-                stream.tags = Some(tags.join(","));
+                stream.tags = tags_to_csv(tags);
             }
             if let Some(content_warning) = patch.content_warning {
                 stream.content_warning = Some(content_warning);
@@ -113,7 +128,7 @@ impl ApiBase {
                     patch.title.as_deref(),
                     patch.summary.as_deref(),
                     patch.image.as_deref(),
-                    patch.tags.as_ref().map(|t| t.join(",")).as_deref(),
+                    patch.tags.as_ref().and_then(|t| tags_to_csv(t.clone())).as_deref(),
                     patch.content_warning.as_deref(),
                     patch.goal.as_deref(),
                 )
@@ -235,7 +250,7 @@ impl ApiBase {
             title: req.event.title,
             summary: req.event.summary,
             image: req.event.image,
-            tags: req.event.tags.map(|t| t.join(",")),
+            tags: req.event.tags.and_then(tags_to_csv),
             content_warning: req.event.content_warning,
             goal: req.event.goal,
             ..Default::default()

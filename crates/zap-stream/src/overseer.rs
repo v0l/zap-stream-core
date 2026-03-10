@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(feature = "hls")]
 use tokio::fs::remove_dir_all;
 use tokio::sync::RwLock;
@@ -75,7 +75,6 @@ pub struct ZapStreamOverseer {
     out_dir: PathBuf,
     /// Last time the stream event was published
     last_event_publish: Arc<AtomicU64>,
-    last_view_counter: Arc<AtomicU32>,
     /// MoQ origin to push streams to
     #[cfg(feature = "moq")]
     moq_origin: Option<OriginProducer>,
@@ -152,7 +151,6 @@ impl ZapStreamOverseer {
             nwc_topup_requests: Arc::new(RwLock::new(HashMap::new())),
             out_dir: PathBuf::from(&settings.output_dir),
             last_event_publish: Arc::new(AtomicU64::new(0)),
-            last_view_counter: Arc::new(AtomicU32::new(0)),
             #[cfg(feature = "moq")]
             moq_origin: None,
             #[cfg(feature = "moq")]
@@ -436,17 +434,12 @@ impl Overseer for ZapStreamOverseer {
                     error!("Failed to end dead stream {}: {}", &id, e);
                 }
             } else {
-                // Stream is active, check if we should update viewer count in nostr event
+                // Stream is active - republish event at a fixed interval to keep viewer count fresh
                 let last_pub = self.last_event_publish.load(Ordering::Relaxed);
-                let last_view_counter = self.last_view_counter.load(Ordering::Relaxed);
-                let current_viewers = self.stream_manager.get_viewer_count(&stream.id).await;
-                if let Ok(user) = self.db.get_user(stream.user_id).await
-                    && current_viewers as u32 != last_view_counter
-                    && Timestamp::now().as_secs().saturating_sub(last_pub) > 60 * 5
+                if Timestamp::now().as_secs().saturating_sub(last_pub) > 60
+                    && let Ok(user) = self.db.get_user(stream.user_id).await
                 {
                     self.publish_stream_event(&stream, &user.pubkey).await?;
-                    self.last_view_counter
-                        .store(current_viewers as u32, Ordering::Relaxed);
                 }
             }
         }
