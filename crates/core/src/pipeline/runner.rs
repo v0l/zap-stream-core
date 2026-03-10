@@ -769,7 +769,7 @@ impl PipelineRunner {
                             egress_type: &e.kind,
                         })?;
                     }
-                    let fwd = MuxerEgress::new("RTMP Forward", muxer, g, None, false)?;
+                    let fwd = MuxerEgress::new_rtmp_forward("RTMP Forward", muxer, g)?;
                     setup_egress.push(Box::new(fwd));
                 }
                 #[cfg(feature = "egress-moq")]
