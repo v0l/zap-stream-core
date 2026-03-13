@@ -142,7 +142,7 @@ impl ZapStreamDb {
 
     pub async fn update_stream(&self, user_stream: &UserStream) -> Result<()> {
         sqlx::query(
-        "update user_stream set state = ?, starts = ?, ends = ?, title = ?, summary = ?, image = ?, thumb = ?, tags = ?, content_warning = ?, goal = ?, pinned = ?, cost = ?, duration = ?, fee = ?, event = ?, endpoint_id = ?, node_name = ?, stream_key_id = ? where id = ?",
+        "update user_stream set state = ?, starts = ?, ends = ?, title = ?, summary = ?, image = ?, thumb = ?, tags = ?, content_warning = ?, goal = ?, pinned = ?, cost = ?, duration = ?, fee = ?, event = ?, endpoint_id = ?, node_name = ?, stream_key_id = ?, external_id = ? where id = ?",
     )
         .bind(&user_stream.state)
         .bind(user_stream.starts)
@@ -162,6 +162,7 @@ impl ZapStreamDb {
         .bind(user_stream.endpoint_id)
         .bind(&user_stream.node_name)
         .bind(user_stream.stream_key_id)
+        .bind(&user_stream.external_id)
         .bind(&user_stream.id)
         .execute(&self.db)
         .await
@@ -325,14 +326,16 @@ impl ZapStreamDb {
         &self,
         user_id: u64,
         key: &str,
+        external_id: Option<&str>,
         expires: Option<DateTime<Utc>>,
         stream_id: &str,
     ) -> Result<u64> {
         let result = sqlx::query(
-            "insert into user_stream_key (user_id, `key`, expires, stream_id) values (?, ?, ?, ?)",
+            "insert into user_stream_key (user_id, `key`, external_id, expires, stream_id) values (?, ?, ?, ?, ?)",
         )
         .bind(user_id)
         .bind(key)
+        .bind(external_id)
         .bind(expires)
         .bind(stream_id)
         .execute(&self.db)
@@ -347,6 +350,20 @@ impl ZapStreamDb {
                 .bind(user_id)
                 .fetch_all(&self.db)
                 .await?,
+        )
+    }
+
+    pub async fn get_user_stream_key_by_external_id(
+        &self,
+        external_id: &str,
+    ) -> Result<Option<UserStreamKey>> {
+        Ok(
+            sqlx::query_as(
+                "select * from user_stream_key where external_id = ? and (expires is null or expires > now())",
+            )
+            .bind(external_id)
+            .fetch_optional(&self.db)
+            .await?,
         )
     }
 
@@ -905,6 +922,19 @@ impl ZapStreamDb {
         .await?)
     }
 
+    /// Get the most recent ended stream for a user
+    pub async fn get_user_latest_ended_stream(
+        &self,
+        user_id: u64,
+    ) -> Result<Option<UserStream>> {
+        Ok(sqlx::query_as(
+            "select * from user_stream where user_id = ? and state = 3 order by ends desc, starts desc limit 1",
+        )
+        .bind(user_id)
+        .fetch_optional(&self.db)
+        .await?)
+    }
+
     /// Get live streams for a user
     pub async fn get_user_live_streams(&self, user_id: u64) -> Result<Vec<UserStream>> {
         Ok(
@@ -914,6 +944,7 @@ impl ZapStreamDb {
                 .await?,
         )
     }
+
 
     /// Get unified user history combining payments and completed streams with proper pagination
     pub async fn get_unified_user_history(

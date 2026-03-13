@@ -48,6 +48,7 @@ pub enum LiveInputStatusSimple {
     Connected,
     Reconnected,
     Reconnecting,
+    Disconnected,
     ClientDisconnect,
     TtlExceeded,
     FailedToConnect,
@@ -58,11 +59,22 @@ pub enum LiveInputStatusSimple {
 #[derive(Debug, Deserialize, Clone)]
 pub struct LiveInputStatusComplex {
     pub current: LiveInputStatusCurrent,
+    #[serde(default)]
+    pub history: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct LiveInputStatusCurrent {
     pub state: LiveInputStatusSimple,
+    #[serde(default)]
+    pub ingest_protocol: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub status_entered_at: Option<String>,
+    #[serde(default)]
+    pub status_last_seen: Option<String>,
 }
 
 impl LiveInputStatus {

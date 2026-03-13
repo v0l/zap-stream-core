@@ -250,7 +250,7 @@ impl ZapStreamOverseer {
             }
             _ => {}
         }
-        let ev = self.n53.stream_to_event(stream, extra_tags).await?;
+        let ev = self.n53.stream_to_event(stream, extra_tags, None).await?;
         self.client.send_event(&ev).await?;
         info!("Published stream event {}", ev.id.to_hex());
         self.last_event_publish
