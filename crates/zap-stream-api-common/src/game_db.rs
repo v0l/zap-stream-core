@@ -38,7 +38,7 @@ fn now_secs() -> u64 {
 }
 
 impl GameDb {
-    const GAME_FIELDS: &str = "id,cover.image_id,genres.name,name,summary";
+    const GAME_FIELDS: &str = "id,cover.image_id,genres.name,name,summary,rating";
     pub fn new(config: TwitchConfig) -> Self {
         Self {
             config,
@@ -133,16 +133,18 @@ impl GameDb {
 
         let url = "https://api.igdb.com/v4/games";
         let q = format!(
-            "search \"{}\"; fields {}; limit {};",
-            search,
+            "fields {}; search \"{}\"; where rating != null; limit {}; sort rating desc;",
             Self::GAME_FIELDS,
+            search,
             limit
         );
 
         let rsp = self.post_base(url).await?.body(q).send().await?;
         let res: Vec<GameInfo> = rsp.json().await.map_err(anyhow::Error::from)?;
         // Cache the fresh response before returning.
-        self.set_cached(cache_key, res.clone()).await;
+        if res.len() > 0 {
+            self.set_cached(cache_key, res.clone()).await;
+        }
         Ok(res)
     }
 
@@ -157,7 +159,9 @@ impl GameDb {
         let q = format!("fields {}; where id = {};", Self::GAME_FIELDS, game_id);
         let rsp = self.post_base(url).await?.body(q).send().await?;
         let res: Vec<GameInfo> = rsp.json().await.map_err(anyhow::Error::from)?;
-        self.set_cached(cache_key, res.clone()).await;
+        if res.len() > 0 {
+            self.set_cached(cache_key, res.clone()).await;
+        }
         Ok(res.into_iter().next().unwrap())
     }
 }
