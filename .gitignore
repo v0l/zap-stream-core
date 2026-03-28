@@ -1,3 +1,5 @@
 **/target
 .idea/
 **/out/
+scripts/.env
+scripts/node_modules/

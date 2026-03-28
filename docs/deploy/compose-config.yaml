@@ -6,6 +6,8 @@ endpoints:
 
 # Public hostname which points to the IP address used to listen for all [endpoints]
 endpoints_public_hostname: "localhost"
+# For Cloudflare Live Stream ingest, use zap-stream-external instead.
+# See docs/CLOUDFLARE_BACKEND.md and docs/deploy/external-compose.yaml.
 
 # Output directory for recording / hls
 output_dir: "./out"

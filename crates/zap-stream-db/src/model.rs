@@ -134,6 +134,8 @@ pub struct UserStreamKey {
     pub user_id: u64,
     /// The stream key (UUID)
     pub key: String,
+    /// External system identifier (e.g. Cloudflare Live Input UID)
+    pub external_id: Option<String>,
     /// Timestamp when the key was created
     pub created: DateTime<Utc>,
     /// Expiration timestamp for this stream key
