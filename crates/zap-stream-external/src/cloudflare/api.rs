@@ -995,14 +995,26 @@ impl CfApiWrapper {
         let mut url = Url::parse(&self.public_url)?;
         url.set_path(Self::WEBHOOK_API_PATH);
 
-        let webhooks = self.client.get_webhooks().await?;
-        if webhooks.success
-            && let Some(w) = webhooks.result
-            && w.notification_url == url.as_str()
-        {
-            info!("Webhook notification url already registered: {}", url);
-            self.webhook_details.write().await.replace(w);
-            return Ok(());
+        // Check if webhook is already registered; treat errors (e.g. 404 on
+        // fresh accounts with no webhook) as "not registered" and proceed to
+        // create one.
+        if let Ok(webhooks) = self.client.get_webhooks().await {
+            if webhooks.success {
+                if let Some(w) = webhooks.result {
+                    if w.notification_url == url.as_str() {
+                        info!("Webhook notification url already registered: {}", url);
+                        self.webhook_details.write().await.replace(w);
+                        return Ok(());
+                    }
+                    info!("Webhook URL mismatch, updating...");
+                } else {
+                    info!("No webhook registered, creating...");
+                }
+            } else {
+                info!("Webhook query unsuccessful, creating...");
+            }
+        } else {
+            info!("Could not fetch existing webhook, creating...");
         }
 
         let wh = self.client.create_webhook(url.to_string().as_str()).await?;

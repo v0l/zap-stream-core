@@ -40,17 +40,33 @@ Optional (but recommended):
 
 ## Cloudflare setup
 
-You will need a Cloudflare account with Live Streaming enabled.
+You will need a Cloudflare account with **Stream** (paid subscription) enabled.
 
-1) **Create an API token** with access to Stream
-2) **Set webhook destination** to your external service
-3) **Enable notifications** for:
-   - `live_input.connected`
-   - `live_input.disconnected`
-   - `live_input.errored`
-   - `live_input.recording.ready`
+### 1. Create an API token
 
-Your external service will automatically register the webhook URL on startup, and Cloudflare should confirm it.
+In the Cloudflare dashboard:
+- **My Profile** → **API Tokens** → **Create Token** → **Custom token**
+- Permissions: **Account** → **Stream** → **Edit**
+- Account resources: **Include** → select your account
+- Set `cloudflare.token` and `cloudflare.account_id` in your config
+
+### 2. Webhook registration
+
+The service automatically registers its webhook URL (`{public_url}/api/v1/webhook/cloudflare`) with Cloudflare on startup. If no webhook exists yet (fresh account), it will create one. If one exists with the correct URL, it skips registration.
+
+**Note**: Cloudflare supports only **one webhook URL per account**. If multiple instances (e.g. staging and production) share a Cloudflare account, each startup will overwrite the other's webhook URL. Use separate Cloudflare accounts for separate environments.
+
+### 3. Enable notification policies
+
+In the Cloudflare dashboard, create a **Stream Live Input** notification policy:
+- **Notifications** → **Add** → **Stream** → **Stream Live Input**
+- Select your webhook destination
+- Leave "Stream Live IDs" blank (applies to all inputs)
+- Enable event types:
+  - `live_input.connected`
+  - `live_input.disconnected`
+
+This is a one-time dashboard configuration — the API token does not create it.
 
 ## Custom ingest domain (optional)
 
