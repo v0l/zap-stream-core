@@ -1002,24 +1002,81 @@ impl CfApiWrapper {
             if webhooks.success {
                 if let Some(w) = webhooks.result {
                     if w.notification_url == url.as_str() {
-                        info!("Webhook notification url already registered: {}", url);
+                        info!("Stream webhook already registered: {}", url);
                         self.webhook_details.write().await.replace(w);
                         return Ok(());
                     }
-                    info!("Webhook URL mismatch, updating...");
-                } else {
-                    info!("No webhook registered, creating...");
                 }
-            } else {
-                info!("Webhook query unsuccessful, creating...");
             }
-        } else {
-            info!("Could not fetch existing webhook, creating...");
         }
 
         let wh = self.client.create_webhook(url.to_string().as_str()).await?;
-        info!("Webhook created for {}", wh.result.notification_url);
+        info!("Stream webhook updated: {}", wh.result.notification_url);
         self.webhook_details.write().await.replace(wh.result);
+        Ok(())
+    }
+
+    /// Ensure a Cloudflare Alerting notification policy exists for stream live
+    /// input events (connected/disconnected). This is a separate system from the
+    /// Stream webhook registered by `setup_webhook()`.
+    pub async fn setup_notification_policy(&self) -> Result<()> {
+        let mut url = Url::parse(&self.public_url)?;
+        url.set_path(Self::WEBHOOK_API_PATH);
+        let webhook_url = url.to_string();
+
+        // Step 1: Find or create an alerting webhook destination matching our URL
+        let destination_id = if let Ok(destinations) =
+            self.client.get_alerting_webhook_destinations().await
+        {
+            if let Some(dest) = destinations
+                .result
+                .iter()
+                .find(|d| d.url.as_deref() == Some(&webhook_url))
+            {
+                info!(
+                    "Notification destination already registered: {}",
+                    webhook_url
+                );
+                dest.id.clone()
+            } else {
+                let dest = self
+                    .client
+                    .create_alerting_webhook_destination("ZS Core Webhook", &webhook_url)
+                    .await?;
+                info!("Notification destination created: {}", webhook_url);
+                dest.result.id
+            }
+        } else {
+            let dest = self
+                .client
+                .create_alerting_webhook_destination("ZS Core Webhook", &webhook_url)
+                .await?;
+            info!("Notification destination created: {}", webhook_url);
+            dest.result.id
+        };
+
+        // Step 2: Find or create a notification policy for stream_live_notifications
+        // If a policy exists, update it to use our destination (handles switching
+        // between environments). If not, create one.
+        if let Ok(policies) = self.client.get_alerting_policies().await {
+            if let Some(policy) = policies
+                .result
+                .iter()
+                .find(|p| p.alert_type.as_deref() == Some("stream_live_notifications"))
+            {
+                // Update the existing policy to point to our destination
+                self.client
+                    .update_alerting_notification_policy(&policy.id, &destination_id)
+                    .await?;
+                info!("Notification policy updated: {}", webhook_url);
+                return Ok(());
+            }
+        }
+
+        self.client
+            .create_alerting_notification_policy("Stream Live Notifications", &destination_id)
+            .await?;
+        info!("Notification policy created: {}", webhook_url);
         Ok(())
     }
 }

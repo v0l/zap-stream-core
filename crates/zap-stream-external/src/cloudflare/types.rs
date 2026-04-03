@@ -211,3 +211,33 @@ pub enum WebhookPayload {
     /// Catch-all
     Unknown(serde_json::Value),
 }
+
+/// Cloudflare Alerting webhook destination
+/// Note: the create endpoint returns only `id`, while the list endpoint
+/// returns all fields.
+#[derive(Debug, Deserialize, Clone)]
+pub struct AlertingWebhookDestination {
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(rename = "type")]
+    pub destination_type: Option<String>,
+}
+
+/// Cloudflare Alerting notification policy
+/// Note: create/update endpoints return only `id`, while the list endpoint
+/// returns all fields.
+#[derive(Debug, Deserialize, Clone)]
+pub struct AlertingPolicy {
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub alert_type: Option<String>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub mechanisms: Option<serde_json::Value>,
+}

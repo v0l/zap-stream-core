@@ -137,6 +137,18 @@ async fn main() -> Result<()> {
             settings.client_url.clone(),
         );
         api_impl.setup_webhook().await?;
+        // Notification policy setup runs as a background task because Cloudflare
+        // validates the webhook URL on destination creation — the HTTP server
+        // must be listening before this can succeed.
+        let api_for_notify = api_impl.clone();
+        tasks.push(tokio::spawn(async move {
+            // Brief delay to let the HTTP server bind
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            if let Err(e) = api_for_notify.setup_notification_policy().await {
+                tracing::error!("Failed to setup notification policy: {}", e);
+            }
+            Ok(())
+        }));
         tasks.push(api_impl.clone().check_streams(shutdown.clone()));
         server = server
             .merge(AxumApi::new(api_impl.clone()))
