@@ -463,15 +463,41 @@ impl CfApiWrapper {
                         info!("Checking {} live streams..", live_streams.len());
                         for live_stream in live_streams {
                             let user = self.db.get_user(live_stream.user_id).await?;
-                            let input = match self.fetch_user_live_input(&user).await {
-                                Ok(r) => r,
-                                Err(e) => {
-                                    warn!("Failed to fetch live input for user {}: {}", live_stream.user_id, e);
+                            let input = if let Some(key_id) = live_stream.stream_key_id {
+                                // Custom key (show) — look up the key's Cloudflare input
+                                let key = match self.db.get_user_stream_key_by_id(key_id).await {
+                                    Ok(k) => k,
+                                    Err(e) => {
+                                        warn!("Failed to fetch stream key {} for stream {}: {}", key_id, live_stream.id, e);
+                                        continue;
+                                    }
+                                };
+                                let external_id = match key.external_id.as_ref() {
+                                    Some(id) => id,
+                                    None => {
+                                        warn!("Stream key {} has no external_id, skipping poll for stream {}", key_id, live_stream.id);
+                                        continue;
+                                    }
+                                };
+                                let response = self.client.get_live_input(external_id).await?;
+                                if response.success {
+                                    response.result
+                                } else {
+                                    warn!("Failed to fetch live input for stream key {}: {:?}", key_id, response.errors.first());
                                     continue;
+                                }
+                            } else {
+                                // Default key — existing behavior
+                                match self.fetch_user_live_input(&user).await {
+                                    Ok(r) => r,
+                                    Err(e) => {
+                                        warn!("Failed to fetch live input for user {}: {}", live_stream.user_id, e);
+                                        continue;
+                                    }
                                 }
                             };
                             if !input.status.as_ref().map(|s| s.is_connected()).unwrap_or(false) {
-                                warn!("Database sync issue, live stream is supposed to be live but cloudflare shows the status {:?}", input.status);
+                                warn!("Database sync issue, live stream {} is supposed to be live but cloudflare input {} shows the status {:?}", live_stream.id, input.uid, input.status);
                                 if let Err(e) = self.publish_stream_end(input).await {
                                     warn!("Failed to publish live input for user {}", e);
                                 }

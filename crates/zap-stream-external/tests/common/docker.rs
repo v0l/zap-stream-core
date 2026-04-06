@@ -36,6 +36,18 @@ pub async fn get_docker_logs(container: &str, tail: u32) -> String {
     format!("{}{}", stdout, stderr)
 }
 
+/// Fetch logs from `container` since `since` (RFC 3339 or relative e.g. "30s").
+pub async fn get_docker_logs_since(container: &str, since: &str) -> String {
+    let output = Command::new("docker")
+        .args(["logs", "--since", since, container])
+        .output()
+        .await
+        .expect("docker logs failed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    format!("{}{}", stdout, stderr)
+}
+
 /// Check if a command is available on PATH.
 pub async fn command_exists(name: &str) -> bool {
     Command::new("which")

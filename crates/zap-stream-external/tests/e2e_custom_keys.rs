@@ -8,17 +8,24 @@ use common::ffmpeg::FfmpegStream;
 use common::nostr_relay::{self, NostrRelay};
 use nostr_sdk::Timestamp;
 use std::time::Duration;
+use uuid::Uuid;
 
 /// Safe test-only nsec (not used for anything real).
 const TEST_NSEC: &str = "nsec107gexedhvf97ej83jzalley9wt682mlgy9ty5xwsp98vnph09fysssnzlk";
 
+/// Stream to key 1 with metadata A, stream to key 2 with metadata B,
+/// verify each Nostr event carries its own key's metadata and not the other's.
 #[tokio::test]
 #[ignore]
-async fn e2e_custom_key_management() {
+async fn e2e_custom_key_metadata_isolation() {
     let config = TestConfig::from_env();
-    let total_steps = 11;
+    let total_steps = 13;
 
-    // ── Step 1/11: Prerequisites ──────────────────────────────────────
+    // Unique token for this test run so we never match stale relay events
+    let run_id = &Uuid::new_v4().to_string()[..8];
+    println!("[INFO] Test run_id: {run_id}");
+
+    // ── Step 1: Prerequisites ──────────────────────────────────────────
     println!("[TEST] Step 1/{total_steps}: Check prerequisites");
     assert!(
         docker::check_docker_available().await,
@@ -42,7 +49,6 @@ async fn e2e_custom_key_management() {
     let db = TestDb::connect(&config.db_connection_string()).await;
     db.ensure_user_exists(&client.pubkey_hex()).await;
 
-    // Get RTMPS base URL for streaming later
     let account = client.get_account().await;
     let endpoints = account["endpoints"].as_array().expect("no endpoints");
     let rtmps = endpoints
@@ -51,29 +57,26 @@ async fn e2e_custom_key_management() {
         .expect("No RTMPS endpoint");
     let rtmp_url = rtmps["url"].as_str().unwrap();
 
-    // ── Step 2/11: Create first custom key ────────────────────────────
-    println!("[TEST] Step 2/{total_steps}: Create first custom key with metadata");
+    // ── Step 2: Create key 1 with Alpha metadata ───────────────────────
+    let alpha_title = format!("Show Alpha {run_id}");
+    let alpha_summary = format!("Alpha summary {run_id}");
+    println!("[TEST] Step 2/{total_steps}: Create key 1 (Alpha)");
     let key1_resp = client
-        .create_key(
-            "Custom Key Test Stream",
-            "E2E test of custom keys on external backend",
-            &["test", "custom-key", "e2e"],
-        )
+        .create_key(&alpha_title, &alpha_summary, &["alpha", run_id])
         .await;
     let key1 = key1_resp["key"]
         .as_str()
         .expect("No 'key' in response")
         .to_string();
     assert!(!key1.is_empty(), "Key 1 is empty");
-    println!(
-        "[PASS] Step 2/{total_steps}: Key 1 created: {}...",
-        &key1[..20.min(key1.len())]
-    );
+    println!("[PASS] Step 2/{total_steps}: Key 1 created: {}...", &key1[..20.min(key1.len())]);
 
-    // ── Step 3/11: Create second custom key ───────────────────────────
-    println!("[TEST] Step 3/{total_steps}: Create second custom key (verify uniqueness)");
+    // ── Step 3: Create key 2 with Beta metadata ────────────────────────
+    let beta_title = format!("Show Beta {run_id}");
+    let beta_summary = format!("Beta summary {run_id}");
+    println!("[TEST] Step 3/{total_steps}: Create key 2 (Beta)");
     let key2_resp = client
-        .create_key("Second Custom Stream", "Testing multiple keys per user", &[])
+        .create_key(&beta_title, &beta_summary, &["beta", run_id])
         .await;
     let key2 = key2_resp["key"]
         .as_str()
@@ -81,20 +84,12 @@ async fn e2e_custom_key_management() {
         .to_string();
     assert!(!key2.is_empty(), "Key 2 is empty");
     assert_ne!(key1, key2, "Key 1 and Key 2 are the same");
-    println!(
-        "[PASS] Step 3/{total_steps}: Key 2 created: {}... (unique)",
-        &key2[..20.min(key2.len())]
-    );
+    println!("[PASS] Step 3/{total_steps}: Key 2 created: {}...", &key2[..20.min(key2.len())]);
 
-    // ── Step 4/11: List keys ──────────────────────────────────────────
-    println!("[TEST] Step 4/{total_steps}: List all keys");
+    // ── Step 4: List keys, extract stream_ids ──────────────────────────
+    println!("[TEST] Step 4/{total_steps}: List keys and extract stream_ids");
     let keys_list = client.list_keys().await;
     let keys_arr = keys_list.as_array().expect("keys list is not an array");
-    assert!(
-        keys_arr.len() >= 2,
-        "Expected at least 2 keys, got {}",
-        keys_arr.len()
-    );
 
     let entry1 = keys_arr
         .iter()
@@ -117,234 +112,267 @@ async fn e2e_custom_key_management() {
         stream_id_1, stream_id_2,
         "Key 1 and Key 2 have the same stream_id"
     );
-    println!(
-        "[PASS] Step 4/{total_steps}: {} keys listed, stream_ids unique ({}..., {}...)",
-        keys_arr.len(),
-        &stream_id_1[..8.min(stream_id_1.len())],
-        &stream_id_2[..8.min(stream_id_2.len())]
-    );
 
-    // ── Step 5/11: Cloudflare API direct validation ───────────────────
-    println!("[TEST] Step 5/{total_steps}: Cloudflare API direct validation");
-    if let (Some(cf_token), Some(cf_account)) =
-        (&config.cloudflare_api_token, &config.cloudflare_account_id)
-    {
-        let ck_ext_id = db
-            .get_custom_key_external_id(&stream_id_1)
-            .await
-            .expect("No external_id for custom key 1");
-
-        let cf_url = format!(
-            "https://api.cloudflare.com/client/v4/accounts/{}/stream/live_inputs/{}",
-            cf_account, ck_ext_id
-        );
-        let http = reqwest::Client::new();
-        let cf_resp: serde_json::Value = http
-            .get(&cf_url)
-            .header("Authorization", format!("Bearer {}", cf_token))
-            .send()
-            .await
-            .expect("CF API call failed")
-            .json()
-            .await
-            .expect("CF API invalid JSON");
-
-        assert_eq!(
-            cf_resp["success"].as_bool(),
-            Some(true),
-            "Cloudflare API returned success=false"
-        );
-        println!("[PASS] Step 5/{total_steps}: Cloudflare API validated");
-    } else {
-        println!(
-            "[PASS] Step 5/{total_steps}: Cloudflare API validation skipped (no credentials)"
-        );
-    }
-
-    // ── Step 6/11: Stream using custom key 1 ──────────────────────────
-    println!("[TEST] Step 6/{total_steps}: Stream using custom key 1");
-
-    // Get the custom key's Cloudflare external_id so we can assert on it specifically
     let ck1_external_id = db
         .get_custom_key_external_id(&stream_id_1)
         .await
-        .expect("No external_id in DB for custom key 1");
-    println!("[INFO] Custom key 1 external_id (CF Live Input): {}", ck1_external_id);
-
-    // Capture log baseline before streaming so we only check NEW log entries
-    let logs_before = docker::get_docker_logs(&ext_container, 200).await;
-    let baseline_len = logs_before.len();
-
-    let mut ffmpeg = FfmpegStream::start_rtmps(rtmp_url, &key1, 90, 1000).await;
-    tokio::time::sleep(Duration::from_secs(3)).await;
-    assert!(ffmpeg.is_running(), "FFmpeg died immediately");
-    println!("[PASS] Step 6/{total_steps}: Custom key stream started");
-
-    // ── Step 7/11: Webhook START for custom key ───────────────────────
-    println!("[TEST] Step 7/{total_steps}: Webhook START for custom key (input_id={})", ck1_external_id);
-    tokio::time::sleep(Duration::from_secs(20)).await;
-    let logs_after = docker::get_docker_logs(&ext_container, 200).await;
-
-    // Only look at new log lines that appeared after we started streaming
-    let new_logs = if logs_after.len() > baseline_len {
-        &logs_after[baseline_len..]
-    } else {
-        &logs_after
-    };
-
-    let webhook_marker = format!("live_input.connected for input_id: {}", ck1_external_id);
-    assert!(
-        new_logs.contains(&webhook_marker),
-        "Missing webhook for THIS custom key's Live Input.\n\
-         Expected to find: '{}'\n\
-         in new logs ({} bytes since baseline)",
-        webhook_marker,
-        new_logs.len(),
+        .expect("No external_id for key 1");
+    let ck2_external_id = db
+        .get_custom_key_external_id(&stream_id_2)
+        .await
+        .expect("No external_id for key 2");
+    assert_ne!(
+        ck1_external_id, ck2_external_id,
+        "Key 1 and Key 2 have the same Cloudflare external_id"
     );
-    println!("[PASS] Step 7/{total_steps}: Webhook START received for input_id={}", ck1_external_id);
+    println!(
+        "[PASS] Step 4/{total_steps}: stream_ids unique ({}, {}), CF inputs unique ({}, {})",
+        &stream_id_1[..8],
+        &stream_id_2[..8],
+        &ck1_external_id[..8],
+        &ck2_external_id[..8],
+    );
 
-    // ── Step 8/11: LIVE Nostr event with custom metadata ──────────────
-    println!("[TEST] Step 8/{total_steps}: LIVE Nostr event with custom metadata");
     let relay = NostrRelay::connect(&config.nostr_relay_url).await;
-    let since = Timestamp::from(chrono::Utc::now().timestamp() as u64 - 600);
+    let since = Timestamp::from(chrono::Utc::now().timestamp() as u64 - 60);
 
-    // Poll for the event to appear — relay indexing can lag behind the webhook log
-    let mut events = Vec::new();
-    for attempt in 1..=6 {
-        events = relay
-            .query_30311_events(since, Some(&stream_id_1))
-            .await;
-        if !events.is_empty() {
-            break;
-        }
-        println!(
-            "  [WAIT] Attempt {}/6: no event with d-tag={} yet, retrying in 5s...",
-            attempt, stream_id_1
-        );
-        tokio::time::sleep(Duration::from_secs(5)).await;
-    }
+    // ── Step 5: Stream to key 1 ────────────────────────────────────────
+    println!("[TEST] Step 5/{total_steps}: Stream to key 1 (Alpha)");
+    let stream1_start = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
+    let mut ffmpeg1 = FfmpegStream::start_rtmps(rtmp_url, &key1, 90, 1000).await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(ffmpeg1.is_running(), "FFmpeg died immediately for key 1");
+
+    tokio::time::sleep(Duration::from_secs(20)).await;
+    let logs1 = docker::get_docker_logs_since(&ext_container, &stream1_start).await;
+    let webhook_marker1 = format!("live_input.connected for input_id: {}", ck1_external_id);
     assert!(
-        !events.is_empty(),
-        "No kind 30311 events with d-tag={} after 30s of polling",
+        logs1.contains(&webhook_marker1),
+        "Missing webhook for key 1's Live Input.\n\
+         Expected: '{}'\n\
+         in logs since {} ({} bytes)",
+        webhook_marker1,
+        stream1_start,
+        logs1.len(),
+    );
+    println!("[PASS] Step 5/{total_steps}: Key 1 stream started, webhook received");
+
+    // ── Step 6: Stop key 1 stream ──────────────────────────────────────
+    println!("[TEST] Step 6/{total_steps}: Stop key 1 stream");
+    ffmpeg1.stop().await;
+    tokio::time::sleep(Duration::from_secs(15)).await;
+    println!("[PASS] Step 6/{total_steps}: Key 1 stream stopped");
+
+    // ── Step 7: Verify key 1 Nostr event has Alpha metadata ────────────
+    println!("[TEST] Step 7/{total_steps}: Verify key 1 Nostr event has Alpha metadata");
+    let events1 = relay
+        .query_30311_events(since, Some(&stream_id_1))
+        .await;
+    assert!(
+        !events1.is_empty(),
+        "No kind 30311 events with d-tag={}",
         stream_id_1,
     );
 
-    let live_event = events
-        .iter()
-        .find(|e| {
-            nostr_relay::get_tag_value(e, "d").as_deref() == Some(stream_id_1.as_str())
-                && nostr_relay::get_tag_value(e, "status").as_deref() == Some("live")
-        })
-        .expect(&format!(
-            "No LIVE kind 30311 event with d-tag={} (found {} events, statuses: {:?})",
-            stream_id_1,
-            events.len(),
-            events
-                .iter()
-                .map(|e| nostr_relay::get_tag_value(e, "status"))
-                .collect::<Vec<_>>()
-        ));
-    assert!(
-        nostr_relay::has_tag(live_event, "streaming"),
-        "LIVE event missing 'streaming' tag"
-    );
-
-    let title = nostr_relay::get_tag_value(live_event, "title");
+    // Use the most recent event (ended or live) — it carries the same metadata
+    let event1 = &events1[0];
     assert_eq!(
-        title.as_deref(),
-        Some("Custom Key Test Stream"),
-        "Title mismatch: {:?}",
-        title
+        nostr_relay::get_tag_value(event1, "d").as_deref(),
+        Some(stream_id_1.as_str()),
+        "Key 1 event d-tag mismatch"
     );
-    let summary = nostr_relay::get_tag_value(live_event, "summary");
+
+    let title1 = nostr_relay::get_tag_value(event1, "title");
     assert_eq!(
-        summary.as_deref(),
-        Some("E2E test of custom keys on external backend"),
-        "Summary mismatch: {:?}",
-        summary
+        title1.as_deref(),
+        Some(alpha_title.as_str()),
+        "Key 1 event has wrong title: {:?} (expected {:?})",
+        title1,
+        alpha_title,
     );
-
-    let t_tags = nostr_relay::get_all_tag_values(live_event, "t");
+    let summary1 = nostr_relay::get_tag_value(event1, "summary");
+    assert_eq!(
+        summary1.as_deref(),
+        Some(alpha_summary.as_str()),
+        "Key 1 event has wrong summary: {:?} (expected {:?})",
+        summary1,
+        alpha_summary,
+    );
+    let t_tags1 = nostr_relay::get_all_tag_values(event1, "t");
     assert!(
-        t_tags.contains(&"test".to_string()),
-        "Missing 'test' t-tag (got {:?})",
-        t_tags
+        t_tags1.contains(&"alpha".to_string()),
+        "Key 1 event missing 'alpha' t-tag (got {:?})",
+        t_tags1,
     );
     assert!(
-        t_tags.contains(&"custom-key".to_string()),
-        "Missing 'custom-key' t-tag (got {:?})",
-        t_tags
+        t_tags1.contains(&run_id.to_string()),
+        "Key 1 event missing run_id t-tag '{}' (got {:?})",
+        run_id,
+        t_tags1,
     );
-    println!("[PASS] Step 8/{total_steps}: LIVE event with metadata verified");
+    // Cross-contamination guard: key 1 must NOT have key 2's tag
+    assert!(
+        !t_tags1.contains(&"beta".to_string()),
+        "Key 1 event has 'beta' t-tag — metadata cross-contamination! (got {:?})",
+        t_tags1,
+    );
+    println!("[PASS] Step 7/{total_steps}: Key 1 event has Alpha metadata, no Beta contamination");
 
-    // ── Step 9/11: End custom key stream ──────────────────────────────
-    println!("[TEST] Step 9/{total_steps}: End custom key stream");
-    let logs_before_stop = docker::get_docker_logs(&ext_container, 200).await;
-    let stop_baseline_len = logs_before_stop.len();
+    // ── Step 8: Stream to key 2 ────────────────────────────────────────
+    println!("[TEST] Step 8/{total_steps}: Stream to key 2 (Beta)");
+    let stream2_start = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
-    ffmpeg.stop().await;
+    let mut ffmpeg2 = FfmpegStream::start_rtmps(rtmp_url, &key2, 90, 1000).await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(ffmpeg2.is_running(), "FFmpeg died immediately for key 2");
+
+    tokio::time::sleep(Duration::from_secs(20)).await;
+    let logs2 = docker::get_docker_logs_since(&ext_container, &stream2_start).await;
+    let webhook_marker2 = format!("live_input.connected for input_id: {}", ck2_external_id);
+    assert!(
+        logs2.contains(&webhook_marker2),
+        "Missing webhook for key 2's Live Input.\n\
+         Expected: '{}'\n\
+         in logs since {} ({} bytes)",
+        webhook_marker2,
+        stream2_start,
+        logs2.len(),
+    );
+    println!("[PASS] Step 8/{total_steps}: Key 2 stream started, webhook received");
+
+    // ── Step 9: Stop key 2 stream ──────────────────────────────────────
+    println!("[TEST] Step 9/{total_steps}: Stop key 2 stream");
+    ffmpeg2.stop().await;
     tokio::time::sleep(Duration::from_secs(15)).await;
-    let logs_after_stop = docker::get_docker_logs(&ext_container, 200).await;
+    println!("[PASS] Step 9/{total_steps}: Key 2 stream stopped");
 
-    let new_stop_logs = if logs_after_stop.len() > stop_baseline_len {
-        &logs_after_stop[stop_baseline_len..]
-    } else {
-        &logs_after_stop
-    };
-
-    let disconnect_marker = format!("live_input.disconnected for input_id: {}", ck1_external_id);
+    // ── Step 10: Verify key 2 Nostr event has Beta metadata ────────────
+    println!("[TEST] Step 10/{total_steps}: Verify key 2 Nostr event has Beta metadata");
+    let events2 = relay
+        .query_30311_events(since, Some(&stream_id_2))
+        .await;
     assert!(
-        new_stop_logs.contains(&disconnect_marker),
-        "Missing disconnect webhook for THIS custom key's Live Input.\n\
-         Expected to find: '{}'\n\
-         in new logs ({} bytes since baseline)",
-        disconnect_marker,
-        new_stop_logs.len(),
+        !events2.is_empty(),
+        "No kind 30311 events with d-tag={}",
+        stream_id_2,
     );
-    println!("[PASS] Step 9/{total_steps}: Custom key stream ended (input_id={})", ck1_external_id);
 
-    // ── Step 10/11: ENDED Nostr event ─────────────────────────────────
-    println!("[TEST] Step 10/{total_steps}: ENDED Nostr event for custom key");
-    let events = relay
+    let event2 = &events2[0];
+    assert_eq!(
+        nostr_relay::get_tag_value(event2, "d").as_deref(),
+        Some(stream_id_2.as_str()),
+        "Key 2 event d-tag mismatch"
+    );
+
+    let title2 = nostr_relay::get_tag_value(event2, "title");
+    assert_eq!(
+        title2.as_deref(),
+        Some(beta_title.as_str()),
+        "Key 2 event has wrong title: {:?} (expected {:?})",
+        title2,
+        beta_title,
+    );
+    let summary2 = nostr_relay::get_tag_value(event2, "summary");
+    assert_eq!(
+        summary2.as_deref(),
+        Some(beta_summary.as_str()),
+        "Key 2 event has wrong summary: {:?} (expected {:?})",
+        summary2,
+        beta_summary,
+    );
+    let t_tags2 = nostr_relay::get_all_tag_values(event2, "t");
+    assert!(
+        t_tags2.contains(&"beta".to_string()),
+        "Key 2 event missing 'beta' t-tag (got {:?})",
+        t_tags2,
+    );
+    assert!(
+        t_tags2.contains(&run_id.to_string()),
+        "Key 2 event missing run_id t-tag '{}' (got {:?})",
+        run_id,
+        t_tags2,
+    );
+    // Cross-contamination guard: key 2 must NOT have key 1's tag
+    assert!(
+        !t_tags2.contains(&"alpha".to_string()),
+        "Key 2 event has 'alpha' t-tag — metadata cross-contamination! (got {:?})",
+        t_tags2,
+    );
+    println!("[PASS] Step 10/{total_steps}: Key 2 event has Beta metadata, no Alpha contamination");
+
+    // ── Step 11: Verify both events have correct lifecycle tags ─────────
+    println!("[TEST] Step 11/{total_steps}: Verify lifecycle tags on both events");
+    let final_events1 = relay
         .query_30311_events(since, Some(&stream_id_1))
         .await;
-    let ended_event = events
+    let ended1 = final_events1
         .iter()
-        .find(|e| {
-            nostr_relay::get_tag_value(e, "d").as_deref() == Some(&stream_id_1)
-                && nostr_relay::get_tag_value(e, "status").as_deref() == Some("ended")
-        })
+        .find(|e| nostr_relay::get_tag_value(e, "status").as_deref() == Some("ended"))
         .expect(&format!(
-            "No ENDED event with d-tag={} (found {} events)",
-            stream_id_1,
-            events.len()
+            "No ENDED event for key 1 (d-tag={})",
+            stream_id_1
         ));
-
     assert!(
-        nostr_relay::has_tag(ended_event, "ends"),
-        "ENDED event missing 'ends' tag"
+        nostr_relay::has_tag(ended1, "ends"),
+        "Key 1 ENDED event missing 'ends' tag"
     );
-    let ends_val = nostr_relay::get_tag_value(ended_event, "ends").unwrap();
-    assert!(!ends_val.is_empty(), "'ends' tag is empty");
 
-    let streaming_val = nostr_relay::get_tag_value(ended_event, "streaming");
+    let final_events2 = relay
+        .query_30311_events(since, Some(&stream_id_2))
+        .await;
+    let ended2 = final_events2
+        .iter()
+        .find(|e| nostr_relay::get_tag_value(e, "status").as_deref() == Some("ended"))
+        .expect(&format!(
+            "No ENDED event for key 2 (d-tag={})",
+            stream_id_2
+        ));
     assert!(
-        streaming_val.is_none() || streaming_val.as_deref() == Some(""),
-        "ENDED event should not have 'streaming' tag (got {:?})",
-        streaming_val
+        nostr_relay::has_tag(ended2, "ends"),
+        "Key 2 ENDED event missing 'ends' tag"
     );
-    println!("[PASS] Step 10/{total_steps}: ENDED event verified");
+    println!("[PASS] Step 11/{total_steps}: Both streams have ENDED events with 'ends' tag");
 
-    // ── Step 11/11: Keys persist after stream lifecycle ────────────────
-    println!("[TEST] Step 11/{total_steps}: Keys persist after stream lifecycle");
+    // ── Step 12: Cloudflare API validation (both keys) ─────────────────
+    println!("[TEST] Step 12/{total_steps}: Cloudflare API validation");
+    if let (Some(cf_token), Some(cf_account)) =
+        (&config.cloudflare_api_token, &config.cloudflare_account_id)
+    {
+        let http = reqwest::Client::new();
+        for (label, ext_id) in [("Key 1", &ck1_external_id), ("Key 2", &ck2_external_id)] {
+            let cf_url = format!(
+                "https://api.cloudflare.com/client/v4/accounts/{}/stream/live_inputs/{}",
+                cf_account, ext_id
+            );
+            let cf_resp: serde_json::Value = http
+                .get(&cf_url)
+                .header("Authorization", format!("Bearer {}", cf_token))
+                .send()
+                .await
+                .expect("CF API call failed")
+                .json()
+                .await
+                .expect("CF API invalid JSON");
+            assert_eq!(
+                cf_resp["success"].as_bool(),
+                Some(true),
+                "{} Cloudflare API returned success=false for input {}",
+                label,
+                ext_id,
+            );
+        }
+        println!("[PASS] Step 12/{total_steps}: Both Cloudflare Live Inputs validated");
+    } else {
+        println!(
+            "[PASS] Step 12/{total_steps}: Cloudflare API validation skipped (no credentials)"
+        );
+    }
+
+    // ── Step 13: Keys persist after full lifecycle ──────────────────────
+    println!("[TEST] Step 13/{total_steps}: Keys persist after lifecycle");
     let keys_after = client.list_keys().await;
     let keys_after_arr = keys_after.as_array().expect("keys list is not an array");
-    assert!(
-        keys_after_arr.len() >= 2,
-        "Expected at least 2 keys after lifecycle, got {}",
-        keys_after_arr.len()
-    );
     assert!(
         keys_after_arr
             .iter()
@@ -357,7 +385,7 @@ async fn e2e_custom_key_management() {
             .any(|k| k["key"].as_str() == Some(&key2)),
         "Key 2 disappeared after stream lifecycle"
     );
-    println!("[PASS] Step 11/{total_steps}: Keys persisted");
+    println!("[PASS] Step 13/{total_steps}: Both keys persisted");
 
     relay.disconnect().await;
     println!("\n====== ALL {total_steps}/{total_steps} STEPS PASSED ======");

@@ -367,6 +367,15 @@ impl ZapStreamDb {
         )
     }
 
+    pub async fn get_user_stream_key_by_id(&self, id: u64) -> Result<UserStreamKey> {
+        Ok(
+            sqlx::query_as("select * from user_stream_key where id = ?")
+                .bind(id)
+                .fetch_one(&self.db)
+                .await?,
+        )
+    }
+
     /// Delete a stream key
     pub async fn delete_stream_key(&self, user_id: u64, key_id: u64) -> Result<()> {
         sqlx::query("delete from user_stream_key where id = ? and user_id = ?")
