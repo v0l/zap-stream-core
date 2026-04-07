@@ -515,15 +515,18 @@ impl CfApiWrapper {
                                         .viewer_count_tracker
                                         .get_viewer_count(&live_stream.id, &hls_url)
                                         .await;
+                                    // Feed viewer count into stream manager so stream_to_event picks it up
+                                    self.stream_manager
+                                        .set_viewer_count(&live_stream.id, viewer_count as usize)
+                                        .await;
                                     if self
                                         .should_publish_viewer_count(&live_stream.id, viewer_count)
                                         .await
                                     {
                                         let event = self
-                                            .publish_stream_event_with_viewer_count(
+                                            .publish_stream_event(
                                                 &live_stream,
                                                 &user,
-                                                Some(viewer_count),
                                             )
                                             .await?;
                                         let mut updated_stream = live_stream.clone();
@@ -944,21 +947,10 @@ impl CfApiWrapper {
         Ok(None)
     }
 
-    async fn publish_stream_event_with_viewer_count(
-        &self,
-        stream: &UserStream,
-        user: &User,
-        viewer_count: Option<u32>,
-    ) -> Result<Event> {
-        self.publish_stream_event_full(stream, user, viewer_count, None)
-            .await
-    }
-
     async fn publish_stream_event_full(
         &self,
         stream: &UserStream,
         user: &User,
-        viewer_count: Option<u32>,
         download_url: Option<&str>,
     ) -> Result<Event> {
         let mut extra_tags = vec![
@@ -978,10 +970,6 @@ impl CfApiWrapper {
         if let Some(url) = download_url {
             extra_tags.push(Tag::parse(["download", url])?);
         }
-        if let Some(count) = viewer_count {
-            let count_str = count.to_string();
-            extra_tags.push(Tag::parse(["current_participants", count_str.as_str()])?);
-        }
         let alt_text = build_alt_text(&self.nostr_client, stream, &self.client_url).await?;
         let ev = self.n53.stream_to_event(stream, extra_tags, Some(alt_text)).await?;
         self.n53.publish(&ev).await?;
@@ -990,7 +978,7 @@ impl CfApiWrapper {
     }
 
     pub async fn publish_stream_event(&self, stream: &UserStream, user: &User) -> Result<Event> {
-        self.publish_stream_event_full(stream, user, None, None)
+        self.publish_stream_event_full(stream, user, None)
             .await
     }
 
@@ -1000,7 +988,7 @@ impl CfApiWrapper {
         user: &User,
         download_url: Option<&str>,
     ) -> Result<Event> {
-        self.publish_stream_event_full(stream, user, None, download_url)
+        self.publish_stream_event_full(stream, user, download_url)
             .await
     }
 
