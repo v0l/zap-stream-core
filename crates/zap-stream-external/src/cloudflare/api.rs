@@ -250,6 +250,13 @@ impl ViewerCountTracker {
     }
 }
 
+/// Returns `true` if a duplicate `live_input.connected` webhook should be skipped
+/// because an active stream already exists for this Cloudflare input.
+/// Cloudflare delivers webhooks at-least-once, so duplicates are expected.
+fn should_skip_duplicate_webhook(mapped_stream: Option<&UserStream>) -> bool {
+    matches!(mapped_stream, Some(s) if s.state == UserStreamState::Live)
+}
+
 #[derive(Clone)]
 pub struct CfApiWrapper {
     /// Cloudflare API client
@@ -671,6 +678,16 @@ impl CfApiWrapper {
     }
 
     async fn publish_stream_start(&self, input: LiveInput) -> Result<()> {
+        // Dedup guard: skip duplicate live_input.connected webhooks (CF delivers at-least-once)
+        let mapped = self.get_mapped_stream(&input.uid).await?;
+        if should_skip_duplicate_webhook(mapped.as_ref()) {
+            info!(
+                "Skipping duplicate live_input.connected webhook for input {}: stream {} is already Live",
+                input.uid, mapped.unwrap().id
+            );
+            return Ok(());
+        }
+
         let user = self.db.get_user_by_external_id(&input.uid).await?;
         if let Some(user) = user {
             let new_id = Uuid::new_v4();
@@ -1388,7 +1405,8 @@ mod tests {
     use super::{
         apply_custom_ingest_domain, apply_video_asset_to_stream, build_account_endpoints,
         build_alt_text, build_stream_key, get_download_url, resolve_client_url, resolve_tos_url,
-        select_ingest_endpoint, select_stream_for_video_asset, slugify_title, ViewerCountTracker,
+        select_ingest_endpoint, select_stream_for_video_asset, should_skip_duplicate_webhook,
+        slugify_title, ViewerCountTracker,
     };
     use crate::cloudflare::{LiveInput, Playback, RtmpsEndpoint, SrtEndpoint, VideoAssetStatus, VideoAssetWebhook};
     use mockito::Server;
@@ -1873,5 +1891,37 @@ mod tests {
         assert!(first > 0);
         assert_eq!(first, second);
         mock.assert_async().await;
+    }
+
+    #[test]
+    fn skip_duplicate_when_stream_is_live() {
+        let stream = UserStream {
+            state: UserStreamState::Live,
+            ..sample_stream()
+        };
+        assert!(should_skip_duplicate_webhook(Some(&stream)));
+    }
+
+    #[test]
+    fn allow_webhook_when_no_mapped_stream() {
+        assert!(!should_skip_duplicate_webhook(None));
+    }
+
+    #[test]
+    fn allow_webhook_when_mapped_stream_ended() {
+        let stream = UserStream {
+            state: UserStreamState::Ended,
+            ..sample_stream()
+        };
+        assert!(!should_skip_duplicate_webhook(Some(&stream)));
+    }
+
+    #[test]
+    fn allow_webhook_when_mapped_stream_planned() {
+        let stream = UserStream {
+            state: UserStreamState::Planned,
+            ..sample_stream()
+        };
+        assert!(!should_skip_duplicate_webhook(Some(&stream)));
     }
 }
