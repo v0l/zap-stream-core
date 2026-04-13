@@ -283,7 +283,11 @@ async fn e2e_single_user_lifecycle() {
         "Missing live_input.connected webhook for custom key"
     );
 
-    if let Some(state) = db.get_stream_state(&custom_key_stream_id).await {
+    // Custom keys reuse the same stream row (and d-tag) every time.
+    let ck_live_stream_id = custom_key_stream_id.clone();
+    println!("[INFO] Custom key stream ID (d-tag): {}", ck_live_stream_id);
+
+    if let Some(state) = db.get_stream_state(&ck_live_stream_id).await {
         assert!(
             state == 2 || state == 3,
             "Custom key stream state should be Live(2) or Ended(3), got {}",
@@ -295,12 +299,12 @@ async fn e2e_single_user_lifecycle() {
     // ── Step 15/16: Custom key Nostr event metadata ───────────────────
     println!("[TEST] Step 15/{total_steps}: Custom key Nostr event metadata");
     let ck_events = relay
-        .query_30311_events(since, Some(&custom_key_stream_id))
+        .query_30311_events(since, Some(&ck_live_stream_id))
         .await;
     assert!(
         !ck_events.is_empty(),
         "No kind 30311 events for custom key stream_id={}",
-        custom_key_stream_id
+        ck_live_stream_id
     );
     let ck_event = &ck_events[0];
     let ck_status = nostr_relay::get_tag_value(ck_event, "status");
@@ -343,7 +347,7 @@ async fn e2e_single_user_lifecycle() {
     tokio::time::sleep(Duration::from_secs(15)).await;
 
     let ck_events = relay
-        .query_30311_events(since, Some(&custom_key_stream_id))
+        .query_30311_events(since, Some(&ck_live_stream_id))
         .await;
     let ck_ended = ck_events
         .iter()

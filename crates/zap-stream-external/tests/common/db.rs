@@ -54,4 +54,5 @@ impl TestDb {
                 .expect("DB query failed");
         row.and_then(|r| r.get::<Option<String>, _>("external_id"))
     }
+
 }
