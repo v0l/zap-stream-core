@@ -119,7 +119,7 @@ impl ApiBase {
                 stream.goal = Some(goal);
             }
 
-            self.db.update_stream(&stream).await?;
+            self.db.update_stream(&stream).await?;;
         } else {
             // Update user default stream info
             self.db
