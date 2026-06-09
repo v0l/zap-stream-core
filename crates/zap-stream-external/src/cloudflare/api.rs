@@ -31,6 +31,26 @@ use zap_stream_api_common::*;
 use zap_stream_core::ingress::ConnectionInfo;
 use zap_stream_db::{IngestEndpoint, StreamKeyType, User, UserStream, UserStreamState, ZapStreamDb};
 
+/// Sentinel error: no live streams found for a user during stream-end processing.
+/// Used for downcast-based matching instead of string comparison.
+#[derive(Debug)]
+struct NoLiveStreams {
+    user_id: u64,
+    stream_key_id: Option<u64>,
+}
+
+impl std::fmt::Display for NoLiveStreams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "No live streams found for user {} (stream_key_id: {:?})",
+            self.user_id, self.stream_key_id
+        )
+    }
+}
+
+impl std::error::Error for NoLiveStreams {}
+
 fn select_ingest_endpoint<'a>(
     endpoints: &'a [IngestEndpoint],
     ingest_id: Option<u64>,
@@ -509,24 +529,29 @@ impl CfApiWrapper {
     }
 
     async fn get_mapped_stream(&self, input_uid: &str) -> Result<Option<UserStream>> {
-        let mut map = self.input_stream_map.write().await;
-        let now = Instant::now();
-        let ttl = Self::input_map_ttl();
-        map.retain(|_, (_, created)| now.duration_since(*created) <= ttl);
-        let Some((stream_id, _)) = map.get(input_uid).cloned() else {
-            return Ok(None);
-        };
-        let stream_uuid = match Uuid::parse_str(&stream_id) {
-            Ok(id) => id,
-            Err(_) => {
-                map.remove(input_uid);
+        let stream_uuid = {
+            let mut map = self.input_stream_map.write().await;
+            let now = Instant::now();
+            let ttl = Self::input_map_ttl();
+            map.retain(|_, (_, created)| now.duration_since(*created) <= ttl);
+            let Some((stream_id, _)) = map.get(input_uid).cloned() else {
                 return Ok(None);
+            };
+            match Uuid::parse_str(&stream_id) {
+                Ok(id) => id,
+                Err(_) => {
+                    map.remove(input_uid);
+                    return Ok(None);
+                }
             }
-        };
+        }; // write lock dropped
+
         let stream = self.db.try_get_stream(&stream_uuid).await?;
+
         if stream.is_none() {
-            map.remove(input_uid);
+            self.input_stream_map.write().await.remove(input_uid);
         }
+
         Ok(stream)
     }
 
@@ -763,7 +788,7 @@ impl CfApiWrapper {
                             .await?;
                         match self.publish_stream_end(input).await {
                             Ok(()) => {}
-                            Err(e) if e.to_string().contains("No live streams found") => {
+                            Err(e) if e.downcast_ref::<NoLiveStreams>().is_some() => {
                                 info!("Disconnect webhook received but stream already ended (likely ended by poller): {}", e);
                             }
                             Err(e) => return Err(e),
@@ -899,12 +924,9 @@ impl CfApiWrapper {
         let mut stream = streams
             .into_iter()
             .find(|s| s.stream_key_id == stream_key_id)
-            .ok_or_else(|| {
-                anyhow!(
-                    "No live streams found for user {} (stream_key_id: {:?})",
-                    user.id,
-                    stream_key_id
-                )
+            .ok_or(NoLiveStreams {
+                user_id: user.id,
+                stream_key_id,
             })?;
 
         self.stream_manager.remove_active_stream(&stream.id).await;

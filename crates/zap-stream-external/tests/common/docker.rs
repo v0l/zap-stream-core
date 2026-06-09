@@ -24,18 +24,6 @@ pub async fn detect_container(pattern: &str) -> Option<String> {
         .map(String::from)
 }
 
-/// Fetch the last `tail` lines of logs from `container`.
-pub async fn get_docker_logs(container: &str, tail: u32) -> String {
-    let output = Command::new("docker")
-        .args(["logs", "--tail", &tail.to_string(), container])
-        .output()
-        .await
-        .expect("docker logs failed");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    format!("{}{}", stdout, stderr)
-}
-
 /// Fetch logs from `container` since `since` (RFC 3339 or relative e.g. "30s").
 pub async fn get_docker_logs_since(container: &str, since: &str) -> String {
     let output = Command::new("docker")
