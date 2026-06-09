@@ -186,7 +186,7 @@ async fn e2e_single_user_lifecycle() {
 
     // ── Step 9/16: Stream via RTMPS ───────────────────────────────────
     println!("[TEST] Step 9/{total_steps}: Stream via RTMPS to Cloudflare");
-    let mut ffmpeg = FfmpegStream::start_rtmps(rtmp_url, rtmp_key, 30, 1000).await;
+    let mut ffmpeg = FfmpegStream::start_rtmps(rtmp_url, rtmp_key, 90, 1000).await;
     tokio::time::sleep(Duration::from_secs(3)).await;
     assert!(ffmpeg.is_running(), "FFmpeg died immediately");
     println!("[PASS] Step 9/{total_steps}: RTMPS stream started");
@@ -270,7 +270,7 @@ async fn e2e_single_user_lifecycle() {
 
     // ── Step 14/16: Stream with custom key ────────────────────────────
     println!("[TEST] Step 14/{total_steps}: Stream with custom key");
-    let mut ck_ffmpeg = FfmpegStream::start_rtmps(rtmp_url, custom_key, 30, 800).await;
+    let mut ck_ffmpeg = FfmpegStream::start_rtmps(rtmp_url, custom_key, 90, 800).await;
     tokio::time::sleep(Duration::from_secs(3)).await;
     assert!(ck_ffmpeg.is_running(), "Custom key FFmpeg died immediately");
 
