@@ -135,7 +135,8 @@ async fn main() -> Result<()> {
             settings.endpoints_public_hostname.clone(),
             settings.tos_url.clone(),
             settings.client_url.clone(),
-        );
+        )
+        .await?;
         api_impl.setup_webhook().await?;
         // Notification policy setup runs as a background task because Cloudflare
         // validates the webhook URL on destination creation — the HTTP server

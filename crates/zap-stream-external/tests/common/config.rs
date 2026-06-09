@@ -2,6 +2,9 @@ use std::env;
 
 pub struct TestConfig {
     pub api_port: u16,
+    pub db_host: String,
+    pub db_port: u16,
+    pub db_user: String,
     pub db_password: String,
     pub nostr_relay_url: String,
     pub external_container: Option<String>,
@@ -17,6 +20,12 @@ impl TestConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(8080),
+            db_host: env::var("DB_HOST").unwrap_or_else(|_| "localhost".to_string()),
+            db_port: env::var("DB_PORT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(3306),
+            db_user: env::var("DB_USER").unwrap_or_else(|_| "root".to_string()),
             db_password: env::var("DB_ROOT_PASSWORD").unwrap_or_else(|_| "root".to_string()),
             nostr_relay_url: env::var("NOSTR_RELAY_URL")
                 .unwrap_or_else(|_| "ws://localhost:3334".to_string()),
@@ -33,8 +42,8 @@ impl TestConfig {
 
     pub fn db_connection_string(&self) -> String {
         format!(
-            "mysql://root:{}@localhost:3306/zap_stream",
-            self.db_password
+            "mysql://{}:{}@{}:{}/zap_stream",
+            self.db_user, self.db_password, self.db_host, self.db_port
         )
     }
 }

@@ -3,9 +3,7 @@ mod common;
 use common::api_client::ApiClient;
 use common::config::TestConfig;
 use common::db::TestDb;
-
-/// Safe test-only nsec (same as e2e_single_user / e2e_custom_keys).
-const TEST_NSEC: &str = "nsec107gexedhvf97ej83jzalley9wt682mlgy9ty5xwsp98vnph09fysssnzlk";
+use nostr_sdk::{Keys, ToBech32};
 
 /// Smoke test: POST /keys should create a custom stream key with its own
 /// Cloudflare Live Input, returning a key and stream_id.  We then verify
@@ -17,7 +15,8 @@ const TEST_NSEC: &str = "nsec107gexedhvf97ej83jzalley9wt682mlgy9ty5xwsp98vnph09f
 async fn key_creation_generates_cloudflare_uuid() {
     let config = TestConfig::from_env();
     let db = TestDb::connect(&config.db_connection_string()).await;
-    let client = ApiClient::new(TEST_NSEC, &config.api_base_url()).await;
+    let test_nsec = Keys::generate().secret_key().to_bech32().expect("bech32 nsec");
+    let client = ApiClient::new(&test_nsec, &config.api_base_url()).await;
 
     // Ensure user exists in DB
     db.ensure_user_exists(&client.pubkey_hex()).await;

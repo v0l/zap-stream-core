@@ -45,9 +45,8 @@ The test harness validates the full lifecycle: API authentication, Cloudflare Li
 | 2 | Check cloudflared tunnel liveness | AI Agent |
 | 3 | Update docker override with tunnel URL | AI Agent |
 | 4 | Restart docker stack | AI Agent |
-| 5 | Update Cloudflare webhook notification URL | Developer (in CF dashboard) |
-| 6 | Run Rust e2e tests | AI Agent |
-| 7 | Manual smoke test | Developer |
+| 5 | Run Rust e2e tests | AI Agent |
+| 6 | Manual smoke test | Developer |
 
 ---
 
@@ -90,7 +89,7 @@ cloudflared tunnel --url http://localhost:8090 &
 
 # cloudflared will print a line like:
 #   | https://something-something.trycloudflare.com
-# Copy this URL — you need it for Steps 3 and 5
+# Copy this URL — you need it for Step 3
 ```
 
 Quick tunnel URLs are ephemeral. They change every time you restart cloudflared.
@@ -159,21 +158,13 @@ docker compose -f docker-compose.external.yaml -f docker-compose.override.yml lo
 
 ---
 
-## Step 5: Update Cloudflare Webhook Notification URL
+## Step 5: Run E2E Tests
 
-This is a separate configuration from the service's self-registered webhook. Cloudflare has a **Notifications** system that sends `live_input.connected`, `live_input.disconnected`, and `live_input.errored` events. This must point to your tunnel URL.
-
-1. Go to the **Cloudflare Dashboard** > **Notifications** > **Destinations** > **Webhooks**
-2. Find or create the webhook destination used for Stream Live Input notifications
-3. Update the webhook URL to: `https://<your-tunnel-url>/api/v1/webhook/cloudflare`
-4. Save the webhook destination
-5. Go to **Notification Policies** and ensure the "Stream Live Input" notification policy is **enabled** and using this webhook destination
-
-Without this step, stream start/end lifecycle events will not fire — the e2e tests will hang waiting for webhooks.
-
----
-
-## Step 6: Run E2E Tests
+> **Note:** The Cloudflare notification policy (webhook destination + notification policy for
+> `live_input.connected`/`disconnected` events) is now **auto-configured on startup** by
+> `setup_notification_policy()`. There is no manual Cloudflare dashboard step required.
+> The binary creates or updates the alerting webhook destination and notification policy
+> to point to its own `public_url` each time it starts.
 
 The e2e tests are Rust integration tests in `crates/zap-stream-external/tests/`. They are gated with `#[ignore]` and only run when explicitly requested.
 
@@ -271,13 +262,13 @@ cargo test -p zap-stream-external -- --ignored --nocapture
 
 **If any e2e tests fail**, check:
 - Is the tunnel still alive? (repeat Step 2)
-- Is the CF notification webhook pointing to the right URL? (repeat Step 5)
+- Is the CF notification webhook correct? The binary auto-configures this on startup — restart the stack to re-register.
 - Are containers running? `docker ps | grep -E '(zap-stream-external|db)'`
 - Container logs: `docker logs <external-container> --tail 50`
 
 ---
 
-## Step 7: Manual Smoke Test
+## Step 6: Manual Smoke Test
 
 After automated tests pass, do a manual test with a real streaming app to verify the user experience end-to-end.
 
@@ -321,7 +312,10 @@ All e2e tests accept configuration via environment variables:
 | `ZS_API_PORT` | `8080` | Port the external API listens on |
 | `ZS_EXTERNAL_CONTAINER` | auto-detect | Docker container name for `zap-stream-external` |
 | `ZS_DB_CONTAINER` | auto-detect | Docker container name for MariaDB |
-| `DB_ROOT_PASSWORD` | `root` | MariaDB root password |
+| `DB_HOST` | `localhost` | MariaDB hostname |
+| `DB_PORT` | `3306` | MariaDB port |
+| `DB_USER` | `root` | MariaDB username |
+| `DB_ROOT_PASSWORD` | `root` | MariaDB password |
 | `NOSTR_RELAY_URL` | `ws://localhost:3334` | WebSocket URL of the Nostr relay |
 | `CLOUDFLARE_API_TOKEN` | (none) | Optional: for direct CF API validation in custom keys test |
 | `CLOUDFLARE_ACCOUNT_ID` | (none) | Optional: for direct CF API validation in custom keys test |
@@ -346,7 +340,7 @@ These are steps for the AI agent to take autonomously — do not ask the user to
 
 **Cargo tests fail:** Fix before proceeding. E2e tests will not produce useful results against broken code.
 
-**Tunnel dead:** `curl` returns `000` or times out. Kill old cloudflared, start new tunnel, update docker override (Step 3), restart stack (Step 4), update CF notification webhook (Step 5).
+**Tunnel dead:** `curl` returns `000` or times out. Kill old cloudflared, start new tunnel, update docker override (Step 3), restart stack (Step 4). The notification webhook is auto-configured on startup.
 
 **Webhooks not received:** Most common cause. Verify: (a) tunnel is alive, (b) `APP__PUBLIC_URL` in docker override matches tunnel, (c) CF notification webhook URL in dashboard matches tunnel, (d) notification policy is enabled.
 

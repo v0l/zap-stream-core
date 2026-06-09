@@ -10,7 +10,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{any};
 use axum::{Router};
 use chrono::Utc;
-use nostr_sdk::{Client, Event, JsonUtil, Kind, NostrSigner, PublicKey, Tag, ToBech32};
+use nostr_sdk::{Client, Event, JsonUtil, Kind, PublicKey, Tag, ToBech32};
 use nostr_sdk::prelude::Coordinate;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -150,7 +150,7 @@ fn slugify_title(title: &str) -> String {
 }
 
 /// Build the deterministic MP4 download URL from a video asset webhook.
-/// Returns None if the recording exceeds 4 hours (CloudFlare limit for MP4 downloads).
+/// Returns None if the recording exceeds 4 hours (Cloudflare limit for MP4 downloads).
 /// When a stream title is provided, appends `?filename=<slugified-title>` so the
 /// downloaded file has a meaningful name instead of `default.mp4`.
 fn get_download_url(asset: &VideoAssetWebhook, title: Option<&str>) -> Option<String> {
@@ -158,26 +158,23 @@ fn get_download_url(asset: &VideoAssetWebhook, title: Option<&str>) -> Option<St
     if asset.duration > MAX_DOWNLOAD_DURATION_SECS {
         return None;
     }
-    // Derive base URL from the HLS playback URL by replacing the path
-    if let Ok(mut url) = Url::parse(&asset.playback.hls) {
-        url.set_path(&format!("{}/downloads/default.mp4", asset.uid));
-        if let Some(t) = title {
-            let slug = slugify_title(t);
-            if !slug.is_empty() {
-                url.set_query(Some(&format!("filename={}", slug)));
-            }
+    // Extract the host from the HLS playback URL (e.g. customer-<hash>.cloudflarestream.com)
+    // and construct the download path from the asset UID directly.
+    let hls_url = Url::parse(&asset.playback.hls).ok()?;
+    let host = hls_url.host_str()?;
+    let scheme = hls_url.scheme();
+    let mut url = Url::parse(&format!(
+        "{}://{}/{}/downloads/default.mp4",
+        scheme, host, asset.uid
+    ))
+    .ok()?;
+    if let Some(t) = title {
+        let slug = slugify_title(t);
+        if !slug.is_empty() {
+            url.query_pairs_mut().append_pair("filename", &slug);
         }
-        Some(url.to_string())
-    } else {
-        None
     }
-}
-
-fn select_stream_for_video_asset(
-    matched: Option<UserStream>,
-    fallback: Option<UserStream>,
-) -> Option<UserStream> {
-    matched.or(fallback)
+    Some(url.to_string())
 }
 
 #[derive(Clone, Debug)]
@@ -204,6 +201,10 @@ impl ViewerCountTracker {
             cache: Arc::new(RwLock::new(HashMap::new())),
             cache_duration,
         }
+    }
+
+    async fn remove(&self, stream_id: &str) {
+        self.cache.write().await.remove(stream_id);
     }
 
     async fn get_viewer_count(&self, stream_id: &str, hls_url: &str) -> u32 {
@@ -293,6 +294,8 @@ pub struct CfApiWrapper {
     min_update_minutes: i64,
     /// Custom ingest domain (if configured)
     custom_ingest_domain: Option<String>,
+    /// Cached signer public key (static for lifetime of process)
+    signer_pubkey: PublicKey,
 }
 
 impl CfApiWrapper {
@@ -303,7 +306,7 @@ impl CfApiWrapper {
     /// Matches upstream ZapStreamOverseer::RECONNECT_WINDOW_SECONDS.
     const RECONNECT_WINDOW_SECONDS: u64 = 120;
 
-    pub fn new(
+    pub async fn new(
         token: CloudflareToken,
         db: ZapStreamDb,
         client: Client,
@@ -313,8 +316,9 @@ impl CfApiWrapper {
         endpoints_public_hostname: Option<String>,
         tos_url: Option<String>,
         client_url: Option<String>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self> {
+        let signer_pubkey = client.signer().await?.get_public_key().await?;
+        Ok(Self {
             client: CloudflareClient::new(token),
             nostr_client: client.clone(),
             api_base: ApiBase::new(db.clone(), client.clone(), lightning),
@@ -332,7 +336,8 @@ impl CfApiWrapper {
             viewer_count_states: Default::default(),
             min_update_minutes: 5,
             custom_ingest_domain: endpoints_public_hostname,
-        }
+            signer_pubkey,
+        })
     }
 
     fn input_map_ttl() -> Duration {
@@ -786,9 +791,7 @@ impl CfApiWrapper {
                     };
                     let matched = self.get_mapped_stream(&v.live_input).await?;
                     let fallback = self.db.get_user_latest_ended_stream(user.id).await?;
-                    let Some(mut stream) =
-                        select_stream_for_video_asset(matched, fallback)
-                    else {
+                    let Some(mut stream) = matched.or(fallback) else {
                         warn!(
                             "No ended streams found for user {}, skipping Video Asset update",
                             user.id
@@ -915,6 +918,8 @@ impl CfApiWrapper {
 
         info!("Stream ended {}", stream.id);
         self.remove_input_mapping(&input.uid).await;
+        self.viewer_count_states.write().await.remove(&stream.id);
+        self.viewer_count_tracker.remove(&stream.id).await;
         Ok(())
     }
 
@@ -977,7 +982,7 @@ impl CfApiWrapper {
         if let Some(url) = download_url {
             extra_tags.push(Tag::parse(["download", url])?);
         }
-        let alt_text = build_alt_text(&self.nostr_client, stream, &self.client_url).await?;
+        let alt_text = build_alt_text(&self.signer_pubkey, stream, &self.client_url)?;
         let ev = self.n53.stream_to_event(stream, extra_tags, Some(alt_text)).await?;
         self.n53.publish(&ev).await?;
         info!("Published stream event {}", ev.id.to_hex());
@@ -1381,9 +1386,8 @@ fn resolve_client_url(client_url: Option<&str>) -> String {
     }
 }
 
-async fn build_alt_text(client: &Client, stream: &UserStream, client_url: &str) -> Result<String> {
-    let pubkey = client.signer().await?.get_public_key().await?;
-    let coord = Coordinate::new(Kind::LiveEvent, pubkey).identifier(&stream.id);
+fn build_alt_text(pubkey: &PublicKey, stream: &UserStream, client_url: &str) -> Result<String> {
+    let coord = Coordinate::new(Kind::LiveEvent, *pubkey).identifier(&stream.id);
     Ok(format!(
         "Watch live on {}/{}",
         client_url,
@@ -1400,7 +1404,7 @@ mod tests {
     use super::{
         apply_custom_ingest_domain, apply_video_asset_to_stream, build_account_endpoints,
         build_alt_text, build_stream_key, get_download_url, resolve_client_url, resolve_tos_url,
-        select_ingest_endpoint, select_stream_for_video_asset, should_skip_duplicate_webhook,
+        select_ingest_endpoint, should_skip_duplicate_webhook,
         slugify_title, ViewerCountTracker,
     };
     use crate::cloudflare::{LiveInput, Playback, RtmpsEndpoint, SrtEndpoint, VideoAssetStatus, VideoAssetWebhook};
@@ -1618,12 +1622,10 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn build_alt_text_uses_configured_client_url() {
+    #[test]
+    fn build_alt_text_uses_configured_client_url() {
         let keys = Keys::generate();
-        let client = nostr_sdk::ClientBuilder::new().signer(keys).build();
-        let alt_text = build_alt_text(&client, &sample_stream(), "https://client.example")
-            .await
+        let alt_text = build_alt_text(&keys.public_key(), &sample_stream(), "https://client.example")
             .unwrap();
 
         assert!(alt_text.starts_with("Watch live on https://client.example/"));
@@ -1837,32 +1839,6 @@ mod tests {
         assert_eq!(slugify_title(""), "");
         assert_eq!(slugify_title("café & más"), "caf-m-s");
         assert_eq!(slugify_title("under_score test"), "under_score-test");
-    }
-
-    #[test]
-    fn select_stream_for_video_asset_prefers_matched() {
-        let matched = UserStream {
-            id: "matched".to_string(),
-            ..Default::default()
-        };
-        let fallback = UserStream {
-            id: "fallback".to_string(),
-            ..Default::default()
-        };
-
-        let selected = select_stream_for_video_asset(Some(matched), Some(fallback)).unwrap();
-        assert_eq!(selected.id, "matched");
-    }
-
-    #[test]
-    fn select_stream_for_video_asset_uses_fallback_when_missing() {
-        let fallback = UserStream {
-            id: "fallback".to_string(),
-            ..Default::default()
-        };
-
-        let selected = select_stream_for_video_asset(None, Some(fallback)).unwrap();
-        assert_eq!(selected.id, "fallback");
     }
 
     #[tokio::test]

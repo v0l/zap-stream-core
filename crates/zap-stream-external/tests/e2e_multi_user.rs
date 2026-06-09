@@ -6,12 +6,8 @@ use common::db::TestDb;
 use common::docker;
 use common::ffmpeg::FfmpegStream;
 use common::nostr_relay::{self, NostrRelay};
-use nostr_sdk::Timestamp;
+use nostr_sdk::{Keys, ToBech32, Timestamp};
 use std::time::Duration;
-
-/// Safe test-only nsec keys (not used for anything real).
-const USER_A_NSEC: &str = "nsec15devjmm9cgwlpu7dw64cl29c02taw9gjrt5k6s78wxh3frwhhdcs986v76";
-const USER_B_NSEC: &str = "nsec1u47296qau8ssg675wezgem0z3jslwxjaqs9xve74w3yn3v4esryqeqn2qg";
 
 #[tokio::test]
 #[ignore]
@@ -41,8 +37,10 @@ async fn e2e_multi_user_concurrent_streaming() {
 
     // ── Step 2/14: Database setup ─────────────────────────────────────
     println!("[TEST] Step 2/{total_steps}: Database setup for both users");
-    let client_a = ApiClient::new(USER_A_NSEC, &config.api_base_url()).await;
-    let client_b = ApiClient::new(USER_B_NSEC, &config.api_base_url()).await;
+    let nsec_a = Keys::generate().secret_key().to_bech32().expect("bech32 nsec");
+    let nsec_b = Keys::generate().secret_key().to_bech32().expect("bech32 nsec");
+    let client_a = ApiClient::new(&nsec_a, &config.api_base_url()).await;
+    let client_b = ApiClient::new(&nsec_b, &config.api_base_url()).await;
     let db = TestDb::connect(&config.db_connection_string()).await;
     db.ensure_user_exists(&client_a.pubkey_hex()).await;
     db.ensure_user_exists(&client_b.pubkey_hex()).await;

@@ -6,11 +6,8 @@ use common::db::TestDb;
 use common::docker;
 use common::ffmpeg::FfmpegStream;
 use common::nostr_relay::{self, NostrRelay};
-use nostr_sdk::Timestamp;
+use nostr_sdk::{Keys, ToBech32, Timestamp};
 use std::time::Duration;
-
-/// Safe test-only nsec (not used for anything real).
-const TEST_NSEC: &str = "nsec107gexedhvf97ej83jzalley9wt682mlgy9ty5xwsp98vnph09fysssnzlk";
 
 #[tokio::test]
 #[ignore]
@@ -40,7 +37,8 @@ async fn e2e_single_user_lifecycle() {
 
     // ── Step 2/16: Initial database state ─────────────────────────────
     println!("[TEST] Step 2/{total_steps}: Check initial database state");
-    let client = ApiClient::new(TEST_NSEC, &config.api_base_url()).await;
+    let test_nsec = Keys::generate().secret_key().to_bech32().expect("bech32 nsec");
+    let client = ApiClient::new(&test_nsec, &config.api_base_url()).await;
     let db = TestDb::connect(&config.db_connection_string()).await;
     db.ensure_user_exists(&client.pubkey_hex()).await;
     let ext_id_before = db.get_external_id(&client.pubkey_hex()).await;
