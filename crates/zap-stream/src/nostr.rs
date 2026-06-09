@@ -1,9 +1,6 @@
 use crate::stream_manager::StreamManager;
 use anyhow::{bail, Result};
-use nostr_sdk::prelude::Coordinate;
-use nostr_sdk::{
-    Client, Event, EventBuilder, JsonUtil, Kind, NostrSigner, Tag, Timestamp, ToBech32,
-};
+use nostr_sdk::{Client, Event, EventBuilder, JsonUtil, Kind, Tag, Timestamp};
 use std::ops::Add;
 use zap_stream_db::{UserStream, UserStreamState};
 
@@ -108,25 +105,8 @@ impl N53Publisher {
             ])?);
         }
 
-        match alt {
-            Some(alt_text) => {
-                tags.push(Tag::parse(["alt", &alt_text])?);
-            }
-            None => {
-                let pubkey = self.client.signer().await?.get_public_key().await?;
-                let coord = Coordinate::new(Kind::LiveEvent, pubkey).identifier(&stream.id);
-                tags.push(Tag::parse([
-                    "alt",
-                    &format!(
-                        "Watch live on https://zap.stream/{}",
-                        nostr_sdk::nips::nip19::Nip19Coordinate {
-                            coordinate: coord,
-                            relays: vec![]
-                        }
-                        .to_bech32()?
-                    ),
-                ])?);
-            }
+        if let Some(alt_text) = alt {
+            tags.push(Tag::parse(["alt", &alt_text])?);
         }
 
         let mut eb = EventBuilder::new(Kind::LiveEvent, "")
@@ -304,7 +284,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_to_event_generates_default_alt_when_none() {
+    async fn stream_to_event_no_alt_when_none() {
         let keys = Keys::generate();
         let client = ClientBuilder::new().signer(keys).build();
         let publisher = N53Publisher::new(
@@ -315,13 +295,6 @@ mod tests {
         let stream = sample_stream(UserStreamState::Planned);
         let event = publisher.stream_to_event(&stream, vec![], None).await.unwrap();
 
-        assert_eq!(count_tag(event.tags.iter(), "alt"), 1);
-        let alt_value = event
-            .tags
-            .iter()
-            .find(|tag| tag.as_slice().first().map(|v| v.as_str()) == Some("alt"))
-            .and_then(|tag| tag.as_slice().get(1).map(|v| v.to_string()))
-            .unwrap();
-        assert!(alt_value.starts_with("Watch live on https://zap.stream/"));
+        assert_eq!(count_tag(event.tags.iter(), "alt"), 0);
     }
 }
