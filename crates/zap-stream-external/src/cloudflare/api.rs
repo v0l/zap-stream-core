@@ -658,10 +658,22 @@ impl CfApiWrapper {
                         return Ok(());
                     },
                     _ = timer.tick() => {
-                       let live_streams = self.db.list_live_streams().await?;
+                       let live_streams = match self.db.list_live_streams().await {
+                            Ok(s) => s,
+                            Err(e) => {
+                                warn!("Poller: failed to list live streams: {}, will retry next tick", e);
+                                continue;
+                            }
+                        };
                         info!("Checking {} live streams..", live_streams.len());
                         for live_stream in live_streams {
-                            let user = self.db.get_user(live_stream.user_id).await?;
+                            let user = match self.db.get_user(live_stream.user_id).await {
+                                Ok(u) => u,
+                                Err(e) => {
+                                    warn!("Poller: failed to fetch user {} for stream {}: {}", live_stream.user_id, live_stream.id, e);
+                                    continue;
+                                }
+                            };
                             let input = if let Some(key_id) = live_stream.stream_key_id {
                                 // Custom key (show) — look up the key's Cloudflare input
                                 let key = match self.db.get_user_stream_key_by_id(key_id).await {
@@ -678,7 +690,13 @@ impl CfApiWrapper {
                                         continue;
                                     }
                                 };
-                                let response = self.client.get_live_input(external_id).await?;
+                                let response = match self.client.get_live_input(external_id).await {
+                                    Ok(r) => r,
+                                    Err(e) => {
+                                        warn!("Poller: failed to fetch live input for stream key {}: {}", key_id, e);
+                                        continue;
+                                    }
+                                };
                                 if response.success {
                                     response.result
                                 } else {
@@ -701,8 +719,18 @@ impl CfApiWrapper {
                                     warn!("Failed to publish live input for user {}", e);
                                 }
                             } else {
-                                self.ensure_tracking_live(&input, &user, &live_stream).await?;
-                                if let Some(hls_url) = self.get_streaming_url(&live_stream, &input)? {
+                                if let Err(e) = self.ensure_tracking_live(&input, &user, &live_stream).await {
+                                    warn!("Poller: failed to ensure tracking for stream {}: {}", live_stream.id, e);
+                                    continue;
+                                }
+                                let hls_url = match self.get_streaming_url(&live_stream, &input) {
+                                    Ok(url) => url,
+                                    Err(e) => {
+                                        warn!("Poller: failed to get streaming URL for stream {}: {}", live_stream.id, e);
+                                        continue;
+                                    }
+                                };
+                                if let Some(hls_url) = hls_url {
                                     let viewer_count = self
                                         .viewer_count_tracker
                                         .get_viewer_count(&live_stream.id, &hls_url)
@@ -722,7 +750,9 @@ impl CfApiWrapper {
                                             Ok(event) => {
                                                 let mut updated_stream = live_stream.clone();
                                                 updated_stream.event = Some(event.as_json());
-                                                self.db.update_stream(&updated_stream).await?;
+                                                if let Err(e) = self.db.update_stream(&updated_stream).await {
+                                                    warn!("Poller: failed to save viewer count update for stream {}: {}", live_stream.id, e);
+                                                }
                                             }
                                             Err(e) => {
                                                 warn!(
