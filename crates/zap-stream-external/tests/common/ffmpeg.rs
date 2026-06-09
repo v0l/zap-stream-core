@@ -61,7 +61,13 @@ impl FfmpegStream {
 
     /// Kill the ffmpeg process and wait for it to exit.
     pub async fn stop(&mut self) {
-        let _ = self.child.kill().await;
-        let _ = self.child.wait().await;
+        self.child
+            .kill()
+            .await
+            .expect("Failed to kill ffmpeg process");
+        self.child
+            .wait()
+            .await
+            .expect("Failed to wait for ffmpeg process");
     }
 }

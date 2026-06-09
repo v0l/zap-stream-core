@@ -44,6 +44,23 @@ impl TestDb {
         row.map(|r| r.get::<u8, _>("state"))
     }
 
+    /// Get the most recent stream ID (UUID) for a user's primary key.
+    pub async fn get_latest_stream_id(&self, pubkey_hex: &str) -> Option<String> {
+        let upper = pubkey_hex.to_uppercase();
+        let row = sqlx::query(
+            "SELECT us.id FROM user_stream us \
+             JOIN user u ON us.user_id = u.id \
+             WHERE HEX(u.pubkey) = ? \
+             AND us.stream_key_id IS NULL \
+             ORDER BY us.starts DESC LIMIT 1",
+        )
+        .bind(&upper)
+        .fetch_optional(&self.pool)
+        .await
+        .expect("DB query failed");
+        row.map(|r| r.get::<String, _>("id"))
+    }
+
     /// Get the external_id from user_stream_key for a given stream_id.
     pub async fn get_custom_key_external_id(&self, stream_id: &str) -> Option<String> {
         let row =

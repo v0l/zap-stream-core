@@ -186,6 +186,7 @@ async fn e2e_single_user_lifecycle() {
 
     // ── Step 9/16: Stream via RTMPS ───────────────────────────────────
     println!("[TEST] Step 9/{total_steps}: Stream via RTMPS to Cloudflare");
+    let stream_start_ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     let mut ffmpeg = FfmpegStream::start_rtmps(rtmp_url, rtmp_key, 90, 1000).await;
     tokio::time::sleep(Duration::from_secs(3)).await;
     assert!(ffmpeg.is_running(), "FFmpeg died immediately");
@@ -194,28 +195,49 @@ async fn e2e_single_user_lifecycle() {
     // ── Step 10/16: Webhook START ─────────────────────────────────────
     println!("[TEST] Step 10/{total_steps}: Webhooks trigger stream START");
     tokio::time::sleep(Duration::from_secs(20)).await;
-    let logs = docker::get_docker_logs(&ext_container, 200).await;
+    let logs = docker::get_docker_logs_since(&ext_container, &stream_start_ts).await;
+    let connected_marker = format!("live_input.connected for input_id: {}", ext_id_after);
     assert!(
-        logs.contains("live_input.connected"),
-        "Missing live_input.connected webhook in logs"
+        logs.contains(&connected_marker),
+        "Missing webhook for this user's Live Input.\n\
+         Expected: '{}'\n\
+         in logs since {} ({} bytes)",
+        connected_marker,
+        stream_start_ts,
+        logs.len(),
     );
     assert!(
         logs.contains("Published stream event"),
         "Missing 'Published stream event' in logs"
     );
-    println!("[PASS] Step 10/{total_steps}: Webhook START received");
+
+    // Retrieve the stream UUID (d-tag) created by the webhook
+    let primary_stream_id = db
+        .get_latest_stream_id(&client.pubkey_hex())
+        .await
+        .expect("No stream created for this user after webhook");
+    println!(
+        "[PASS] Step 10/{total_steps}: Webhook START received (stream_id={})",
+        primary_stream_id
+    );
 
     // ── Step 11/16: Verify LIVE Nostr event ───────────────────────────
     println!("[TEST] Step 11/{total_steps}: Verify LIVE Nostr event (kind 30311)");
     let relay = NostrRelay::connect(&config.nostr_relay_url).await;
     let since = Timestamp::from(chrono::Utc::now().timestamp() as u64 - 600);
-    let events = relay.query_30311_events(since, None).await;
-    assert!(!events.is_empty(), "No kind 30311 events found");
+    let events = relay
+        .query_30311_events(since, Some(&primary_stream_id))
+        .await;
+    assert!(
+        !events.is_empty(),
+        "No kind 30311 events for stream_id={}",
+        primary_stream_id
+    );
 
     let live_event = events
         .iter()
         .find(|e| nostr_relay::get_tag_value(e, "status").as_deref() == Some("live"))
-        .expect("No LIVE kind 30311 event found");
+        .expect("No LIVE kind 30311 event found for this stream");
 
     assert!(
         nostr_relay::has_tag(live_event, "streaming"),
@@ -233,26 +255,36 @@ async fn e2e_single_user_lifecycle() {
 
     // ── Step 12/16: End stream ────────────────────────────────────────
     println!("[TEST] Step 12/{total_steps}: End stream and verify END webhooks");
+    let stop_ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     ffmpeg.stop().await;
+    assert!(!ffmpeg.is_running(), "FFmpeg still running after stop");
     tokio::time::sleep(Duration::from_secs(15)).await;
-    let logs = docker::get_docker_logs(&ext_container, 200).await;
+    let logs = docker::get_docker_logs_since(&ext_container, &stop_ts).await;
+    let disconnected_marker = format!("live_input.disconnected for input_id: {}", ext_id_after);
+    // Disconnect can come via webhook or poller — check for either
+    let stream_ended_marker = format!("Stream ended {}", primary_stream_id);
     assert!(
-        logs.contains("live_input.disconnected"),
-        "Missing live_input.disconnected webhook in logs"
-    );
-    assert!(
-        logs.contains("Stream ended"),
-        "Missing 'Stream ended' in logs"
+        logs.contains(&disconnected_marker) || logs.contains(&stream_ended_marker),
+        "Missing disconnect for this user's Live Input.\n\
+         Expected either: '{}'\n\
+         or: '{}'\n\
+         in logs since {} ({} bytes)",
+        disconnected_marker,
+        stream_ended_marker,
+        stop_ts,
+        logs.len(),
     );
     println!("[PASS] Step 12/{total_steps}: Stream END webhooks received");
 
     // ── Step 13/16: Verify ENDED Nostr event ──────────────────────────
     println!("[TEST] Step 13/{total_steps}: Verify ENDED Nostr event");
-    let events = relay.query_30311_events(since, None).await;
+    let events = relay
+        .query_30311_events(since, Some(&primary_stream_id))
+        .await;
     let ended_event = events
         .iter()
         .find(|e| nostr_relay::get_tag_value(e, "status").as_deref() == Some("ended"))
-        .expect("No ENDED kind 30311 event found");
+        .expect("No ENDED kind 30311 event found for this stream");
 
     assert!(
         nostr_relay::has_tag(ended_event, "ends"),
@@ -264,34 +296,56 @@ async fn e2e_single_user_lifecycle() {
         "ENDED event should not have 'streaming' tag (got {:?})",
         streaming_val
     );
+    // Verify DB state is Ended(3)
+    let primary_final_state = db
+        .get_stream_state(&primary_stream_id)
+        .await
+        .expect("Primary stream should exist in DB");
+    assert_eq!(
+        primary_final_state, 3,
+        "Primary stream state should be Ended(3), got {}",
+        primary_final_state
+    );
     println!("[PASS] Step 13/{total_steps}: ENDED Nostr event verified");
 
     // ── Steps 14-16: Custom key stream lifecycle ──────────────────────
 
     // ── Step 14/16: Stream with custom key ────────────────────────────
     println!("[TEST] Step 14/{total_steps}: Stream with custom key");
+    let ck_start_ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let ck_ext_id_val = ck_ext_id
+        .as_ref()
+        .expect("Custom key should have an external_id");
     let mut ck_ffmpeg = FfmpegStream::start_rtmps(rtmp_url, custom_key, 90, 800).await;
     tokio::time::sleep(Duration::from_secs(3)).await;
     assert!(ck_ffmpeg.is_running(), "Custom key FFmpeg died immediately");
 
     tokio::time::sleep(Duration::from_secs(20)).await;
-    let logs = docker::get_docker_logs(&ext_container, 200).await;
+    let logs = docker::get_docker_logs_since(&ext_container, &ck_start_ts).await;
+    let ck_connected_marker = format!("live_input.connected for input_id: {}", ck_ext_id_val);
     assert!(
-        logs.contains("live_input.connected"),
-        "Missing live_input.connected webhook for custom key"
+        logs.contains(&ck_connected_marker),
+        "Missing webhook for custom key's Live Input.\n\
+         Expected: '{}'\n\
+         in logs since {} ({} bytes)",
+        ck_connected_marker,
+        ck_start_ts,
+        logs.len(),
     );
 
     // Custom keys reuse the same stream row (and d-tag) every time.
     let ck_live_stream_id = custom_key_stream_id.clone();
     println!("[INFO] Custom key stream ID (d-tag): {}", ck_live_stream_id);
 
-    if let Some(state) = db.get_stream_state(&ck_live_stream_id).await {
-        assert!(
-            state == 2 || state == 3,
-            "Custom key stream state should be Live(2) or Ended(3), got {}",
-            state
-        );
-    }
+    let ck_state = db
+        .get_stream_state(&ck_live_stream_id)
+        .await
+        .expect("Custom key stream should exist in DB");
+    assert_eq!(
+        ck_state, 2,
+        "Custom key stream state should be Live(2), got {}",
+        ck_state
+    );
     println!("[PASS] Step 14/{total_steps}: Custom key stream started");
 
     // ── Step 15/16: Custom key Nostr event metadata ───────────────────
@@ -341,9 +395,28 @@ async fn e2e_single_user_lifecycle() {
 
     // ── Step 16/16: Custom key ENDED Nostr event ──────────────────────
     println!("[TEST] Step 16/{total_steps}: Custom key stream ENDED Nostr event");
+    let ck_stop_ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     ck_ffmpeg.stop().await;
+    assert!(!ck_ffmpeg.is_running(), "Custom key FFmpeg still running after stop");
     tokio::time::sleep(Duration::from_secs(15)).await;
 
+    // Verify backend saw the disconnect
+    let ck_stop_logs = docker::get_docker_logs_since(&ext_container, &ck_stop_ts).await;
+    let ck_disconnected_marker = format!("live_input.disconnected for input_id: {}", ck_ext_id_val);
+    let ck_ended_marker = format!("Stream ended {}", ck_live_stream_id);
+    assert!(
+        ck_stop_logs.contains(&ck_disconnected_marker) || ck_stop_logs.contains(&ck_ended_marker),
+        "Missing disconnect for custom key's Live Input.\n\
+         Expected either: '{}'\n\
+         or: '{}'\n\
+         in logs since {} ({} bytes)",
+        ck_disconnected_marker,
+        ck_ended_marker,
+        ck_stop_ts,
+        ck_stop_logs.len(),
+    );
+
+    // Verify Nostr event updated to ended
     let ck_events = relay
         .query_30311_events(since, Some(&ck_live_stream_id))
         .await;
@@ -360,6 +433,17 @@ async fn e2e_single_user_lifecycle() {
     assert!(
         !ends_val.is_empty(),
         "Custom key ENDED event 'ends' tag is empty"
+    );
+
+    // Verify DB state is Ended(3)
+    let ck_final_state = db
+        .get_stream_state(&ck_live_stream_id)
+        .await
+        .expect("Custom key stream should exist in DB");
+    assert_eq!(
+        ck_final_state, 3,
+        "Custom key stream state should be Ended(3), got {}",
+        ck_final_state
     );
     println!("[PASS] Step 16/{total_steps}: Custom key ENDED event verified");
 

@@ -111,6 +111,7 @@ async fn e2e_multi_user_concurrent_streaming() {
 
     // ── Step 5/14: User A starts streaming ────────────────────────────
     println!("[TEST] Step 5/{total_steps}: User A starts streaming");
+    let a_start_ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     let mut ffmpeg_a = FfmpegStream::start_rtmps(rtmp_url_a, rtmp_key_a, 120, 1000).await;
     tokio::time::sleep(Duration::from_secs(5)).await;
     assert!(ffmpeg_a.is_running(), "User A FFmpeg died immediately");
@@ -119,11 +120,16 @@ async fn e2e_multi_user_concurrent_streaming() {
     // ── Step 6/14: User A webhook START ───────────────────────────────
     println!("[TEST] Step 6/{total_steps}: User A webhook START");
     tokio::time::sleep(Duration::from_secs(20)).await;
-    let logs = docker::get_docker_logs(&ext_container, 200).await;
+    let logs = docker::get_docker_logs_since(&ext_container, &a_start_ts).await;
     let a_connected = format!("live_input.connected for input_id: {}", ext_id_a);
     assert!(
-        logs.contains(&a_connected) || logs.contains("live_input.connected"),
-        "Missing User A connected webhook"
+        logs.contains(&a_connected),
+        "Missing User A connected webhook.\n\
+         Expected: '{}'\n\
+         in logs since {} ({} bytes)",
+        a_connected,
+        a_start_ts,
+        logs.len(),
     );
     assert!(
         logs.contains("Published stream event"),
@@ -139,6 +145,7 @@ async fn e2e_multi_user_concurrent_streaming() {
 
     // ── Step 7/14: User B starts streaming ────────────────────────────
     println!("[TEST] Step 7/{total_steps}: User B starts streaming (concurrent)");
+    let b_start_ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     let mut ffmpeg_b = FfmpegStream::start_rtmps(rtmp_url_b, rtmp_key_b, 120, 800).await;
     tokio::time::sleep(Duration::from_secs(5)).await;
     assert!(ffmpeg_a.is_running(), "User A FFmpeg died while B started");
@@ -148,18 +155,18 @@ async fn e2e_multi_user_concurrent_streaming() {
     // ── Step 8/14: User B webhook START ───────────────────────────────
     println!("[TEST] Step 8/{total_steps}: User B webhook START");
     tokio::time::sleep(Duration::from_secs(20)).await;
-    let logs = docker::get_docker_logs(&ext_container, 200).await;
+    let logs = docker::get_docker_logs_since(&ext_container, &b_start_ts).await;
     let b_connected = format!("live_input.connected for input_id: {}", ext_id_b);
     assert!(
-        logs.contains(&b_connected) || logs.contains("live_input.connected"),
-        "Missing User B connected webhook"
+        logs.contains(&b_connected),
+        "Missing User B connected webhook.\n\
+         Expected: '{}'\n\
+         in logs since {} ({} bytes)",
+        b_connected,
+        b_start_ts,
+        logs.len(),
     );
-    let a_connected = format!("live_input.connected for input_id: {}", ext_id_a);
-    assert!(
-        logs.contains(&a_connected) || logs.contains("live_input.connected"),
-        "Missing User A connected webhook (should still be present)"
-    );
-    println!("[PASS] Step 8/{total_steps}: User B webhook START (both present)");
+    println!("[PASS] Step 8/{total_steps}: User B webhook START received");
 
     // ── Step 9/14: Per-user LIVE Nostr events ─────────────────────────
     println!("[TEST] Step 9/{total_steps}: Verify per-user LIVE Nostr events");
@@ -185,7 +192,9 @@ async fn e2e_multi_user_concurrent_streaming() {
 
     // ── Step 10/14: Stream isolation — stop User A ────────────────────
     println!("[TEST] Step 10/{total_steps}: Stream isolation - stop User A");
+    let a_stop_ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     ffmpeg_a.stop().await;
+    assert!(!ffmpeg_a.is_running(), "User A FFmpeg still running after stop");
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert!(
         ffmpeg_b.is_running(),
@@ -196,11 +205,17 @@ async fn e2e_multi_user_concurrent_streaming() {
     // ── Step 11/14: User A disconnect webhook ─────────────────────────
     println!("[TEST] Step 11/{total_steps}: User A disconnect webhook (isolation)");
     tokio::time::sleep(Duration::from_secs(15)).await;
-    let logs = docker::get_docker_logs(&ext_container, 200).await;
+    let logs = docker::get_docker_logs_since(&ext_container, &a_stop_ts).await;
     let a_disconnected = format!("live_input.disconnected for input_id: {}", ext_id_a);
+    let a_stream_ended = logs.contains("Stream ended");
     assert!(
-        logs.contains(&a_disconnected) || logs.contains("live_input.disconnected"),
-        "Missing User A disconnected webhook"
+        logs.contains(&a_disconnected) || a_stream_ended,
+        "Missing User A disconnect.\n\
+         Expected: '{}'\n\
+         in logs since {} ({} bytes)",
+        a_disconnected,
+        a_stop_ts,
+        logs.len(),
     );
     let b_disconnected = format!("live_input.disconnected for input_id: {}", ext_id_b);
     assert!(
@@ -222,13 +237,21 @@ async fn e2e_multi_user_concurrent_streaming() {
 
     // ── Step 12/14: Stop User B ───────────────────────────────────────
     println!("[TEST] Step 12/{total_steps}: Stop User B");
+    let b_stop_ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     ffmpeg_b.stop().await;
+    assert!(!ffmpeg_b.is_running(), "User B FFmpeg still running after stop");
     tokio::time::sleep(Duration::from_secs(15)).await;
-    let logs = docker::get_docker_logs(&ext_container, 200).await;
+    let logs = docker::get_docker_logs_since(&ext_container, &b_stop_ts).await;
     let b_disconnected = format!("live_input.disconnected for input_id: {}", ext_id_b);
+    let b_stream_ended = logs.contains("Stream ended");
     assert!(
-        logs.contains(&b_disconnected) || logs.contains("live_input.disconnected"),
-        "Missing User B disconnected webhook"
+        logs.contains(&b_disconnected) || b_stream_ended,
+        "Missing User B disconnect.\n\
+         Expected: '{}'\n\
+         in logs since {} ({} bytes)",
+        b_disconnected,
+        b_stop_ts,
+        logs.len(),
     );
     println!("[PASS] Step 12/{total_steps}: User B stopped");
 
