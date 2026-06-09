@@ -1,10 +1,15 @@
+#[cfg(feature = "ffmpeg")]
 use anyhow::{Result, bail};
+#[cfg(feature = "ffmpeg")]
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
     av_get_pix_fmt_name, av_get_sample_fmt_name, avcodec_get_name,
 };
+#[cfg(feature = "ffmpeg")]
 use ffmpeg_rs_raw::rstr;
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "ffmpeg")]
 use std::fmt::{Display, Formatter};
+#[cfg(feature = "ffmpeg")]
 use std::mem::transmute;
 use uuid::Uuid;
 
@@ -71,6 +76,7 @@ pub struct IngressStream {
     pub language: String,
 }
 
+#[cfg(feature = "ffmpeg")]
 impl IngressStream {
     /// Get the name of the codec from the FFMPEG codec ID
     pub fn codec_name(&self) -> Result<String> {
@@ -110,6 +116,7 @@ impl IngressStream {
     }
 }
 
+#[cfg(feature = "ffmpeg")]
 impl Display for IngressStream {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let codec_name = self.codec_name().unwrap_or_else(|_| "unknown".to_string());

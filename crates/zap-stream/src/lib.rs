@@ -1,6 +1,7 @@
 pub mod admin_api;
 pub mod api_base;
 pub mod http;
+#[cfg(feature = "ffmpeg")]
 pub mod multitrack;
 pub mod nostr;
 pub mod payments;

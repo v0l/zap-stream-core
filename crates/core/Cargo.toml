@@ -5,8 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
-default = []
-pipeline = []
+default = ["ffmpeg"]
+ffmpeg = ["dep:ffmpeg-rs-raw"]
+pipeline = ["ffmpeg"]
 ingress-srt = ["dep:srt-tokio"]
 ingress-rtmp = ["dep:rml_rtmp", "dep:xflv", "dep:bytes"]
 ingress-test = []
@@ -16,7 +17,7 @@ egress-hls = ["dep:m3u8-rs"]
 debug-hls = ["egress-hls"]
 
 [dependencies]
-ffmpeg-rs-raw.workspace = true
+ffmpeg-rs-raw = { workspace = true, optional = true }
 tokio.workspace = true
 tokio-util.workspace = true
 anyhow.workspace = true
