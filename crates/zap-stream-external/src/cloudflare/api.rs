@@ -137,8 +137,8 @@ fn build_stream_key(row: &zap_stream_db::UserStreamKey, key: String) -> StreamKe
 
 fn apply_video_asset_to_stream(stream: &mut UserStream, asset: &VideoAssetWebhook) -> bool {
     let mut changed = false;
-    if stream.external_id.as_deref() != Some(asset.uid.as_str()) {
-        stream.external_id = Some(asset.uid.clone());
+    if stream.external_video_id.as_deref() != Some(asset.uid.as_str()) {
+        stream.external_video_id = Some(asset.uid.clone());
         changed = true;
     }
     if stream.thumb.as_deref() != Some(asset.thumbnail.as_str()) {
@@ -456,6 +456,7 @@ impl CfApiWrapper {
             stream.state = UserStreamState::Live;
             stream.endpoint_id = Some(endpoint.id);
             stream.ends = None;
+            stream.external_input_id = Some(input.uid.clone());
             self.db.update_stream(&stream).await?;
             self.register_input_mapping(&input.uid, &stream.id).await;
             return Ok(stream);
@@ -496,6 +497,7 @@ impl CfApiWrapper {
             stream.state = UserStreamState::Live;
             stream.endpoint_id = Some(endpoint.id);
             stream.ends = None;
+            stream.external_input_id = Some(input.uid.clone());
             self.db.update_stream(&stream).await?;
             self.register_input_mapping(&input.uid, &stream.id).await;
             return Ok(stream);
@@ -520,6 +522,7 @@ impl CfApiWrapper {
             goal: user.goal.clone(),
             tags: user.tags.clone(),
             stream_key_id: None,
+            external_input_id: Some(input.uid.clone()),
             ..Default::default()
         };
         self.db.insert_stream(&new_stream).await?;
@@ -813,28 +816,16 @@ impl CfApiWrapper {
                         "Cloudflare Video Asset ready for input_uid {}, recording: {} thumbnail: {}",
                         v.live_input, v.playback.hls, v.thumbnail
                     );
-                    let input = self.get_user_live_input_by_input_id(&v.live_input).await?;
-                    let user = if let Some(user) = self.db.get_user_by_external_id(&input.uid).await? {
-                        user
-                    } else if let Some(key) = self.db.get_user_stream_key_by_external_id(&input.uid).await? {
-                        self.db.get_user(key.user_id).await?
-                    } else {
-                        bail!("No user or stream key found with external_id {}", input.uid);
-                    };
-                    let matched = self.get_mapped_stream(&v.live_input).await?;
-                    let fallback = self.db.get_user_latest_ended_stream(user.id).await?;
-                    let Some(mut stream) = matched.or(fallback) else {
+                    // Look up the stream that was produced by this CF Live Input.
+                    // external_input_id is set at stream start, so this is a direct match.
+                    let Some(mut stream) = self.db.get_stream_by_external_input_id(&v.live_input).await? else {
                         warn!(
-                            "No ended streams found for user {}, skipping Video Asset update",
-                            user.id
+                            "No stream found for input {}, skipping Video Asset update",
+                            v.live_input
                         );
                         return Ok(());
                     };
-                    let user = if stream.user_id == user.id {
-                        user
-                    } else {
-                        self.db.get_user(stream.user_id).await?
-                    };
+                    let user = self.db.get_user(stream.user_id).await?;
                     let download_url = get_download_url(&v, stream.title.as_deref());
                     if let Some(ref url) = download_url {
                         if let Err(e) = self.client.create_download(&v.uid).await {
@@ -997,8 +988,8 @@ impl CfApiWrapper {
                 return Ok(Some(base_url.to_string()));
             }
             UserStreamState::Ended => {
-                // external_id will be the video id
-                if let Some(r) = &stream.external_id {
+                // external_video_id is the Cloudflare video/recording UID
+                if let Some(r) = &stream.external_video_id {
                     base_url.set_path(&format!("{}/manifest/video.m3u8", r));
                     return Ok(Some(base_url.to_string()));
                 }
@@ -1532,7 +1523,8 @@ mod tests {
             endpoint_id: None,
             node_name: None,
             stream_key_id: None,
-            external_id: None,
+            external_video_id: None,
+            external_input_id: None,
         }
     }
 
@@ -1703,7 +1695,7 @@ mod tests {
 
         let changed = apply_video_asset_to_stream(&mut stream, &asset);
         assert!(changed);
-        assert_eq!(stream.external_id.as_deref(), Some("video-uid"));
+        assert_eq!(stream.external_video_id.as_deref(), Some("video-uid"));
         assert_eq!(
             stream.thumb.as_deref(),
             Some("https://example.com/thumb.jpg")
@@ -1713,7 +1705,7 @@ mod tests {
     #[test]
     fn apply_video_asset_to_stream_is_idempotent() {
         let mut stream = UserStream {
-            external_id: Some("video-uid".to_string()),
+            external_video_id: Some("video-uid".to_string()),
             thumb: Some("https://example.com/thumb.jpg".to_string()),
             ..Default::default()
         };
@@ -1736,9 +1728,9 @@ mod tests {
     }
 
     #[test]
-    fn apply_video_asset_to_stream_updates_only_external_id() {
+    fn apply_video_asset_to_stream_updates_only_external_video_id() {
         let mut stream = UserStream {
-            external_id: Some("old-uid".to_string()),
+            external_video_id: Some("old-uid".to_string()),
             thumb: Some("https://example.com/thumb.jpg".to_string()),
             ..Default::default()
         };
@@ -1758,7 +1750,7 @@ mod tests {
 
         let changed = apply_video_asset_to_stream(&mut stream, &asset);
         assert!(changed);
-        assert_eq!(stream.external_id.as_deref(), Some("video-uid"));
+        assert_eq!(stream.external_video_id.as_deref(), Some("video-uid"));
         assert_eq!(
             stream.thumb.as_deref(),
             Some("https://example.com/thumb.jpg")
@@ -1768,7 +1760,7 @@ mod tests {
     #[test]
     fn apply_video_asset_to_stream_updates_only_thumb() {
         let mut stream = UserStream {
-            external_id: Some("video-uid".to_string()),
+            external_video_id: Some("video-uid".to_string()),
             thumb: Some("https://example.com/old.jpg".to_string()),
             ..Default::default()
         };
@@ -1788,7 +1780,7 @@ mod tests {
 
         let changed = apply_video_asset_to_stream(&mut stream, &asset);
         assert!(changed);
-        assert_eq!(stream.external_id.as_deref(), Some("video-uid"));
+        assert_eq!(stream.external_video_id.as_deref(), Some("video-uid"));
         assert_eq!(
             stream.thumb.as_deref(),
             Some("https://example.com/thumb.jpg")

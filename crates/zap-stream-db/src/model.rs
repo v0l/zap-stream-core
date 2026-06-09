@@ -108,8 +108,10 @@ pub struct UserStream {
     pub node_name: Option<String>,
     /// Fixed key ID used for this stream event
     pub stream_key_id: Option<u64>,
-    /// An external ID used to identify this stream in an external system
-    pub external_id: Option<String>,
+    /// Cloudflare video/recording UID (set when video asset webhook arrives)
+    pub external_video_id: Option<String>,
+    /// Cloudflare Live Input UID that produced this stream (set at stream start)
+    pub external_input_id: Option<String>,
 }
 
 #[derive(Debug, Clone, FromRow)]

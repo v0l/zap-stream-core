@@ -110,8 +110,8 @@ impl ZapStreamDb {
 
     pub async fn insert_stream(&self, user_stream: &UserStream) -> Result<()> {
         sqlx::query(
-        "insert into user_stream (id, user_id, state, starts, ends, title, summary, image, thumb, tags, content_warning, goal, pinned, cost, duration, fee, event, endpoint_id, node_name, stream_key_id, external_id)
-              values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        "insert into user_stream (id, user_id, state, starts, ends, title, summary, image, thumb, tags, content_warning, goal, pinned, cost, duration, fee, event, endpoint_id, node_name, stream_key_id, external_video_id, external_input_id)
+             values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
         .bind(&user_stream.id)
         .bind(user_stream.user_id)
@@ -133,7 +133,8 @@ impl ZapStreamDb {
         .bind(user_stream.endpoint_id)
         .bind(&user_stream.node_name)
         .bind(user_stream.stream_key_id)
-        .bind(&user_stream.external_id)
+        .bind(&user_stream.external_video_id)
+        .bind(&user_stream.external_input_id)
         .execute(&self.db)
         .await?;
 
@@ -142,7 +143,7 @@ impl ZapStreamDb {
 
     pub async fn update_stream(&self, user_stream: &UserStream) -> Result<()> {
         sqlx::query(
-        "update user_stream set state = ?, starts = ?, ends = ?, title = ?, summary = ?, image = ?, thumb = ?, tags = ?, content_warning = ?, goal = ?, pinned = ?, cost = ?, duration = ?, fee = ?, event = ?, endpoint_id = ?, node_name = ?, stream_key_id = ?, external_id = ? where id = ?",
+        "update user_stream set state = ?, starts = ?, ends = ?, title = ?, summary = ?, image = ?, thumb = ?, tags = ?, content_warning = ?, goal = ?, pinned = ?, cost = ?, duration = ?, fee = ?, event = ?, endpoint_id = ?, node_name = ?, stream_key_id = ?, external_video_id = ?, external_input_id = ? where id = ?",
     )
         .bind(&user_stream.state)
         .bind(user_stream.starts)
@@ -162,9 +163,9 @@ impl ZapStreamDb {
         .bind(user_stream.endpoint_id)
         .bind(&user_stream.node_name)
         .bind(user_stream.stream_key_id)
-        .bind(&user_stream.external_id)
+        .bind(&user_stream.external_video_id)
+        .bind(&user_stream.external_input_id)
         .bind(&user_stream.id)
-        .bind(&user_stream.external_id)
         .execute(&self.db)
         .await
         .map_err(anyhow::Error::new)?;
@@ -941,6 +942,19 @@ impl ZapStreamDb {
             "select * from user_stream where user_id = ? and state = 3 order by ends desc, starts desc limit 1",
         )
         .bind(user_id)
+        .fetch_optional(&self.db)
+        .await?)
+    }
+
+    /// Get stream by external input ID (Cloudflare Live Input UID)
+    pub async fn get_stream_by_external_input_id(
+        &self,
+        external_input_id: &str,
+    ) -> Result<Option<UserStream>> {
+        Ok(sqlx::query_as(
+            "select * from user_stream where external_input_id = ? order by starts desc limit 1",
+        )
+        .bind(external_input_id)
         .fetch_optional(&self.db)
         .await?)
     }
