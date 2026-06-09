@@ -828,10 +828,27 @@ impl CfApiWrapper {
                     let user = self.db.get_user(stream.user_id).await?;
                     let download_url = get_download_url(&v, stream.title.as_deref());
                     if let Some(ref url) = download_url {
-                        if let Err(e) = self.client.create_download(&v.uid).await {
-                            warn!("Failed to enable MP4 download for {}: {}", v.uid, e);
-                        } else {
-                            info!("Enabled MP4 download for video {}: {}", v.uid, url);
+                        let mut enabled = false;
+                        for attempt in 1..=3 {
+                            match self.client.create_download(&v.uid).await {
+                                Ok(_) => {
+                                    info!("Enabled MP4 download for video {}: {}", v.uid, url);
+                                    enabled = true;
+                                    break;
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        "Failed to enable MP4 download for {} (attempt {}/3): {}",
+                                        v.uid, attempt, e
+                                    );
+                                    if attempt < 3 {
+                                        tokio::time::sleep(std::time::Duration::from_secs(2 * attempt)).await;
+                                    }
+                                }
+                            }
+                        }
+                        if !enabled {
+                            warn!("Giving up on MP4 download for {} after 3 attempts", v.uid);
                         }
                     }
                     if apply_video_asset_to_stream(&mut stream, &v) {
