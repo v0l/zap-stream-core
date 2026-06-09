@@ -1,5 +1,5 @@
 use crate::stream_manager::StreamManager;
-use anyhow::Result;
+use anyhow::{bail, Result};
 use nostr_sdk::prelude::Coordinate;
 use nostr_sdk::{
     Client, Event, EventBuilder, JsonUtil, Kind, NostrSigner, Tag, Timestamp, ToBech32,
@@ -22,7 +22,10 @@ impl N53Publisher {
     }
 
     pub async fn publish(&self, ev: &Event) -> Result<()> {
-        self.client.send_event(ev).await?;
+        let output = self.client.send_event(ev).await?;
+        if output.success.is_empty() {
+            bail!("Failed to publish event: no relay accepted it");
+        }
         Ok(())
     }
 

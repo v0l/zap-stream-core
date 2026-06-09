@@ -712,15 +712,22 @@ impl CfApiWrapper {
                                         .should_publish_viewer_count(&live_stream.id, viewer_count)
                                         .await
                                     {
-                                        let event = self
-                                            .publish_stream_event(
-                                                &live_stream,
-                                                &user,
-                                            )
-                                            .await?;
-                                        let mut updated_stream = live_stream.clone();
-                                        updated_stream.event = Some(event.as_json());
-                                        self.db.update_stream(&updated_stream).await?;
+                                        match self
+                                            .publish_stream_event(&live_stream, &user)
+                                            .await
+                                        {
+                                            Ok(event) => {
+                                                let mut updated_stream = live_stream.clone();
+                                                updated_stream.event = Some(event.as_json());
+                                                self.db.update_stream(&updated_stream).await?;
+                                            }
+                                            Err(e) => {
+                                                warn!(
+                                                    "Failed to publish viewer count update for stream {}: {}",
+                                                    live_stream.id, e
+                                                );
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -882,9 +889,26 @@ impl CfApiWrapper {
         let mut stream = self
             .resolve_or_create_stream(&user, &input, stream_key_id)
             .await?;
-        let stream_event = self.publish_stream_event(&stream, &user).await?;
-        stream.event = Some(stream_event.as_json());
-        self.db.update_stream(&stream).await?;
+
+        // Publish the "live" event to Nostr. If publish fails, roll back the DB
+        // row so we don't leave an orphaned Live stream with no Nostr event.
+        match self.publish_stream_event(&stream, &user).await {
+            Ok(stream_event) => {
+                stream.event = Some(stream_event.as_json());
+                self.db.update_stream(&stream).await?;
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to publish stream start for stream {}, rolling back: {}",
+                    stream.id, e
+                );
+                stream.state = UserStreamState::Ended;
+                stream.ends = Some(Utc::now());
+                self.db.update_stream(&stream).await?;
+                self.remove_input_mapping(&input.uid).await;
+                return Err(e);
+            }
+        }
         Ok(())
     }
 
@@ -929,14 +953,17 @@ impl CfApiWrapper {
                 stream_key_id,
             })?;
 
-        self.stream_manager.remove_active_stream(&stream.id).await;
-        zap_stream_core::metrics::remove_playback_rate(&stream.id);
-
+        // Publish the "ended" event to Nostr before mutating any local state.
+        // If publish fails, DB still says Live and the poller will retry next cycle.
         stream.state = UserStreamState::Ended;
         stream.ends = Some(Utc::now());
         let event = self.publish_stream_event(&stream, &user).await?;
         stream.event = Some(event.as_json());
         self.db.update_stream(&stream).await?;
+
+        // Event published and DB updated — now clean up local state
+        self.stream_manager.remove_active_stream(&stream.id).await;
+        zap_stream_core::metrics::remove_playback_rate(&stream.id);
 
         info!("Stream ended {}", stream.id);
         self.remove_input_mapping(&input.uid).await;
@@ -1335,6 +1362,10 @@ impl ZapStreamApi for CfApiWrapper {
         let live_input_name = format!("{}-{}", pk.to_bech32()?, stream_id);
         let response = self.client.create_live_input(&live_input_name).await?;
         let input = response.result;
+        // If DB writes below fail, this CF Live Input becomes a "ghost" — it exists
+        // on Cloudflare but has no DB reference. This is intentional: ghost inputs are
+        // harmless (no quota cost, no billing), and deleting CF inputs risks breaking
+        // active stream key references that cannot be recovered.
 
         let mut new_stream = zap_stream_db::UserStream {
             id: stream_id.to_string(),
