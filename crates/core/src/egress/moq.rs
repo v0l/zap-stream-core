@@ -1,16 +1,17 @@
-use crate::egress::{Egress, EgressResult, EncoderVariantGroup};
+use crate::egress::{Egress, EgressResult, EncoderOrSourceStream, EncoderVariantGroup};
 use crate::variant::VariantStream;
 use anyhow::{Result, bail};
 use bytes::Bytes;
 use ffmpeg_rs_raw::AvPacketRef;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{AV_PKT_FLAG_KEY, av_q2d};
+use hang::catalog::Container;
 use hang::catalog::{AAC, Audio, AudioCodec, H264, H265, VP9, Video, VideoCodec};
-use hang::moq_lite::{Broadcast, OriginProducer};
-use hang::{Catalog, Frame, Timestamp, TrackProducer, catalog};
-use std::collections::HashMap;
+use hang::moq_lite::{Broadcast, OriginProducer, TrackProducer};
+use hang::{Catalog, catalog};
+use std::collections::{BTreeMap, HashMap};
 use std::slice;
 use tokio::runtime::Handle;
-use tracing::warn;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 pub struct MoqEgress {
@@ -18,6 +19,50 @@ pub struct MoqEgress {
     /// Track producer handle for stream data
     tracks: HashMap<String, TrackProducer>,
     pts_offset: f64,
+}
+
+/// Extract codec description (extradata containing SPS/PPS for H.264, VPS/SPS/PPS for H.265)
+/// from either an encoder's codec context or a source stream's codecpar.
+fn get_extradata(stream: &EncoderOrSourceStream) -> Option<Bytes> {
+    unsafe {
+        let (extradata, extradata_size) = match stream {
+            EncoderOrSourceStream::Encoder(enc) => {
+                let ctx = enc.codec_context();
+                ((*ctx).extradata, (*ctx).extradata_size)
+            }
+            EncoderOrSourceStream::SourceStream(avstream) => {
+                let par = (**avstream).codecpar;
+                if par.is_null() {
+                    return None;
+                }
+                ((*par).extradata, (*par).extradata_size)
+            }
+        };
+        if extradata.is_null() || extradata_size <= 0 {
+            return None;
+        }
+        // Cap at 10KB to guard against corrupted/malicious extradata_size
+        if extradata_size > 10 * 1024 {
+            warn!(
+                "extradata_size {} exceeds 10KB cap, ignoring",
+                extradata_size
+            );
+            return None;
+        }
+        let data = slice::from_raw_parts(extradata as *const u8, extradata_size as usize);
+        Some(Bytes::copy_from_slice(data))
+    }
+}
+
+/// Extract H.264 profile, constraints, and level from extradata (AVCC format).
+/// AVCC box layout: [version(1), profile(1), constraints(1), level(1), ...]
+fn get_h264_params(extradata: &Bytes) -> (u8, u8, u8) {
+    // AVCC box starts with version=1; skip non-AVCC extradata (e.g. Annex-B)
+    if extradata.len() >= 4 && extradata[0] == 1 {
+        (extradata[1], extradata[2], extradata[3])
+    } else {
+        (0, 0, 0)
+    }
 }
 
 impl MoqEgress {
@@ -31,8 +76,8 @@ impl MoqEgress {
     ) -> Result<Self> {
         // create a Catalog which contains all the video / audio tracks
         let mut catalog = Catalog::default();
-        let mut video_tracks = HashMap::new();
-        let mut audio_tracks = HashMap::new();
+        let mut video_tracks = BTreeMap::new();
+        let mut audio_tracks = BTreeMap::new();
         let mut track_handles = Vec::new();
         let mut video_priority = 100;
         let mut audio_priority = 1;
@@ -40,17 +85,39 @@ impl MoqEgress {
             for stream in &group.streams {
                 match stream.variant {
                     VariantStream::Video(var) | VariantStream::CopyVideo(var) => {
+                        let description = get_extradata(&stream.stream);
+                        if let Some(ref desc) = description {
+                            info!(
+                                "MoQ: video track {} has {} bytes of codec description (extradata)",
+                                var.id,
+                                desc.len()
+                            );
+                        } else {
+                            warn!(
+                                "MoQ: video track {} has no codec description - \
+                                 subscribers may fail to initialize decoders",
+                                var.id
+                            );
+                        }
+
                         let cfg = catalog::VideoConfig {
                             codec: match var.codec.as_str() {
-                                "h264" => H264 {
-                                    //TODO: take from encoder
-                                    profile: 0,
-                                    constraints: 0,
-                                    level: 0,
+                                "h264" => {
+                                    let (profile, constraints, level) = description
+                                        .as_ref()
+                                        .map(get_h264_params)
+                                        .unwrap_or((0, 0, 0));
+                                    H264 {
+                                        // SPS/PPS are in the description (avc1 style),
+                                        // not inline in each frame's bitstream
+                                        inline: description.is_none(),
+                                        profile,
+                                        constraints,
+                                        level,
+                                    }
+                                    .into()
                                 }
-                                .into(),
                                 "h265" | "hevc" => H265 {
-                                    //TODO: take from encoder
                                     in_band: false,
                                     profile_space: 0,
                                     profile_idc: 0,
@@ -62,7 +129,6 @@ impl MoqEgress {
                                 .into(),
                                 "vp8" => VideoCodec::VP8,
                                 "vp9" => VP9 {
-                                    //TODO: take from encoder
                                     profile: 0,
                                     level: 0,
                                     bit_depth: 0,
@@ -75,7 +141,7 @@ impl MoqEgress {
                                 .into(),
                                 _ => bail!("Unsupported video codec {}", &var.codec),
                             },
-                            description: None,
+                            description,
                             coded_width: Some(var.width as _),
                             coded_height: Some(var.height as _),
                             display_ratio_width: None,
@@ -83,6 +149,8 @@ impl MoqEgress {
                             bitrate: Some(var.bitrate as _),
                             framerate: Some(var.fps as _),
                             optimize_for_latency: Some(true),
+                            container: Container::Legacy,
+                            jitter: None,
                         };
                         video_tracks.insert(var.id.to_string(), cfg);
                         track_handles.push(hang::moq_lite::Track {
@@ -92,16 +160,21 @@ impl MoqEgress {
                         video_priority += 1;
                     }
                     VariantStream::Audio(var) | VariantStream::CopyAudio(var) => {
+                        let description = get_extradata(&stream.stream);
+                        let sample_rate = var.sample_rate;
+                        let channel_count = var.channels as u32;
                         let cfg = catalog::AudioConfig {
                             codec: match var.codec.as_str() {
                                 "aac" | "libfdk_aac" => AAC { profile: 0 }.into(),
                                 "opus" => AudioCodec::Opus,
                                 _ => bail!("Unsupported audio codec {}", &var.codec),
                             },
-                            sample_rate: 0,
-                            channel_count: 0,
+                            sample_rate,
+                            channel_count,
                             bitrate: Some(var.bitrate as _),
-                            description: None,
+                            description,
+                            container: Container::Legacy,
+                            jitter: None,
                         };
                         audio_tracks.insert(var.id.to_string(), cfg);
                         track_handles.push(hang::moq_lite::Track {
@@ -119,34 +192,32 @@ impl MoqEgress {
             bail!("Must have at least 1 video or audio track")
         }
         if !video_tracks.is_empty() {
-            catalog.video = Some(Video {
+            catalog.video = Video {
                 renditions: video_tracks,
-                priority: 1,
                 display: None,
                 rotation: None,
                 flip: None,
-            })
+            }
         }
         if !audio_tracks.is_empty() {
-            catalog.audio = Some(Audio {
+            catalog.audio = Audio {
                 renditions: audio_tracks,
-                priority: 0,
-            })
+            }
         }
         let mut broadcast = Broadcast::produce();
 
         let catalog = catalog.produce();
-        broadcast.producer.insert_track(catalog.consumer.track);
+        broadcast.insert_track(catalog.track);
 
         // create the tracks
         let mut tracks = HashMap::new();
         for track in track_handles {
             let id = track.name.clone();
-            tracks.insert(id, broadcast.producer.create_track(track).into());
+            tracks.insert(id, broadcast.create_track(track).into());
         }
 
         let g = handle.enter();
-        if !origin.publish_broadcast(id, broadcast.consumer) {
+        if !origin.publish_broadcast(id, broadcast.consume()) {
             bail!("Failed to publish, not allowed")
         }
         drop(g);
@@ -161,20 +232,8 @@ impl MoqEgress {
 impl Egress for MoqEgress {
     fn process_pkt(&mut self, packet: AvPacketRef, variant: &Uuid) -> Result<EgressResult> {
         if let Some(track) = self.tracks.get_mut(variant.to_string().as_str()) {
-            let is_keyframe = packet.flags & AV_PKT_FLAG_KEY != 0;
             let data_slice = unsafe { slice::from_raw_parts(packet.data, packet.size as _) };
-            let mut pts_secs = packet.pts as f64 * unsafe { av_q2d(packet.time_base) };
-            pts_secs += self.pts_offset;
-            if pts_secs < 0.0 {
-                self.pts_offset += pts_secs.abs();
-                warn!("PTS was negative, new offset {:.4}s", self.pts_offset);
-                pts_secs += self.pts_offset;
-            }
-            track.write(Frame {
-                timestamp: Timestamp::from_secs_f64(pts_secs),
-                keyframe: is_keyframe,
-                payload: Bytes::copy_from_slice(data_slice),
-            })
+            track.write_frame(data_slice)
         }
 
         Ok(EgressResult::None)

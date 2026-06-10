@@ -111,7 +111,7 @@ impl ZapStreamDb {
     pub async fn insert_stream(&self, user_stream: &UserStream) -> Result<()> {
         sqlx::query(
         "insert into user_stream (id, user_id, state, starts, ends, title, summary, image, thumb, tags, content_warning, goal, pinned, cost, duration, fee, event, endpoint_id, node_name, stream_key_id, external_id)
-             values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+              values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
         .bind(&user_stream.id)
         .bind(user_stream.user_id)
@@ -164,6 +164,7 @@ impl ZapStreamDb {
         .bind(user_stream.stream_key_id)
         .bind(&user_stream.external_id)
         .bind(&user_stream.id)
+        .bind(&user_stream.external_id)
         .execute(&self.db)
         .await
         .map_err(anyhow::Error::new)?;

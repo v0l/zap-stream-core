@@ -1,0 +1,3 @@
+[submodule "docs/agents-common"]
+	path = docs/agents-common
+	url = https://github.com/LNVPS/agents.git

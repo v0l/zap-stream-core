@@ -1,3 +1,4 @@
+use crate::api_base::tags_to_csv;
 use crate::user_history_to_api_model;
 use anyhow::{Result, bail};
 use async_trait::async_trait;
@@ -279,7 +280,7 @@ impl ZapStreamAdminApi for ZapStreamAdminApiImpl {
                     req.title.as_deref(),
                     req.summary.as_deref(),
                     req.image.as_deref(),
-                    req.tags.as_ref().map(|tags| tags.join(",")).as_deref(),
+                    req.tags.as_ref().and_then(|tags| tags_to_csv(tags.clone())).as_deref(),
                     req.content_warning.as_deref(),
                     req.goal.as_deref(),
                 )

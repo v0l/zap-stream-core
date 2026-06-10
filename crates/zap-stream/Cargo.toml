@@ -54,7 +54,7 @@ axum-extra = { version = "0.12", features = ["file-stream"] }
 tower-http = { version = "0.6", default-features = false, features = ["cors"] }
 
 #moq
-moq-native = { git = "https://github.com/kixelated/moq.git", rev = "b2abf685647f125486cbb40b44e1134f947c6583", optional = true, default-features = false }
+moq-native = { git = "https://github.com/kixelated/moq.git", rev = "b100eeaf1264057e9c770e56569d6ffb7a975af4", optional = true, default-features = false }
 
 # track_id
 chromaprint-sys-next = { version = "1.6", optional = true }
