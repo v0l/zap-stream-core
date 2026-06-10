@@ -861,20 +861,32 @@ impl CfApiWrapper {
                         let mut enabled = false;
                         for attempt in 1..=3 {
                             match self.client.create_download(&v.uid).await {
-                                Ok(_) => {
-                                    info!("Enabled MP4 download for video {}: {}", v.uid, url);
-                                    enabled = true;
-                                    break;
+                                Ok(resp) => {
+                                    let status = &resp.result.default.status;
+                                    info!(
+                                        "create_download for video {} (attempt {}/3): CF status={}, percentComplete={}",
+                                        v.uid, attempt, status, resp.result.default.percent_complete
+                                    );
+                                    if status == "ready" || status == "inprogress" {
+                                        info!("Enabled MP4 download for video {}: {}", v.uid, url);
+                                        enabled = true;
+                                        break;
+                                    }
                                 }
                                 Err(e) => {
                                     warn!(
-                                        "Failed to enable MP4 download for {} (attempt {}/3): {}",
+                                        "create_download failed for {} (attempt {}/3): {}",
                                         v.uid, attempt, e
                                     );
-                                    if attempt < 3 {
-                                        tokio::time::sleep(std::time::Duration::from_secs(2 * attempt)).await;
-                                    }
                                 }
+                            }
+                            // On failure or bad status, delete the broken asset before retrying
+                            if attempt < 3 {
+                                info!("Deleting broken download asset for {} before retry", v.uid);
+                                if let Err(e) = self.client.delete_download(&v.uid).await {
+                                    warn!("delete_download failed for {}: {}", v.uid, e);
+                                }
+                                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
                             }
                         }
                         if !enabled {

@@ -275,8 +275,9 @@ impl CloudflareClient {
         Ok(response.json().await?)
     }
 
-    /// Enable MP4 download for a video asset
-    pub async fn create_download(&self, video_uid: &str) -> Result<()> {
+    /// Enable MP4 download for a video asset.
+    /// Returns the parsed download response so callers can check the asset status.
+    pub async fn create_download(&self, video_uid: &str) -> Result<ApiResponse<DownloadResponse>> {
         let url = format!(
             "{}/accounts/{}/stream/{}/downloads",
             self.base_url, self.account_id, video_uid
@@ -285,6 +286,32 @@ impl CloudflareClient {
         let response = self
             .http_client
             .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_token))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            return Err(anyhow!("Cloudflare API error {}: {}", status, error_text));
+        }
+
+        Ok(response.json().await?)
+    }
+
+    /// Delete an existing MP4 download for a video asset
+    pub async fn delete_download(&self, video_uid: &str) -> Result<()> {
+        let url = format!(
+            "{}/accounts/{}/stream/{}/downloads",
+            self.base_url, self.account_id, video_uid
+        );
+
+        let response = self
+            .http_client
+            .delete(&url)
             .header("Authorization", format!("Bearer {}", self.api_token))
             .send()
             .await?;

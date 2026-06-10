@@ -212,6 +212,23 @@ pub enum WebhookPayload {
     Unknown(serde_json::Value),
 }
 
+/// Cloudflare download response from POST /downloads
+#[derive(Debug, Deserialize, Clone)]
+pub struct DownloadResponse {
+    pub default: DownloadAsset,
+}
+
+/// A single download asset entry
+#[derive(Debug, Deserialize, Clone)]
+pub struct DownloadAsset {
+    pub status: String,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(rename = "percentComplete")]
+    #[serde(default)]
+    pub percent_complete: f64,
+}
+
 /// Cloudflare Alerting webhook destination
 /// Note: the create endpoint returns only `id`, while the list endpoint
 /// returns all fields.
