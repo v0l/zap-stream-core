@@ -59,7 +59,8 @@ impl CloudflareClient {
 
         let body = serde_json::json!({
             "meta": {"name": name},
-            "recording": {"mode": "automatic"}
+            "recording": {"mode": "automatic"},
+            "deleteRecordingAfterDays": 90
         });
 
         let response = self
@@ -274,6 +275,199 @@ impl CloudflareClient {
         Ok(response.json().await?)
     }
 
+    /// Enable MP4 download for a video asset.
+    /// Returns the parsed download response so callers can check the asset status.
+    pub async fn create_download(&self, video_uid: &str) -> Result<ApiResponse<DownloadResponse>> {
+        let url = format!(
+            "{}/accounts/{}/stream/{}/downloads",
+            self.base_url, self.account_id, video_uid
+        );
+
+        let response = self
+            .http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_token))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            return Err(anyhow!("Cloudflare API error {}: {}", status, error_text));
+        }
+
+        Ok(response.json().await?)
+    }
+
+    /// Delete an existing MP4 download for a video asset
+    pub async fn delete_download(&self, video_uid: &str) -> Result<()> {
+        let url = format!(
+            "{}/accounts/{}/stream/{}/downloads",
+            self.base_url, self.account_id, video_uid
+        );
+
+        let response = self
+            .http_client
+            .delete(&url)
+            .header("Authorization", format!("Bearer {}", self.api_token))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            return Err(anyhow!("Cloudflare API error {}: {}", status, error_text));
+        }
+
+        Ok(())
+    }
+
+    /// List alerting webhook destinations
+    pub async fn get_alerting_webhook_destinations(
+        &self,
+    ) -> Result<ApiResponse<Vec<AlertingWebhookDestination>>> {
+        let url = format!(
+            "{}/accounts/{}/alerting/v3/destinations/webhooks",
+            self.base_url, self.account_id
+        );
+
+        Ok(self.get_json(&url).await?)
+    }
+
+    /// Create an alerting webhook destination
+    pub async fn create_alerting_webhook_destination(
+        &self,
+        name: &str,
+        webhook_url: &str,
+    ) -> Result<ApiResponse<AlertingWebhookDestination>> {
+        let url = format!(
+            "{}/accounts/{}/alerting/v3/destinations/webhooks",
+            self.base_url, self.account_id
+        );
+
+        let body = serde_json::json!({
+            "name": name,
+            "url": webhook_url
+        });
+
+        let response = self
+            .http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_token))
+            .json(&body)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            return Err(anyhow!("Cloudflare API error {}: {}", status, error_text));
+        }
+
+        Ok(response.json().await?)
+    }
+
+    /// List alerting notification policies
+    pub async fn get_alerting_policies(&self) -> Result<ApiResponse<Vec<AlertingPolicy>>> {
+        let url = format!(
+            "{}/accounts/{}/alerting/v3/policies",
+            self.base_url, self.account_id
+        );
+
+        Ok(self.get_json(&url).await?)
+    }
+
+    /// Create an alerting notification policy for stream live notifications
+    pub async fn create_alerting_notification_policy(
+        &self,
+        name: &str,
+        webhook_destination_id: &str,
+    ) -> Result<ApiResponse<AlertingPolicy>> {
+        let url = format!(
+            "{}/accounts/{}/alerting/v3/policies",
+            self.base_url, self.account_id
+        );
+
+        let body = serde_json::json!({
+            "name": name,
+            "enabled": true,
+            "alert_type": "stream_live_notifications",
+            "mechanisms": {
+                "webhooks": [{"id": webhook_destination_id}]
+            },
+            "filters": {}
+        });
+
+        let response = self
+            .http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_token))
+            .json(&body)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            return Err(anyhow!("Cloudflare API error {}: {}", status, error_text));
+        }
+
+        Ok(response.json().await?)
+    }
+
+    /// Update an alerting notification policy to use a different webhook destination
+    pub async fn update_alerting_notification_policy(
+        &self,
+        policy_id: &str,
+        webhook_destination_id: &str,
+    ) -> Result<ApiResponse<AlertingPolicy>> {
+        let url = format!(
+            "{}/accounts/{}/alerting/v3/policies/{}",
+            self.base_url, self.account_id, policy_id
+        );
+
+        let body = serde_json::json!({
+            "name": "Stream Live Notifications",
+            "enabled": true,
+            "alert_type": "stream_live_notifications",
+            "mechanisms": {
+                "webhooks": [{"id": webhook_destination_id}]
+            },
+            "filters": {}
+        });
+
+        let response = self
+            .http_client
+            .put(&url)
+            .header("Authorization", format!("Bearer {}", self.api_token))
+            .json(&body)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            return Err(anyhow!("Cloudflare API error {}: {}", status, error_text));
+        }
+
+        Ok(response.json().await?)
+    }
+
     /// List stream webhooks on account
     pub async fn get_webhooks(&self) -> Result<ApiResponse<Option<WebhookResult>>> {
         let url = format!(
@@ -322,8 +516,11 @@ mod tests {
             .create_async()
             .await;
 
-        let client = CloudflareClient::new("test-token".to_string(), "test-account".to_string())
-            .with_base_url(server.url());
+        let client = CloudflareClient::new(CloudflareToken {
+            token: "test-token".to_string(),
+            account_id: "test-account".to_string(),
+        })
+        .with_base_url(server.url());
 
         let result = client.create_live_input("test-stream").await;
         assert!(result.is_ok(), "create_live_input should succeed");
@@ -340,6 +537,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_create_live_input_includes_delete_recording_after_days() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/accounts/test-account/stream/live_inputs")
+            .match_header("authorization", "Bearer test-token")
+            .match_body(mockito::Matcher::Json(serde_json::json!({
+                "meta": {"name": "test-stream"},
+                "recording": {"mode": "automatic"},
+                "deleteRecordingAfterDays": 90
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                "success": true,
+                "result": {
+                    "uid": "test-uid",
+                    "rtmps": {
+                        "url": "rtmps://live.cloudflare.com:443/live/",
+                        "streamKey": "test-key"
+                    },
+                    "created": "2025-01-12T00:00:00Z",
+                    "status": null,
+                    "deleteRecordingAfterDays": 90
+                }
+            }"#,
+            )
+            .create_async()
+            .await;
+
+        let client = CloudflareClient::new(CloudflareToken {
+            token: "test-token".to_string(),
+            account_id: "test-account".to_string(),
+        })
+        .with_base_url(server.url());
+
+        let result = client.create_live_input("test-stream").await;
+        assert!(result.is_ok());
+
+        let response = result.unwrap();
+        assert_eq!(response.result.delete_recording_after_days, Some(90));
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
     async fn test_create_live_input_api_error() {
         let mut server = Server::new_async().await;
         let _mock = server
@@ -349,8 +592,11 @@ mod tests {
             .create_async()
             .await;
 
-        let client = CloudflareClient::new("invalid-token".to_string(), "test-account".to_string())
-            .with_base_url(server.url());
+        let client = CloudflareClient::new(CloudflareToken {
+            token: "invalid-token".to_string(),
+            account_id: "test-account".to_string(),
+        })
+        .with_base_url(server.url());
 
         let result = client.create_live_input("test-stream").await;
         assert!(result.is_err(), "create_live_input should fail with 401");
@@ -381,14 +627,23 @@ mod tests {
             .create_async()
             .await;
 
-        let client = CloudflareClient::new("test-token".to_string(), "test-account".to_string())
-            .with_base_url(server.url());
+        let client = CloudflareClient::new(CloudflareToken {
+            token: "test-token".to_string(),
+            account_id: "test-account".to_string(),
+        })
+        .with_base_url(server.url());
 
         let result = client.get_live_input("test-uid").await;
         assert!(result.is_ok());
 
         let response = result.unwrap();
-        assert_eq!(response.result.status, Some(serde_json::json!("connected")));
+        assert!(
+            response
+                .result
+                .status
+                .as_ref()
+                .is_some_and(|status| status.is_connected())
+        );
 
         mock.assert_async().await;
     }
@@ -415,8 +670,11 @@ mod tests {
             .create_async()
             .await;
 
-        let client = CloudflareClient::new("test-token".to_string(), "test-account".to_string())
-            .with_base_url(server.url());
+        let client = CloudflareClient::new(CloudflareToken {
+            token: "test-token".to_string(),
+            account_id: "test-account".to_string(),
+        })
+        .with_base_url(server.url());
 
         let result = client.get_video_assets("test-live-input-uid").await;
         assert!(result.is_ok());
@@ -442,12 +700,261 @@ mod tests {
             .create_async()
             .await;
 
-        let client = CloudflareClient::new("test-token".to_string(), "test-account".to_string())
-            .with_base_url(server.url());
+        let client = CloudflareClient::new(CloudflareToken {
+            token: "test-token".to_string(),
+            account_id: "test-account".to_string(),
+        })
+        .with_base_url(server.url());
 
         let result = client.delete_live_input("test-uid").await;
         assert!(result.is_ok());
 
         mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_create_download_success() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/accounts/test-account/stream/video-uid-123/downloads")
+            .match_header("authorization", "Bearer test-token")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                "success": true,
+                "result": {
+                    "default": {
+                        "status": "inprogress",
+                        "url": "https://customer-test.cloudflarestream.com/video-uid-123/downloads/default.mp4",
+                        "percentComplete": 0.0
+                    }
+                }
+            }"#,
+            )
+            .create_async()
+            .await;
+
+        let client = CloudflareClient::new(CloudflareToken {
+            token: "test-token".to_string(),
+            account_id: "test-account".to_string(),
+        })
+        .with_base_url(server.url());
+
+        let result = client.create_download("video-uid-123").await;
+        assert!(result.is_ok());
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_get_alerting_webhook_destinations_success() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock(
+                "GET",
+                "/accounts/test-account/alerting/v3/destinations/webhooks",
+            )
+            .match_header("authorization", "Bearer test-token")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                "success": true,
+                "result": [{
+                    "id": "dest-123",
+                    "name": "ZS Core Webhook",
+                    "url": "https://example.com/api/v1/webhook/cloudflare",
+                    "type": "generic"
+                }]
+            }"#,
+            )
+            .create_async()
+            .await;
+
+        let client = CloudflareClient::new(CloudflareToken {
+            token: "test-token".to_string(),
+            account_id: "test-account".to_string(),
+        })
+        .with_base_url(server.url());
+
+        let result = client.get_alerting_webhook_destinations().await;
+        assert!(result.is_ok());
+
+        let response = result.unwrap();
+        assert!(response.success);
+        assert_eq!(response.result.len(), 1);
+        assert_eq!(response.result[0].id, "dest-123");
+        assert_eq!(
+            response.result[0].url.as_deref(),
+            Some("https://example.com/api/v1/webhook/cloudflare")
+        );
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_create_alerting_webhook_destination_success() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock(
+                "POST",
+                "/accounts/test-account/alerting/v3/destinations/webhooks",
+            )
+            .match_header("authorization", "Bearer test-token")
+            .match_header("content-type", "application/json")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                "success": true,
+                "result": {
+                    "id": "new-dest-456"
+                }
+            }"#,
+            )
+            .create_async()
+            .await;
+
+        let client = CloudflareClient::new(CloudflareToken {
+            token: "test-token".to_string(),
+            account_id: "test-account".to_string(),
+        })
+        .with_base_url(server.url());
+
+        let result = client
+            .create_alerting_webhook_destination(
+                "ZS Core Webhook",
+                "https://example.com/api/v1/webhook/cloudflare",
+            )
+            .await;
+        assert!(result.is_ok());
+
+        let response = result.unwrap();
+        assert_eq!(response.result.id, "new-dest-456");
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_get_alerting_policies_success() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("GET", "/accounts/test-account/alerting/v3/policies")
+            .match_header("authorization", "Bearer test-token")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                "success": true,
+                "result": [{
+                    "id": "policy-789",
+                    "name": "Stream Live Notifications",
+                    "alert_type": "stream_live_notifications",
+                    "enabled": true,
+                    "mechanisms": {"webhooks": [{"id": "dest-123"}]}
+                }]
+            }"#,
+            )
+            .create_async()
+            .await;
+
+        let client = CloudflareClient::new(CloudflareToken {
+            token: "test-token".to_string(),
+            account_id: "test-account".to_string(),
+        })
+        .with_base_url(server.url());
+
+        let result = client.get_alerting_policies().await;
+        assert!(result.is_ok());
+
+        let response = result.unwrap();
+        assert_eq!(response.result.len(), 1);
+        assert_eq!(
+            response.result[0].alert_type.as_deref(),
+            Some("stream_live_notifications")
+        );
+        assert_eq!(response.result[0].enabled, Some(true));
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_create_alerting_notification_policy_success() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/accounts/test-account/alerting/v3/policies")
+            .match_header("authorization", "Bearer test-token")
+            .match_header("content-type", "application/json")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                "success": true,
+                "result": {
+                    "id": "new-policy-101"
+                }
+            }"#,
+            )
+            .create_async()
+            .await;
+
+        let client = CloudflareClient::new(CloudflareToken {
+            token: "test-token".to_string(),
+            account_id: "test-account".to_string(),
+        })
+        .with_base_url(server.url());
+
+        let result = client
+            .create_alerting_notification_policy("Stream Live Notifications", "dest-123")
+            .await;
+        assert!(result.is_ok());
+
+        let response = result.unwrap();
+        assert_eq!(response.result.id, "new-policy-101");
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_create_alerting_notification_policy_api_error() {
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/accounts/test-account/alerting/v3/policies")
+            .with_status(403)
+            .with_body("Forbidden - missing Notifications permission")
+            .create_async()
+            .await;
+
+        let client = CloudflareClient::new(CloudflareToken {
+            token: "test-token".to_string(),
+            account_id: "test-account".to_string(),
+        })
+        .with_base_url(server.url());
+
+        let result = client
+            .create_alerting_notification_policy("Stream Live Notifications", "dest-123")
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_create_download_api_error() {
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/accounts/test-account/stream/video-uid-123/downloads")
+            .with_status(500)
+            .with_body("Internal Server Error")
+            .create_async()
+            .await;
+
+        let client = CloudflareClient::new(CloudflareToken {
+            token: "test-token".to_string(),
+            account_id: "test-account".to_string(),
+        })
+        .with_base_url(server.url());
+
+        let result = client.create_download("video-uid-123").await;
+        assert!(result.is_err());
     }
 }

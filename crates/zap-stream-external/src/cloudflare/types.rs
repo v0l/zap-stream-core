@@ -48,6 +48,7 @@ pub enum LiveInputStatusSimple {
     Connected,
     Reconnected,
     Reconnecting,
+    Disconnected,
     ClientDisconnect,
     TtlExceeded,
     FailedToConnect,
@@ -58,11 +59,22 @@ pub enum LiveInputStatusSimple {
 #[derive(Debug, Deserialize, Clone)]
 pub struct LiveInputStatusComplex {
     pub current: LiveInputStatusCurrent,
+    #[serde(default)]
+    pub history: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct LiveInputStatusCurrent {
     pub state: LiveInputStatusSimple,
+    #[serde(default)]
+    pub ingest_protocol: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub status_entered_at: Option<String>,
+    #[serde(default)]
+    pub status_last_seen: Option<String>,
 }
 
 impl LiveInputStatus {
@@ -198,4 +210,51 @@ pub enum WebhookPayload {
     VideoAsset(VideoAssetWebhook),
     /// Catch-all
     Unknown(serde_json::Value),
+}
+
+/// Cloudflare download response from POST /downloads
+#[derive(Debug, Deserialize, Clone)]
+pub struct DownloadResponse {
+    pub default: DownloadAsset,
+}
+
+/// A single download asset entry
+#[derive(Debug, Deserialize, Clone)]
+pub struct DownloadAsset {
+    pub status: String,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(rename = "percentComplete")]
+    #[serde(default)]
+    pub percent_complete: f64,
+}
+
+/// Cloudflare Alerting webhook destination
+/// Note: the create endpoint returns only `id`, while the list endpoint
+/// returns all fields.
+#[derive(Debug, Deserialize, Clone)]
+pub struct AlertingWebhookDestination {
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(rename = "type")]
+    pub destination_type: Option<String>,
+}
+
+/// Cloudflare Alerting notification policy
+/// Note: create/update endpoints return only `id`, while the list endpoint
+/// returns all fields.
+#[derive(Debug, Deserialize, Clone)]
+pub struct AlertingPolicy {
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub alert_type: Option<String>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub mechanisms: Option<serde_json::Value>,
 }

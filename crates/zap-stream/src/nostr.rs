@@ -1,9 +1,6 @@
 use crate::stream_manager::StreamManager;
-use anyhow::Result;
-use nostr_sdk::prelude::Coordinate;
-use nostr_sdk::{
-    Client, Event, EventBuilder, JsonUtil, Kind, NostrSigner, Tag, Timestamp, ToBech32,
-};
+use anyhow::{bail, Result};
+use nostr_sdk::{Client, Event, EventBuilder, JsonUtil, Kind, Tag, Timestamp};
 use std::ops::Add;
 use zap_stream_db::{UserStream, UserStreamState};
 
@@ -22,7 +19,10 @@ impl N53Publisher {
     }
 
     pub async fn publish(&self, ev: &Event) -> Result<()> {
-        self.client.send_event(ev).await?;
+        let output = self.client.send_event(ev).await?;
+        if output.success.is_empty() {
+            bail!("Failed to publish event: no relay accepted it");
+        }
         Ok(())
     }
 
@@ -30,6 +30,7 @@ impl N53Publisher {
         &self,
         stream: &UserStream,
         extra_tags: Vec<Tag>,
+        alt: Option<String>,
     ) -> Result<Event> {
         let mut tags = vec![
             Tag::parse(&["d".to_string(), stream.id.to_string()])?,
@@ -95,7 +96,7 @@ impl N53Publisher {
             }
         }
 
-        // Add current viewer count for live streams
+        // Add current viewer count for live streams (always from stream manager)
         if stream.state == UserStreamState::Live {
             let viewer_count = self.stream_manager.get_viewer_count(&stream.id).await;
             tags.push(Tag::parse(&[
@@ -104,19 +105,9 @@ impl N53Publisher {
             ])?);
         }
 
-        let pubkey = self.client.signer().await?.get_public_key().await?;
-        let coord = Coordinate::new(Kind::LiveEvent, pubkey).identifier(&stream.id);
-        tags.push(Tag::parse([
-            "alt",
-            &format!(
-                "Watch live on https://zap.stream/{}",
-                nostr_sdk::nips::nip19::Nip19Coordinate {
-                    coordinate: coord,
-                    relays: vec![]
-                }
-                .to_bech32()?
-            ),
-        ])?);
+        if let Some(alt_text) = alt {
+            tags.push(Tag::parse(["alt", &alt_text])?);
+        }
 
         let mut eb = EventBuilder::new(Kind::LiveEvent, "")
             .tags(tags)
@@ -131,5 +122,179 @@ impl N53Publisher {
         }
 
         Ok(self.client.sign_event_builder(eb).await?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::N53Publisher;
+    use crate::stream_manager::StreamManager;
+    use chrono::Utc;
+    use nostr_sdk::{ClientBuilder, Keys, Tag};
+    use uuid::Uuid;
+    use zap_stream_core::ingress::ConnectionInfo;
+    use zap_stream_db::{UserStream, UserStreamState};
+
+    const TEST_STREAM_UUID: &str = "00000000-0000-0000-0000-000000000001";
+
+    fn sample_stream(state: UserStreamState) -> UserStream {
+        let mut stream = UserStream::default();
+        stream.id = TEST_STREAM_UUID.to_string();
+        stream.user_id = 1;
+        stream.starts = Utc::now();
+        stream.state = state;
+        stream
+    }
+
+    fn test_connection_info() -> ConnectionInfo {
+        ConnectionInfo {
+            id: Uuid::parse_str(TEST_STREAM_UUID).unwrap(),
+            endpoint: "test".to_string(),
+            ip_addr: "127.0.0.1".to_string(),
+            app_name: "test".to_string(),
+            key: "test-key".to_string(),
+        }
+    }
+
+    fn count_tag<'a>(tags: impl Iterator<Item = &'a Tag>, name: &str) -> usize {
+        tags.filter(|tag| tag.as_slice().first().map(|v| v.as_str()) == Some(name))
+            .count()
+    }
+
+    #[tokio::test]
+    async fn stream_to_event_always_adds_viewer_count_from_stream_manager() {
+        let keys = Keys::generate();
+        let client = ClientBuilder::new().signer(keys).build();
+        let publisher = N53Publisher::new(
+            StreamManager::new("test-node".to_string()),
+            client,
+        );
+
+        let stream = sample_stream(UserStreamState::Live);
+        // No current_participants in extra_tags — stream_to_event should add it from stream_manager
+        let event = publisher
+            .stream_to_event(&stream, vec![], None)
+            .await
+            .unwrap();
+
+        assert_eq!(count_tag(event.tags.iter(), "current_participants"), 1);
+        let cp_value = event
+            .tags
+            .iter()
+            .find(|t| t.as_slice().first().map(|v| v.as_str()) == Some("current_participants"))
+            .and_then(|t| t.as_slice().get(1).map(|v| v.to_string()))
+            .unwrap();
+        assert_eq!(cp_value, "0");
+    }
+
+    #[tokio::test]
+    async fn stream_to_event_uses_stream_manager_viewer_count() {
+        let keys = Keys::generate();
+        let client = ClientBuilder::new().signer(keys).build();
+        let sm = StreamManager::new("test-node".to_string());
+
+        // Register stream in stream manager, then set viewer count
+        let conn = test_connection_info();
+        sm.add_active_stream("deadbeef", 1, 30.0, "1920x1080", &conn, vec![], None)
+            .await;
+        sm.set_viewer_count(TEST_STREAM_UUID, 42).await;
+
+        let publisher = N53Publisher::new(sm, client);
+        let stream = sample_stream(UserStreamState::Live);
+
+        let event = publisher
+            .stream_to_event(&stream, vec![], None)
+            .await
+            .unwrap();
+
+        let cp_tags: Vec<_> = event
+            .tags
+            .iter()
+            .filter(|t| t.as_slice().first().map(|v| v.as_str()) == Some("current_participants"))
+            .collect();
+        assert_eq!(cp_tags.len(), 1);
+        assert_eq!(cp_tags[0].as_slice()[1], "42");
+    }
+
+    #[tokio::test]
+    async fn stream_to_event_live_stream_defaults_to_zero_viewers() {
+        let keys = Keys::generate();
+        let client = ClientBuilder::new().signer(keys).build();
+        let publisher = N53Publisher::new(
+            StreamManager::new("test-node".to_string()),
+            client,
+        );
+
+        let stream = sample_stream(UserStreamState::Live);
+        let event = publisher
+            .stream_to_event(&stream, vec![], None)
+            .await
+            .unwrap();
+
+        let cp_tags: Vec<_> = event
+            .tags
+            .iter()
+            .filter(|t| t.as_slice().first().map(|v| v.as_str()) == Some("current_participants"))
+            .collect();
+        assert_eq!(cp_tags.len(), 1);
+        assert_eq!(cp_tags[0].as_slice()[1], "0");
+    }
+
+    #[tokio::test]
+    async fn stream_to_event_non_live_no_viewer_count() {
+        let keys = Keys::generate();
+        let client = ClientBuilder::new().signer(keys).build();
+        let publisher = N53Publisher::new(
+            StreamManager::new("test-node".to_string()),
+            client,
+        );
+
+        let stream = sample_stream(UserStreamState::Ended);
+        let event = publisher
+            .stream_to_event(&stream, vec![], None)
+            .await
+            .unwrap();
+
+        assert_eq!(count_tag(event.tags.iter(), "current_participants"), 0);
+    }
+
+    #[tokio::test]
+    async fn stream_to_event_uses_provided_alt() {
+        let keys = Keys::generate();
+        let client = ClientBuilder::new().signer(keys).build();
+        let publisher = N53Publisher::new(
+            StreamManager::new("test-node".to_string()),
+            client,
+        );
+
+        let stream = sample_stream(UserStreamState::Planned);
+        let event = publisher
+            .stream_to_event(&stream, vec![], Some("custom-alt".to_string()))
+            .await
+            .unwrap();
+
+        assert_eq!(count_tag(event.tags.iter(), "alt"), 1);
+        let alt_value = event
+            .tags
+            .iter()
+            .find(|tag| tag.as_slice().first().map(|v| v.as_str()) == Some("alt"))
+            .and_then(|tag| tag.as_slice().get(1).map(|v| v.to_string()))
+            .unwrap();
+        assert_eq!(alt_value, "custom-alt");
+    }
+
+    #[tokio::test]
+    async fn stream_to_event_no_alt_when_none() {
+        let keys = Keys::generate();
+        let client = ClientBuilder::new().signer(keys).build();
+        let publisher = N53Publisher::new(
+            StreamManager::new("test-node".to_string()),
+            client,
+        );
+
+        let stream = sample_stream(UserStreamState::Planned);
+        let event = publisher.stream_to_event(&stream, vec![], None).await.unwrap();
+
+        assert_eq!(count_tag(event.tags.iter(), "alt"), 0);
     }
 }

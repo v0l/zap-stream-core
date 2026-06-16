@@ -12,7 +12,9 @@ mod hls;
 pub use hls::*;
 mod zap;
 pub use zap::*;
+#[cfg(feature = "ffmpeg")]
 mod multitrack;
+#[cfg(feature = "ffmpeg")]
 pub use multitrack::*;
 
 #[cfg(feature = "pipeline")]

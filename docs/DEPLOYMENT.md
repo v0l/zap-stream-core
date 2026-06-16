@@ -12,6 +12,12 @@ zap.stream requires several services to operate:
 - **Lightning Network Daemon (LND)** - Processes Bitcoin Lightning payments
 - **zap.stream Core Service** - Main streaming server handling RTMP/SRT ingestion and HLS output
 
+### Optional: External Cloudflare Backend
+
+If you want Cloudflare Live Stream ingest, use the external backend binary instead of the core HTTP API. The external service exposes the same API, handles Cloudflare webhooks, and publishes Nostr events.
+
+See `docs/CLOUDFLARE_BACKEND.md` and `docs/deploy/external-compose.yaml` for configuration and deployment details.
+
 ## Required Services
 
 ### 1. Database (MariaDB/MySQL)

@@ -4,7 +4,9 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use nostr_sdk::{
     Client, Event, EventBuilder, JsonUtil, Keys, Kind, Metadata, NostrSigner, Tag, Timestamp,
+    ToBech32,
 };
+use nostr_sdk::nips::nip01::Coordinate;
 use nwc::prelude::{NostrWalletConnect, NostrWalletConnectUri, PayInvoiceRequest};
 use payments_rs::lightning::{AddInvoiceRequest, LightningNode};
 use std::collections::HashMap;
@@ -250,7 +252,23 @@ impl ZapStreamOverseer {
             }
             _ => {}
         }
-        let ev = self.n53.stream_to_event(stream, extra_tags).await?;
+        let alt = if let Some(ref client_url) = self.settings.overseer.client_url {
+            let pubkey = self.client.signer().await?.get_public_key().await?;
+            let coord = Coordinate::new(Kind::LiveEvent, pubkey).identifier(&stream.id);
+            let naddr = nostr_sdk::nips::nip19::Nip19Coordinate {
+                coordinate: coord,
+                relays: vec![],
+            }
+            .to_bech32()?;
+            Some(format!(
+                "Watch live on {}/{}",
+                client_url.trim_end_matches('/'),
+                naddr
+            ))
+        } else {
+            None
+        };
+        let ev = self.n53.stream_to_event(stream, extra_tags, alt).await?;
         self.client.send_event(&ev).await?;
         info!("Published stream event {}", ev.id.to_hex());
         self.last_event_publish

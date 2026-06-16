@@ -1,23 +1,30 @@
+#[cfg(feature = "ffmpeg")]
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID;
 use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
 
+#[cfg(feature = "ffmpeg")]
 pub mod egress;
+#[cfg(feature = "ffmpeg")]
 pub mod endpoint;
+#[cfg(feature = "ffmpeg")]
 mod generator;
 pub mod ingress;
 pub mod listen;
 pub mod metrics;
+#[cfg(feature = "ffmpeg")]
 pub mod mux;
 #[cfg(feature = "pipeline")]
 pub mod overseer;
 #[cfg(feature = "pipeline")]
 pub mod pipeline;
+#[cfg(feature = "ffmpeg")]
 pub mod reorder;
 #[cfg(test)]
 pub mod test_hls_timing;
+#[cfg(feature = "ffmpeg")]
 pub mod variant;
 
 /// Compute SHA-256 hash of a file
@@ -40,6 +47,7 @@ pub fn hash_file_sync(f: &mut std::fs::File) -> anyhow::Result<[u8; 32]> {
 pub use hang;
 
 /// Maps a common codec name to a codec id in FFMPEG
+#[cfg(feature = "ffmpeg")]
 pub fn map_codec_id(codec: &str) -> Option<AVCodecID> {
     match codec {
         "h264" => Some(AVCodecID::AV_CODEC_ID_H264),

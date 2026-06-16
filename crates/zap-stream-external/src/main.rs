@@ -34,6 +34,18 @@ struct Settings {
     /// Public URL which points to this http server
     public_url: String,
 
+    /// Terms of Service URL (defaults to https://zap.stream/tos)
+    #[serde(default)]
+    tos_url: Option<String>,
+
+    /// Client URL for "Watch live on" alt tag (defaults to https://zap.stream)
+    #[serde(default)]
+    client_url: Option<String>,
+
+    /// Public hostname for ingest endpoints (custom RTMPS domain)
+    #[serde(default)]
+    endpoints_public_hostname: Option<String>,
+
     /// Payment backend config
     payments: PaymentBackend,
 
@@ -120,8 +132,24 @@ async fn main() -> Result<()> {
             node.clone(),
             stream_manager.clone(),
             settings.public_url.clone(),
-        );
+            settings.endpoints_public_hostname.clone(),
+            settings.tos_url.clone(),
+            settings.client_url.clone(),
+        )
+        .await?;
         api_impl.setup_webhook().await?;
+        // Notification policy setup runs as a background task because Cloudflare
+        // validates the webhook URL on destination creation — the HTTP server
+        // must be listening before this can succeed.
+        let api_for_notify = api_impl.clone();
+        tasks.push(tokio::spawn(async move {
+            // Brief delay to let the HTTP server bind
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            if let Err(e) = api_for_notify.setup_notification_policy().await {
+                tracing::error!("Failed to setup notification policy: {}", e);
+            }
+            Ok(())
+        }));
         tasks.push(api_impl.clone().check_streams(shutdown.clone()));
         server = server
             .merge(AxumApi::new(api_impl.clone()))

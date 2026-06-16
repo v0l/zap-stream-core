@@ -67,6 +67,9 @@ pub struct OverseerConfig {
     pub low_balance_threshold: Option<u64>,
     /// Advertise this server on nostr for others to use (NIP-89)
     pub advertise: Option<AdvertiseConfig>,
+    /// Client URL for alt tag (e.g. "https://zap.stream")
+    #[serde(default)]
+    pub client_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

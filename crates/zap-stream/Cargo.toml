@@ -6,7 +6,8 @@ rust-version.workspace = true
 
 [features]
 default = ["rtmp", "hls", "test-pattern", "moq", "tls-ring"]
-pipeline = ["zap-stream-core/pipeline"]
+ffmpeg = ["dep:ffmpeg-rs-raw", "zap-stream-core/ffmpeg"]
+pipeline = ["ffmpeg", "zap-stream-core/pipeline"]
 srt = ["pipeline", "zap-stream-core/ingress-srt"]
 rtmp = ["pipeline", "zap-stream-core/ingress-rtmp"]
 hls = ["pipeline", "zap-stream-core/egress-hls"]
@@ -30,7 +31,7 @@ zap-stream-core-nostr = { path = "../core-nostr", default-features = false }
 zap-stream-api-common = { path = "../zap-stream-api-common", default-features = false, features = ["axum", "admin"] }
 
 uuid.workspace = true
-ffmpeg-rs-raw.workspace = true
+ffmpeg-rs-raw = { workspace = true, optional = true }
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

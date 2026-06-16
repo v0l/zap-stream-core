@@ -298,7 +298,23 @@ impl StreamManager {
     }
 
     pub async fn get_viewer_count(&self, stream_id: &str) -> usize {
+        // Prefer the explicitly set viewer count from active_streams if available
+        let streams = self.active_streams.read().await;
+        if let Some(info) = streams.get(stream_id) {
+            return info.viewers as usize;
+        }
+        drop(streams);
         self.viewer_tracker.get_viewer_count(stream_id).await
+    }
+
+    /// Set the viewer count for a stream directly.
+    /// Used by external backends that source viewer counts from external APIs
+    /// (e.g. Cloudflare) rather than from HLS manifest tracking.
+    pub async fn set_viewer_count(&self, stream_id: &str, count: usize) {
+        let mut streams = self.active_streams.write().await;
+        if let Some(info) = streams.get_mut(stream_id) {
+            info.viewers = count as u32;
+        }
     }
 
     pub async fn get_total_viewers(&self) -> u64 {
@@ -316,11 +332,13 @@ impl StreamManager {
         average_fps: f32,
         frame_count: u64,
     ) {
+        // Fetch viewer count before acquiring write lock to avoid deadlock
+        let viewers = self.viewer_tracker.get_viewer_count(stream_id).await as u32;
         let mut streams = self.active_streams.write().await;
         if let Some(info) = streams.get_mut(stream_id) {
             info.average_fps = average_fps;
             info.frame_count = frame_count;
-            info.viewers = self.get_viewer_count(stream_id).await as _;
+            info.viewers = viewers;
             info.last_update = Some(Utc::now());
             if let Err(e) = self
                 .broadcaster

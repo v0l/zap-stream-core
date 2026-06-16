@@ -262,7 +262,7 @@ impl ApiBase {
         // Create the stream key record and get its ID
         let key_id = self
             .db
-            .create_stream_key(uid, &new_key, req.expires, &stream_id.to_string())
+            .create_stream_key(uid, &new_key, None, req.expires, &stream_id.to_string())
             .await?;
 
         // set the stream key id on the stream event
