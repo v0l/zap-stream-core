@@ -2,6 +2,7 @@ use crate::stream_manager::StreamManager;
 use anyhow::{bail, Result};
 use nostr_sdk::{Client, Event, EventBuilder, JsonUtil, Kind, Tag, Timestamp};
 use std::ops::Add;
+use tracing::warn;
 use zap_stream_db::{UserStream, UserStreamState};
 
 #[derive(Clone)]
@@ -19,9 +20,25 @@ impl N53Publisher {
     }
 
     pub async fn publish(&self, ev: &Event) -> Result<()> {
+        // `send_event` only errors on a hard transport failure; it returns Ok even when every
+        // relay rejected the event. Treat "no relay accepted it" as a failure so callers can
+        // tell that the update did not actually land anywhere.
         let output = self.client.send_event(ev).await?;
         if output.success.is_empty() {
-            bail!("Failed to publish event: no relay accepted it");
+            bail!(
+                "Failed to publish event {}: no relay accepted it ({} rejected)",
+                ev.id,
+                output.failed.len()
+            );
+        }
+        if !output.failed.is_empty() {
+            warn!(
+                "Event {} accepted by {} relay(s), rejected by {}: {:?}",
+                ev.id,
+                output.success.len(),
+                output.failed.len(),
+                output.failed
+            );
         }
         Ok(())
     }
