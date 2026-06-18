@@ -21,6 +21,11 @@ impl ZapStreamDb {
         Ok(ZapStreamDb { db })
     }
 
+    /// Build from an existing pool (mainly for tests)
+    pub fn from_pool(db: MySqlPool) -> Self {
+        ZapStreamDb { db }
+    }
+
     pub async fn migrate(&self) -> Result<()> {
         sqlx::migrate!().run(&self.db).await?;
         Ok(())
