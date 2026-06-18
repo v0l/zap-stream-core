@@ -3,10 +3,9 @@ use crate::overseer::Overseer;
 use crate::pipeline::PipelinePlugin;
 use crate::variant::VariantStream;
 use anyhow::{Result, anyhow, bail};
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_WEBP;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPictureType::AV_PICTURE_TYPE_NONE;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::{AV_NOPTS_VALUE, av_get_pix_fmt_name, av_rescale_q};
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
+    AV_NOPTS_VALUE, AVCodecID, AVPictureType, AVPixelFormat, av_get_pix_fmt_name, av_rescale_q,
+};
 use ffmpeg_rs_raw::{AudioFifo, AvFrameRef, AvPacketRef, Encoder, Resample, Scaler, rstr};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
@@ -61,21 +60,21 @@ impl PipelineWorkerThread {
         let thumb_start = Instant::now();
 
         let encoder = unsafe {
-            Encoder::new(AV_CODEC_ID_WEBP)?
+            Encoder::new(AVCodecID::WEBP)?
                 .with_height(frame.height)
                 .with_width(frame.width)
-                .with_pix_fmt(AV_PIX_FMT_YUV420P)
+                .with_pix_fmt(AVPixelFormat::YUV420P)
                 .open(None)?
         };
 
         // use scaler to convert pixel format if not YUV420P
-        if frame.format != AV_PIX_FMT_YUV420P as i32 {
+        if frame.format != AVPixelFormat::YUV420P.0 as i32 {
             let mut sw = Scaler::new();
             let new_frame = sw.process_frame(
                 &frame,
                 frame.width as _,
                 frame.height as _,
-                AV_PIX_FMT_YUV420P,
+                AVPixelFormat::YUV420P,
             )?;
             encoder.save_picture(&new_frame, dst_pic.to_str().unwrap())?;
         } else {
@@ -182,7 +181,7 @@ impl PipelineWorkerThread {
             let enc_ctx = e.codec_context();
 
             if frame.width != 0
-                && frame.format != unsafe { (*enc_ctx).pix_fmt } as i32
+                && frame.format != unsafe { (*enc_ctx).pix_fmt }.0
                 && self.scaler.is_none()
             {
                 warn!(
@@ -196,7 +195,7 @@ impl PipelineWorkerThread {
                 self.scaler.replace(sc);
                 return self.scale_encode_frame(frame.clone());
             }
-            frame.pict_type = AV_PICTURE_TYPE_NONE;
+            frame.pict_type = AVPictureType::NONE;
             frame.pts = unsafe { av_rescale_q(frame.pts, frame.time_base, (*enc_ctx).time_base) };
             frame.pkt_dts = AV_NOPTS_VALUE;
             frame.duration =

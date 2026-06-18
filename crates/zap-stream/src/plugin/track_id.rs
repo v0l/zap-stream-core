@@ -60,7 +60,7 @@ impl TrackIdPlugin {
             ctx,
             sample_time,
             resample: Mutex::new(Resample::new(
-                AVSampleFormat::AV_SAMPLE_FMT_S16,
+                AVSampleFormat::S16,
                 sample_rate,
                 channels as _,
             )),

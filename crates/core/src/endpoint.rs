@@ -783,8 +783,8 @@ mod tests {
     use super::*;
     use crate::mux::SegmentType;
     use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID;
-    use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
-    use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVSampleFormat::AV_SAMPLE_FMT_FLTP;
+    use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat;
+    use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVSampleFormat;
     use tracing_subscriber::filter::LevelFilter;
 
     #[test]
@@ -800,8 +800,8 @@ mod tests {
                 IngressStream {
                     index: 0,
                     stream_type: StreamType::Video,
-                    codec: AVCodecID::AV_CODEC_ID_H264 as _,
-                    format: AV_PIX_FMT_YUV420P as _,
+                    codec: AVCodecID::H264.0 as _,
+                    format: AVPixelFormat::YUV420P.0 as _,
                     width: 1920,
                     height: 1080,
                     bitrate: 8_000_000,
@@ -811,8 +811,8 @@ mod tests {
                 IngressStream {
                     index: 1,
                     stream_type: StreamType::Video,
-                    codec: AVCodecID::AV_CODEC_ID_H264 as _,
-                    format: AV_PIX_FMT_YUV420P as _,
+                    codec: AVCodecID::H264.0 as _,
+                    format: AVPixelFormat::YUV420P.0 as _,
                     width: 1280,
                     height: 720,
                     bitrate: 6_000_000,
@@ -822,8 +822,8 @@ mod tests {
                 IngressStream {
                     index: 2,
                     stream_type: StreamType::Audio,
-                    codec: AVCodecID::AV_CODEC_ID_AAC as _,
-                    format: AV_SAMPLE_FMT_FLTP as _,
+                    codec: AVCodecID::AAC.0 as _,
+                    format: AVSampleFormat::FLTP.0 as _,
                     bitrate: 320_000,
                     sample_rate: 44_100,
                     channels: 2,

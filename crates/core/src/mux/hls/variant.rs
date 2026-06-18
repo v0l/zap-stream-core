@@ -5,12 +5,10 @@ use crate::mux::{HlsVariantStream, SegmentType};
 use crate::variant::VariantStream;
 use anyhow::{Result, bail, ensure};
 use chrono::Utc;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::AV_CODEC_ID_H264;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVMediaType::AVMEDIA_TYPE_VIDEO;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVIO_FLAG_WRITE, av_freep, av_get_bits_per_pixel,
-    av_interleaved_write_frame, av_pix_fmt_desc_get, av_q2d, av_write_frame, avio_closep,
-    avio_flush, avio_open, avio_size,
+    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVIO_FLAG_WRITE, AVCodecID, AVMediaType, av_freep,
+    av_get_bits_per_pixel, av_interleaved_write_frame, av_pix_fmt_desc_get, av_q2d, av_write_frame,
+    avio_closep, avio_flush, avio_open, avio_size,
 };
 use ffmpeg_rs_raw::{AvPacketRef, Muxer, bail_ffmpeg, cstr};
 use m3u8_rs::Playlist::MediaPlaylist;
@@ -359,7 +357,7 @@ impl HlsVariant {
         let mut result = EgressResult::None;
         let stream_type = unsafe { (*(*pkt_stream).codecpar).codec_type };
         let mut can_split =
-            stream_type == AVMEDIA_TYPE_VIDEO && (pkt.flags & AV_PKT_FLAG_KEY == AV_PKT_FLAG_KEY);
+            stream_type == AVMediaType::VIDEO && (pkt.flags & AV_PKT_FLAG_KEY == AV_PKT_FLAG_KEY);
         let mut is_ref_pkt = stream_index == self.ref_stream_index;
 
         if pkt.pts == AV_NOPTS_VALUE {
@@ -384,7 +382,7 @@ impl HlsVariant {
 
             let should_end_this_segment = cur_duration >= self.segment_length() as f64;
             let split_seg = can_split && should_end_this_segment;
-            let split_partial = stream_type == AVMEDIA_TYPE_VIDEO
+            let split_partial = stream_type == AVMediaType::VIDEO
                 && self.low_latency
                 && (cur_part_duration >= self.partial_target_duration as f64 || split_seg);
 
@@ -748,7 +746,7 @@ impl HlsVariant {
 
                 match stream {
                     HlsVariantStream::Video { .. } => {
-                        if (*p).codec_id == AV_CODEC_ID_H264 {
+                        if (*p).codec_id == AVCodecID::H264 {
                             // Use profile and level from codec parameters
                             let profile_idc = (*p).profile as u8;
                             let level_idc = (*p).level as u8;

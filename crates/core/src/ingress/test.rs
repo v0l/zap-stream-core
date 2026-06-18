@@ -5,8 +5,8 @@ use crate::metrics::EndpointStats;
 use crate::overseer::Overseer;
 use anyhow::Result;
 use chrono::Utc;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVSampleFormat::AV_SAMPLE_FMT_FLTP;
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat;
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVSampleFormat;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{AV_PROFILE_H264_MAIN, AVRational};
 use ffmpeg_rs_raw::{Encoder, Muxer};
 use ringbuf::traits::{Observer, Split};
@@ -97,7 +97,7 @@ impl TestPatternSrc {
                 .with_stream_index(0)
                 .with_framerate(VIDEO_FPS)?
                 .with_bitrate(1_000_000)
-                .with_pix_fmt(AV_PIX_FMT_YUV420P)
+                .with_pix_fmt(AVPixelFormat::YUV420P)
                 .with_width(VIDEO_WIDTH as _)
                 .with_height(VIDEO_HEIGHT as _)
                 .with_level(51)
@@ -110,7 +110,7 @@ impl TestPatternSrc {
                 .with_stream_index(1)
                 .with_default_channel_layout(1)
                 .with_bitrate(128_000)
-                .with_sample_format(AV_SAMPLE_FMT_FLTP)
+                .with_sample_format(AVSampleFormat::FLTP)
                 .with_sample_rate(SAMPLE_RATE as _)?
                 .open(None)?
         };
@@ -144,7 +144,7 @@ impl TestPatternSrc {
                 VIDEO_FPS,
                 VIDEO_WIDTH,
                 VIDEO_HEIGHT,
-                AV_PIX_FMT_YUV420P,
+                AVPixelFormat::YUV420P,
                 SAMPLE_RATE,
                 frame_size,
                 1,

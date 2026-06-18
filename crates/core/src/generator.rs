@@ -1,12 +1,9 @@
 use crate::ingress::IngressStream;
 use anyhow::{Result, bail};
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVColorSpace::AVCOL_SPC_RGB;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPictureType::AV_PICTURE_TYPE_NONE;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_RGBA;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVSampleFormat::AV_SAMPLE_FMT_FLTP;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    AV_FRAME_FLAG_KEY, AVPixelFormat, AVRational, AVStream, av_channel_layout_default,
-    av_frame_alloc, av_frame_free, av_frame_get_buffer, av_q2d, av_rescale_q,
+    AV_FRAME_FLAG_KEY, AVColorSpace, AVPictureType, AVPixelFormat, AVRational, AVSampleFormat,
+    AVStream, av_channel_layout_default, av_frame_alloc, av_frame_free, av_frame_get_buffer,
+    av_q2d, av_rescale_q,
 };
 use ffmpeg_rs_raw::{AvFrameRef, Scaler};
 use fontdue::Font;
@@ -193,13 +190,13 @@ impl FrameGenerator {
 
                 (*src_frame).width = self.width as _;
                 (*src_frame).height = self.height as _;
-                (*src_frame).pict_type = AV_PICTURE_TYPE_NONE;
+                (*src_frame).pict_type = AVPictureType::NONE;
                 // FFmpeg 8.0 removed AVFrame.key_frame; use the AV_FRAME_FLAG_KEY flag instead
                 // (available since FFmpeg 6.1, so this is portable across 7.x and 8.x).
                 (*src_frame).flags |= AV_FRAME_FLAG_KEY;
-                (*src_frame).colorspace = AVCOL_SPC_RGB;
+                (*src_frame).colorspace = AVColorSpace::RGB;
                 //internally always use RGBA, we convert frame to target pixel format at the end
-                (*src_frame).format = AV_PIX_FMT_RGBA as _;
+                (*src_frame).format = AVPixelFormat::RGBA.0 as _;
                 (*src_frame).pts = self.video_pts;
                 (*src_frame).duration = self.pts_per_frame() as _;
                 (*src_frame).time_base = self.video_timebase;
@@ -390,7 +387,7 @@ impl FrameGenerator {
             // Generate audio if we don't have enough to cover the next video frame
             if self.audio_pts < audio_pts_needed {
                 let audio_frame = av_frame_alloc();
-                (*audio_frame).format = AV_SAMPLE_FMT_FLTP as _;
+                (*audio_frame).format = AVSampleFormat::FLTP.0 as _;
                 (*audio_frame).nb_samples = self.audio_frame_size as _;
                 (*audio_frame).duration = self.audio_frame_size as _;
                 (*audio_frame).sample_rate = self.audio_sample_rate as _;
@@ -485,7 +482,6 @@ impl FrameGenerator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_YUV420P;
 
     #[test]
     fn test_frame_timing_synchronization() {
@@ -499,7 +495,7 @@ mod tests {
                 fps,
                 1280,
                 720,
-                AV_PIX_FMT_YUV420P,
+                AVPixelFormat::YUV420P,
                 sample_rate,
                 frame_size,
                 channels,
@@ -603,7 +599,7 @@ mod tests {
                 fps,
                 1280,
                 720,
-                AV_PIX_FMT_YUV420P,
+                AVPixelFormat::YUV420P,
                 sample_rate,
                 1024,
                 2,

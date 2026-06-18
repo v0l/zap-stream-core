@@ -6,9 +6,9 @@ use anyhow::Result;
 use axum::Router;
 use clap::Parser;
 use config::Config;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVCodecID::{AV_CODEC_ID_H264, AV_CODEC_ID_HEVC};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    av_hwdevice_get_type_name, av_log_set_callback, av_version_info, avcodec_find_decoder,
+    AVCodecID, av_hwdevice_get_type_name, av_log_set_callback, av_version_info,
+    avcodec_find_decoder,
 };
 use ffmpeg_rs_raw::{Decoder, ffmpeg_sys_the_third, rstr};
 use payments_rs::lightning::setup_crypto_provider;
@@ -109,13 +109,13 @@ async fn main() -> Result<()> {
 
         let mut has_hw_accel = false;
         let decoder = Decoder::new();
-        let h264_codec = avcodec_find_decoder(AV_CODEC_ID_H264);
+        let h264_codec = avcodec_find_decoder(AVCodecID::H264);
         for hw in decoder.list_supported_hw_accel(h264_codec) {
             let device = av_hwdevice_get_type_name(hw);
             info!("Supported HW accel=h264_{}", rstr!(device));
             has_hw_accel = true;
         }
-        let h265_codec = avcodec_find_decoder(AV_CODEC_ID_HEVC);
+        let h265_codec = avcodec_find_decoder(AVCodecID::HEVC);
         for hw in decoder.list_supported_hw_accel(h265_codec) {
             let device = av_hwdevice_get_type_name(hw);
             info!("Supported HW accel=h265_{}", rstr!(device));

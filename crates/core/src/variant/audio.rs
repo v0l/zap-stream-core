@@ -3,9 +3,9 @@ use crate::ingress::IngressStream;
 use crate::map_codec_id;
 use anyhow::Result;
 use anyhow::bail;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVSampleFormat::AV_SAMPLE_FMT_NONE;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    AV_CODEC_FLAG_GLOBAL_HEADER, AV_CODEC_FLAG_LOW_DELAY, av_get_sample_fmt, avcodec_find_encoder,
+    AV_CODEC_FLAG_GLOBAL_HEADER, AV_CODEC_FLAG_LOW_DELAY, AVSampleFormat, av_get_sample_fmt,
+    avcodec_find_encoder,
 };
 use ffmpeg_rs_raw::{Encoder, cstr, free_cstr};
 use serde::{Deserialize, Serialize};
@@ -78,10 +78,10 @@ impl AudioVariant {
             let n_c = cstr!(self.sample_format.as_str());
             let id = av_get_sample_fmt(n_c);
             free_cstr!(n_c);
-            if id == AV_SAMPLE_FMT_NONE {
+            if id == AVSampleFormat::NONE {
                 bail!("Sample format {} not supported", self.sample_format);
             }
-            Ok(id as _)
+            Ok(id.0 as _)
         }
     }
 

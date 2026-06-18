@@ -96,10 +96,10 @@ impl MultiTrackEngine {
                 IngressStream {
                     index: 0,
                     stream_type: StreamType::Video,
-                    codec: ingest_video_codec_id as _,
+                    codec: ingest_video_codec_id.0 as _,
                     format: unsafe {
                         let str = cstr!(pix_fmt);
-                        let ret: i32 = av_get_pix_fmt(str) as _;
+                        let ret: i32 = av_get_pix_fmt(str).0 as _;
                         if ret == -1 {
                             return Ok(MultiTrackConfigResponse::status_error(format!(
                                 "Could not find pixel format {}",
@@ -139,10 +139,10 @@ impl MultiTrackEngine {
                 IngressStream {
                     index: 1,
                     stream_type: StreamType::Audio,
-                    codec: ingest_audio_codec_id as _,
+                    codec: ingest_audio_codec_id.0 as _,
                     format: unsafe {
                         let str = cstr!(sample_fmt);
-                        let ret: i32 = av_get_sample_fmt(str) as _;
+                        let ret: i32 = av_get_sample_fmt(str).0 as _;
                         free_cstr!(str);
                         if ret == -1 {
                             return Ok(MultiTrackConfigResponse::status_error(format!(
