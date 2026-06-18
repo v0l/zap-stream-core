@@ -5,8 +5,8 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPictureType::AV_PICTURE_TYPE_NONE;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_RGBA;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVSampleFormat::AV_SAMPLE_FMT_FLTP;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    AVPixelFormat, AVRational, AVStream, av_channel_layout_default, av_frame_alloc, av_frame_free,
-    av_frame_get_buffer, av_q2d, av_rescale_q,
+    AV_FRAME_FLAG_KEY, AVPixelFormat, AVRational, AVStream, av_channel_layout_default,
+    av_frame_alloc, av_frame_free, av_frame_get_buffer, av_q2d, av_rescale_q,
 };
 use ffmpeg_rs_raw::{AvFrameRef, Scaler};
 use fontdue::Font;
@@ -194,7 +194,9 @@ impl FrameGenerator {
                 (*src_frame).width = self.width as _;
                 (*src_frame).height = self.height as _;
                 (*src_frame).pict_type = AV_PICTURE_TYPE_NONE;
-                (*src_frame).key_frame = 1;
+                // FFmpeg 8.0 removed AVFrame.key_frame; use the AV_FRAME_FLAG_KEY flag instead
+                // (available since FFmpeg 6.1, so this is portable across 7.x and 8.x).
+                (*src_frame).flags |= AV_FRAME_FLAG_KEY;
                 (*src_frame).colorspace = AVCOL_SPC_RGB;
                 //internally always use RGBA, we convert frame to target pixel format at the end
                 (*src_frame).format = AV_PIX_FMT_RGBA as _;
