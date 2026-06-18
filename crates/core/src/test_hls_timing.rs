@@ -5,9 +5,8 @@ use crate::mux::{HlsMuxer, SegmentType};
 use crate::variant::{AudioVariant, VariantStream, VideoVariant};
 use anyhow::{Context, Result};
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    AV_CODEC_FLAG_GLOBAL_HEADER, AV_NOPTS_VALUE, AV_PROFILE_H264_MAIN,
-    AVMediaType::AVMEDIA_TYPE_AUDIO, AVMediaType::AVMEDIA_TYPE_VIDEO,
-    AVPixelFormat::AV_PIX_FMT_YUV420P, AVRational, AVSampleFormat::AV_SAMPLE_FMT_FLTP, av_q2d,
+    AV_CODEC_FLAG_GLOBAL_HEADER, AV_NOPTS_VALUE, AV_PROFILE_H264_MAIN, AVMediaType, AVPixelFormat,
+    AVRational, AVSampleFormat, av_q2d,
 };
 use ffmpeg_rs_raw::{Demuxer, Encoder};
 use m3u8_rs::{MediaSegmentType, parse_media_playlist};
@@ -168,7 +167,7 @@ impl HlsTimingTester {
                 .with_stream_index(0)
                 .with_framerate(VIDEO_FPS)?
                 .with_bitrate(1_000_000)
-                .with_pix_fmt(AV_PIX_FMT_YUV420P)
+                .with_pix_fmt(AVPixelFormat::YUV420P)
                 .with_width(VIDEO_WIDTH as _)
                 .with_height(VIDEO_HEIGHT as _)
                 .with_level(51)
@@ -192,7 +191,7 @@ impl HlsTimingTester {
                 .with_stream_index(1)
                 .with_default_channel_layout(1)
                 .with_bitrate(128_000)
-                .with_sample_format(AV_SAMPLE_FMT_FLTP)
+                .with_sample_format(AVSampleFormat::FLTP)
                 .with_sample_rate(SAMPLE_RATE as _)?;
 
             if need_global_header {
@@ -259,7 +258,7 @@ impl HlsTimingTester {
             VIDEO_FPS,
             VIDEO_WIDTH,
             VIDEO_HEIGHT,
-            AV_PIX_FMT_YUV420P,
+            AVPixelFormat::YUV420P,
             SAMPLE_RATE,
             frame_size,
             1,
@@ -649,7 +648,7 @@ impl HlsTimingTester {
                         let current_stream_idx = (*stream).index as usize;
 
                         match codec_type {
-                            AVMEDIA_TYPE_VIDEO => {
+                            AVMediaType::VIDEO => {
                                 if video_stream_idx.is_none() {
                                     video_stream_idx = Some(current_stream_idx);
                                 }
@@ -661,7 +660,7 @@ impl HlsTimingTester {
                                     video_last_duration = duration;
                                 }
                             }
-                            AVMEDIA_TYPE_AUDIO => {
+                            AVMediaType::AUDIO => {
                                 if audio_stream_idx.is_none() {
                                     audio_stream_idx = Some(current_stream_idx);
                                 }

@@ -1,0 +1,53 @@
+name: Build Docker Images (PR)
+
+on:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-zap-stream-core:
+    name: Build zap-stream-core
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build zap-stream-core
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./crates/zap-stream/Dockerfile
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha,scope=zap-stream-core
+          cache-to: type=gha,mode=max,scope=zap-stream-core
+
+  build-n94-bridge:
+    name: Build n94-bridge
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build n94-bridge
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./crates/n94-bridge/Dockerfile
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha,scope=n94-bridge
+          cache-to: type=gha,mode=max,scope=n94-bridge

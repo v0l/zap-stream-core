@@ -215,7 +215,12 @@ impl ZapStreamOverseer {
         self.moq_bind = bind;
     }
 
-    pub async fn publish_stream_event(
+    /// Build the nostr event for a stream without publishing it.
+    ///
+    /// This is the local, reliable half of [`Self::publish_stream_event`]: it never touches
+    /// the relays, so it can be used to persist the event (e.g. in its ended state) to the DB
+    /// independently of whether the subsequent relay publish succeeds.
+    pub async fn build_stream_event(
         &self,
         stream: &UserStream,
         pubkey: &Vec<u8>,
@@ -269,7 +274,16 @@ impl ZapStreamOverseer {
             None
         };
         let ev = self.n53.stream_to_event(stream, extra_tags, alt).await?;
-        self.client.send_event(&ev).await?;
+        Ok(ev)
+    }
+
+    pub async fn publish_stream_event(
+        &self,
+        stream: &UserStream,
+        pubkey: &Vec<u8>,
+    ) -> Result<Event> {
+        let ev = self.build_stream_event(stream, pubkey).await?;
+        self.n53.publish(&ev).await?;
         info!("Published stream event {}", ev.id.to_hex());
         self.last_event_publish
             .store(Timestamp::now().as_secs(), Ordering::Relaxed);
@@ -895,9 +909,24 @@ impl Overseer for ZapStreamOverseer {
 
         stream.state = UserStreamState::Ended;
         stream.ends = Some(Utc::now());
-        let event = self.publish_stream_event(&stream, &user.pubkey).await?;
+
+        // Build the ended-state event and persist it to the DB BEFORE publishing to relays.
+        // Building is local and reliable; publishing is not (e.g. "connection closed before
+        // message completed"). If the publish fails we must still record the ended state and
+        // the ended event locally, otherwise the stream stays stuck live: it keeps counting
+        // as live, blocks the user from starting a new stream and prevents recording cleanup.
+        let event = self.build_stream_event(&stream, &user.pubkey).await?;
         stream.event = Some(event.as_json());
         self.db.update_stream(&stream).await?;
+
+        // Best-effort publish of the end event; a failure here must not abort on_end.
+        if let Err(e) = self.n53.publish(&event).await {
+            error!("Failed to publish stream end event for {}: {}", stream.id, e);
+        } else {
+            info!("Published stream event {}", event.id.to_hex());
+            self.last_event_publish
+                .store(Timestamp::now().as_secs(), Ordering::Relaxed);
+        }
 
         info!("Stream ended {}", stream.id);
         Ok(())

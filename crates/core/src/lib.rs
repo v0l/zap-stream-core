@@ -50,14 +50,14 @@ pub use hang;
 #[cfg(feature = "ffmpeg")]
 pub fn map_codec_id(codec: &str) -> Option<AVCodecID> {
     match codec {
-        "h264" => Some(AVCodecID::AV_CODEC_ID_H264),
-        "h265" | "hevc" => Some(AVCodecID::AV_CODEC_ID_HEVC),
-        "av1" => Some(AVCodecID::AV_CODEC_ID_AV1),
-        "vp9" => Some(AVCodecID::AV_CODEC_ID_VP9),
-        "vp8" => Some(AVCodecID::AV_CODEC_ID_VP8),
-        "aac" => Some(AVCodecID::AV_CODEC_ID_AAC),
-        "opus" => Some(AVCodecID::AV_CODEC_ID_OPUS),
-        "webp" => Some(AVCodecID::AV_CODEC_ID_WEBP),
+        "h264" => Some(AVCodecID::H264),
+        "h265" | "hevc" => Some(AVCodecID::HEVC),
+        "av1" => Some(AVCodecID::AV1),
+        "vp9" => Some(AVCodecID::VP9),
+        "vp8" => Some(AVCodecID::VP8),
+        "aac" => Some(AVCodecID::AAC),
+        "opus" => Some(AVCodecID::OPUS),
+        "webp" => Some(AVCodecID::WEBP),
         _ => None,
     }
 }

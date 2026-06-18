@@ -2,11 +2,9 @@ use crate::egress::EncoderParam;
 use crate::ingress::IngressStream;
 use crate::map_codec_id;
 use anyhow::{Result, bail};
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVColorSpace::AVCOL_SPC_BT709;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVPixelFormat::AV_PIX_FMT_NONE;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    AV_CODEC_FLAG_GLOBAL_HEADER, AV_CODEC_FLAG_LOW_DELAY, AVColorRange, AVRational,
-    av_color_range_from_name, av_color_space_from_name, av_get_pix_fmt, av_q2d,
+    AV_CODEC_FLAG_GLOBAL_HEADER, AV_CODEC_FLAG_LOW_DELAY, AVColorRange, AVColorSpace, AVPixelFormat,
+    AVRational, av_color_range_from_name, av_color_space_from_name, av_get_pix_fmt, av_q2d,
     avcodec_find_encoder,
 };
 use ffmpeg_rs_raw::{Encoder, cstr, free_cstr, get_ffmpeg_error_msg, rstr};
@@ -147,10 +145,10 @@ impl VideoVariant {
             let c_fmt = cstr!(self.pixel_format.as_str());
             let fmt = av_get_pix_fmt(c_fmt);
             free_cstr!(c_fmt);
-            if fmt == AV_PIX_FMT_NONE {
+            if fmt == AVPixelFormat::NONE {
                 bail!("Invalid pixel format {}", self.pixel_format);
             }
-            Ok(fmt as _)
+            Ok(fmt.0 as _)
         }
     }
 
@@ -205,7 +203,7 @@ impl VideoVariant {
                             (*ctx).colorspace = transmute(cs);
                         }
                     } else {
-                        (*ctx).colorspace = AVCOL_SPC_BT709;
+                        (*ctx).colorspace = AVColorSpace::BT709;
                     }
 
                     if !self.color_range.is_empty() {
@@ -222,7 +220,7 @@ impl VideoVariant {
                             (*ctx).color_range = transmute(cr);
                         }
                     } else {
-                        (*ctx).color_range = AVColorRange::AVCOL_RANGE_MPEG;
+                        (*ctx).color_range = AVColorRange::MPEG;
                     }
 
                     // Set GLOBAL_HEADER flag for fMP4 HLS and recorder contexts

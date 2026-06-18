@@ -1,8 +1,6 @@
 use anyhow::{Context, Result};
 use ffmpeg_rs_raw::Demuxer;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    AV_NOPTS_VALUE, AVMediaType::AVMEDIA_TYPE_AUDIO, AVMediaType::AVMEDIA_TYPE_VIDEO, av_q2d,
-};
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::{AV_NOPTS_VALUE, AVMediaType, av_q2d};
 use m3u8_rs::{MediaSegmentType, parse_media_playlist};
 use std::env;
 use std::fmt;
@@ -646,7 +644,7 @@ fn analyze_segment_with_reader(reader: Box<dyn Read>) -> Result<SegmentDurations
                     let current_stream_idx = (*stream).index as usize;
 
                     match codec_type {
-                        AVMEDIA_TYPE_VIDEO => {
+                        AVMediaType::VIDEO => {
                             if video_stream_idx.is_none() {
                                 video_stream_idx = Some(current_stream_idx);
                             }
@@ -659,7 +657,7 @@ fn analyze_segment_with_reader(reader: Box<dyn Read>) -> Result<SegmentDurations
                                 video_packets += 1;
                             }
                         }
-                        AVMEDIA_TYPE_AUDIO => {
+                        AVMediaType::AUDIO => {
                             if audio_stream_idx.is_none() {
                                 audio_stream_idx = Some(current_stream_idx);
                             }
@@ -765,7 +763,7 @@ fn analyze_partial_segment(
 }
 
 fn analyze_init_segment(path: &Path) -> Result<InitSegmentInfo> {
-    use ffmpeg_rs_raw::ffmpeg_sys_the_third::{AVPixelFormat::AV_PIX_FMT_NONE, avcodec_get_name};
+    use ffmpeg_rs_raw::ffmpeg_sys_the_third::{AVPixelFormat, avcodec_get_name};
     use std::ffi::CStr;
 
     let mut demuxer = Demuxer::new(path.to_str().unwrap())?;
@@ -797,7 +795,7 @@ fn analyze_init_segment(path: &Path) -> Result<InitSegmentInfo> {
                 };
 
                 let (codec_type_str, width, height, pixel_format) = match codec_type {
-                    AVMEDIA_TYPE_VIDEO => {
+                    AVMediaType::VIDEO => {
                         let w = if (*codecpar).width > 0 {
                             Some((*codecpar).width)
                         } else {
@@ -809,7 +807,7 @@ fn analyze_init_segment(path: &Path) -> Result<InitSegmentInfo> {
                             None
                         };
 
-                        let pix_fmt = if (*codecpar).format != AV_PIX_FMT_NONE as i32 {
+                        let pix_fmt = if (*codecpar).format != AVPixelFormat::NONE.0 as i32 {
                             pixel_format_set = true;
                             // Skip pixel format name resolution for now due to type mismatch
                             Some("yuv420p".to_string()) // Common default
@@ -819,7 +817,7 @@ fn analyze_init_segment(path: &Path) -> Result<InitSegmentInfo> {
 
                         ("video".to_string(), w, h, pix_fmt)
                     }
-                    AVMEDIA_TYPE_AUDIO => ("audio".to_string(), None, None, None),
+                    AVMediaType::AUDIO => ("audio".to_string(), None, None, None),
                     _ => ("other".to_string(), None, None, None),
                 };
 
