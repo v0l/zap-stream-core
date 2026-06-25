@@ -44,6 +44,12 @@ struct RtmpClient {
     tx: UnboundedSender<PipelineCommand>,
     // Handler to accept/deny publish requests
     publish_handler: Option<Box<dyn FnMut(&str, &str) -> (bool, Option<String>) + Send + 'static>>,
+    // Track stream readiness so we don't probe before codec sequence headers arrive
+    metadata_received: bool,
+    has_video: bool,
+    has_audio: bool,
+    video_seq_header_received: bool,
+    audio_seq_header_received: bool,
 }
 
 impl RtmpClient {
@@ -65,6 +71,11 @@ impl RtmpClient {
             publish_handler: None,
             muxer: FlvMuxer::new(),
             tx,
+            metadata_received: false,
+            has_video: false,
+            has_audio: false,
+            video_seq_header_received: false,
+            audio_seq_header_received: false,
         })
     }
 
@@ -180,9 +191,69 @@ impl RtmpClient {
         Ok(())
     }
 
+    /// Detect an FLV video tag carrying a codec sequence header (AVCDecoderConfigurationRecord
+    /// for H264 / equivalent for HEVC). This is the packet that contains resolution and pixel
+    /// format, which the FFmpeg probe needs to resolve stream parameters.
+    fn is_video_sequence_header(data: &[u8]) -> bool {
+        let Some(&b0) = data.first() else {
+            return false;
+        };
+        // Enhanced RTMP (ExVideoTagHeader): IsExHeader high bit set, packet type in low nibble
+        if b0 & 0x80 != 0 {
+            return (b0 & 0x0f) == 0; // PacketTypeSequenceStart
+        }
+        // Legacy: codecId in low nibble (AVC=7, HEVC=12), AVCPacketType==0 == sequence header
+        let codec_id = b0 & 0x0f;
+        if codec_id == 7 || codec_id == 12 {
+            return data.len() >= 2 && data[1] == 0;
+        }
+        false
+    }
+
+    /// Detect when audio is ready for probing. AAC requires its AudioSpecificConfig sequence
+    /// header; other codecs have no sequence header so the first packet is sufficient.
+    fn is_audio_ready(data: &[u8]) -> bool {
+        let Some(&b0) = data.first() else {
+            return false;
+        };
+        let sound_format = (b0 >> 4) & 0x0f;
+        if sound_format == 10 {
+            return data.len() >= 2 && data[1] == 0; // AAC sequence header
+        }
+        true
+    }
+
+    /// True once enough has been received for a reliable FFmpeg probe.
+    fn media_ready(&self) -> bool {
+        self.metadata_received
+            && (!self.has_video || self.video_seq_header_received)
+            && (!self.has_audio || self.audio_seq_header_received)
+    }
+
+    /// Pump the socket until codec sequence headers have been buffered, so the downstream
+    /// FFmpeg probe can resolve resolution/pixel format. Best-effort: proceeds on timeout.
+    pub fn wait_for_media_ready(&mut self, timeout: Duration) -> Result<()> {
+        let start = Instant::now();
+        while !self.media_ready() {
+            if start.elapsed() > timeout {
+                warn!("Timed out waiting for codec sequence headers before probe");
+                break;
+            }
+            match self.read_data()? {
+                Some(0) => bail!("EOF while waiting for codec sequence headers"),
+                Some(len) => self.process_socket_buf(len)?,
+                None => sleep(Duration::from_millis(10)),
+            }
+        }
+        Ok(())
+    }
+
     fn write_flv_header(&mut self, metadata: &rml_rtmp::sessions::StreamMetadata) -> Result<()> {
         let has_video = metadata.video_codec_id.is_some();
         let has_audio = metadata.audio_codec_id.is_some();
+        self.has_video = has_video;
+        self.has_audio = has_audio;
+        self.metadata_received = true;
 
         self.muxer
             .write_flv_header(has_audio, has_video)
@@ -268,12 +339,18 @@ impl RtmpClient {
             ServerSessionEvent::AudioDataReceived {
                 data, timestamp, ..
             } => {
+                if !self.audio_seq_header_received && Self::is_audio_ready(&data) {
+                    self.audio_seq_header_received = true;
+                }
                 self.write_flv_tag(8, timestamp.value, data)
                     .map_err(|e| anyhow!("failed to write flv tag: {}", e))?;
             }
             ServerSessionEvent::VideoDataReceived {
                 data, timestamp, ..
             } => {
+                if !self.video_seq_header_received && Self::is_video_sequence_header(&data) {
+                    self.video_seq_header_received = true;
+                }
                 self.write_flv_tag(9, timestamp.value, data)
                     .map_err(|e| anyhow!("failed to write flv tag: {}", e))?;
             }
@@ -414,6 +491,13 @@ fn socket_handler(
 
     if let Err(e) = cc.read_until_publish_request(Duration::from_secs(10)) {
         bail!("Error waiting for publish request: {}", e)
+    }
+
+    // Buffer codec sequence headers (e.g. H264 SPS/PPS) before the pipeline probes the
+    // input, otherwise FFmpeg resolves the video stream with an unspecified size/pixel
+    // format and the variant setup panics.
+    if let Err(e) = cc.wait_for_media_ready(Duration::from_secs(10)) {
+        bail!("Error waiting for codec sequence headers: {}", e)
     }
 
     let id = *id

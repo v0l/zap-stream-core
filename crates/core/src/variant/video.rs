@@ -131,10 +131,16 @@ impl VideoVariant {
 
     /// Apply any modifications to the config based on the ingress stream which is used for this variant
     pub fn patch_for_ingress(&mut self, ingress: &IngressStream) {
-        // if the ingress stream is a different size, apply scale mode
+        // if the ingress stream is a different size, apply scale mode.
+        // If the ingress pixel format is unknown (probe couldn't resolve it), assume a
+        // conversion is required rather than panicking.
+        let pixel_format_differs = ingress
+            .pixel_format_name()
+            .map(|p| p != self.pixel_format)
+            .unwrap_or(true);
         if ingress.width as u16 != self.width
             || ingress.height as u16 != self.height
-            || ingress.pixel_format_name().unwrap() != self.pixel_format
+            || pixel_format_differs
         {
             self.scale_mode = Some(ScaleMode::Default);
         }
