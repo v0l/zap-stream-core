@@ -325,10 +325,15 @@ impl HlsVariant {
         self.segment_length_target.max(2.0)
     }
 
+    /// Target duration of a single partial segment (LL-HLS `PART-TARGET`).
+    ///
+    /// We aim for ~4 partials per full segment which keeps `PART-HOLD-BACK`
+    /// (3x part target) comfortably below the full segment duration while still
+    /// producing reasonably sized fragments.
     pub fn partial_segment_length(&self) -> f32 {
-        let seg_size = self.segment_length();
-        let partial_seg_size = seg_size / 3.0; // 3 segments min
-        partial_seg_size - partial_seg_size % seg_size
+        // clamp to a sane minimum so very short segment lengths don't produce
+        // absurdly tiny fragments
+        (self.segment_length() / 4.0).max(0.2)
     }
 
     pub fn segment_name(t: SegmentType, idx: u64) -> String {
@@ -695,6 +700,21 @@ impl HlsVariant {
             pl.unknown_tags.push(ExtTag {
                 tag: "X-MAP".to_string(),
                 rest: Some(format!("URI=\"{}\"", init_path)),
+            });
+        }
+
+        // LL-HLS: advertise blocking playlist reload + partial hold back so that
+        // players actually enter low-latency mode. PART-HOLD-BACK must be at least
+        // 3x the partial target duration per RFC 8216 (LL-HLS).
+        if self.low_latency {
+            let part_hold_back =
+                (self.partial_target_duration * 3.0).max(self.partial_target_duration + 0.1);
+            pl.unknown_tags.push(ExtTag {
+                tag: "X-SERVER-CONTROL".to_string(),
+                rest: Some(format!(
+                    "PART-HOLD-BACK={:.3},CAN-BLOCK-RELOAD=YES",
+                    part_hold_back
+                )),
             });
         }
 

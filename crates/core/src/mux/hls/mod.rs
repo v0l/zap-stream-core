@@ -70,8 +70,13 @@ impl HlsMuxer {
         }
         let mut vars = Vec::new();
         for g in encoders {
-            let var = HlsVariant::new(out_dir.clone(), g, segment_type, segment_length)?;
-            //var.enable_low_latency(segment_length / 4.0);
+            let mut var = HlsVariant::new(out_dir.clone(), g, segment_type, segment_length)?;
+            // Low-latency HLS requires byte-range addressable partial segments; we only
+            // enable it for fMP4 output where partial fragments are well supported by players.
+            if segment_type == SegmentType::FMP4 {
+                let part_target = var.partial_segment_length();
+                var.enable_low_latency(part_target);
+            }
             vars.push(var);
         }
 
@@ -108,7 +113,8 @@ impl HlsMuxer {
 
     fn write_master_playlist(&mut self) -> Result<()> {
         let mut pl = m3u8_rs::MasterPlaylist::default();
-        pl.version = Some(3);
+        // Version 6 is required for fMP4 / LL-HLS aware clients
+        pl.version = Some(6);
         pl.variants = self
             .variants
             .iter()
