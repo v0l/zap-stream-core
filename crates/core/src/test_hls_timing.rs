@@ -1,5 +1,5 @@
 #![cfg(feature = "debug-hls")]
-use crate::egress::EncoderOrSourceStream;
+use crate::egress::{EncoderOrSourceStream, EncoderVariant, EncoderVariantGroup};
 use crate::generator::FrameGenerator;
 use crate::mux::{HlsMuxer, SegmentType};
 use crate::variant::{AudioVariant, VariantStream, VideoVariant};
@@ -213,12 +213,15 @@ impl HlsTimingTester {
             bitrate: 1_000_000,
             codec: "libx264".to_string(),
             preset: Some("fast".to_string()),
-            profile: Some("main".to_string()),
+            profile: AV_PROFILE_H264_MAIN as u32,
             level: 51,
             gop: (VIDEO_FPS * 2.0) as _,
             pixel_format: "yuv420p".to_string(),
             tune: None,
             max_b_frames: 0,
+            color_space: "bt709".to_string(),
+            color_range: "tv".to_string(),
+            scale_mode: None,
         };
 
         let audio_stream = AudioVariant {
@@ -233,24 +236,23 @@ impl HlsTimingTester {
 
         let video_variant = VariantStream::Video(video_stream.clone());
         let audio_variant = VariantStream::Audio(audio_stream.clone());
-        let variants = vec![
-            (
-                &video_variant,
-                EncoderOrSourceStream::Encoder(&video_encoder),
-            ),
-            (
-                &audio_variant,
-                EncoderOrSourceStream::Encoder(&audio_encoder),
-            ),
-        ];
+        let groups = vec![EncoderVariantGroup {
+            id: Uuid::new_v4(),
+            streams: vec![
+                EncoderVariant {
+                    variant: &video_variant,
+                    stream: EncoderOrSourceStream::Encoder(&video_encoder),
+                },
+                EncoderVariant {
+                    variant: &audio_variant,
+                    stream: EncoderOrSourceStream::Encoder(&audio_encoder),
+                },
+            ],
+        }];
 
         // Create HLS muxer
-        let mut hls_muxer = HlsMuxer::new(
-            output_dir.to_path_buf(),
-            variants.into_iter(),
-            segment_type,
-            2.0,
-        )?;
+        let mut hls_muxer = HlsMuxer::new(output_dir.to_path_buf(), &groups, segment_type, 2.0)?;
+        hls_muxer.open()?;
 
         // Create frame generator
         let frame_size = unsafe { (*audio_encoder.codec_context()).frame_size as _ };
@@ -408,16 +410,36 @@ impl HlsTimingTester {
     }
 
     fn test_stream_timing_internal(&self, hls_dir: &Path) -> Result<HlsTimingTestResult> {
-        let playlist_path = hls_dir.join("live.m3u8");
+        let top_path = hls_dir.join("live.m3u8");
 
-        if !playlist_path.exists() {
+        if !top_path.exists() {
             return Err(anyhow::anyhow!(
                 "Playlist file does not exist: {:?}",
-                playlist_path
+                top_path
             ));
         }
 
-        // Parse the playlist
+        // The top-level live.m3u8 is a master playlist. Resolve it down to the
+        // first video variant's media playlist (which is what carries segments).
+        let top_raw = fs::read(&top_path).context("Failed to read playlist file")?;
+        let (hls_dir, playlist_path) = match m3u8_rs::parse_playlist_res(&top_raw) {
+            Ok(m3u8_rs::Playlist::MasterPlaylist(master)) => {
+                let variant = master
+                    .variants
+                    .first()
+                    .ok_or_else(|| anyhow::anyhow!("master playlist has no variants"))?;
+                let media_path = hls_dir.join(&variant.uri);
+                let base = media_path
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| hls_dir.to_path_buf());
+                (base, media_path)
+            }
+            _ => (hls_dir.to_path_buf(), top_path.clone()),
+        };
+        let hls_dir = hls_dir.as_path();
+
+        // Parse the (variant) media playlist
         let playlist_content =
             fs::read_to_string(&playlist_path).context("Failed to read playlist file")?;
 
@@ -856,6 +878,84 @@ mod tests {
                 panic!("Test generation failed: {}", e);
             }
         }
+    }
+
+    /// Verify that fMP4 output produces a proper CMAF layout:
+    /// - a master playlist with an EXT-X-MEDIA audio rendition group
+    /// - a video variant that references the audio group (and carries no audio itself)
+    /// - a separate shared audio rendition playlist + init segment
+    #[ignore]
+    #[test]
+    fn test_cmaf_audio_grouping() {
+        tracing_subscriber::fmt::try_init().ok();
+
+        let temp_dir = tempdir().unwrap();
+        let tester = HlsTimingTester::new(0.2, 1.0, 0.5);
+
+        let (_muxer, out_dir) = tester
+            .generate_test_stream(temp_dir.path(), 8.0, SegmentType::FMP4)
+            .expect("generation failed");
+
+        // Top-level live.m3u8 must be a master playlist
+        let master_raw = fs::read(out_dir.join("live.m3u8")).unwrap();
+        let master = match m3u8_rs::parse_playlist_res(&master_raw) {
+            Ok(m3u8_rs::Playlist::MasterPlaylist(m)) => m,
+            other => panic!("expected master playlist, got {:?}", other),
+        };
+
+        // There must be exactly one audio rendition group
+        let audio_alts: Vec<_> = master
+            .alternatives
+            .iter()
+            .filter(|a| a.media_type == m3u8_rs::AlternativeMediaType::Audio)
+            .collect();
+        assert_eq!(audio_alts.len(), 1, "expected one audio rendition group");
+        let audio_alt = audio_alts[0];
+        let audio_uri = audio_alt.uri.clone().expect("audio rendition needs URI");
+
+        // Exactly one video variant, referencing the audio group, codecs listing audio
+        assert_eq!(master.variants.len(), 1, "expected one video variant");
+        let video = &master.variants[0];
+        assert_eq!(
+            video.audio.as_deref(),
+            Some(audio_alt.group_id.as_str()),
+            "video variant must reference the audio group"
+        );
+        let codecs = video.codecs.clone().unwrap_or_default();
+        assert!(
+            codecs.contains("avc1") && codecs.contains("mp4a"),
+            "video CODECS must advertise both video and audio: {}",
+            codecs
+        );
+
+        // The audio rendition playlist + init segment exist and are separate from video
+        let audio_pl_path = out_dir.join(&audio_uri);
+        assert!(audio_pl_path.exists(), "audio playlist missing: {:?}", audio_pl_path);
+        let audio_dir = audio_pl_path.parent().unwrap();
+        assert!(audio_dir.join("init.mp4").exists(), "audio init segment missing");
+        assert_ne!(
+            audio_dir,
+            out_dir.join(&video.uri).parent().unwrap(),
+            "audio and video renditions must live in separate directories"
+        );
+
+        // Audio playlist must contain fMP4 segments and an EXT-X-MAP
+        let audio_pl_raw = fs::read(&audio_pl_path).unwrap();
+        let audio_pl = match m3u8_rs::parse_playlist_res(&audio_pl_raw) {
+            Ok(m3u8_rs::Playlist::MediaPlaylist(m)) => m,
+            other => panic!("expected audio media playlist, got {:?}", other),
+        };
+        let audio_segs = audio_pl
+            .segments
+            .iter()
+            .filter(|s| matches!(s, MediaSegmentType::Full(_)))
+            .count();
+        assert!(audio_segs > 0, "audio rendition should have segments");
+
+        println!(
+            "✓ CMAF audio grouping: group={}, audio_uri={}, video_codecs={}, audio_segs={}",
+            audio_alt.group_id, audio_uri, codecs, audio_segs
+        );
     }
 
     #[ignore]

@@ -1,4 +1,4 @@
-use crate::egress::{EgressResult, EgressSegment, EncoderOrSourceStream, EncoderVariantGroup};
+use crate::egress::{EgressResult, EgressSegment, EncoderOrSourceStream, EncoderVariant};
 use crate::hash_file_sync;
 use crate::mux::hls::segment::{HlsSegment, PartialSegmentInfo, SegmentInfo};
 use crate::mux::{HlsVariantStream, SegmentType};
@@ -12,7 +12,10 @@ use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
 };
 use ffmpeg_rs_raw::{AvPacketRef, Muxer, bail_ffmpeg, cstr};
 use m3u8_rs::Playlist::MediaPlaylist;
-use m3u8_rs::{ExtTag, MediaSegmentType, PartInf, Playlist, PreloadHint};
+use m3u8_rs::{
+    AlternativeMedia, AlternativeMediaType, ExtTag, MediaSegmentType, PartInf, Playlist,
+    PreloadHint,
+};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs::{File, create_dir_all};
@@ -58,6 +61,12 @@ pub struct HlsVariant {
     next_partial_independent: bool,
     /// Path to initialization segment for fMP4
     init_segment_path: Option<String>,
+    /// Whether this variant contains a video stream
+    has_video: bool,
+    /// CMAF audio rendition group id.
+    /// - For an audio-only variant this is the group it *provides* (EXT-X-MEDIA GROUP-ID).
+    /// - For a video (main) variant this is the group it *references* (EXT-X-STREAM-INF AUDIO=).
+    audio_group: Option<String>,
 }
 
 impl HlsVariant {
@@ -65,12 +74,12 @@ impl HlsVariant {
 
     pub fn new(
         out_dir: PathBuf,
-        group: &EncoderVariantGroup,
+        name: String,
+        streams_in: &[&EncoderVariant],
         segment_type: SegmentType,
         mut segment_length: f32,
+        audio_group: Option<String>,
     ) -> Result<Self> {
-        let name = group.id.to_string();
-
         let mut segments = Vec::new();
         let var_dir = out_dir.join(&name);
         if !var_dir.exists() {
@@ -116,7 +125,7 @@ impl HlsVariant {
         let mut ref_stream_index = -1;
         let mut has_video = false;
 
-        for g in &group.streams {
+        for g in streams_in.iter().copied() {
             match g.stream {
                 EncoderOrSourceStream::Encoder(enc) => match g.variant {
                     VariantStream::Video(v) => unsafe {
@@ -224,6 +233,8 @@ impl HlsVariant {
             next_partial_independent: false,
             segment_length_target: segment_length,
             init_segment_path: None,
+            has_video,
+            audio_group,
         };
 
         Ok(variant)
@@ -356,8 +367,14 @@ impl HlsVariant {
         let pkt_q = unsafe { av_q2d(pkt.time_base) };
         let mut result = EgressResult::None;
         let stream_type = unsafe { (*(*pkt_stream).codecpar).codec_type };
-        let mut can_split =
-            stream_type == AVMediaType::VIDEO && (pkt.flags & AV_PKT_FLAG_KEY == AV_PKT_FLAG_KEY);
+        // For variants with video we only split on video keyframes. For audio-only
+        // renditions (CMAF audio group) every audio frame is a sync sample so we can
+        // split on any audio packet at a segment boundary.
+        let mut can_split = if self.has_video {
+            stream_type == AVMediaType::VIDEO && (pkt.flags & AV_PKT_FLAG_KEY == AV_PKT_FLAG_KEY)
+        } else {
+            stream_type == AVMediaType::AUDIO
+        };
         let mut is_ref_pkt = stream_index == self.ref_stream_index;
 
         if pkt.pts == AV_NOPTS_VALUE {
@@ -581,6 +598,7 @@ impl HlsVariant {
                 duration: seg.duration,
                 path: self.map_segment_path(seg.index, self.segment_type),
                 sha256: seg.sha256,
+                audio_only: self.is_audio_only(),
             })
             .collect();
 
@@ -595,6 +613,7 @@ impl HlsVariant {
             duration: cur_duration as f32,
             path: completed_seg_path,
             sha256: hash,
+            audio_only: self.is_audio_only(),
         };
 
         self.segments.push(HlsSegment::Full(SegmentInfo {
@@ -773,6 +792,13 @@ impl HlsVariant {
                 }
             }
 
+            // For CMAF the audio is delivered in a separate rendition group, but the
+            // STREAM-INF CODECS attribute must still advertise every codec the variant
+            // depends on, including the referenced audio group.
+            if self.audio_group.is_some() && !codecs.iter().any(|c| c.starts_with("mp4a")) {
+                codecs.push("mp4a.40.2".to_string());
+            }
+
             if codecs.is_empty() {
                 None
             } else {
@@ -781,14 +807,46 @@ impl HlsVariant {
         }
     }
 
-    pub fn to_playlist_variant(&self) -> m3u8_rs::VariantStream {
+    /// True if this variant only carries audio (a CMAF audio rendition).
+    pub fn is_audio_only(&self) -> bool {
+        !self.has_video
+            && self
+                .streams
+                .iter()
+                .any(|s| matches!(s, HlsVariantStream::Audio { .. }))
+    }
+
+    /// Build an EXT-X-MEDIA entry for this variant if it is an audio rendition.
+    pub fn to_alternative_media(&self) -> Option<AlternativeMedia> {
+        let group_id = self.audio_group.clone()?;
+        if !self.is_audio_only() {
+            return None;
+        }
+        Some(AlternativeMedia {
+            media_type: AlternativeMediaType::Audio,
+            uri: Some(format!("{}/{}", self.name, Self::PLAYLIST_NAME)),
+            group_id,
+            name: "audio".to_string(),
+            default: true,
+            autoselect: true,
+            channels: Some("2".to_string()),
+            ..Default::default()
+        })
+    }
+
+    /// Build the EXT-X-STREAM-INF entry for this variant.
+    /// Returns `None` for audio-only renditions (they are emitted as EXT-X-MEDIA instead).
+    pub fn to_playlist_variant(&self) -> Option<m3u8_rs::VariantStream> {
+        if self.is_audio_only() {
+            return None;
+        }
         unsafe {
             let pes = self.video_stream().unwrap_or(self.streams.first().unwrap());
             let av_stream = *(*self.mux.context()).streams.add(pes.index());
             let codec_par = (*av_stream).codecpar;
             let bitrate = (*codec_par).bit_rate as u64;
             let fps = av_q2d((*codec_par).framerate);
-            m3u8_rs::VariantStream {
+            Some(m3u8_rs::VariantStream {
                 is_i_frame: false,
                 uri: format!("{}/{}", self.name, Self::PLAYLIST_NAME),
                 bandwidth: if bitrate == 0 {
@@ -810,12 +868,12 @@ impl HlsVariant {
                 }),
                 frame_rate: if fps > 0.0 { Some(fps) } else { None },
                 hdcp_level: None,
-                audio: None,
+                audio: self.audio_group.clone(),
                 video: None,
                 subtitles: None,
                 closed_captions: None,
                 other_attributes: None,
-            }
+            })
         }
     }
 }
