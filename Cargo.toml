@@ -30,7 +30,7 @@ url = "2"
 itertools = "0.14"
 chrono = { version = "0.4", features = ["serde"] }
 hex = "0.4"
-m3u8-rs = { git = "https://git.v0l.io/Kieran/m3u8-rs.git", rev = "6803eefca2838a8bfae9e19fd516ef36d7d89997" }
+m3u8-rs = { git = "https://github.com/v0l/m3u8-rs.git", branch = "hls-ll" }
 sha2 = "0.10"
 data-encoding = "2.9"
 rand = "0.9"
