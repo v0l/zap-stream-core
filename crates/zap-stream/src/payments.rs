@@ -7,7 +7,8 @@ use lnurl::pay::PayResponse;
 use lnurl::{AsyncClient, LnUrlResponse};
 use nostr_sdk::{Client, Event, EventBuilder, JsonUtil, Kind, Tag};
 use nwc::prelude::{
-    MakeInvoiceRequest, NostrWalletConnect, NostrWalletConnectUri, NotificationResult,
+    LookupInvoiceRequest, MakeInvoiceRequest, NostrWalletConnect, NostrWalletConnectUri,
+    NotificationResult,
 };
 pub use payments_rs::lightning::LightningNode;
 use payments_rs::lightning::{
@@ -314,6 +315,56 @@ impl PaymentHandler {
                 }
             }
         })
+    }
+
+    /// Reconcile expired-but-unpaid invoices against an NWC wallet.
+    ///
+    /// If the payment backend went down (e.g. NWC disconnected) while invoices were
+    /// actually being paid, those payments get stranded: the poller stops checking them
+    /// once their `expires` timestamp passes. This looks up each expired unpaid invoice
+    /// on the wallet and completes the ones that actually settled.
+    pub async fn reconcile_expired_nwc_payments(
+        nwc_url: &str,
+        db: &ZapStreamDb,
+        client: &Client,
+    ) -> Result<()> {
+        let uri = NostrWalletConnectUri::parse(nwc_url)?;
+        let conn = NostrWalletConnect::new(uri);
+
+        let payments = db.get_expired_unpaid_payments().await?;
+        info!("Reconciling {} expired unpaid payment(s)...", payments.len());
+
+        let mut settled = 0usize;
+        for payment in payments {
+            let ph_hex = payment.payment_hash.encode_hex::<String>();
+            let rsp = match conn
+                .lookup_invoice(LookupInvoiceRequest {
+                    payment_hash: Some(ph_hex.clone()),
+                    invoice: None,
+                })
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    // Not found / lookup error - most likely never paid
+                    warn!("lookup_invoice failed for {}: {}", ph_hex, e);
+                    continue;
+                }
+            };
+
+            if rsp.settled_at.is_some() {
+                info!("Payment {} settled on wallet, completing...", ph_hex);
+                if let Err(e) =
+                    Self::try_complete_payment(ph_hex.clone(), rsp.preimage, db, client).await
+                {
+                    error!("Failed to complete reconciled payment {}: {}", ph_hex, e);
+                } else {
+                    settled += 1;
+                }
+            }
+        }
+        info!("Reconciliation complete, settled {} payment(s).", settled);
+        Ok(())
     }
 
     async fn try_complete_payment(
