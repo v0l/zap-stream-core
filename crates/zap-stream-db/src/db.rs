@@ -482,6 +482,15 @@ impl ZapStreamDb {
         .await?)
     }
 
+    /// Get expired but unpaid top-up/zap payments (for reconciliation after a backend outage)
+    pub async fn get_expired_unpaid_payments(&self) -> Result<Vec<Payment>> {
+        Ok(sqlx::query_as(
+        "select * from payment where is_paid = false and payment_type in (0,1) and expires <= current_timestamp() order by created desc",
+    )
+        .fetch_all(&self.db)
+        .await?)
+    }
+
     /// Get the latest completed payment
     pub async fn get_latest_completed_payment(&self) -> Result<Option<Payment>> {
         Ok(sqlx::query_as(
