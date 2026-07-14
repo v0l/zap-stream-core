@@ -44,6 +44,10 @@ pub struct EgressSegment {
     pub path: PathBuf,
     /// SHA-256 hash of the file
     pub sha256: [u8; 32],
+    /// Whether this segment belongs to an audio-only rendition (CMAF audio group).
+    /// Such renditions are shared across every video variant and are not billed
+    /// separately.
+    pub audio_only: bool,
 }
 
 pub enum EncoderOrSourceStream<'a> {
