@@ -147,6 +147,15 @@ impl HlsMuxer {
             }
         }
 
+        // Low-latency HLS requires byte-range addressable partial segments; we only
+        // enable it for fMP4 output where partial fragments are well supported by players.
+        if segment_type == SegmentType::FMP4 {
+            for var in vars.iter_mut() {
+                let part_target = var.partial_segment_length();
+                var.enable_low_latency(part_target);
+            }
+        }
+
         // force all variants to have the same segment length
         if let Some(max_seg_duration) = vars
             .iter()
@@ -180,7 +189,7 @@ impl HlsMuxer {
 
     fn write_master_playlist(&mut self) -> Result<()> {
         let mut pl = m3u8_rs::MasterPlaylist::default();
-        // fMP4/CMAF (EXT-X-MAP + audio rendition groups) requires HLS protocol v6+
+        // fMP4/CMAF (EXT-X-MAP + audio rendition groups) and LL-HLS require HLS protocol v6+
         let is_fmp4 = self
             .variants
             .iter()

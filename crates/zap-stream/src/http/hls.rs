@@ -95,17 +95,105 @@ impl HlsRouter {
             .base_path
             .join(&stream_id)
             .join(HLS_EGRESS_PATH)
-            .join(variant)
+            .join(&variant)
             .join("live.m3u8");
 
-        let stream = FileStream::from_path(&playlist_path)
-            .await
-            .map_err(|_| (StatusCode::NOT_FOUND, "File not found"))?;
-        this.stream_manager.track_viewer(&stream_id, &q.vt).await;
-        let mut rsp = stream.into_response();
-        rsp.headers_mut()
-            .insert("content-type", Self::PLAYLIST_CONTENT_TYPE.parse().unwrap());
-        Ok(rsp)
+        if let Some(vt) = q.vt.as_deref() {
+            this.stream_manager.track_viewer(&stream_id, vt).await;
+        }
+
+        // LL-HLS blocking playlist reload (RFC 8216, Part 6.2.5.2):
+        // when the client asks for a future media-sequence-number / part via
+        // `_HLS_msn` and `_HLS_part`, hold the request until the playlist on disk
+        // actually contains that part (or we time out). This is what lets players
+        // run at sub-segment latency instead of polling.
+        let content = if q.hls_msn.is_some() {
+            Self::read_playlist_blocking(&playlist_path, q.hls_msn, q.hls_part)
+                .await
+                .map_err(|_| (StatusCode::NOT_FOUND, "File not found"))?
+        } else {
+            tokio::fs::read(&playlist_path)
+                .await
+                .map_err(|_| (StatusCode::NOT_FOUND, "File not found"))?
+        };
+
+        let headers = [
+            (CONTENT_TYPE, Self::PLAYLIST_CONTENT_TYPE),
+            // playlists are live and must never be cached by intermediaries
+            (axum::http::header::CACHE_CONTROL, "no-cache, no-store"),
+        ];
+        Ok((headers, content).into_response())
+    }
+
+    /// Block until the variant playlist contains the requested (msn, part), then
+    /// return its bytes. Falls back to whatever is current after a short timeout
+    /// so a client is never left hanging if the stream stalls or ends.
+    async fn read_playlist_blocking(
+        path: &std::path::Path,
+        want_msn: Option<u64>,
+        want_part: Option<u64>,
+    ) -> Result<Vec<u8>> {
+        use std::time::Duration;
+        use tokio::time::Instant;
+
+        // Bound the wait. Players re-issue the blocking request, so a modest cap
+        // keeps connections from piling up while still covering a full segment.
+        let deadline = Instant::now() + Duration::from_secs(6);
+        let want_msn = want_msn.unwrap_or(0);
+        let want_part = want_part.unwrap_or(0);
+
+        loop {
+            let content = tokio::fs::read(path).await?;
+            if Self::playlist_has_part(&content, want_msn, want_part) || Instant::now() >= deadline {
+                return Ok(content);
+            }
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+    }
+
+    /// Returns true when the playlist already contains the requested part, i.e.
+    /// the requested (msn, part) is <= the most recent part advertised.
+    fn playlist_has_part(content: &[u8], want_msn: u64, want_part: u64) -> bool {
+        let (_, pl) = match m3u8_rs::parse_playlist(content) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        let pl = match pl {
+            m3u8_rs::Playlist::MediaPlaylist(pl) => pl,
+            // master playlist can't carry parts; don't block
+            m3u8_rs::Playlist::MasterPlaylist(_) => return true,
+        };
+
+        // MSN of the first listed full segment
+        let media_sequence = pl.media_sequence;
+        // Count full segments and the partial segments that trail the last full one.
+        let mut full_count: u64 = 0;
+        let mut trailing_parts: u64 = 0;
+        for seg in &pl.segments {
+            match seg {
+                m3u8_rs::MediaSegmentType::Full(_) => {
+                    full_count += 1;
+                    trailing_parts = 0;
+                }
+                m3u8_rs::MediaSegmentType::Partial(_) => {
+                    trailing_parts += 1;
+                }
+                m3u8_rs::MediaSegmentType::PreloadHint(_) => {}
+            }
+        }
+
+        // The in-progress segment (the one currently accumulating parts) has this MSN
+        let in_progress_msn = media_sequence + full_count;
+        if want_msn < in_progress_msn {
+            // A later segment has already begun, so every part of `want_msn` exists.
+            return true;
+        }
+        if want_msn == in_progress_msn {
+            // available part indices are 0..trailing_parts-1
+            return trailing_parts > want_part;
+        }
+        // requested a segment we haven't started yet
+        false
     }
 
     async fn get_segment(
@@ -227,5 +315,76 @@ impl HlsRouter {
 
 #[derive(Deserialize)]
 struct ViewerTokenQuery {
-    pub vt: String,
+    #[serde(default)]
+    pub vt: Option<String>,
+    /// LL-HLS blocking reload: media sequence number being requested
+    #[serde(rename = "_HLS_msn", default)]
+    pub hls_msn: Option<u64>,
+    /// LL-HLS blocking reload: partial segment index within `_HLS_msn`
+    #[serde(rename = "_HLS_part", default)]
+    pub hls_part: Option<u64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A representative LL-HLS media playlist: media-sequence 10, two full
+    /// segments (MSN 10, 11) followed by the in-progress segment (MSN 12) that
+    /// currently has 2 published parts plus a preload hint for the third.
+    const LL_PLAYLIST: &str = "#EXTM3U\n\
+#EXT-X-VERSION:6\n\
+#EXT-X-TARGETDURATION:2\n\
+#EXT-X-MEDIA-SEQUENCE:10\n\
+#EXT-X-MAP:URI=\"init.mp4\"\n\
+#EXT-X-PART-INF:PART-TARGET=0.5\n\
+#EXT-X-SERVER-CONTROL:PART-HOLD-BACK=1.500,CAN-BLOCK-RELOAD=YES\n\
+#EXTINF:2,\n10.m4s\n\
+#EXTINF:2,\n11.m4s\n\
+#EXT-X-PART:DURATION=0.5,URI=\"12.m4s\",BYTERANGE=\"100@0\",INDEPENDENT=YES\n\
+#EXT-X-PART:DURATION=0.5,URI=\"12.m4s\",BYTERANGE=\"100@100\"\n\
+#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"12.m4s\",BYTERANGE-START=200\n";
+
+    #[test]
+    fn ll_playlist_parses() {
+        // The tags we emit must round-trip through the parser the server itself uses.
+        let (_, pl) = m3u8_rs::parse_playlist(LL_PLAYLIST.as_bytes()).expect("valid playlist");
+        assert!(matches!(pl, m3u8_rs::Playlist::MediaPlaylist(_)));
+    }
+
+    #[test]
+    fn part_already_available_returns_true() {
+        // in-progress segment is MSN 12 with parts 0 and 1 available
+        assert!(HlsRouter::playlist_has_part(LL_PLAYLIST.as_bytes(), 12, 0));
+        assert!(HlsRouter::playlist_has_part(LL_PLAYLIST.as_bytes(), 12, 1));
+    }
+
+    #[test]
+    fn earlier_segment_is_always_available() {
+        // any part of an already-completed segment is available
+        assert!(HlsRouter::playlist_has_part(LL_PLAYLIST.as_bytes(), 11, 99));
+        assert!(HlsRouter::playlist_has_part(LL_PLAYLIST.as_bytes(), 10, 0));
+    }
+
+    #[test]
+    fn future_part_blocks() {
+        // part 2 of MSN 12 has not been published yet (only 0,1 exist)
+        assert!(!HlsRouter::playlist_has_part(LL_PLAYLIST.as_bytes(), 12, 2));
+        // an entire future segment is not available
+        assert!(!HlsRouter::playlist_has_part(LL_PLAYLIST.as_bytes(), 13, 0));
+    }
+
+    #[test]
+    fn invalid_playlist_does_not_unblock() {
+        assert!(!HlsRouter::playlist_has_part(b"not a playlist", 0, 0));
+    }
+
+    #[test]
+    fn add_token_to_url_appends_correctly() {
+        assert_eq!(HlsRouter::add_token_to_url("a/live.m3u8", "tok"), "a/live.m3u8?vt=tok");
+        assert_eq!(
+            HlsRouter::add_token_to_url("a/live.m3u8?x=1", "tok"),
+            "a/live.m3u8?x=1&vt=tok"
+        );
+    }
 }
