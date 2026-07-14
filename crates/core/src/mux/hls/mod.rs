@@ -1,6 +1,7 @@
-use crate::egress::{EgressResult, EncoderVariantGroup};
+use crate::egress::{EgressResult, EncoderVariant, EncoderVariantGroup};
 use crate::mux::SegmentType;
 use crate::mux::hls::variant::HlsVariant;
+use crate::variant::VariantStream;
 use anyhow::Result;
 use ffmpeg_rs_raw::AvPacketRef;
 use itertools::Itertools;
@@ -10,6 +11,14 @@ use std::path::PathBuf;
 use std::time::Instant;
 use tracing::{trace, warn};
 use uuid::Uuid;
+
+/// Returns true if this encoder variant carries an audio stream
+fn is_audio_variant(v: &EncoderVariant) -> bool {
+    matches!(
+        v.variant,
+        VariantStream::Audio(_) | VariantStream::CopyAudio(_)
+    )
+}
 
 mod segment;
 mod variant;
@@ -69,15 +78,82 @@ impl HlsMuxer {
             std::fs::create_dir_all(&out_dir)?;
         }
         let mut vars = Vec::new();
-        for g in encoders {
-            let mut var = HlsVariant::new(out_dir.clone(), g, segment_type, segment_length)?;
-            // Low-latency HLS requires byte-range addressable partial segments; we only
-            // enable it for fMP4 output where partial fragments are well supported by players.
-            if segment_type == SegmentType::FMP4 {
+        match segment_type {
+            SegmentType::FMP4 => {
+                // CMAF: extract the (deduplicated) audio streams into their own
+                // rendition group so the shared audio track is only stored/served once
+                // instead of being muxed into every video variant. The audio variant's
+                // UUID is unique already, so we use it directly as the rendition group
+                // id (and as the on-disk directory name).
+                let mut audio_seen: Vec<Uuid> = Vec::new();
+                for g in encoders {
+                    for s in g.streams.iter().filter(|s| is_audio_variant(s)) {
+                        let id = s.variant.id();
+                        if audio_seen.contains(&id) {
+                            continue;
+                        }
+                        audio_seen.push(id);
+                        let var = HlsVariant::new(
+                            out_dir.clone(),
+                            id.to_string(),
+                            &[s],
+                            segment_type,
+                            segment_length,
+                            Some(id.to_string()),
+                        )?;
+                        vars.push(var);
+                    }
+                }
+
+                // Create the main (video) variants with audio stripped, each
+                // referencing the shared audio rendition group by its UUID.
+                for g in encoders {
+                    let media: Vec<&EncoderVariant> =
+                        g.streams.iter().filter(|s| !is_audio_variant(s)).collect();
+                    if media.is_empty() {
+                        // pure audio-only group, already handled above
+                        continue;
+                    }
+                    let audio_group = g
+                        .streams
+                        .iter()
+                        .find(|s| is_audio_variant(s))
+                        .map(|s| s.variant.id().to_string());
+                    let var = HlsVariant::new(
+                        out_dir.clone(),
+                        g.id.to_string(),
+                        &media,
+                        segment_type,
+                        segment_length,
+                        audio_group,
+                    )?;
+                    vars.push(var);
+                }
+            }
+            SegmentType::MPEGTS => {
+                // MPEG-TS keeps audio muxed together with video in each variant
+                for g in encoders {
+                    let streams: Vec<&EncoderVariant> = g.streams.iter().collect();
+                    let var = HlsVariant::new(
+                        out_dir.clone(),
+                        g.id.to_string(),
+                        &streams,
+                        segment_type,
+                        segment_length,
+                        None,
+                    )?;
+                    vars.push(var);
+                }
+            }
+        }
+
+        // Low-latency HLS requires byte-range addressable partial segments; we only
+        // enable it for fMP4 output where partial fragments are well supported by players.
+        if segment_type == SegmentType::FMP4 {
+            for var in vars.iter_mut() {
                 let part_target = var.partial_segment_length();
                 var.enable_low_latency(part_target);
             }
-            vars.push(var);
         }
 
         // force all variants to have the same segment length
@@ -113,12 +189,22 @@ impl HlsMuxer {
 
     fn write_master_playlist(&mut self) -> Result<()> {
         let mut pl = m3u8_rs::MasterPlaylist::default();
-        // Version 6 is required for fMP4 / LL-HLS aware clients
-        pl.version = Some(6);
+        // fMP4/CMAF (EXT-X-MAP + audio rendition groups) and LL-HLS require HLS protocol v6+
+        let is_fmp4 = self
+            .variants
+            .iter()
+            .any(|v| v.segment_type == SegmentType::FMP4);
+        pl.version = Some(if is_fmp4 { 6 } else { 3 });
+        // EXT-X-MEDIA entries for shared audio renditions
+        pl.alternatives = self
+            .variants
+            .iter()
+            .filter_map(|v| v.to_alternative_media())
+            .collect();
         pl.variants = self
             .variants
             .iter()
-            .map(|v| v.to_playlist_variant())
+            .filter_map(|v| v.to_playlist_variant())
             .collect();
 
         let mut f_out = File::create(self.out_dir.join(Self::MASTER_PLAYLIST))?;
@@ -186,6 +272,7 @@ impl HlsMuxer {
                         },
                         variant.segment_type,
                     ),
+                    variant.is_audio_only(),
                 ) {
                     remaining_segments.push(egress_segment);
                 }

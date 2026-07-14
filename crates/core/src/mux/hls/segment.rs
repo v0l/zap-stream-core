@@ -21,7 +21,12 @@ impl HlsSegment {
     }
 
     /// Convert to EgressSegment with variant ID and path
-    pub fn to_egress_segment(&self, variant_id: Uuid, path: PathBuf) -> Option<EgressSegment> {
+    pub fn to_egress_segment(
+        &self,
+        variant_id: Uuid,
+        path: PathBuf,
+        audio_only: bool,
+    ) -> Option<EgressSegment> {
         match self {
             HlsSegment::Full(seg) => Some(EgressSegment {
                 variant: variant_id,
@@ -29,6 +34,7 @@ impl HlsSegment {
                 duration: seg.duration,
                 path,
                 sha256: seg.sha256,
+                audio_only,
             }),
             HlsSegment::Partial(_) => None, // Partial segments don't have full segment info
         }

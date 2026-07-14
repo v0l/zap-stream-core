@@ -39,7 +39,12 @@ mod websocket_metrics;
 
 #[derive(Parser, Debug)]
 #[clap(version, about)]
-struct Args {}
+struct Args {
+    /// Reconcile expired-but-unpaid invoices against the (NWC) wallet, then exit.
+    /// Use this to recover payments stranded by a payment-backend outage.
+    #[clap(long)]
+    reconcile_payments: bool,
+}
 
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "aarch64")))]
 type VaList = ffmpeg_sys_the_third::va_list;
@@ -92,7 +97,7 @@ pub unsafe extern "C" fn av_log_redirect(
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().init();
-    let _args = Args::parse();
+    let args = Args::parse();
 
     info!("Starting zap-stream");
 
@@ -158,6 +163,27 @@ async fn main() -> Result<()> {
         let api = Api::new(arc.clone(), settings.clone());
         (arc, api)
     };
+    // One-off reconciliation mode: recover expired invoices that actually settled
+    if args.reconcile_payments {
+        match &settings.overseer.payments {
+            zap_stream::payments::PaymentBackend::NWC { url } => {
+                PaymentHandler::reconcile_expired_nwc_payments(
+                    url,
+                    &overseer.database(),
+                    &overseer.nostr_client(),
+                )
+                .await?;
+            }
+            other => {
+                error!(
+                    "--reconcile-payments is only supported for the NWC backend (configured: {:?})",
+                    other
+                );
+            }
+        }
+        return Ok(());
+    }
+
     let mut tasks = vec![];
 
     //listen for invoice

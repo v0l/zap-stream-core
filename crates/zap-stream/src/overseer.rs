@@ -1039,8 +1039,13 @@ fn into_n94_segment(seg: &EgressSegment) -> N94Segment {
 }
 
 fn get_cost(endpoint: &IngestEndpoint, segments: &[EgressSegment]) -> (f32, i64) {
-    // count total duration from all segments (including copied)
-    let duration = segments.iter().fold(0.0, |acc, v| acc + v.duration);
+    // count total duration from all video segments (including copied).
+    // Audio-only renditions (CMAF audio group) are shared across all video
+    // variants and are not billed separately.
+    let duration = segments
+        .iter()
+        .filter(|v| !v.audio_only)
+        .fold(0.0, |acc, v| acc + v.duration);
 
     let cost_per_minute = endpoint.cost;
 
@@ -1079,6 +1084,7 @@ mod tests {
             duration,
             path: PathBuf::from("/test"),
             sha256: [0u8; 32],
+            audio_only: false,
         }
     }
 
