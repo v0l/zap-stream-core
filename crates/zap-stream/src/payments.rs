@@ -48,10 +48,11 @@ pub enum PaymentBackend {
 
 pub struct NWCNode {
     conn: NostrWalletConnect,
+    db: ZapStreamDb,
 }
 
 impl NWCNode {
-    pub async fn new(url: &str) -> Result<Self> {
+    pub async fn new(url: &str, db: ZapStreamDb) -> Result<Self> {
         let url = NostrWalletConnectUri::parse(url)?;
         let conn = NostrWalletConnect::new(url);
         let info = conn.get_info().await?;
@@ -60,7 +61,7 @@ impl NWCNode {
         } else {
             info!("Connected to NWC!");
         }
-        Ok(Self { conn })
+        Ok(Self { conn, db })
     }
 }
 
@@ -182,13 +183,17 @@ impl LightningNode for NWCNode {
         &self,
         _from_payment_hash: Option<Vec<u8>>,
     ) -> Result<Pin<Box<dyn Stream<Item = InvoiceUpdate> + Send>>> {
-        let conn = self.conn.clone();
         let (tx, rx) = tokio::sync::mpsc::channel(10);
+
+        // Fast path: subscribe to NIP-47 payment notifications (only works if the
+        // wallet supports the optional `notifications` capability).
+        let conn = self.conn.clone();
+        let notif_tx = tx.clone();
         let _: JoinHandle<Result<()>> = tokio::spawn(async move {
             conn.subscribe_to_notifications().await?;
             conn.handle_notifications(|n| async {
                 if let NotificationResult::PaymentReceived(i) = n.notification
-                    && let Err(e) = tx
+                    && let Err(e) = notif_tx
                         .send(InvoiceUpdate::Settled {
                             payment_hash: i.payment_hash,
                             preimage: Some(i.preimage),
@@ -204,6 +209,54 @@ impl LightningNode for NWCNode {
             .map_err(|e| anyhow!("Failed to handle NWC notifications: {}", e))?;
             Ok(())
         });
+
+        // Robust fallback: poll the wallet for pending invoices via `lookup_invoice`.
+        // Many wallets/relays don't deliver NIP-47 notifications, which would
+        // otherwise leave paid invoices stranded (see issue #89). complete_payment
+        // is idempotent, so double-reporting with the notification path is harmless.
+        let conn = self.conn.clone();
+        let db = self.db.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                let payments = match db.get_pending_payments().await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        warn!("Failed to load pending payments: {}", e);
+                        continue;
+                    }
+                };
+                for payment in payments {
+                    let ph_hex = payment.payment_hash.encode_hex::<String>();
+                    let rsp = match conn
+                        .lookup_invoice(LookupInvoiceRequest {
+                            payment_hash: Some(ph_hex.clone()),
+                            invoice: None,
+                        })
+                        .await
+                    {
+                        Ok(r) => r,
+                        Err(e) => {
+                            // Not found / not yet paid - keep polling until expiry
+                            warn!("lookup_invoice failed for {}: {}", ph_hex, e);
+                            continue;
+                        }
+                    };
+                    if rsp.settled_at.is_some()
+                        && let Err(e) = tx
+                            .send(InvoiceUpdate::Settled {
+                                payment_hash: ph_hex,
+                                preimage: rsp.preimage,
+                                external_id: None,
+                            })
+                            .await
+                    {
+                        warn!("Failed to send payment update: {}", e);
+                    }
+                }
+            }
+        });
+
         Ok(ReceiverStream::new(rx).boxed())
     }
 }
@@ -233,7 +286,7 @@ pub async fn create_lightning(
         }
         PaymentBackend::NWC { url } => {
             info!("Using NWC payment backend");
-            Ok(Arc::new(NWCNode::new(url).await?))
+            Ok(Arc::new(NWCNode::new(url, db.clone()).await?))
         }
         PaymentBackend::LNURL { address } => {
             info!("Using LNURL payment backend: {}", address);
