@@ -24,6 +24,10 @@ path = "src/main.rs"
 name = "zap-stream"
 required-features = ["pipeline"]
 
+[[bin]]
+path = "src/bin/import_tool.rs"
+name = "import-tool"
+
 [dependencies]
 zap-stream-db = { path = "../zap-stream-db", default-features = false }
 zap-stream-core = { path = "../core", default-features = false }
@@ -46,6 +50,7 @@ url.workspace = true
 m3u8-rs.workspace = true
 data-encoding.workspace = true
 sha2.workspace = true
+sqlx = { version = "0.8", features = ["runtime-tokio", "mysql", "chrono"] }
 nostr-sdk.workspace = true
 ctrlc.workspace = true
 
