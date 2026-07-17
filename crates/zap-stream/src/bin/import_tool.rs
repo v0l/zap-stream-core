@@ -1,8 +1,8 @@
-//! Import tool for merging user data from a remote zap-stream-core instance.
+//! Import tool for merging user data from another zap-stream-core instance.
 //!
 //! Imports user accounts, payment history and stream history between two
 //! instances of the current MySQL schema (MySQL -> MySQL), and **merges** user
-//! balances (adds the remote balance on top of the local balance) rather than
+//! balances (adds the incoming balance on top of the local balance) rather than
 //! overwriting them.
 //!
 //! Users are matched across systems by pubkey (their numeric ids differ), so
@@ -19,20 +19,20 @@ use std::collections::HashMap;
 
 #[derive(Parser, Debug)]
 #[command(name = "import-tool")]
-#[command(about = "Imports and merges user data from a remote zap-stream-core MySQL database")]
+#[command(about = "Imports and merges user data from another zap-stream-core MySQL database")]
 struct Args {
-    /// Remote (source) MySQL connection string to import FROM
-    #[arg(long = "source-connection")]
-    source_connection: String,
+    /// MySQL connection string to import FROM
+    #[arg(long = "from-connection")]
+    from_connection: String,
 
-    /// Local (target) MySQL connection string to import INTO.
+    /// MySQL connection string to import INTO.
     /// If omitted, the primary database is read from the main config file
     /// (overseer.database).
-    #[arg(long = "target-connection")]
-    target_connection: Option<String>,
+    #[arg(long = "to-connection")]
+    to_connection: Option<String>,
 
-    /// Path to the main config file used to resolve the target database when
-    /// --target-connection is not provided.
+    /// Path to the main config file used to resolve the "to" database when
+    /// --to-connection is not provided.
     #[arg(long = "config", default_value = "config.yaml")]
     config: String,
 
@@ -46,7 +46,7 @@ struct Args {
 }
 
 /// Minimal view over the main config file, used only to resolve the primary
-/// (target) database connection string.
+/// ("to") database connection string.
 #[derive(Debug, Deserialize)]
 struct ConfigOverseer {
     database: String,
@@ -57,10 +57,10 @@ struct ConfigFile {
     overseer: ConfigOverseer,
 }
 
-/// Resolve the target database connection: use the explicit flag if provided,
+/// Resolve the "to" database connection: use the explicit flag if provided,
 /// otherwise read `overseer.database` from the main config file.
-fn resolve_target_connection(args: &Args) -> Result<String> {
-    if let Some(conn) = &args.target_connection {
+fn resolve_to_connection(args: &Args) -> Result<String> {
+    if let Some(conn) = &args.to_connection {
         return Ok(conn.clone());
     }
 
@@ -76,7 +76,7 @@ fn resolve_target_connection(args: &Args) -> Result<String> {
 }
 
 #[derive(Debug, FromRow)]
-struct RemoteUser {
+struct FromUser {
     id: u64,
     pubkey: Vec<u8>,
     balance: i64,
@@ -96,7 +96,7 @@ struct RemoteUser {
 }
 
 #[derive(Debug, FromRow)]
-struct RemotePayment {
+struct FromPayment {
     payment_hash: Vec<u8>,
     user_id: u64,
     invoice: Option<String>,
@@ -111,7 +111,7 @@ struct RemotePayment {
 }
 
 #[derive(Debug, FromRow)]
-struct RemoteStream {
+struct FromStream {
     id: String,
     user_id: u64,
     starts: DateTime<Utc>,
@@ -136,7 +136,7 @@ struct RemoteStream {
 }
 
 #[derive(Debug, FromRow)]
-struct RemoteStreamKey {
+struct FromStreamKey {
     user_id: u64,
     #[sqlx(rename = "key")]
     key: String,
@@ -147,51 +147,51 @@ struct RemoteStreamKey {
 }
 
 struct ImportTool {
-    source_db: MySqlPool,
-    target_db: MySqlPool,
+    from_db: MySqlPool,
+    to_db: MySqlPool,
     dry_run: bool,
     skip_balances: bool,
 }
 
 impl ImportTool {
     async fn new(
-        source_connection: &str,
-        target_connection: &str,
+        from_connection: &str,
+        to_connection: &str,
         dry_run: bool,
         skip_balances: bool,
     ) -> Result<Self> {
-        let source_db = MySqlPool::connect(source_connection)
+        let from_db = MySqlPool::connect(from_connection)
             .await
-            .context("connecting to source database")?;
-        let target_db = MySqlPool::connect(target_connection)
+            .context("connecting to 'from' database")?;
+        let to_db = MySqlPool::connect(to_connection)
             .await
-            .context("connecting to target database")?;
+            .context("connecting to 'to' database")?;
 
         Ok(Self {
-            source_db,
-            target_db,
+            from_db,
+            to_db,
             dry_run,
             skip_balances,
         })
     }
 
-    /// Import all users, returning a map from remote user_id -> local user_id.
+    /// Import all users, returning a map from "from" user_id -> "to" user_id.
     async fn import_users(&self) -> Result<HashMap<u64, u64>> {
-        println!("🔍 Fetching users from source system...");
-        let users = sqlx::query_as::<_, RemoteUser>(
+        println!("🔍 Fetching users from the 'from' database...");
+        let users = sqlx::query_as::<_, FromUser>(
             "select id, pubkey, balance, tos_accepted, stream_key, is_admin, is_blocked, \
              recording, stream_dump_recording, title, summary, image, tags, \
              content_warning, goal, nwc from user",
         )
-        .fetch_all(&self.source_db)
+        .fetch_all(&self.from_db)
         .await?;
-        println!("📊 Found {} users in source system", users.len());
+        println!("📊 Found {} users to import", users.len());
 
-        let mut remote_to_local: HashMap<u64, u64> = HashMap::new();
+        let mut from_to: HashMap<u64, u64> = HashMap::new();
 
         for (i, user) in users.iter().enumerate() {
-            // The source (remote) id is used to remap payments/streams.
-            let remote_id = user.id;
+            // The "from" id is used to remap payments/streams onto the "to" user.
+            let from_id = user.id;
             println!(
                 "👤 Importing user {}/{}: {}",
                 i + 1,
@@ -200,7 +200,7 @@ impl ImportTool {
             );
             match self.import_single_user(user).await {
                 Ok(local_id) => {
-                    remote_to_local.insert(remote_id, local_id);
+                    from_to.insert(from_id, local_id);
                 }
                 Err(e) => {
                     println!(
@@ -212,14 +212,14 @@ impl ImportTool {
             }
         }
 
-        println!("✅ User import completed ({} mapped)", remote_to_local.len());
-        Ok(remote_to_local)
+        println!("✅ User import completed ({} mapped)", from_to.len());
+        Ok(from_to)
     }
 
-    async fn import_single_user(&self, user: &RemoteUser) -> Result<u64> {
+    async fn import_single_user(&self, user: &FromUser) -> Result<u64> {
         let existing = sqlx::query("select id from user where pubkey = ?")
             .bind(user.pubkey.as_slice())
-            .fetch_optional(&self.target_db)
+            .fetch_optional(&self.to_db)
             .await?;
 
         if self.dry_run {
@@ -253,13 +253,13 @@ impl ImportTool {
                 sqlx::query("update user set balance = balance + ? where id = ?")
                     .bind(user.balance)
                     .bind(local_id)
-                    .execute(&self.target_db)
+                    .execute(&self.to_db)
                     .await?;
                 println!("  💰 Added {} msat to existing user {}", user.balance, local_id);
             }
             Ok(local_id)
         } else {
-            // New user: insert with the source balance directly.
+            // New user: insert with the incoming balance directly.
             let balance = if self.skip_balances { 0 } else { user.balance };
             let res = sqlx::query(
                 "insert into user (pubkey, balance, tos_accepted, stream_key, is_admin, \
@@ -282,26 +282,26 @@ impl ImportTool {
             .bind(&user.content_warning)
             .bind(&user.goal)
             .bind(&user.nwc)
-            .execute(&self.target_db)
+            .execute(&self.to_db)
             .await?;
             println!("  ➕ Created user {} with balance {} msat", hex::encode(&user.pubkey), balance);
             Ok(res.last_insert_id())
         }
     }
 
-    async fn import_payments(&self, remote_to_local: &HashMap<u64, u64>) -> Result<()> {
-        println!("💰 Fetching payments from source system...");
-        let payments = sqlx::query_as::<_, RemotePayment>(
+    async fn import_payments(&self, from_to: &HashMap<u64, u64>) -> Result<()> {
+        println!("💰 Fetching payments from the 'from' database...");
+        let payments = sqlx::query_as::<_, FromPayment>(
             "select payment_hash, user_id, invoice, is_paid, amount, created, expires, \
              nostr, payment_type, fee, external_data from payment",
         )
-        .fetch_all(&self.source_db)
+        .fetch_all(&self.from_db)
         .await?;
-        println!("📊 Found {} payments in source system", payments.len());
+        println!("📊 Found {} payments to import", payments.len());
 
         let mut imported = 0;
         for payment in &payments {
-            let local_id = match remote_to_local.get(&payment.user_id) {
+            let local_id = match from_to.get(&payment.user_id) {
                 Some(id) => *id,
                 None => continue,
             };
@@ -317,7 +317,7 @@ impl ImportTool {
     }
 
     /// Returns Ok(true) if a new payment was inserted, Ok(false) if skipped.
-    async fn import_single_payment(&self, payment: &RemotePayment, local_id: u64) -> Result<bool> {
+    async fn import_single_payment(&self, payment: &FromPayment, local_id: u64) -> Result<bool> {
         if self.dry_run {
             println!(
                 "  🔍 [DRY RUN] Would import payment {} ({} msat)",
@@ -329,7 +329,7 @@ impl ImportTool {
 
         let existing = sqlx::query("select payment_hash from payment where payment_hash = ?")
             .bind(payment.payment_hash.as_slice())
-            .fetch_optional(&self.target_db)
+            .fetch_optional(&self.to_db)
             .await?;
         if existing.is_some() {
             return Ok(false);
@@ -351,53 +351,53 @@ impl ImportTool {
         .bind(payment.payment_type)
         .bind(payment.fee)
         .bind(&payment.external_data)
-        .execute(&self.target_db)
+        .execute(&self.to_db)
         .await?;
         Ok(true)
     }
 
-    /// Build a map from remote ingest_endpoint id -> local ingest_endpoint id,
+    /// Build a map from "from" ingest_endpoint id -> "to" ingest_endpoint id,
     /// matched by endpoint name. Unmatched endpoints map to None (endpoint_id
     /// is nulled on the imported stream to avoid FK violations).
     async fn build_endpoint_map(&self) -> Result<HashMap<u64, u64>> {
-        let remote: Vec<(u64, String)> = sqlx::query("select id, name from ingest_endpoint")
-            .fetch_all(&self.source_db)
+        let from_endpoints: Vec<(u64, String)> = sqlx::query("select id, name from ingest_endpoint")
+            .fetch_all(&self.from_db)
             .await?
             .into_iter()
             .map(|r| (r.get::<u64, _>("id"), r.get::<String, _>("name")))
             .collect();
         let local: HashMap<String, u64> = sqlx::query("select id, name from ingest_endpoint")
-            .fetch_all(&self.target_db)
+            .fetch_all(&self.to_db)
             .await?
             .into_iter()
             .map(|r| (r.get::<String, _>("name"), r.get::<u64, _>("id")))
             .collect();
 
         let mut map = HashMap::new();
-        for (remote_id, name) in remote {
+        for (from_id, name) in from_endpoints {
             if let Some(local_id) = local.get(&name) {
-                map.insert(remote_id, *local_id);
+                map.insert(from_id, *local_id);
             }
         }
         Ok(map)
     }
 
-    async fn import_streams(&self, remote_to_local: &HashMap<u64, u64>) -> Result<()> {
-        println!("🎬 Fetching streams from source system...");
-        let streams = sqlx::query_as::<_, RemoteStream>(
+    async fn import_streams(&self, from_to: &HashMap<u64, u64>) -> Result<()> {
+        println!("🎬 Fetching streams from the 'from' database...");
+        let streams = sqlx::query_as::<_, FromStream>(
             "select id, user_id, starts, ends, state, title, summary, image, thumb, tags, \
              content_warning, goal, pinned, cost, duration, fee, event, endpoint_id, \
              node_name, external_video_id, external_input_id from user_stream",
         )
-        .fetch_all(&self.source_db)
+        .fetch_all(&self.from_db)
         .await?;
-        println!("📊 Found {} streams in source system", streams.len());
+        println!("📊 Found {} streams to import", streams.len());
 
         let endpoint_map = self.build_endpoint_map().await?;
 
         let mut imported = 0;
         for stream in &streams {
-            let local_id = match remote_to_local.get(&stream.user_id) {
+            let local_id = match from_to.get(&stream.user_id) {
                 Some(id) => *id,
                 None => continue,
             };
@@ -418,7 +418,7 @@ impl ImportTool {
     /// Returns Ok(true) if a new stream was inserted, Ok(false) if skipped.
     async fn import_single_stream(
         &self,
-        stream: &RemoteStream,
+        stream: &FromStream,
         local_id: u64,
         endpoint_map: &HashMap<u64, u64>,
     ) -> Result<bool> {
@@ -429,7 +429,7 @@ impl ImportTool {
 
         let existing = sqlx::query("select id from user_stream where id = ?")
             .bind(&stream.id)
-            .fetch_optional(&self.target_db)
+            .fetch_optional(&self.to_db)
             .await?;
         if existing.is_some() {
             return Ok(false);
@@ -468,24 +468,24 @@ impl ImportTool {
         .bind(&stream.node_name)
         .bind(&stream.external_video_id)
         .bind(&stream.external_input_id)
-        .execute(&self.target_db)
+        .execute(&self.to_db)
         .await?;
         Ok(true)
     }
 
-    async fn import_stream_keys(&self, remote_to_local: &HashMap<u64, u64>) -> Result<()> {
-        println!("🔑 Fetching stream keys from source system...");
-        let keys = sqlx::query_as::<_, RemoteStreamKey>(
+    async fn import_stream_keys(&self, from_to: &HashMap<u64, u64>) -> Result<()> {
+        println!("🔑 Fetching stream keys from the 'from' database...");
+        let keys = sqlx::query_as::<_, FromStreamKey>(
             "select user_id, `key`, created, expires, stream_id, external_id \
              from user_stream_key",
         )
-        .fetch_all(&self.source_db)
+        .fetch_all(&self.from_db)
         .await?;
-        println!("📊 Found {} stream keys in source system", keys.len());
+        println!("📊 Found {} stream keys to import", keys.len());
 
         let mut imported = 0;
         for key in &keys {
-            let local_id = match remote_to_local.get(&key.user_id) {
+            let local_id = match from_to.get(&key.user_id) {
                 Some(id) => *id,
                 None => continue,
             };
@@ -501,7 +501,7 @@ impl ImportTool {
     }
 
     /// Returns Ok(true) if a new key was inserted, Ok(false) if skipped.
-    async fn import_single_stream_key(&self, key: &RemoteStreamKey, local_id: u64) -> Result<bool> {
+    async fn import_single_stream_key(&self, key: &FromStreamKey, local_id: u64) -> Result<bool> {
         if self.dry_run {
             println!(
                 "  🔍 [DRY RUN] Would import stream key for stream {}",
@@ -514,7 +514,7 @@ impl ImportTool {
         // the key isn't already present.
         let stream_exists = sqlx::query("select id from user_stream where id = ?")
             .bind(&key.stream_id)
-            .fetch_optional(&self.target_db)
+            .fetch_optional(&self.to_db)
             .await?
             .is_some();
         if !stream_exists {
@@ -523,7 +523,7 @@ impl ImportTool {
 
         let existing = sqlx::query("select id from user_stream_key where `key` = ?")
             .bind(&key.key)
-            .fetch_optional(&self.target_db)
+            .fetch_optional(&self.to_db)
             .await?;
         if existing.is_some() {
             return Ok(false);
@@ -539,21 +539,21 @@ impl ImportTool {
         .bind(key.expires)
         .bind(&key.stream_id)
         .bind(&key.external_id)
-        .execute(&self.target_db)
+        .execute(&self.to_db)
         .await?;
         Ok(true)
     }
 
     async fn report(&self) -> Result<()> {
         let src_users: i64 = sqlx::query("select count(*) as c from user")
-            .fetch_one(&self.source_db)
+            .fetch_one(&self.from_db)
             .await?
             .try_get("c")?;
         let dst_users: i64 = sqlx::query("select count(*) as c from user")
-            .fetch_one(&self.target_db)
+            .fetch_one(&self.to_db)
             .await?
             .try_get("c")?;
-        println!("📊 Users - source: {}, target: {}", src_users, dst_users);
+        println!("📊 Users - from: {}, to: {}", src_users, dst_users);
         Ok(())
     }
 }
@@ -562,31 +562,31 @@ impl ImportTool {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    let target_connection = resolve_target_connection(&args)?;
+    let to_connection = resolve_to_connection(&args)?;
 
     println!("🚀 Starting import tool...");
     println!("📋 Configuration:");
-    println!("  Source connection: {}", args.source_connection);
-    println!("  Target connection: {}", target_connection);
-    if args.target_connection.is_none() {
+    println!("  From connection: {}", args.from_connection);
+    println!("  To connection: {}", to_connection);
+    if args.to_connection.is_none() {
         println!("    (resolved from config file: {})", args.config);
     }
     println!("  Dry run: {}", args.dry_run);
     println!("  Skip balances: {}", args.skip_balances);
 
     let tool = ImportTool::new(
-        &args.source_connection,
-        &target_connection,
+        &args.from_connection,
+        &to_connection,
         args.dry_run,
         args.skip_balances,
     )
     .await?;
 
     // Order matters: users -> payments -> streams -> stream keys.
-    let remote_to_local = tool.import_users().await?;
-    tool.import_payments(&remote_to_local).await?;
-    tool.import_streams(&remote_to_local).await?;
-    tool.import_stream_keys(&remote_to_local).await?;
+    let from_to = tool.import_users().await?;
+    tool.import_payments(&from_to).await?;
+    tool.import_streams(&from_to).await?;
+    tool.import_stream_keys(&from_to).await?;
     tool.report().await?;
 
     println!("🎉 Import completed successfully!");
