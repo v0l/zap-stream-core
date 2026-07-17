@@ -77,6 +77,7 @@ fn resolve_target_connection(args: &Args) -> Result<String> {
 
 #[derive(Debug, FromRow)]
 struct RemoteUser {
+    id: u64,
     pubkey: Vec<u8>,
     balance: i64,
     tos_accepted: Option<DateTime<Utc>>,
@@ -178,7 +179,7 @@ impl ImportTool {
     async fn import_users(&self) -> Result<HashMap<u64, u64>> {
         println!("🔍 Fetching users from source system...");
         let users = sqlx::query_as::<_, RemoteUser>(
-            "select pubkey, balance, tos_accepted, stream_key, is_admin, is_blocked, \
+            "select id, pubkey, balance, tos_accepted, stream_key, is_admin, is_blocked, \
              recording, stream_dump_recording, title, summary, image, tags, \
              content_warning, goal, nwc from user",
         )
@@ -186,21 +187,11 @@ impl ImportTool {
         .await?;
         println!("📊 Found {} users in source system", users.len());
 
-        // Build remote pubkey -> remote id map for payment/stream remapping.
-        let pubkey_to_remote_id: HashMap<Vec<u8>, u64> = sqlx::query("select id, pubkey from user")
-            .fetch_all(&self.source_db)
-            .await?
-            .into_iter()
-            .map(|r| (r.get::<Vec<u8>, _>("pubkey"), r.get::<u64, _>("id")))
-            .collect();
-
         let mut remote_to_local: HashMap<u64, u64> = HashMap::new();
 
         for (i, user) in users.iter().enumerate() {
-            let remote_id = match pubkey_to_remote_id.get(&user.pubkey) {
-                Some(id) => *id,
-                None => continue,
-            };
+            // The source (remote) id is used to remap payments/streams.
+            let remote_id = user.id;
             println!(
                 "👤 Importing user {}/{}: {}",
                 i + 1,
