@@ -147,15 +147,6 @@ impl HlsMuxer {
             }
         }
 
-        // Low-latency HLS requires byte-range addressable partial segments; we only
-        // enable it for fMP4 output where partial fragments are well supported by players.
-        if segment_type == SegmentType::FMP4 {
-            for var in vars.iter_mut() {
-                let part_target = var.partial_segment_length();
-                var.enable_low_latency(part_target);
-            }
-        }
-
         // force all variants to have the same segment length
         if let Some(max_seg_duration) = vars
             .iter()
@@ -170,6 +161,17 @@ impl HlsMuxer {
             );
             vars.iter_mut()
                 .for_each(|s| s.segment_length_target = max_seg_duration);
+        }
+
+        // Low-latency HLS requires byte-range addressable partial segments; we only
+        // enable it for fMP4 output where partial fragments are well supported by players.
+        // This must happen AFTER segment lengths are forced equal so every variant
+        // derives its PART-TARGET from the same (final) segment length.
+        if segment_type == SegmentType::FMP4 {
+            for var in vars.iter_mut() {
+                let part_target = var.partial_segment_length();
+                var.enable_low_latency(part_target);
+            }
         }
 
         Ok(Self {

@@ -14,7 +14,6 @@ use ffmpeg_rs_raw::{AvPacketRef, Muxer, bail_ffmpeg, cstr};
 use m3u8_rs::Playlist::MediaPlaylist;
 use m3u8_rs::{
     AlternativeMedia, AlternativeMediaType, ExtTag, MediaSegmentType, PartInf, Playlist,
-    PreloadHint,
 };
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -45,7 +44,8 @@ pub struct HlsVariant {
     pub(crate) segment_type: SegmentType,
     /// Timestamp of the start of the current segment
     current_segment_start: f64,
-    /// Timestamp of the start of the current partial
+    /// Timestamp of the start of the current partial (DTS timeline; packets
+    /// arrive in decode order so DTS is the only monotonic clock available)
     current_partial_start: f64,
     /// Number of packets written to current segment
     packets_written: u64,
@@ -271,7 +271,6 @@ impl HlsVariant {
             Playlist::MasterPlaylist(_) => bail!("Invalid MasterPlaylist, expected MediaPlaylist"),
             MediaPlaylist(pl) => {
                 let mut idx_ctr = pl.media_sequence;
-                let mut partial_ctr = 1;
                 let mut ret = Vec::new();
 
                 // map HLS segments from playlist back into internal structs
@@ -294,25 +293,14 @@ impl HlsVariant {
                                     .unwrap_or_default(),
                             });
                             idx_ctr += 1;
-                            partial_ctr = 1; // always reset on full segment
                             full_seg
                         }
-                        MediaSegmentType::Partial(p) => {
-                            let part_seg = HlsSegment::Partial(PartialSegmentInfo {
-                                index: partial_ctr, //assume order is correct
-                                parent_index: idx_ctr,
-                                // we use byte-range style, so filename always is the same as full segment name
-                                parent_kind: if p.uri.ends_with(".ts") {
-                                    SegmentType::MPEGTS
-                                } else {
-                                    SegmentType::FMP4
-                                },
-                                duration: p.duration,
-                                independent: p.independent,
-                                byte_range: p.byte_range.as_ref().map(|r| (r.length, r.offset)),
-                            });
-                            partial_ctr += 1;
-                            part_seg
+                        MediaSegmentType::Partial(_) => {
+                            // Drop stale partial segments: they reference byte ranges of a
+                            // file from the previous run which the new stream will overwrite.
+                            // Keeping them corrupts the byte-range chain (and can underflow
+                            // the next partial's size computation).
+                            continue;
                         }
                         MediaSegmentType::PreloadHint(_) => {
                             // ignore
@@ -358,6 +346,23 @@ impl HlsVariant {
         self.out_dir.join(Self::segment_name(typ, idx))
     }
 
+    /// Whether writing the next packet would push the current partial segment past
+    /// `PART-TARGET`. Per the LL-HLS spec no part may exceed the advertised
+    /// PART-TARGET, so the part must be closed *before* the packet that would
+    /// cross the boundary. Falls back to closing once the target is reached when
+    /// the packet duration is unknown.
+    pub(crate) fn partial_would_exceed_target(
+        cur_part_duration: f64,
+        next_pkt_duration: f64,
+        target: f64,
+    ) -> bool {
+        if next_pkt_duration > 0.0 {
+            cur_part_duration + next_pkt_duration > target
+        } else {
+            cur_part_duration >= target
+        }
+    }
+
     /// Process a single packet through the muxer
     pub(crate) fn process_packet(
         &mut self,
@@ -399,17 +404,34 @@ impl HlsVariant {
         }
         if is_ref_pkt && self.packets_written > 0 {
             let pkt_pts = pkt.pts as f64 * pkt_q;
+            // Partial segments are tracked on the DTS timeline: packets arrive in
+            // decode order, and with B-frames the PTS is non-monotonic and can jump
+            // more than one frame ahead, which would overshoot PART-TARGET.
+            let pkt_dts = if pkt.dts == AV_NOPTS_VALUE {
+                pkt_pts
+            } else {
+                pkt.dts as f64 * pkt_q
+            };
+            let pkt_duration = pkt.duration as f64 * pkt_q;
             let cur_duration = pkt_pts - self.current_segment_start;
-            let cur_part_duration = pkt_pts - self.current_partial_start;
+            let cur_part_duration = pkt_dts - self.current_partial_start;
 
             let should_end_this_segment = cur_duration >= self.segment_length() as f64;
             let split_seg = can_split && should_end_this_segment;
-            let split_partial = stream_type == AVMediaType::VIDEO
-                && self.low_latency
-                && (cur_part_duration >= self.partial_target_duration as f64 || split_seg);
+            // Partials are produced for the reference stream of every LL variant:
+            // video keyframe-bounded parts for video variants, and per-packet
+            // bounded parts for audio-only (CMAF rendition) variants. Audio-only
+            // variants MUST also emit parts, otherwise their playlist advertises
+            // PART-INF without ever publishing an EXT-X-PART and LL players stall.
+            let split_partial = self.low_latency
+                && (Self::partial_would_exceed_target(
+                    cur_part_duration,
+                    pkt_duration,
+                    self.partial_target_duration as f64,
+                ) || split_seg);
 
             if split_partial {
-                self.split_partial_segment(pkt_pts, true)?;
+                self.split_partial_segment(pkt_dts, true)?;
                 self.next_partial_independent = can_split;
             }
             if split_seg {
@@ -475,6 +497,12 @@ impl HlsVariant {
                 _ => None,
             })
             .unwrap_or(0);
+        ensure!(
+            end_pos >= previous_end_pos,
+            "Partial segment byte range would be negative (end_pos={}, previous_end_pos={})",
+            end_pos,
+            previous_end_pos
+        );
         let partial_size = end_pos - previous_end_pos;
         let partial_info = PartialSegmentInfo {
             index: self.current_partial_index,
@@ -737,16 +765,12 @@ impl HlsVariant {
             });
         }
 
-        // append segment preload for next part segment
-        if let Some(HlsSegment::Partial(partial)) = self.segments.last() {
-            // TODO: try to estimate if there will be another partial segment
-            pl.segments.push(MediaSegmentType::PreloadHint(PreloadHint {
-                hint_type: "PART".to_string(),
-                uri: partial.filename(),
-                byte_range_start: partial.end_pos(),
-                byte_range_length: None,
-            }));
-        }
+        // NOTE: we intentionally do NOT emit EXT-X-PRELOAD-HINT. The segment
+        // handler serves plain files and cannot hold an open-ended range request
+        // until the hinted part is flushed; players acting on a hint would either
+        // get 416s or a truncated (mid-fragment) response, corrupting playback.
+        // The hint is optional per spec, so players fall back to fetching the
+        // byte ranges advertised in the playlist, which are always complete.
 
         pl.version = Some(self.playlist_version());
         pl.target_duration = if self.playlist_version() >= 6 {
@@ -895,5 +919,99 @@ impl HlsVariant {
                 other_attributes: None,
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: parts were closed only once their duration reached
+    /// PART-TARGET, making every part exceed the advertised target (LL-HLS
+    /// spec violation, breaks strict players like Safari). The part must be
+    /// closed *before* the packet that would cross the boundary.
+    #[test]
+    fn partial_split_never_exceeds_part_target() {
+        let target = 0.5;
+        let frame = 1.0 / 30.0;
+
+        // simulate a stream of 30fps packets and collect closed part durations
+        let mut part_start = 0.0f64;
+        let mut closed = Vec::new();
+        let mut pts = 0.0f64;
+        for _ in 0..300 {
+            let cur_part_duration = pts - part_start;
+            if HlsVariant::partial_would_exceed_target(cur_part_duration, frame, target) {
+                closed.push(cur_part_duration);
+                part_start = pts;
+            }
+            pts += frame;
+        }
+
+        assert!(!closed.is_empty(), "should have closed parts");
+        for d in &closed {
+            assert!(
+                *d <= target + f64::EPSILON,
+                "part duration {} exceeds PART-TARGET {}",
+                d,
+                target
+            );
+        }
+    }
+
+    #[test]
+    fn partial_split_falls_back_when_duration_unknown() {
+        // unknown packet duration: close once target reached (old behavior)
+        assert!(HlsVariant::partial_would_exceed_target(0.5, 0.0, 0.5));
+        assert!(!HlsVariant::partial_would_exceed_target(0.49, 0.0, 0.5));
+    }
+
+    #[test]
+    fn partial_split_boundary_conditions() {
+        // would cross the target -> split now
+        assert!(HlsVariant::partial_would_exceed_target(0.48, 0.033, 0.5));
+        // still fits inside the target -> keep accumulating
+        assert!(!HlsVariant::partial_would_exceed_target(0.45, 0.033, 0.5));
+        // exactly reaching the target is allowed (parts may equal PART-TARGET)
+        assert!(!HlsVariant::partial_would_exceed_target(0.4, 0.1, 0.5));
+    }
+
+    /// Regression: reloading a playlist on stream resume used to keep trailing
+    /// EXT-X-PART entries. Those reference byte ranges of a file from the
+    /// previous run which the new stream overwrites, corrupting the byte-range
+    /// chain (and potentially underflowing the next partial size computation).
+    #[test]
+    fn try_load_media_seq_drops_trailing_partials() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path().to_path_buf();
+
+        // dummy segment payloads (content doesn't matter, only hashing)
+        std::fs::write(dir_path.join("10.m4s"), b"seg10").unwrap();
+        std::fs::write(dir_path.join("11.m4s"), b"seg11").unwrap();
+        std::fs::write(dir_path.join("12.m4s"), b"seg12-partial").unwrap();
+
+        let playlist = "#EXTM3U\n\
+#EXT-X-VERSION:6\n\
+#EXT-X-TARGETDURATION:2\n\
+#EXT-X-MEDIA-SEQUENCE:10\n\
+#EXT-X-PART-INF:PART-TARGET=0.5\n\
+#EXTINF:2,\n10.m4s\n\
+#EXTINF:2,\n11.m4s\n\
+#EXT-X-PART:DURATION=0.5,URI=\"12.m4s\",BYTERANGE=\"100@0\",INDEPENDENT=YES\n\
+#EXT-X-PART:DURATION=0.5,URI=\"12.m4s\",BYTERANGE=\"100@100\"\n\
+#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"12.m4s\",BYTERANGE-START=200\n";
+        std::fs::write(dir_path.join(HlsVariant::PLAYLIST_NAME), playlist).unwrap();
+
+        let segments = HlsVariant::try_load_media_seq(&dir_path).unwrap();
+
+        assert_eq!(segments.len(), 2, "only full segments should be loaded");
+        let indexes: Vec<u64> = segments
+            .iter()
+            .map(|s| match s {
+                HlsSegment::Full(f) => f.index,
+                HlsSegment::Partial(_) => panic!("partial segments must be dropped on resume"),
+            })
+            .collect();
+        assert_eq!(indexes, vec![10, 11]);
     }
 }
