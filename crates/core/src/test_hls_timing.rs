@@ -958,6 +958,111 @@ mod tests {
         );
     }
 
+    /// LL-HLS invariants over a real generated fMP4 stream. Regression coverage for:
+    /// - audio-only (CMAF rendition) playlists advertising PART-INF but never
+    ///   publishing any EXT-X-PART (LL players stall on blocking reload)
+    /// - part durations exceeding the advertised PART-TARGET
+    /// - non-contiguous part byte-range chains
+    /// - EXT-X-PRELOAD-HINT being emitted (the file-based segment handler cannot
+    ///   serve open-ended ranges of a still-growing file without truncation)
+    #[ignore]
+    #[test]
+    fn test_ll_hls_invariants() {
+        tracing_subscriber::fmt::try_init().ok();
+
+        let temp_dir = tempdir().unwrap();
+        let tester = HlsTimingTester::new(0.2, 1.0, 0.5);
+
+        let (_muxer, out_dir) = tester
+            .generate_test_stream(temp_dir.path(), 8.0, SegmentType::FMP4)
+            .expect("generation failed");
+
+        // find every variant/rendition media playlist under the output dir
+        let mut playlists = Vec::new();
+        for entry in fs::read_dir(&out_dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() && path.join("live.m3u8").exists() {
+                playlists.push(path.join("live.m3u8"));
+            }
+        }
+        assert!(
+            playlists.len() >= 2,
+            "expected video variant + audio rendition playlists, found {}",
+            playlists.len()
+        );
+
+        for pl_path in &playlists {
+            let raw = fs::read(pl_path).unwrap();
+            let pl = match m3u8_rs::parse_playlist_res(&raw) {
+                Ok(m3u8_rs::Playlist::MediaPlaylist(m)) => m,
+                other => panic!("expected media playlist at {:?}, got {:?}", pl_path, other),
+            };
+
+            let part_target = pl
+                .part_inf
+                .as_ref()
+                .map(|p| p.part_target)
+                .unwrap_or_default();
+            assert!(
+                part_target > 0.0,
+                "{:?}: LL playlist must advertise PART-INF",
+                pl_path
+            );
+
+            let mut part_count = 0usize;
+            // (per current-file byte offset) -> verify contiguous byte-range chain
+            let mut expected_offset: Option<u64> = None;
+            for seg in &pl.segments {
+                match seg {
+                    MediaSegmentType::Partial(p) => {
+                        part_count += 1;
+                        // parts must not exceed PART-TARGET (small float tolerance)
+                        assert!(
+                            p.duration <= part_target + 0.001,
+                            "{:?}: part duration {} exceeds PART-TARGET {}",
+                            pl_path,
+                            p.duration,
+                            part_target
+                        );
+                        let br = p.byte_range.as_ref().expect("parts must be byte-ranged");
+                        let offset = br.offset.unwrap_or(0);
+                        if let Some(expected) = expected_offset
+                            && offset != 0
+                        {
+                            assert_eq!(
+                                offset, expected,
+                                "{:?}: part byte-range chain not contiguous",
+                                pl_path
+                            );
+                        }
+                        expected_offset = Some(offset + br.length);
+                    }
+                    MediaSegmentType::Full(_) => {
+                        // new segment file -> byte offsets restart
+                        expected_offset = None;
+                    }
+                    MediaSegmentType::PreloadHint(h) => {
+                        panic!("{:?}: preload hint must not be emitted: {:?}", pl_path, h);
+                    }
+                }
+            }
+
+            // Regression: every LL playlist (including the audio-only CMAF
+            // rendition) must actually publish parts, otherwise LL players
+            // block forever on _HLS_part reloads.
+            assert!(
+                part_count > 0,
+                "{:?}: playlist advertises PART-INF but has no EXT-X-PART entries",
+                pl_path
+            );
+
+            println!(
+                "✓ LL invariants: {:?} parts={}, part_target={}",
+                pl_path, part_count, part_target
+            );
+        }
+    }
+
     #[ignore]
     #[test]
     fn test_generated_hls_stream_fmp4() {
