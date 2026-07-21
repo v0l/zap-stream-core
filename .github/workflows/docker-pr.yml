@@ -27,8 +27,8 @@ jobs:
           file: ./crates/zap-stream/Dockerfile
           platforms: linux/amd64
           push: false
-          cache-from: type=gha,scope=zap-stream-core
-          cache-to: type=gha,mode=max,scope=zap-stream-core
+          cache-from: type=gha,scope=zap-stream-core-amd64
+          cache-to: type=gha,mode=max,scope=zap-stream-core-amd64
 
   build-n94-bridge:
     name: Build n94-bridge
@@ -49,5 +49,5 @@ jobs:
           file: ./crates/n94-bridge/Dockerfile
           platforms: linux/amd64
           push: false
-          cache-from: type=gha,scope=n94-bridge
-          cache-to: type=gha,mode=max,scope=n94-bridge
+          cache-from: type=gha,scope=n94-bridge-amd64
+          cache-to: type=gha,mode=max,scope=n94-bridge-amd64
