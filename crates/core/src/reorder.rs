@@ -118,7 +118,6 @@ impl<T> FrameReorderBuffer<T> {
     }
 
     /// Flush all remaining frames from the buffer in PTS order.
-    #[allow(dead_code)]
     pub fn flush(&mut self) -> Vec<T> {
         let mut output = Vec::with_capacity(self.heap.len());
         while let Some(ordered) = self.heap.pop() {
@@ -132,5 +131,26 @@ impl<T> FrameReorderBuffer<T> {
     #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.heap.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: frames remaining in the reorder buffer at EOF were dropped
+    /// because flush() was never called by the pipeline. Ensure flush drains
+    /// all buffered frames in PTS order.
+    #[test]
+    fn flush_drains_remaining_frames_in_pts_order() {
+        let mut buf = FrameReorderBuffer::new();
+        // push fewer than MIN_BUFFER_DEPTH frames so nothing is emitted yet
+        assert!(buf.push(2, 1, "c").is_empty());
+        assert!(buf.push(0, 1, "a").is_empty());
+        assert!(buf.push(1, 1, "b").is_empty());
+
+        let flushed = buf.flush();
+        assert_eq!(flushed, vec!["a", "b", "c"]);
+        assert!(buf.is_empty());
     }
 }

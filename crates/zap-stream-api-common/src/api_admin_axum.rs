@@ -1,5 +1,5 @@
 use crate::{
-    AdminIngestEndpointRequest, AdminUserRequest, Nip98Auth, ZapStreamAdminApi,
+    AdminIngestEndpointRequest, AdminUserRequest, Nip98Auth, Nip98Json, ZapStreamAdminApi,
 };
 use crate::{ApiError, PageQueryV1};
 use axum::extract::{Path, Query, State};
@@ -53,10 +53,9 @@ where
                     },
                 )
                 .patch(
-                    async |auth: Nip98Auth,
-                           State(this): State<AxumAdminApi<T>>,
+                    async |State(this): State<AxumAdminApi<T>>,
                            Path(id): Path<u64>,
-                           Json(req): Json<AdminUserRequest>| {
+                           Nip98Json { auth, body: req }: Nip98Json<AdminUserRequest>| {
                         match this.handler.update_user(auth, id, req).await {
                             Ok(r) => Ok(Json(r)),
                             Err(e) => Err(Json(ApiError::from(e))),
@@ -160,9 +159,8 @@ where
                     },
                 )
                 .post(
-                    async |auth: Nip98Auth,
-                           State(this): State<AxumAdminApi<T>>,
-                           Json(req): Json<AdminIngestEndpointRequest>| {
+                    async |State(this): State<AxumAdminApi<T>>,
+                           Nip98Json { auth, body: req }: Nip98Json<AdminIngestEndpointRequest>| {
                         match this.handler.create_ingest_endpoint(auth, req).await {
                             Ok(r) => Ok(Json(r)),
                             Err(e) => Err(Json(ApiError::from(e))),
@@ -183,10 +181,9 @@ where
                     },
                 )
                 .patch(
-                    async |auth: Nip98Auth,
-                           State(this): State<AxumAdminApi<T>>,
+                    async |State(this): State<AxumAdminApi<T>>,
                            Path(id): Path<u64>,
-                           Json(req): Json<AdminIngestEndpointRequest>| {
+                           Nip98Json { auth, body: req }: Nip98Json<AdminIngestEndpointRequest>| {
                         match this.handler.update_ingest_endpoint(auth, id, req).await {
                             Ok(r) => Ok(Json(r)),
                             Err(e) => Err(Json(ApiError::from(e))),

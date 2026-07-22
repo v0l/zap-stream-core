@@ -53,6 +53,10 @@ impl RtmpClient {
         mtx: Option<UnboundedSender<EndpointStats>>,
     ) -> Result<Self> {
         socket.set_nonblocking(false)?;
+        // A read timeout ensures a silent client cannot hold the thread forever:
+        // the publish-request timeout in read_until_publish_request is only checked
+        // between reads, which would never complete on a fully idle socket.
+        socket.set_read_timeout(Some(Duration::from_secs(30)))?;
         let cfg = ServerSessionConfig::new();
         let (ses, res) = ServerSession::new(cfg)?;
         Ok(Self {
@@ -135,6 +139,7 @@ impl RtmpClient {
             Err(e) => {
                 return match e.kind() {
                     ErrorKind::WouldBlock => Ok(None),
+                    ErrorKind::TimedOut => Ok(None),
                     ErrorKind::Interrupted => Ok(None),
                     _ => Err(anyhow::Error::new(e)),
                 };
@@ -298,18 +303,23 @@ impl Read for RtmpClient {
                 Ok(Some(r_len)) => {
                     if let Err(e) = self.process_socket_buf(r_len) {
                         error!("Error processing bytes: {}", e);
-                        return Ok(0);
+                        // return any remaining buffered data before signalling EOF
+                        return Ok(self.buffer.read_buffered(buf));
                     }
                 }
                 Ok(None) if !self.buffer.buf.is_empty() => {
                     // allow reading some data when there is no more data available
                     break;
                 }
+                Ok(None) => {
+                    // no data available and nothing buffered; avoid a hot spin loop
+                    sleep(Duration::from_millis(5));
+                }
                 Err(e) => {
                     error!("Error reading data: {}", e);
-                    return Ok(0);
+                    // return any remaining buffered data before signalling EOF
+                    return Ok(self.buffer.read_buffered(buf));
                 }
-                _ => continue,
             }
         }
 

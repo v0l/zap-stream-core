@@ -119,7 +119,7 @@ impl ApiBase {
                 stream.goal = Some(goal);
             }
 
-            self.db.update_stream(&stream).await?;;
+            self.db.update_stream(&stream).await?;
         } else {
             // Update user default stream info
             self.db
@@ -304,11 +304,11 @@ impl ApiBase {
                 amount_msats as _,
                 zap_stream_db::PaymentType::TopUp,
                 0,
-                DateTime::from_timestamp(
-                    response.parsed_invoice.expires_at().unwrap().as_secs() as _,
-                    0,
-                )
-                .unwrap(),
+                response
+                    .parsed_invoice
+                    .expires_at()
+                    .and_then(|e| DateTime::from_timestamp(e.as_secs() as _, 0))
+                    .unwrap_or_else(|| Utc::now() + chrono::Duration::hours(1)),
                 zap,
                 response.external_id,
             )

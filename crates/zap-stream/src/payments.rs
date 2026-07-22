@@ -125,6 +125,11 @@ impl LightningNode for LNURLNode {
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+                // stop polling once the subscriber is gone; subscribe_invoices may be
+                // called again after a reconnect and stale pollers would accumulate
+                if tx.is_closed() {
+                    break;
+                }
                 let payments = match db.get_pending_payments().await {
                     Ok(p) => p,
                     Err(e) => {
@@ -219,6 +224,11 @@ impl LightningNode for NWCNode {
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(10)).await;
+                // stop polling once the subscriber is gone; subscribe_invoices may be
+                // called again after a reconnect and stale pollers would accumulate
+                if tx.is_closed() {
+                    break;
+                }
                 let payments = match db.get_pending_payments().await {
                     Ok(p) => p,
                     Err(e) => {

@@ -114,8 +114,16 @@ impl BufferedReader {
 
     /// Add data to buffer with size limit and performance tracking
     pub fn add_data(&mut self, data: &[u8]) {
-        if let Some(dump_handle) = &mut self.dump_handle {
-            dump_handle.write_all(data).unwrap();
+        if let Some(dump_handle) = &mut self.dump_handle
+            && let Err(e) = dump_handle.write_all(data)
+        {
+            // A failing dump file (e.g. disk full) must not kill the ingest thread;
+            // disable dumping and continue streaming.
+            warn!(
+                "{} stream dump write failed, disabling dump: {}",
+                self.metrics.source_name, e
+            );
+            self.dump_handle = None;
         }
 
         // Inline buffer management to avoid borrow issues

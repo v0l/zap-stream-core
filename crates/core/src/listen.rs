@@ -59,7 +59,13 @@ impl ListenerEndpoint {
                     .map_err(|_| anyhow!("Error setting endpoint scheme"))?;
 
                 ep.set_path(ingest_name);
-                Ok(ep.to_string())
+                // Url::set_path percent-encodes characters like '{' and '}'; template
+                // placeholders (e.g. "{stream_key}" for OBS multitrack) must survive
+                // literally, so decode them back after encoding.
+                Ok(ep
+                    .to_string()
+                    .replace("%7B", "{")
+                    .replace("%7D", "}"))
             }
             Self::TCP { addr } => {
                 Ok(format!("tcp://{}:{}", public_hostname, addr.port()))

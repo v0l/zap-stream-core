@@ -1,7 +1,11 @@
-use anyhow::Result;
-use ffmpeg_rs_raw::ffmpeg_sys_the_third::AVStream;
-use ffmpeg_rs_raw::{AvPacketRef, Encoder, Muxer};
+use anyhow::{Result, bail};
+use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
+    AVFormatContext, AVStream, avcodec_parameters_copy, avformat_alloc_context,
+    avformat_free_context, avformat_new_stream,
+};
+use ffmpeg_rs_raw::{AvPacketRef, Muxer};
 use std::collections::HashMap;
+use std::ptr;
 use std::time::{Duration, Instant};
 use tracing::warn;
 use uuid::Uuid;
@@ -9,13 +13,67 @@ use uuid::Uuid;
 use crate::egress::{Egress, EgressResult, EncoderOrSourceStream, EncoderVariantGroup};
 use crate::metrics::PacketMetrics;
 
-/// A stream entry stored for muxer reconnection
-enum ReconnectStream {
-    Encoder(*const Encoder),
-    SourceStream(*mut AVStream),
+/// Snapshot of the muxer's stream layout used to rebuild the context on reconnect.
+///
+/// The streams live inside a dedicated `AVFormatContext` owned by this struct, so no
+/// pointers into other components (encoders owned by worker threads, demuxer streams)
+/// are retained. This avoids the dangling-pointer hazard of referencing objects that
+/// may move or be freed while the egress is still alive.
+struct ReconnectTemplate {
+    ctx: *mut AVFormatContext,
+    /// Ordered (variant id, template stream index) pairs
+    streams: Vec<(Uuid, usize)>,
 }
 
-unsafe impl Send for ReconnectStream {}
+// SAFETY: the template context is exclusively owned by MuxerEgress and only accessed
+// from the thread currently driving the egress (guarded externally by the egress mutex).
+unsafe impl Send for ReconnectTemplate {}
+
+impl ReconnectTemplate {
+    fn new() -> Result<Self> {
+        let ctx = unsafe { avformat_alloc_context() };
+        if ctx.is_null() {
+            bail!("Failed to allocate reconnect template context");
+        }
+        Ok(Self {
+            ctx,
+            streams: Vec::new(),
+        })
+    }
+
+    /// Snapshot a stream that was just added to the muxer
+    unsafe fn add_stream(&mut self, var_id: Uuid, src: *mut AVStream) -> Result<()> {
+        unsafe {
+            let stream = avformat_new_stream(self.ctx, ptr::null_mut());
+            if stream.is_null() {
+                bail!("Failed to allocate reconnect template stream");
+            }
+            let ret = avcodec_parameters_copy((*stream).codecpar, (*src).codecpar);
+            if ret < 0 {
+                bail!("Failed to copy codec parameters to reconnect template");
+            }
+            (*stream).time_base = (*src).time_base;
+            (*stream).sample_aspect_ratio = (*src).sample_aspect_ratio;
+            self.streams.push((var_id, (*stream).index as usize));
+            Ok(())
+        }
+    }
+
+    fn get_stream(&self, idx: usize) -> *mut AVStream {
+        unsafe { *(*self.ctx).streams.add(idx) }
+    }
+}
+
+impl Drop for ReconnectTemplate {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.ctx.is_null() {
+                avformat_free_context(self.ctx);
+                self.ctx = ptr::null_mut();
+            }
+        }
+    }
+}
 
 /// Generic muxer egress which accepts a pre-build muxer instance
 pub struct MuxerEgress {
@@ -27,9 +85,9 @@ pub struct MuxerEgress {
     metrics: PacketMetrics,
     /// If packet muxing fails should the pipeline also fail
     critical: bool,
-    /// Reconnect info: ordered list of streams to re-add after reinit, keyed by variant id.
+    /// Reconnect info: owned snapshot of the stream layout.
     /// None means reconnect is not supported for this egress.
-    reconnect_streams: Option<Vec<(Uuid, ReconnectStream)>>,
+    reconnect: Option<ReconnectTemplate>,
     /// Backoff: don't hammer a failing endpoint
     last_failure: Option<Instant>,
 }
@@ -59,28 +117,22 @@ impl MuxerEgress {
         reconnectable: bool,
     ) -> Result<Self> {
         let mut var_map = HashMap::new();
-        let mut reconnect_streams: Vec<(Uuid, ReconnectStream)> = Vec::new();
+        let mut reconnect = if reconnectable {
+            Some(ReconnectTemplate::new()?)
+        } else {
+            None
+        };
 
         let muxer = unsafe {
             for g in &group.streams {
-                match g.stream {
-                    EncoderOrSourceStream::Encoder(enc) => {
-                        let stream = muxer.add_stream_encoder(enc)?;
-                        (*(*stream).codecpar).codec_tag = 0;
-                        var_map.insert(g.variant.id(), (*stream).index);
-                        if reconnectable {
-                            reconnect_streams.push((g.variant.id(), ReconnectStream::Encoder(enc)));
-                        }
-                    }
-                    EncoderOrSourceStream::SourceStream(stream) => {
-                        let stream = muxer.add_copy_stream(stream)?;
-                        (*(*stream).codecpar).codec_tag = 0;
-                        var_map.insert(g.variant.id(), (*stream).index);
-                        if reconnectable {
-                            reconnect_streams
-                                .push((g.variant.id(), ReconnectStream::SourceStream(stream)));
-                        }
-                    }
+                let stream = match g.stream {
+                    EncoderOrSourceStream::Encoder(enc) => muxer.add_stream_encoder(enc)?,
+                    EncoderOrSourceStream::SourceStream(s) => muxer.add_copy_stream(s)?,
+                };
+                (*(*stream).codecpar).codec_tag = 0;
+                var_map.insert(g.variant.id(), (*stream).index);
+                if let Some(t) = reconnect.as_mut() {
+                    t.add_stream(g.variant.id(), stream)?;
                 }
             }
             muxer.open(options)?;
@@ -91,11 +143,7 @@ impl MuxerEgress {
             var_map,
             metrics: PacketMetrics::new(name, None),
             critical,
-            reconnect_streams: if reconnectable {
-                Some(reconnect_streams)
-            } else {
-                None
-            },
+            reconnect,
             last_failure: None,
         })
     }
@@ -103,7 +151,7 @@ impl MuxerEgress {
     /// Try to reconnect the muxer after a write failure.
     /// Returns true if reconnection succeeded.
     unsafe fn try_reconnect(&mut self) -> bool {
-        let Some(ref streams) = self.reconnect_streams else {
+        let Some(ref template) = self.reconnect else {
             return false;
         };
 
@@ -117,17 +165,13 @@ impl MuxerEgress {
                 return false;
             }
 
-            // re-add all streams in original order
-            self.var_map.clear();
-            for (var_id, rs) in streams {
-                let result = match rs {
-                    ReconnectStream::Encoder(enc) => self.muxer.add_stream_encoder(&**enc),
-                    ReconnectStream::SourceStream(src) => self.muxer.add_copy_stream(*src),
-                };
-                match result {
+            // re-add all streams in original order from the owned template snapshot
+            let mut new_map = HashMap::new();
+            for (var_id, template_idx) in &template.streams {
+                match self.muxer.add_copy_stream(template.get_stream(*template_idx)) {
                     Ok(stream) => {
                         (*(*stream).codecpar).codec_tag = 0;
-                        self.var_map.insert(*var_id, (*stream).index);
+                        new_map.insert(*var_id, (*stream).index);
                     }
                     Err(e) => {
                         warn!("RTMP reconnect: add_stream failed: {}", e);
@@ -140,6 +184,7 @@ impl MuxerEgress {
                 warn!("RTMP reconnect: open failed: {}", e);
                 return false;
             }
+            self.var_map = new_map;
         }
 
         true
@@ -181,7 +226,7 @@ impl Egress for MuxerEgress {
                 return Err(e);
             } else {
                 warn!("Error muxing packet in {}: {}", self.metrics.source_name, e);
-                if self.reconnect_streams.is_some() {
+                if self.reconnect.is_some() {
                     self.last_failure = Some(Instant::now());
                 }
             }

@@ -1,5 +1,5 @@
 use crate::{ApiError, CreateStreamKeyRequest, PageQueryV1, PatchAccount};
-use crate::{ForwardRequest, Nip98Auth, PatchEvent, UpdateForwardRequest, ZapStreamApi};
+use crate::{ForwardRequest, Nip98Auth, Nip98Json, PatchEvent, UpdateForwardRequest, ZapStreamApi};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{delete, get, patch, post};
@@ -32,9 +32,8 @@ where
                     }
                 })
                 .patch(
-                    async |auth: Nip98Auth,
-                           State(this): State<AxumApi<T>>,
-                           Json(req): Json<PatchAccount>| {
+                    async |State(this): State<AxumApi<T>>,
+                           Nip98Json { auth, body: req }: Nip98Json<PatchAccount>| {
                         match this.handler.update_account(auth, req).await {
                             Ok(r) => Ok(Json(r)),
                             Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError::from(e)))),
@@ -45,9 +44,8 @@ where
             .route(
                 "/api/v1/event",
                 patch(
-                    async |auth: Nip98Auth,
-                           State(this): State<AxumApi<T>>,
-                           Json(req): Json<PatchEvent>| {
+                    async |State(this): State<AxumApi<T>>,
+                           Nip98Json { auth, body: req }: Nip98Json<PatchEvent>| {
                         match this.handler.update_event(auth, req).await {
                             Ok(r) => Ok(Json(r)),
                             Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError::from(e)))),
@@ -58,9 +56,8 @@ where
             .route(
                 "/api/v1/account/forward",
                 post(
-                    async |auth: Nip98Auth,
-                           State(this): State<AxumApi<T>>,
-                           Json(req): Json<ForwardRequest>| {
+                    async |State(this): State<AxumApi<T>>,
+                           Nip98Json { auth, body: req }: Nip98Json<ForwardRequest>| {
                         match this.handler.create_forward(auth, req).await {
                             Ok(r) => Ok(Json(r)),
                             Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError::from(e)))),
@@ -79,10 +76,9 @@ where
                     },
                 )
                 .patch(
-                    async |auth: Nip98Auth,
-                           State(this): State<AxumApi<T>>,
+                    async |State(this): State<AxumApi<T>>,
                            Path(id): Path<u64>,
-                           Json(req): Json<UpdateForwardRequest>| {
+                           Nip98Json { auth, body: req }: Nip98Json<UpdateForwardRequest>| {
                         match this.handler.update_forward(auth, id, req).await {
                             Ok(r) => Ok(Json(r)),
                             Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError::from(e)))),
@@ -116,9 +112,8 @@ where
                     }
                 })
                 .post(
-                    async |auth: Nip98Auth,
-                           State(this): State<AxumApi<T>>,
-                           Json(req): Json<CreateStreamKeyRequest>| {
+                    async |State(this): State<AxumApi<T>>,
+                           Nip98Json { auth, body: req }: Nip98Json<CreateStreamKeyRequest>| {
                         match this.handler.create_stream_key(auth, req).await {
                             Ok(r) => Ok(Json(r)),
                             Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError::from(e)))),

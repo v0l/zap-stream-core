@@ -9,16 +9,14 @@ use nostr_sdk::{
 use nostr_sdk::nips::nip01::Coordinate;
 use nwc::prelude::{NostrWalletConnect, NostrWalletConnectUri, PayInvoiceRequest};
 use payments_rs::lightning::{AddInvoiceRequest, LightningNode};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(feature = "hls")]
 use tokio::fs::remove_dir_all;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc::unbounded_channel;
-use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use url::Url;
@@ -71,12 +69,12 @@ pub struct ZapStreamOverseer {
     segment_length: f32,
     /// Node name for horizontal scaling
     node_name: String,
-    /// NWC topup handles
-    nwc_topup_requests: Arc<RwLock<HashMap<u64, JoinHandle<()>>>>,
+    /// User ids with an in-flight NWC topup
+    nwc_topup_requests: Arc<RwLock<HashSet<u64>>>,
     /// Primary output directory for media
     out_dir: PathBuf,
-    /// Last time the stream event was published
-    last_event_publish: Arc<AtomicU64>,
+    /// Last time the stream event was published, per stream id
+    last_event_publish: Arc<RwLock<HashMap<String, u64>>>,
     /// MoQ origin to push streams to
     #[cfg(feature = "moq")]
     moq_origin: Option<OriginProducer>,
@@ -150,9 +148,9 @@ impl ZapStreamOverseer {
             segment_length,
             stream_manager,
             node_name,
-            nwc_topup_requests: Arc::new(RwLock::new(HashMap::new())),
+            nwc_topup_requests: Arc::new(RwLock::new(HashSet::new())),
             out_dir: PathBuf::from(&settings.output_dir),
-            last_event_publish: Arc::new(AtomicU64::new(0)),
+            last_event_publish: Arc::new(RwLock::new(HashMap::new())),
             #[cfg(feature = "moq")]
             moq_origin: None,
             #[cfg(feature = "moq")]
@@ -285,9 +283,15 @@ impl ZapStreamOverseer {
         let ev = self.build_stream_event(stream, pubkey).await?;
         self.n53.publish(&ev).await?;
         info!("Published stream event {}", ev.id.to_hex());
-        self.last_event_publish
-            .store(Timestamp::now().as_secs(), Ordering::Relaxed);
+        self.mark_event_published(&stream.id).await;
         Ok(ev)
+    }
+
+    async fn mark_event_published(&self, stream_id: &str) {
+        self.last_event_publish
+            .write()
+            .await
+            .insert(stream_id.to_string(), Timestamp::now().as_secs());
     }
 
     fn map_to_public_url(&self, path: &str) -> Result<Url> {
@@ -412,11 +416,11 @@ impl ZapStreamOverseer {
                 amount_msats as _,
                 zap_stream_db::PaymentType::TopUp,
                 0,
-                DateTime::from_timestamp(
-                    response.parsed_invoice.expires_at().unwrap().as_secs() as _,
-                    0,
-                )
-                .unwrap(),
+                response
+                    .parsed_invoice
+                    .expires_at()
+                    .and_then(|e| DateTime::from_timestamp(e.as_secs() as _, 0))
+                    .unwrap_or_else(|| Utc::now() + chrono::Duration::hours(1)),
                 nostr,
                 response.external_id,
             )
@@ -466,8 +470,13 @@ impl Overseer for ZapStreamOverseer {
                     error!("Failed to end dead stream {}: {}", &id, e);
                 }
             } else {
-                // Stream is active - republish event at a fixed interval to keep viewer count fresh
-                let last_pub = self.last_event_publish.load(Ordering::Relaxed);
+                // Stream is active - republish event at a fixed interval to keep viewer count fresh.
+                // Tracked per-stream: a single global timestamp would mean only one of
+                // several concurrently live streams gets refreshed per interval.
+                let last_pub = {
+                    let map = self.last_event_publish.read().await;
+                    map.get(&stream.id).copied().unwrap_or(0)
+                };
                 if Timestamp::now().as_secs().saturating_sub(last_pub) > 60
                     && let Ok(user) = self.db.get_user(stream.user_id).await
                 {
@@ -676,15 +685,18 @@ impl Overseer for ZapStreamOverseer {
             }
         };
 
+        // The pipeline currently requires a video source; fail gracefully instead of
+        // panicking on audio-only ingests
+        let video_src = cfg
+            .video_src
+            .ok_or_else(|| anyhow!("No video stream found in ingest, cannot start stream"))?;
+
         self.stream_manager
             .add_active_stream(
                 &hex_pubkey,
                 user.id,
-                cfg.video_src.map(|s| s.fps).unwrap(),
-                cfg.video_src
-                    .map(|s| format!("{}x{}", s.width, s.height))
-                    .unwrap()
-                    .as_str(),
+                video_src.fps,
+                format!("{}x{}", video_src.width, video_src.height).as_str(),
                 &connection,
                 egress
                     .iter()
@@ -753,7 +765,7 @@ impl Overseer for ZapStreamOverseer {
             variants: cfg.variants,
             egress: egress_config,
             ingress_info: stream_info.clone(),
-            video_src: cfg.video_src.unwrap().index,
+            video_src: video_src.index,
             audio_src: cfg.audio_src.map(|s| s.index),
             plugins,
         })
@@ -794,11 +806,14 @@ impl Overseer for ZapStreamOverseer {
             // try to auto-topup with NWC when balance is below 1000 sats
             const NWC_TOPUP_AMOUNT: u64 = 1000_000;
             if user.balance < NWC_TOPUP_AMOUNT as _ && user.nwc.is_some() {
-                let has_task = { self.nwc_topup_requests.read().await.contains_key(&user.id) };
-                if !has_task {
+                // Mark the user as in-flight BEFORE spawning: inserting after spawn
+                // raced with the task removing itself on early failure, which could
+                // leave a stale entry that blocked auto-topups forever.
+                let is_new = { self.nwc_topup_requests.write().await.insert(user.id) };
+                if is_new {
                     let user = user.clone();
                     let overseer = self.clone();
-                    let jh = tokio::spawn(async move {
+                    tokio::spawn(async move {
                         let nwc_url = match NostrWalletConnectUri::parse(user.nwc.unwrap()) {
                             Ok(u) => u,
                             Err(e) => {
@@ -846,7 +861,6 @@ impl Overseer for ZapStreamOverseer {
                         }
                         overseer.nwc_topup_requests.write().await.remove(&user.id);
                     });
-                    self.nwc_topup_requests.write().await.insert(user.id, jh);
                     info!("Starting NWC topup for {}", user.id);
                 }
             }
@@ -924,9 +938,9 @@ impl Overseer for ZapStreamOverseer {
             error!("Failed to publish stream end event for {}: {}", stream.id, e);
         } else {
             info!("Published stream event {}", event.id.to_hex());
-            self.last_event_publish
-                .store(Timestamp::now().as_secs(), Ordering::Relaxed);
         }
+        // stream ended, stop tracking its publish interval
+        self.last_event_publish.write().await.remove(&stream.id);
 
         info!("Stream ended {}", stream.id);
         Ok(())

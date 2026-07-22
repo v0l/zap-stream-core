@@ -104,14 +104,31 @@ impl HlsVariant {
             }
         }
 
+        // Determine the next segment index BEFORE creating the muxer so the first
+        // segment file matches what the playlist will advertise. On resume the index
+        // continues from the loaded playlist; previously the muxer always wrote to
+        // "1.ts"/"1.m4s" while the playlist referenced "<idx>.m4s", corrupting the
+        // first segment after a stream resume.
+        let idx = segments
+            .iter()
+            .max_by(|a, b| match (a, b) {
+                (HlsSegment::Full(a), HlsSegment::Full(b)) => a.index.cmp(&b.index),
+                _ => Ordering::Less,
+            })
+            .and_then(|s| {
+                if let HlsSegment::Full(f) = s {
+                    Some(f.index + 1)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(1);
+
         let mut mux = unsafe {
             Muxer::builder()
                 .with_output_path(
                     var_dir
-                        .join(match segment_type {
-                            SegmentType::MPEGTS => "1.ts",
-                            SegmentType::FMP4 => "1.m4s",
-                        })
+                        .join(Self::segment_name(segment_type, idx))
                         .to_str()
                         .unwrap(),
                     match segment_type {
@@ -198,21 +215,6 @@ impl HlsVariant {
             "{} will use stream index {} as reference for segmentation",
             name, ref_stream_index
         );
-
-        let idx = segments
-            .iter()
-            .max_by(|a, b| match (a, b) {
-                (HlsSegment::Full(a), HlsSegment::Full(b)) => a.index.cmp(&b.index),
-                _ => Ordering::Less,
-            })
-            .and_then(|s| {
-                if let HlsSegment::Full(f) = s {
-                    Some(f.index + 1)
-                } else {
-                    None
-                }
-            })
-            .unwrap_or(1);
 
         let variant = Self {
             name: name.clone(),
@@ -773,8 +775,10 @@ impl HlsVariant {
         // byte ranges advertised in the playlist, which are always complete.
 
         pl.version = Some(self.playlist_version());
+        // EXT-X-TARGETDURATION must be >= every segment duration (RFC 8216);
+        // rounding down (e.g. 2.5s -> 2) would violate the spec, so always ceil.
         pl.target_duration = if self.playlist_version() >= 6 {
-            self.segment_length().round() as _
+            self.segment_length().ceil() as _
         } else {
             self.segment_length()
         };
@@ -829,8 +833,14 @@ impl HlsVariant {
                         }
                     }
                     HlsVariantStream::Audio { .. } => {
-                        // Standard AAC-LC codec string
-                        codecs.push("mp4a.40.2".to_string());
+                        // Derive the codec string from the actual codec instead of
+                        // assuming AAC for every audio stream
+                        match (*p).codec_id {
+                            AVCodecID::AAC => codecs.push("mp4a.40.2".to_string()),
+                            AVCodecID::OPUS => codecs.push("opus".to_string()),
+                            AVCodecID::MP3 => codecs.push("mp4a.40.34".to_string()),
+                            _ => codecs.push("mp4a.40.2".to_string()),
+                        }
                     }
                     _ => {}
                 }

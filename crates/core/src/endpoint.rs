@@ -554,8 +554,8 @@ impl FromStr for VariantType {
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         let cs = s.split(':').collect::<Vec<&str>>();
-        match cs[0] {
-            "variant" if cs[1] == "source" => Ok(VariantType::SourceVariant),
+        match *cs.first().unwrap_or(&"") {
+            "variant" if cs.get(1) == Some(&"source") => Ok(VariantType::SourceVariant),
             "variant" if cs.len() == 3 => {
                 if let (Ok(h), Ok(br)) = (cs[1].parse(), cs[2].parse()) {
                     Ok(VariantType::Variant {
@@ -957,6 +957,33 @@ mod tests {
         }
 
         Ok(())
+    }
+
+
+    /// Regression: a capability string without a colon (e.g. "variant") used to
+    /// panic with index-out-of-bounds; capabilities come from the database so a
+    /// bad admin edit must not crash stream setup.
+    #[test]
+    fn test_variant_type_from_str_malformed() {
+        assert!("variant".parse::<VariantType>().is_err());
+        assert!("".parse::<VariantType>().is_err());
+        assert!("dvr".parse::<VariantType>().is_err());
+        assert!("variant:abc:def".parse::<VariantType>().is_err());
+        assert_eq!(
+            "variant:source".parse::<VariantType>().unwrap(),
+            VariantType::SourceVariant
+        );
+        assert_eq!(
+            "variant:720:1000000".parse::<VariantType>().unwrap(),
+            VariantType::Variant { height: 720, bitrate: 1_000_000 }
+        );
+        assert_eq!(
+            "dvr:720".parse::<VariantType>().unwrap(),
+            VariantType::DVR { height: 720 }
+        );
+        // parse_capabilities must skip bad entries without panicking
+        let caps = parse_capabilities(&Some("variant,dvr:720,junk".to_string()));
+        assert_eq!(caps, vec![VariantType::DVR { height: 720 }]);
     }
 
     #[test]

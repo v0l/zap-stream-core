@@ -81,9 +81,11 @@ pub struct StreamManager {
 }
 
 impl StreamManager {
+    /// Streams reported by other nodes are pruned after this long without an update
+    const REMOTE_STREAM_STALE_SECONDS: i64 = 120;
+
     pub fn new(node_name: String) -> Self {
-        let (tx, rx) = broadcast::channel(16);
-        std::mem::forget(rx); // TODO: fix this
+        let (tx, _rx) = broadcast::channel(16);
 
         Self {
             node_name,
@@ -94,8 +96,7 @@ impl StreamManager {
     }
 
     pub async fn new_with_redis(node_name: String, redis: redis::Client) -> Result<Self> {
-        let (tx, rx) = broadcast::channel(16);
-        std::mem::forget(rx); // TODO: fix this
+        let (tx, _rx) = broadcast::channel(16);
 
         Ok(Self {
             node_name,
@@ -103,6 +104,27 @@ impl StreamManager {
             viewer_tracker: ViewerTracker::with_redis(redis).await?,
             broadcaster: tx,
         })
+    }
+
+    /// Broadcast a metric, ignoring the "no receivers" case which is expected
+    /// when no websocket clients / redis publisher are subscribed.
+    fn broadcast(&self, metric: StreamManagerMetric) {
+        let _ = self.broadcaster.send(metric);
+    }
+
+    /// Remove streams reported by other nodes which have stopped updating.
+    /// Local streams are removed explicitly via [Self::remove_active_stream];
+    /// remote entries would otherwise accumulate forever.
+    async fn prune_stale_remote_streams(&self) {
+        let now = Utc::now();
+        let mut streams = self.active_streams.write().await;
+        streams.retain(|_, s| {
+            if s.node_name == self.node_name {
+                return true;
+            }
+            let last = s.last_update.unwrap_or(s.started_at);
+            (now - last).num_seconds() <= Self::REMOTE_STREAM_STALE_SECONDS
+        });
     }
 
     pub fn start_cleanup_task(&self, token: CancellationToken) -> JoinHandle<()> {
@@ -114,6 +136,7 @@ impl StreamManager {
                     _ = token.cancelled() => break,
                     _ = timer.tick() => {
                         mgr.viewer_tracker.cleanup_expired_viewers().await;
+                        mgr.prune_stale_remote_streams().await;
                     }
                 }
             }
@@ -153,9 +176,8 @@ impl StreamManager {
                             memory_total,
                             uptime: sysinfo::System::uptime(),
                         };
-                        if let Err(e) = tx.send(StreamManagerMetric::Node(info)) {
-                            warn!("Failed to send node metrics: {}", e);
-                        }
+                        // ignore send error: it only means there are no subscribers
+                        let _ = tx.send(StreamManagerMetric::Node(info));
                     }
                 }
             }
@@ -204,10 +226,8 @@ impl StreamManager {
                                 let mut acc_lock = acc.write().await;
                                 acc_lock.insert(active_stream.stream_id.clone(), active_stream.clone());
                             }
-                            // send to our WS clients
-                            if let Err(e) = stats_listener.send(msg) {
-                                warn!("Failed to send message: {}", e);
-                            }
+                            // send to our WS clients (ignore: no subscribers is fine)
+                            let _ = stats_listener.send(msg);
                         }
                     }
                     Ok(msg) = sub_to_send.recv() => {
@@ -340,15 +360,9 @@ impl StreamManager {
             info.frame_count = frame_count;
             info.viewers = viewers;
             info.last_update = Some(Utc::now());
-            if let Err(e) = self
-                .broadcaster
-                .send(StreamManagerMetric::ActiveStream(info.clone()))
-            {
-                warn!(
-                    "Failed to send pipeline metrics to the active stream: {}",
-                    e
-                );
-            }
+            let metric = StreamManagerMetric::ActiveStream(info.clone());
+            drop(streams);
+            self.broadcast(metric);
         }
     }
 
@@ -360,15 +374,9 @@ impl StreamManager {
             } else {
                 info.endpoint_stats.insert(metrics.name.clone(), metrics);
             }
-            if let Err(e) = self
-                .broadcaster
-                .send(StreamManagerMetric::ActiveStream(info.clone()))
-            {
-                warn!(
-                    "Failed to send pipeline metrics to the active stream: {}",
-                    e
-                );
-            }
+            let metric = StreamManagerMetric::ActiveStream(info.clone());
+            drop(streams);
+            self.broadcast(metric);
         }
     }
 

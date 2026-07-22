@@ -28,6 +28,22 @@ pub struct HlsRouter {
 impl HlsRouter {
     const PLAYLIST_CONTENT_TYPE: &'static str = "application/vnd.apple.mpegurl";
 
+    /// Validate a single user-supplied path component. Axum percent-decodes path
+    /// segments, so values like ".." or "a/b" can appear here and would otherwise
+    /// escape the media base directory (path traversal).
+    fn safe_path_component(part: &str) -> Result<&str, (StatusCode, &'static str)> {
+        if part.is_empty()
+            || part == "."
+            || part == ".."
+            || part.contains('/')
+            || part.contains('\\')
+            || part.contains('\0')
+        {
+            return Err((StatusCode::BAD_REQUEST, "Invalid path"));
+        }
+        Ok(part)
+    }
+
     pub fn new<P>(base_path: P, stream_manager: StreamManager) -> Router
     where
         P: Into<PathBuf>,
@@ -55,7 +71,7 @@ impl HlsRouter {
         Path(stream): Path<Uuid>,
         State(this): State<HlsRouter>,
         headers: HeaderMap,
-    ) -> Result<Response, String> {
+    ) -> Result<Response, (StatusCode, String)> {
         let client_ip = Self::get_client_ip(&headers);
         let user_agent = headers.get("user-agent").and_then(|h| h.to_str().ok());
 
@@ -67,13 +83,23 @@ impl HlsRouter {
             .join(stream.to_string())
             .join(HLS_EGRESS_PATH)
             .join("live.m3u8");
-        let playlist_content = tokio::fs::read(playlist_path)
-            .await
-            .map_err(|e| format!("Failed to read playlist file: {}", e))?;
+        // NOTE: errors must carry a non-2xx status; a bare String rejection would
+        // render as 200 OK with an error message body, which breaks HLS players.
+        let playlist_content = tokio::fs::read(playlist_path).await.map_err(|e| {
+            (
+                StatusCode::NOT_FOUND,
+                format!("Failed to read playlist file: {}", e),
+            )
+        })?;
 
         // Parse and modify playlist to add viewer token to URLs
-        let modified_content = Self::add_viewer_token_to_playlist(&playlist_content, &token)
-            .map_err(|e| format!("Failed to add playlist token to playlist: {}", e))?;
+        let modified_content =
+            Self::add_viewer_token_to_playlist(&playlist_content, &token).map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Failed to add playlist token to playlist: {}", e),
+                )
+            })?;
 
         let headers = [(CONTENT_TYPE, Self::PLAYLIST_CONTENT_TYPE)];
         Ok((
@@ -93,9 +119,9 @@ impl HlsRouter {
     ) -> Result<Response, (StatusCode, &'static str)> {
         let playlist_path = this
             .base_path
-            .join(&stream_id)
+            .join(Self::safe_path_component(&stream_id)?)
             .join(HLS_EGRESS_PATH)
-            .join(&variant)
+            .join(Self::safe_path_component(&variant)?)
             .join("live.m3u8");
 
         if let Some(vt) = q.vt.as_deref() {
@@ -205,14 +231,17 @@ impl HlsRouter {
             .base_path
             .join(stream_id.to_string())
             .join(HLS_EGRESS_PATH)
-            .join(variant)
-            .join(segment);
+            .join(Self::safe_path_component(&variant)?)
+            .join(Self::safe_path_component(&segment)?);
 
         let stream = FileStream::from_path(&segment_path)
             .await
             .map_err(|_| (StatusCode::NOT_FOUND, "File not found"))?;
         if let Some(r) = headers.get("range") {
-            if let Ok(ranges) = parse_range_header(r.to_str().unwrap()) {
+            let r = r
+                .to_str()
+                .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid range"))?;
+            if let Ok(ranges) = parse_range_header(r) {
                 if ranges.ranges.len() > 1 {
                     warn!("Multipart ranges are not supported, fallback to non-range request");
                     Ok(stream.into_response())
@@ -247,7 +276,8 @@ impl HlsRouter {
         };
         let range_end = match header.end {
             EndPosition::Index(i) => {
-                ensure!(i <= file_size, "Range end out of range");
+                // HTTP ranges are inclusive: the max valid end index is file_size - 1
+                ensure!(i < file_size, "Range end out of range");
                 i
             }
             EndPosition::LastByte => {
@@ -377,6 +407,38 @@ mod tests {
     #[test]
     fn invalid_playlist_does_not_unblock() {
         assert!(!HlsRouter::playlist_has_part(b"not a playlist", 0, 0));
+    }
+
+    /// Regression: variant/segment path components were joined unchecked; a
+    /// percent-encoded ".." or "/" could escape the media base directory.
+    #[test]
+    fn safe_path_component_rejects_traversal() {
+        assert!(HlsRouter::safe_path_component("..").is_err());
+        assert!(HlsRouter::safe_path_component(".").is_err());
+        assert!(HlsRouter::safe_path_component("").is_err());
+        assert!(HlsRouter::safe_path_component("../../etc/passwd").is_err());
+        assert!(HlsRouter::safe_path_component("a/b").is_err());
+        assert!(HlsRouter::safe_path_component("a\\b").is_err());
+        assert!(HlsRouter::safe_path_component("a\0b").is_err());
+        assert!(HlsRouter::safe_path_component("1.m4s").is_ok());
+        assert!(HlsRouter::safe_path_component("720p").is_ok());
+        assert!(
+            HlsRouter::safe_path_component("f2a5c3e8-0000-0000-0000-000000000000").is_ok()
+        );
+    }
+
+    #[test]
+    fn get_range_end_is_inclusive_and_bounded() {
+        use http_range_header::parse_range_header;
+        // bytes=0-99 of a 100 byte file: valid (inclusive end 99)
+        let r = parse_range_header("bytes=0-99").unwrap();
+        assert!(HlsRouter::get_range(100, r.ranges.first().unwrap()).is_ok());
+        // bytes=0-100 of a 100 byte file: end index out of range
+        let r = parse_range_header("bytes=0-100").unwrap();
+        assert!(HlsRouter::get_range(100, r.ranges.first().unwrap()).is_err());
+        // start beyond EOF
+        let r = parse_range_header("bytes=100-").unwrap();
+        assert!(HlsRouter::get_range(100, r.ranges.first().unwrap()).is_err());
     }
 
     #[test]

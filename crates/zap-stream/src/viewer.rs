@@ -92,6 +92,10 @@ impl ViewerTracker {
         if let Some(existing) = v_lock.get_mut(token) {
             debug!("Updating viewer {} for stream {}", token, stream_id);
             existing.last_seen = Instant::now();
+            // viewer may have switched streams; keep the stream id current
+            if existing.stream_id != stream_id {
+                existing.stream_id = stream_id.to_string();
+            }
         } else {
             debug!("New viewer {} for stream {}", token, stream_id);
             let viewer_info = ViewerInfo {

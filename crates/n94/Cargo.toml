@@ -6,9 +6,12 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
-default = ["tls-ring"]
+default = ["tls-ring", "moq"]
 tls-ring = ["rustls/ring"]
 tls-aws-lc-rs = ["rustls/aws-lc-rs"]
+# Forwarded so this crate compiles both standalone and in workspace builds where
+# feature unification enables zap-stream-core/egress-moq (via the zap-stream crate)
+moq = ["zap-stream-core/egress-moq"]
 
 [dependencies]
 zap-stream-core = { path = "../core", default-features = false, features = ["pipeline", "ingress-rtmp", "ingress-tcp"] }

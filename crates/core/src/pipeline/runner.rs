@@ -6,6 +6,7 @@ use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "egress-hls")]
 use crate::egress::hls::HLS_EGRESS_PATH;
 #[cfg(feature = "egress-moq")]
 use crate::egress::moq::MoqEgress;
@@ -112,8 +113,15 @@ pub struct PipelineRunner {
     /// PTS offset per source stream to fix duplicate PTS values
     /// Key is the stream index, value is (last_pts, offset)
     pts_offsets: HashMap<usize, (i64, i64)>,
+
+    /// Whether [Self::flush] has already run (prevents double `on_end` from Drop)
+    did_flush: bool,
 }
 
+// SAFETY: PipelineRunner owns its FFmpeg contexts (demuxer/decoder) exclusively and is
+// only ever driven from a single thread after construction (see `run_pipeline`). The raw
+// FFmpeg pointers inside are never shared across threads; worker threads communicate
+// exclusively via channels and the `egress` mutex.
 unsafe impl Send for PipelineRunner {}
 
 impl PipelineRunner {
@@ -153,6 +161,7 @@ impl PipelineRunner {
             cmd_channel: command,
             frame_reorder_buffers: Default::default(),
             pts_offsets: Default::default(),
+            did_flush: false,
         })
     }
 
@@ -249,10 +258,14 @@ impl PipelineRunner {
         // Track last PTS values for continuity in idle mode
         let stream_index = packet.stream_index as usize;
         if stream_index == config.video_src {
-            self.last_video_pts = packet.pts + packet.duration;
+            if packet.pts != AV_NOPTS_VALUE {
+                self.last_video_pts = packet.pts.saturating_add(packet.duration);
+            }
             self.frame_ctr += 1;
-        } else if Some(stream_index) == config.audio_src {
-            self.last_audio_pts = packet.pts + packet.duration;
+        } else if Some(stream_index) == config.audio_src
+            && packet.pts != AV_NOPTS_VALUE
+        {
+            self.last_audio_pts = packet.pts.saturating_add(packet.duration);
         }
 
         // Check if this packet needs transcoding (not just copying)
@@ -424,7 +437,38 @@ impl PipelineRunner {
 
     /// EOF, cleanup
     fn flush(&mut self) {
+        if self.did_flush {
+            return;
+        }
+        self.did_flush = true;
         self.state = RunnerState::Shutdown;
+
+        // Drain any frames still sitting in the reorder buffers so the tail of the
+        // stream is not silently dropped from recordings/HLS output.
+        let mut buffers = std::mem::take(&mut self.frame_reorder_buffers);
+        for (stream_index, buffer) in buffers.iter_mut() {
+            let stream_index = *stream_index;
+            for mut frame in buffer.flush() {
+                self.mangle_frame_pts(stream_index, &mut frame);
+                if let Some(config) = self.config.clone() {
+                    for var in config
+                        .variants
+                        .iter()
+                        .filter(|v| v.src_index() == stream_index)
+                    {
+                        if let Err(e) = self.send_work(
+                            var.id(),
+                            WorkerThreadCommand::EncodeFrame {
+                                frame: frame.clone(),
+                            },
+                        ) {
+                            warn!("Failed to flush reorder buffer frame: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+
         for (_, w) in self.worker_channels.drain() {
             if let Err(e) = w.send(WorkerThreadCommand::Flush) {
                 warn!("Failed to send flush to worker thread: {}", e);
@@ -481,15 +525,15 @@ impl PipelineRunner {
     }
 
     fn handle_command(&mut self) -> Result<Option<bool>> {
-        if let Some(cmd) = &mut self.cmd_channel {
-            while let Ok(c) = cmd.try_recv() {
-                return match c {
-                    PipelineCommand::Shutdown => {
-                        self.flush();
-                        Ok(Some(true))
-                    }
-                };
-            }
+        if let Some(cmd) = &mut self.cmd_channel
+            && let Ok(c) = cmd.try_recv()
+        {
+            return match c {
+                PipelineCommand::Shutdown => {
+                    self.flush();
+                    Ok(Some(true))
+                }
+            };
         }
         Ok(None)
     }
@@ -597,7 +641,13 @@ impl PipelineRunner {
         let inputs: HashSet<usize> = cfg.variants.iter().map(|e| e.src_index()).collect();
         self.decoder.enable_hw_decoder_any();
         for input_idx in inputs {
-            let stream = info.streams.iter().find(|f| f.index == input_idx).unwrap();
+            let stream = info
+                .streams
+                .iter()
+                .find(|f| f.index == input_idx)
+                .ok_or_else(|| {
+                    anyhow!("Variant references missing input stream index {}", input_idx)
+                })?;
             self.decoder.setup_decoder(stream, None)?;
         }
         self.setup_encoders(&cfg)?;

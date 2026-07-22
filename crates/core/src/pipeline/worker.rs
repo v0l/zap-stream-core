@@ -19,6 +19,12 @@ use uuid::Uuid;
 /// At 60fps, this represents approximately 2 seconds of buffering
 const WORKER_QUEUE_CAPACITY: usize = 120;
 
+/// Maximum number of consecutive processing errors before the worker thread
+/// gives up. A permanently broken encoder/muxer would otherwise spin forever,
+/// logging errors while the client keeps streaming with no output produced.
+/// Exiting closes the work channel which causes the pipeline to fail cleanly.
+const MAX_CONSECUTIVE_ERRORS: u32 = 60;
+
 #[derive(Clone)]
 pub enum WorkerThreadCommand {
     /// Scale/resample and Encode a frame
@@ -329,11 +335,25 @@ impl PipelineWorkerThread {
                 self.variant.id()
             ))
             .spawn(move || {
+                let mut consecutive_errors: u32 = 0;
                 loop {
                     match self.work_queue_rx.recv() {
                         Ok(msg) => {
                             if let Err(e) = self.process_msg(msg) {
-                                error!("Failed to process message: {}", e);
+                                consecutive_errors += 1;
+                                error!(
+                                    "Failed to process message ({}/{}): {}",
+                                    consecutive_errors, MAX_CONSECUTIVE_ERRORS, e
+                                );
+                                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                                    error!(
+                                        "Worker thread giving up after {} consecutive errors",
+                                        consecutive_errors
+                                    );
+                                    break;
+                                }
+                            } else {
+                                consecutive_errors = 0;
                             }
                         }
                         Err(e) => {

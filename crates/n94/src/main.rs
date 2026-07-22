@@ -404,9 +404,6 @@ impl Overseer for N94Overseer {
         Ok(())
     }
 
-    fn get_plugins(&self, conn: &ConnectionInfo) -> Result<Vec<Arc<dyn PipelinePlugin>>> {
-        todo!()
-    }
 }
 
 #[async_trait]
@@ -419,13 +416,15 @@ impl EndpointConfigurator for N94Overseer {
         todo!()
     }
 
-    async fn get_egress(&self, conn: &ConnectionInfo) -> Result<Vec<EgressType>> {
+    async fn get_egress(&self, _conn: &ConnectionInfo) -> Result<Vec<EgressType>> {
         todo!()
     }
 
-    #[cfg(false)]
-    async fn get_moq_origin(&self) -> Result<OriginProducer> {
-        todo!()
+    #[cfg(feature = "moq")]
+    async fn get_moq_origin(
+        &self,
+    ) -> Result<zap_stream_core::hang::moq_lite::OriginProducer> {
+        anyhow::bail!("MoQ is not supported by the n94 broadcaster")
     }
 }
 

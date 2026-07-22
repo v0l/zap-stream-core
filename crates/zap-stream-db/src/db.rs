@@ -429,8 +429,10 @@ impl ZapStreamDb {
         .execute(&self.db)
         .await?;
 
-        // user and payment row updates
-        Ok(res.rows_affected() == 2)
+        // Normally both the payment and user rows are updated (2 rows). With MySQL's
+        // default settings unchanged rows are not counted, so a zero-amount payment
+        // would only report 1 affected row; treat any update as success.
+        Ok(res.rows_affected() >= 1)
     }
 
     /// Update payment fee and mark as paid for withdrawals (subtracts fee from balance)
@@ -442,8 +444,9 @@ impl ZapStreamDb {
         .execute(&self.db)
         .await?;
 
-        // user and payment row updates
-        Ok(res.rows_affected() == 2)
+        // See complete_payment: unchanged rows are not counted by MySQL, so a
+        // zero-fee withdrawal only reports the payment row as affected.
+        Ok(res.rows_affected() >= 1)
     }
 
     /// Get payment by hash
@@ -675,7 +678,11 @@ impl ZapStreamDb {
         ))
     }
 
-    /// Update user default stream info
+    /// Update user default stream info.
+    ///
+    /// Fields passed as `None` are left unchanged (partial update); previously a
+    /// partial PATCH would overwrite every unspecified field with NULL. To clear a
+    /// field, pass an empty string (stored as NULL).
     pub async fn update_user_defaults(
         &self,
         user_id: u64,
@@ -686,7 +693,16 @@ impl ZapStreamDb {
         content_warning: Option<&str>,
         goal: Option<&str>,
     ) -> Result<()> {
-        sqlx::query("update user set title = ?, summary = ?, image = ?, tags = ?, content_warning = ?, goal = ? where id = ?")
+        sqlx::query(
+            "update user set \
+             title = nullif(coalesce(?, title), ''), \
+             summary = nullif(coalesce(?, summary), ''), \
+             image = nullif(coalesce(?, image), ''), \
+             tags = nullif(coalesce(?, tags), ''), \
+             content_warning = nullif(coalesce(?, content_warning), ''), \
+             goal = nullif(coalesce(?, goal), '') \
+             where id = ?",
+        )
         .bind(title)
         .bind(summary)
         .bind(image)
@@ -873,7 +889,12 @@ impl ZapStreamDb {
 
     /// Search users by pubkey prefix (hex encoded)
     pub async fn search_users_by_pubkey(&self, pubkey_prefix: &str) -> Result<(Vec<User>, u64)> {
-        let search_pattern = format!("%{}%", pubkey_prefix);
+        // escape LIKE wildcards in the user-supplied search string
+        let escaped = pubkey_prefix
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let search_pattern = format!("%{}%", escaped);
 
         let total: i64 = sqlx::query_scalar("select count(*) from user where hex(pubkey) like ?")
             .bind(&search_pattern)

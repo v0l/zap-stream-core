@@ -100,13 +100,13 @@ impl MultiTrackEngine {
                     format: unsafe {
                         let str = cstr!(pix_fmt);
                         let ret: i32 = av_get_pix_fmt(str).0 as _;
+                        free_cstr!(str);
                         if ret == -1 {
                             return Ok(MultiTrackConfigResponse::status_error(format!(
                                 "Could not find pixel format {}",
                                 pix_fmt
                             )));
                         }
-                        free_cstr!(str);
                         ret
                     } as _,
                     profile: 0,
