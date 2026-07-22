@@ -161,6 +161,11 @@ impl HlsTimingTester {
         let need_global_header = segment_type == SegmentType::FMP4;
 
         // Create video encoder
+        // NOTE: tune=zerolatency matches the production encoder config
+        // (EgressEncoderConfig::default_video_h264). Without it x264's
+        // lookahead delays video output ~2s behind audio and the interleave
+        // queue flush at the first segment split dumps that much future audio
+        // into segment 1, skewing the timing analysis.
         let keyframe_interval = (VIDEO_FPS * 2.0) as u16; // 2 second keyframe interval
         let mut video_encoder = unsafe {
             let mut encoder = Encoder::new_with_name("libx264")?
@@ -182,7 +187,10 @@ impl HlsTimingTester {
                     }
                 });
 
-            encoder.open(None)?
+            let mut opts = HashMap::new();
+            opts.insert("preset".to_string(), "veryfast".to_string());
+            opts.insert("tune".to_string(), "zerolatency".to_string());
+            encoder.open(Some(opts))?
         };
 
         // Create audio encoder
@@ -446,6 +454,15 @@ impl HlsTimingTester {
         let (_, playlist) = parse_media_playlist(playlist_content.as_bytes())
             .map_err(|e| anyhow::anyhow!("Failed to parse playlist: {:?}", e))?;
 
+        // fMP4 segments are headerless moof/mdat fragments; the EXT-X-MAP init
+        // segment must be prepended for the demuxer to parse them
+        let init_data: Option<Vec<u8>> = playlist_content
+            .lines()
+            .find(|l| l.starts_with("#EXT-X-MAP"))
+            .and_then(|l| l.split("URI=\"").nth(1))
+            .and_then(|l| l.split('"').next())
+            .and_then(|uri| fs::read(hls_dir.join(uri)).ok());
+
         let mut segments = Vec::new();
         let mut total_playlist_duration = 0.0f32;
         let mut total_actual_duration = 0.0f64;
@@ -460,7 +477,7 @@ impl HlsTimingTester {
                         continue; // Skip missing segments
                     }
 
-                    let durations = self.analyze_segment(&segment_path)?;
+                    let durations = self.analyze_segment(&segment_path, init_data.as_deref())?;
                     let actual_duration = durations.total_duration;
                     let video_duration = durations.video_duration;
                     let audio_duration = durations.audio_duration;
@@ -494,9 +511,10 @@ impl HlsTimingTester {
                             &segment_path,
                             byte_range.length,
                             byte_range.offset,
+                            init_data.as_deref(),
                         )?
                     } else {
-                        self.analyze_segment(&segment_path)?
+                        self.analyze_segment(&segment_path, init_data.as_deref())?
                     };
 
                     let actual_duration = durations.total_duration;
@@ -622,10 +640,10 @@ impl HlsTimingTester {
         results
     }
 
-    fn analyze_segment(&self, path: &Path) -> Result<SegmentDurations> {
+    fn analyze_segment(&self, path: &Path, init: Option<&[u8]>) -> Result<SegmentDurations> {
         let file = fs::File::open(path)
             .with_context(|| format!("Failed to open file: {}", path.display()))?;
-        self.analyze_segment_with_reader(Box::new(file))
+        self.analyze_segment_with_reader(Self::with_init_prefix(init, file))
     }
 
     fn analyze_partial_segment(
@@ -633,9 +651,18 @@ impl HlsTimingTester {
         path: &Path,
         length: u64,
         offset: Option<u64>,
+        init: Option<&[u8]>,
     ) -> Result<SegmentDurations> {
         let reader = ByteRangeReader::new(path, length, offset)?;
-        self.analyze_segment_with_reader(Box::new(reader))
+        self.analyze_segment_with_reader(Self::with_init_prefix(init, reader))
+    }
+
+    /// Chain the fMP4 init segment (when present) in front of a segment reader
+    fn with_init_prefix<R: Read + 'static>(init: Option<&[u8]>, reader: R) -> Box<dyn Read> {
+        match init {
+            Some(data) => Box::new(std::io::Cursor::new(data.to_vec()).chain(reader)),
+            None => Box::new(reader),
+        }
     }
 
     fn analyze_segment_with_reader(&self, reader: Box<dyn Read>) -> Result<SegmentDurations> {
@@ -867,9 +894,13 @@ mod tests {
                     test_result.total_segments > 0,
                     "Should have generated segments"
                 );
+                // 10s of input yields 4 COMPLETED 2s segments in the playlist
+                // (the in-progress 8-10s segment is only published once the
+                // next keyframe closes it, and MPEG-TS has no partials)
                 assert!(
-                    test_result.total_playlist_duration > 8.0,
-                    "Should have ~10s of content"
+                    test_result.total_playlist_duration >= 7.5,
+                    "Should have ~8s of completed content, got {}",
+                    test_result.total_playlist_duration
                 );
                 assert!(test_result.full_segments > 0, "Should have full segments");
                 println!("✓ MPEG-TS test passed: {}", test_result.summary());
