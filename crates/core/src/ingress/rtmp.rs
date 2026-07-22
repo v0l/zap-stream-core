@@ -30,6 +30,11 @@ use xflv::muxer::FlvMuxer;
 
 const MAX_MEDIA_BUFFER_SIZE: usize = 10 * 1024 * 1024; // 10MB limit
 
+/// Maximum concurrent RTMP connections (pre- and post-publish). Each connection
+/// owns an OS thread plus up to MAX_MEDIA_BUFFER_SIZE of buffering, so unbounded
+/// accepts are a thread/memory exhaustion vector.
+const MAX_RTMP_CONNECTIONS: usize = 256;
+
 #[derive(PartialEq, Eq, Clone, Hash)]
 struct RtmpPublishedStream(String, String);
 
@@ -258,7 +263,9 @@ impl RtmpClient {
                         info!("Publish request was rejected for: {msg}");
                         let mx = self.session.reject_request(request_id, "0", &msg)?;
                         self.msg_queue.extend(mx);
-                        self.socket.shutdown(Shutdown::Read)?; //half-close
+                        self.process_msg_queue()?; // flush rejection before closing
+                        self.socket.shutdown(Shutdown::Both)?;
+                        bail!("Publish rejected: {msg}");
                     }
                 }
             }
@@ -342,6 +349,7 @@ pub async fn listen(
     let listener = TcpListener::bind(&binder).await?;
 
     info!("RTMP listening on: {}", &addr);
+    let conn_limit = Arc::new(tokio::sync::Semaphore::new(MAX_RTMP_CONNECTIONS));
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => {
@@ -357,9 +365,18 @@ pub async fn listen(
                 let handle = Handle::current();
                 let (tx, rx) = unbounded_channel();
                 setup_term_handler(shutdown, tx.clone());
+                let permit = match conn_limit.clone().try_acquire_owned() {
+                    Ok(p) => p,
+                    Err(_) => {
+                        warn!("RTMP connection limit reached, dropping connection from {}", addr);
+                        drop(socket);
+                        continue;
+                    }
+                };
                 std::thread::Builder::new()
                     .name(format!("client:rtmp:{}", new_id))
                     .spawn(move || {
+                    let _permit = permit; // hold the slot for the connection lifetime
                     if let Err(e) = socket_handler(new_id, handle, socket, addr, out_dir, overseer, ep, tx, rx) {
                         error!("Error handling RTMP socket: {}", e);
                     }

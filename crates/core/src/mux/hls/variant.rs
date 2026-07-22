@@ -797,8 +797,14 @@ impl HlsVariant {
             .unwrap_or(self.idx);
         pl.end_list = false;
 
-        let mut f_out = File::create(self.out_dir.join(Self::PLAYLIST_NAME))?;
-        pl.write_to(&mut f_out)?;
+        let pl_path = self.out_dir.join(Self::PLAYLIST_NAME);
+        let tmp_path = self.out_dir.join(format!("{}.tmp", Self::PLAYLIST_NAME));
+        {
+            let mut f_out = File::create(&tmp_path)?;
+            pl.write_to(&mut f_out)?;
+        }
+        // Atomic rename so concurrent players/CDN never observe a truncated playlist
+        std::fs::rename(&tmp_path, &pl_path)?;
         Ok(())
     }
 

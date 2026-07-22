@@ -324,11 +324,12 @@ impl PipelineWorkerThread {
         Ok(())
     }
 
-    /// Start the worker thread
-    pub fn run(mut self) -> Result<()> {
+    /// Start the worker thread, returning its join handle so the pipeline can
+    /// wait for the queue to drain (Flush processed) before tearing down egress.
+    pub fn run(mut self) -> Result<std::thread::JoinHandle<()>> {
         info!("Worker thread starting for variant: {}", self.variant.id());
 
-        if let Err(e) = std::thread::Builder::new()
+        match std::thread::Builder::new()
             .name(format!(
                 "pipeline:{}:worker:{}",
                 self.pipeline_id,
@@ -365,11 +366,10 @@ impl PipelineWorkerThread {
                     }
                 }
                 info!("Worker thread terminated");
-            })
-        {
-            bail!("Failed to start worker: {e}");
+            }) {
+            Ok(h) => Ok(h),
+            Err(e) => bail!("Failed to start worker: {e}"),
         }
-        Ok(())
     }
 }
 

@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{Read, stdout};
 use std::ops::Sub;
 use std::path::PathBuf;
+use std::thread::JoinHandle;
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -106,6 +107,9 @@ pub struct PipelineRunner {
     /// Command receiver for external process control
     cmd_channel: Option<UnboundedReceiver<PipelineCommand>>,
 
+    /// Worker thread join handles, used to wait for queue drain on shutdown
+    worker_handles: Vec<JoinHandle<()>>,
+
     /// Frame reorder buffers for video source streams (to ensure frames go to encoder in PTS order)
     /// Key is the source stream index
     frame_reorder_buffers: HashMap<usize, FrameReorderBuffer<AvFrameRef>>,
@@ -159,6 +163,7 @@ impl PipelineRunner {
             last_video_pts: 0,
             last_audio_pts: 0,
             cmd_channel: command,
+            worker_handles: Default::default(),
             frame_reorder_buffers: Default::default(),
             pts_offsets: Default::default(),
             did_flush: false,
@@ -222,6 +227,12 @@ impl PipelineRunner {
         }
     }
 
+    /// Maximum forward PTS jump (seconds) accepted before clamping. Timestamps
+    /// originate from the network (attacker controlled); without a cap a single
+    /// bogus PTS permanently grows the offset and breaks segmentation (giant or
+    /// zero-length segments).
+    const MAX_PTS_JUMP_SECS: f64 = 60.0;
+
     /// Fix duplicate/backwards PTS values on frames after reorder buffer
     /// Frames come out of the reorder buffer in PTS order, so we track last_pts
     fn mangle_frame_pts(&mut self, stream_idx: usize, frame: &mut AvFrameRef) {
@@ -229,13 +240,13 @@ impl PipelineRunner {
 
         if frame.pts != AV_NOPTS_VALUE {
             // Apply existing offset first
-            let adjusted_pts = frame.pts + *offset;
+            let adjusted_pts = frame.pts.saturating_add(*offset);
 
             // If adjusted PTS is still <= last PTS, we have a discontinuity
             if *last_pts != i64::MIN && adjusted_pts <= *last_pts {
                 // Calculate additional offset needed: jump past last_pts
                 let additional_offset = *last_pts + 1 - adjusted_pts;
-                *offset += additional_offset;
+                *offset = offset.saturating_add(additional_offset);
                 warn!(
                     "PTS fix: stream={}, original_pts={}, last_pts={}, new_offset={}, delta={}",
                     stream_idx, frame.pts, *last_pts, *offset, additional_offset
@@ -243,7 +254,22 @@ impl PipelineRunner {
             }
 
             // Apply total offset to PTS
-            frame.pts += *offset;
+            frame.pts = frame.pts.saturating_add(*offset);
+
+            // Clamp absurd forward jumps: treat them as a small step forward so a
+            // single corrupt timestamp can't explode segment durations.
+            if *last_pts != i64::MIN && frame.pts > *last_pts {
+                let tb = unsafe { ffmpeg_rs_raw::ffmpeg_sys_the_third::av_q2d(frame.time_base) };
+                let jump_secs = (frame.pts - *last_pts) as f64 * tb;
+                if jump_secs > Self::MAX_PTS_JUMP_SECS {
+                    warn!(
+                        "PTS jump clamp: stream={}, pts={}, last_pts={}, jump={:.1}s, clamping to +1",
+                        stream_idx, frame.pts, *last_pts, jump_secs
+                    );
+                    *offset = offset.saturating_sub(frame.pts - *last_pts - 1);
+                    frame.pts = *last_pts + 1;
+                }
+            }
 
             // Update last_pts for this stream (with offset applied)
             *last_pts = frame.pts;
@@ -482,6 +508,37 @@ impl PipelineRunner {
             if let Err(e) = w.send(WorkerThreadCommand::Flush) {
                 warn!("Failed to send flush to worker thread: {}", e);
             }
+        }
+        // Wait for workers to drain their queues (encoder flush + final packets
+        // muxed into egress) before closing the egress muxers below.
+        for h in self.worker_handles.drain(..) {
+            if let Err(e) = h.join() {
+                warn!("Worker thread panicked during shutdown: {:?}", e);
+            }
+        }
+        // Close egress muxers (writes fMP4 trailer / flushes the final segment)
+        // and report any remaining segments as deleted to the overseer.
+        {
+            let mut results = vec![];
+            {
+                let mut egress = self.egress.lock().expect("egress lock");
+                for eg in egress.iter_mut() {
+                    match eg.reset() {
+                        Ok(r) => results.push(r),
+                        Err(e) => warn!("Failed to reset egress on shutdown: {}", e),
+                    }
+                }
+            }
+            let id = self.connection.id;
+            self.handle.block_on(async {
+                for result in results {
+                    if let crate::egress::EgressResult::Segments { created, deleted } = result
+                        && let Err(e) = self.overseer.on_segments(&id, &created, &deleted).await
+                    {
+                        error!("Failed to notify overseer of final segments: {e}");
+                    }
+                }
+            });
         }
         self.handle.block_on(async {
             if let Err(e) = self.overseer.on_end(&self.connection.id).await {
@@ -866,7 +923,7 @@ impl PipelineRunner {
         }
         // run worker threads
         for w in w_run {
-            w.run()?;
+            self.worker_handles.push(w.run()?);
         }
 
         Ok(())

@@ -209,8 +209,14 @@ impl HlsMuxer {
             .filter_map(|v| v.to_playlist_variant())
             .collect();
 
-        let mut f_out = File::create(self.out_dir.join(Self::MASTER_PLAYLIST))?;
-        pl.write_to(&mut f_out)?;
+        let pl_path = self.out_dir.join(Self::MASTER_PLAYLIST);
+        let tmp_path = self.out_dir.join(format!("{}.tmp", Self::MASTER_PLAYLIST));
+        {
+            let mut f_out = File::create(&tmp_path)?;
+            pl.write_to(&mut f_out)?;
+        }
+        // Atomic rename so concurrent players/CDN never observe a truncated playlist
+        std::fs::rename(&tmp_path, &pl_path)?;
         self.last_master_write = Instant::now();
         Ok(())
     }
