@@ -178,6 +178,10 @@ impl VideoVariant {
                 if let Some(tune) = &self.tune {
                     opt.insert("tune".to_string(), tune.clone());
                 }
+                // frames with pict_type=I forced by the pipeline (time-based
+                // keyframe interval) must become IDR frames, otherwise HLS
+                // segments can't split on them
+                opt.insert("forced-idr".to_string(), "1".to_string());
             }
 
             let enc = Encoder::new_with_codec(encoder)?

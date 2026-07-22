@@ -55,6 +55,13 @@ pub struct PipelineWorkerThread {
     work_queue_rx: Receiver<WorkerThreadCommand>,
 
     did_flush: bool,
+
+    /// PTS (in encoder timebase) of the last forced keyframe. Keyframes are
+    /// forced on MEDIA TIME rather than relying on the encoder's frame-count
+    /// gop_size: the frame-count GOP is derived from ingress-reported fps which
+    /// is frequently wrong (FLV metadata), stretching real keyframe intervals
+    /// and with them HLS segment durations / LL-HLS independent-part spacing.
+    last_forced_keyframe_pts: Option<i64>,
 }
 
 impl PipelineWorkerThread {
@@ -203,6 +210,29 @@ impl PipelineWorkerThread {
             }
             frame.pict_type = AVPictureType::NONE;
             frame.pts = unsafe { av_rescale_q(frame.pts, frame.time_base, (*enc_ctx).time_base) };
+
+            // Time-based keyframe forcing for video variants (see field docs)
+            if let VariantStream::Video(v) = &self.variant
+                && frame.pts != AV_NOPTS_VALUE
+            {
+                // target keyframe interval in seconds; gop is fps*2 by default so
+                // this evaluates to the intended interval even when the reported
+                // fps doesn't match the real delivered frame rate
+                let kf_secs = if v.fps > 0.0 { v.gop as f64 / v.fps as f64 } else { 2.0 };
+                let tb = unsafe { (*enc_ctx).time_base };
+                let kf_ticks = if tb.num > 0 && tb.den > 0 {
+                    (kf_secs * tb.den as f64 / tb.num as f64) as i64
+                } else {
+                    (kf_secs * 90_000.0) as i64
+                };
+                match self.last_forced_keyframe_pts {
+                    Some(last) if frame.pts - last < kf_ticks => {}
+                    _ => {
+                        frame.pict_type = AVPictureType::I;
+                        self.last_forced_keyframe_pts = Some(frame.pts);
+                    }
+                }
+            }
             frame.pkt_dts = AV_NOPTS_VALUE;
             frame.duration =
                 unsafe { av_rescale_q(frame.duration, frame.time_base, (*enc_ctx).time_base) };
@@ -438,6 +468,7 @@ impl PipelineWorkerThreadBuilder {
             work_queue_tx: Some(self.work_queue_tx),
             work_queue_rx: self.work_queue_rx,
             did_flush: false,
+            last_forced_keyframe_pts: None,
         })
     }
 }
