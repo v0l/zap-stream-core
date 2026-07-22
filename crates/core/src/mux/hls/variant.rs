@@ -67,6 +67,12 @@ pub struct HlsVariant {
     /// - For an audio-only variant this is the group it *provides* (EXT-X-MEDIA GROUP-ID).
     /// - For a video (main) variant this is the group it *references* (EXT-X-STREAM-INF AUDIO=).
     audio_group: Option<String>,
+    /// Wall-clock time at which the CURRENT segment started. Used as
+    /// EXT-X-PROGRAM-DATE-TIME for the segment when it completes. PDT must
+    /// reference the segment START; stamping completion time skews each
+    /// variant by its own segment duration which breaks cross-rendition
+    /// alignment in players (audio/video tracks have different cadences).
+    current_segment_wallclock: chrono::DateTime<Utc>,
 }
 
 impl HlsVariant {
@@ -237,6 +243,7 @@ impl HlsVariant {
             init_segment_path: None,
             has_video,
             audio_group,
+            current_segment_wallclock: Utc::now(),
         };
 
         Ok(variant)
@@ -637,6 +644,11 @@ impl HlsVariant {
             })
             .collect();
 
+        // PDT for the completed segment = wall-clock time when it STARTED.
+        // The next segment starts now (real-time live stream).
+        let seg_pdt = self.current_segment_wallclock;
+        self.current_segment_wallclock = Utc::now();
+
         let hash = {
             let mut f = File::open(&completed_seg_path)?;
             hash_file_sync(&mut f)
@@ -657,7 +669,7 @@ impl HlsVariant {
             kind: self.segment_type,
             discontinuity: false,
             sha256: hash,
-            timestamp: Utc::now(),
+            timestamp: seg_pdt,
         }));
 
         self.write_playlist()?;
@@ -775,12 +787,22 @@ impl HlsVariant {
         // byte ranges advertised in the playlist, which are always complete.
 
         pl.version = Some(self.playlist_version());
-        // EXT-X-TARGETDURATION must be >= every segment duration (RFC 8216);
-        // rounding down (e.g. 2.5s -> 2) would violate the spec, so always ceil.
+        // EXT-X-TARGETDURATION must be >= every segment duration (RFC 8216).
+        // Copy variants split on source keyframes, so real segments can exceed
+        // the configured target (e.g. 4.3s GOP vs 2s target) - take the max of
+        // the target and every advertised segment, and always ceil.
+        let max_seg_duration = self
+            .segments
+            .iter()
+            .filter_map(|s| match s {
+                HlsSegment::Full(f) => Some(f.duration),
+                _ => None,
+            })
+            .fold(self.segment_length(), f32::max);
         pl.target_duration = if self.playlist_version() >= 6 {
-            self.segment_length().ceil() as _
+            max_seg_duration.ceil() as _
         } else {
-            self.segment_length()
+            max_seg_duration.ceil()
         };
         if self.low_latency {
             pl.part_inf = Some(PartInf {
