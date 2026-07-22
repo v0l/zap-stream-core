@@ -805,11 +805,12 @@ impl HlsVariant {
         }
 
         // LL-HLS: advertise blocking playlist reload + partial hold back so that
-        // players actually enter low-latency mode. PART-HOLD-BACK must be at least
-        // 3x the partial target duration per RFC 8216 (LL-HLS).
+        // players actually enter low-latency mode. PART-HOLD-BACK must be at
+        // least 3x the partial target duration per RFC 8216bis; use 3.5x for
+        // margin - AVPlayer is known to stall when it is exactly 3.0x.
         if self.low_latency {
             let part_hold_back =
-                (self.partial_target_duration * 3.0).max(self.partial_target_duration + 0.1);
+                (self.partial_target_duration * 3.5).max(self.partial_target_duration + 0.1);
             pl.unknown_tags.push(ExtTag {
                 tag: "X-SERVER-CONTROL".to_string(),
                 rest: Some(format!(
@@ -818,13 +819,6 @@ impl HlsVariant {
                 )),
             });
         }
-
-        // NOTE: we intentionally do NOT emit EXT-X-PRELOAD-HINT. The segment
-        // handler serves plain files and cannot hold an open-ended range request
-        // until the hinted part is flushed; players acting on a hint would either
-        // get 416s or a truncated (mid-fragment) response, corrupting playback.
-        // The hint is optional per spec, so players fall back to fetching the
-        // byte ranges advertised in the playlist, which are always complete.
 
         pl.version = Some(self.playlist_version());
         // EXT-X-TARGETDURATION must be >= every segment duration (RFC 8216).
@@ -859,12 +853,38 @@ impl HlsVariant {
             .unwrap_or(self.idx);
         pl.end_list = false;
 
+        let mut buf = Vec::new();
+        pl.write_to(&mut buf)?;
+
+        // LL-HLS: EXT-X-PRELOAD-HINT for the next partial segment. Apple's
+        // LL-HLS server profile REQUIRES a preload hint; AVPlayer uses the
+        // hinted request to load the live edge and may fail/stall without it.
+        // The HTTP layer blocks hinted (beyond-EOF) range requests until the
+        // part is flushed to disk. Appended manually because BYTERANGE-START
+        // must be an unquoted decimal-integer per spec.
+        if self.low_latency {
+            let next_part_start = self
+                .segments
+                .iter()
+                .rev()
+                .find_map(|s| match s {
+                    HlsSegment::Partial(p) if p.parent_index == self.idx => p.end_pos(),
+                    _ => None,
+                })
+                .unwrap_or(0);
+            buf.extend_from_slice(
+                format!(
+                    "#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"{}\",BYTERANGE-START={}\n",
+                    Self::segment_name(self.segment_type, self.idx),
+                    next_part_start
+                )
+                .as_bytes(),
+            );
+        }
+
         let pl_path = self.out_dir.join(Self::PLAYLIST_NAME);
         let tmp_path = self.out_dir.join(format!("{}.tmp", Self::PLAYLIST_NAME));
-        {
-            let mut f_out = File::create(&tmp_path)?;
-            pl.write_to(&mut f_out)?;
-        }
+        std::fs::write(&tmp_path, &buf)?;
         // Atomic rename so concurrent players/CDN never observe a truncated playlist
         std::fs::rename(&tmp_path, &pl_path)?;
         Ok(())

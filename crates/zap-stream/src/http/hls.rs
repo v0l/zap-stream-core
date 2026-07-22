@@ -133,7 +133,7 @@ impl HlsRouter {
         // `_HLS_msn` and `_HLS_part`, hold the request until the playlist on disk
         // actually contains that part (or we time out). This is what lets players
         // run at sub-segment latency instead of polling.
-        let content = if q.hls_msn.is_some() {
+        let mut content = if q.hls_msn.is_some() {
             Self::read_playlist_blocking(&playlist_path, q.hls_msn, q.hls_part)
                 .await
                 .map_err(|_| (StatusCode::NOT_FOUND, "File not found"))?
@@ -143,12 +143,85 @@ impl HlsRouter {
                 .map_err(|_| (StatusCode::NOT_FOUND, "File not found"))?
         };
 
+        // LL-HLS: append EXT-X-RENDITION-REPORT for sibling renditions. Apple's
+        // LL-HLS profile requires rendition reports when the multivariant
+        // playlist advertises multiple renditions; AVPlayer relies on them to
+        // switch levels at the live edge.
+        if content.windows(15).any(|w| w == b"#EXT-X-PART-INF")
+            && let Some(hls_dir) = playlist_path.parent().and_then(|p| p.parent())
+            && let Some(cur_variant) = playlist_path.parent().and_then(|p| p.file_name())
+        {
+            let mut reports = Vec::new();
+            if let Ok(mut dirs) = tokio::fs::read_dir(hls_dir).await {
+                while let Ok(Some(entry)) = dirs.next_entry().await {
+                    let name = entry.file_name();
+                    if name == cur_variant {
+                        continue;
+                    }
+                    let sib_playlist = entry.path().join("live.m3u8");
+                    if let Ok(data) = tokio::fs::read(&sib_playlist).await
+                        && let Some((last_msn, last_part)) = Self::playlist_last_msn_part(&data)
+                    {
+                        let mut line = format!(
+                            "#EXT-X-RENDITION-REPORT:URI=\"../{}/live.m3u8\",LAST-MSN={}",
+                            name.to_string_lossy(),
+                            last_msn
+                        );
+                        if let Some(p) = last_part {
+                            line.push_str(&format!(",LAST-PART={}", p));
+                        }
+                        line.push('\n');
+                        reports.push(line);
+                    }
+                }
+            }
+            for r in reports {
+                content.extend_from_slice(r.as_bytes());
+            }
+        }
+
         let headers = [
             (CONTENT_TYPE, Self::PLAYLIST_CONTENT_TYPE),
             // playlists are live and must never be cached by intermediaries
             (axum::http::header::CACHE_CONTROL, "no-cache, no-store"),
         ];
         Ok((headers, content).into_response())
+    }
+
+    /// Extract (LAST-MSN, LAST-PART) for a rendition report from a media
+    /// playlist. Uses the in-progress segment when it has published parts,
+    /// otherwise the last completed segment.
+    fn playlist_last_msn_part(content: &[u8]) -> Option<(u64, Option<u64>)> {
+        let (_, pl) = m3u8_rs::parse_playlist(content).ok()?;
+        let pl = match pl {
+            m3u8_rs::Playlist::MediaPlaylist(pl) => pl,
+            m3u8_rs::Playlist::MasterPlaylist(_) => return None,
+        };
+        let mut full_count: u64 = 0;
+        let mut trailing_parts: u64 = 0;
+        for seg in &pl.segments {
+            match seg {
+                m3u8_rs::MediaSegmentType::Full(_) => {
+                    full_count += 1;
+                    trailing_parts = 0;
+                }
+                m3u8_rs::MediaSegmentType::Partial(_) => {
+                    trailing_parts += 1;
+                }
+                m3u8_rs::MediaSegmentType::PreloadHint(_) => {}
+            }
+        }
+        if trailing_parts > 0 {
+            // in-progress segment with published parts
+            Some((
+                pl.media_sequence + full_count,
+                Some(trailing_parts - 1),
+            ))
+        } else if full_count > 0 {
+            Some((pl.media_sequence + full_count - 1, None))
+        } else {
+            None
+        }
     }
 
     /// Block until the variant playlist contains the requested (msn, part), then
@@ -234,9 +307,6 @@ impl HlsRouter {
             .join(Self::safe_path_component(&variant)?)
             .join(Self::safe_path_component(&segment)?);
 
-        let stream = FileStream::from_path(&segment_path)
-            .await
-            .map_err(|_| (StatusCode::NOT_FOUND, "File not found"))?;
         if let Some(r) = headers.get("range") {
             let r = r
                 .to_str()
@@ -244,23 +314,62 @@ impl HlsRouter {
             if let Ok(ranges) = parse_range_header(r) {
                 if ranges.ranges.len() > 1 {
                     warn!("Multipart ranges are not supported, fallback to non-range request");
-                    Ok(stream.into_response())
-                } else {
-                    let file_size = stream.content_size.unwrap();
-                    let single_range = ranges
-                        .ranges
-                        .into_iter()
-                        .next()
-                        .and_then(|r| Self::get_range(file_size, &r).ok())
-                        .ok_or_else(|| {
-                            (StatusCode::RANGE_NOT_SATISFIABLE, "Invalid range request")
-                        })?;
-                    Ok(stream.into_range_response(single_range.start, single_range.end, file_size))
+                    let stream = FileStream::from_path(&segment_path)
+                        .await
+                        .map_err(|_| (StatusCode::NOT_FOUND, "File not found"))?;
+                    return Ok(stream.into_response());
                 }
+                let single = ranges
+                    .ranges
+                    .into_iter()
+                    .next()
+                    .ok_or((StatusCode::BAD_REQUEST, "Invalid range"))?;
+
+                // LL-HLS blocking preload hint: the playlist advertises
+                // EXT-X-PRELOAD-HINT with a BYTERANGE-START at/after the current
+                // end of the in-progress segment file. Per Apple's spec, the
+                // server must hold such requests and respond as soon as the
+                // hinted media is available, so wait for the file to grow past
+                // the requested offset before serving.
+                if let StartPosition::Index(start) = single.start {
+                    use std::time::Duration;
+                    use tokio::time::Instant;
+                    let deadline = Instant::now() + Duration::from_secs(6);
+                    loop {
+                        let size = tokio::fs::metadata(&segment_path)
+                            .await
+                            .map(|m| m.len())
+                            .map_err(|_| (StatusCode::NOT_FOUND, "File not found"))?;
+                        if size > start {
+                            break;
+                        }
+                        if Instant::now() >= deadline {
+                            return Err((
+                                StatusCode::RANGE_NOT_SATISFIABLE,
+                                "Hinted range did not become available",
+                            ));
+                        }
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                }
+
+                let stream = FileStream::from_path(&segment_path)
+                    .await
+                    .map_err(|_| (StatusCode::NOT_FOUND, "File not found"))?;
+                let file_size = stream
+                    .content_size
+                    .ok_or((StatusCode::INTERNAL_SERVER_ERROR, "Unknown file size"))?;
+                let single_range = Self::get_range(file_size, &single).map_err(|_| {
+                    (StatusCode::RANGE_NOT_SATISFIABLE, "Invalid range request")
+                })?;
+                Ok(stream.into_range_response(single_range.start, single_range.end, file_size))
             } else {
                 Err((StatusCode::BAD_REQUEST, "Invalid range"))
             }
         } else {
+            let stream = FileStream::from_path(&segment_path)
+                .await
+                .map_err(|_| (StatusCode::NOT_FOUND, "File not found"))?;
             Ok(stream.into_response())
         }
     }
@@ -407,6 +516,30 @@ mod tests {
     #[test]
     fn invalid_playlist_does_not_unblock() {
         assert!(!HlsRouter::playlist_has_part(b"not a playlist", 0, 0));
+    }
+
+    #[test]
+    fn last_msn_part_uses_in_progress_segment() {
+        // MSN 12 in progress with parts 0,1 -> LAST-MSN=12, LAST-PART=1
+        assert_eq!(
+            HlsRouter::playlist_last_msn_part(LL_PLAYLIST.as_bytes()),
+            Some((12, Some(1)))
+        );
+    }
+
+    #[test]
+    fn last_msn_part_without_trailing_parts() {
+        let pl = "#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:2\n\
+#EXT-X-MEDIA-SEQUENCE:10\n#EXTINF:2,\n10.m4s\n#EXTINF:2,\n11.m4s\n";
+        assert_eq!(
+            HlsRouter::playlist_last_msn_part(pl.as_bytes()),
+            Some((11, None))
+        );
+    }
+
+    #[test]
+    fn last_msn_part_invalid_playlist() {
+        assert_eq!(HlsRouter::playlist_last_msn_part(b"junk"), None);
     }
 
     /// Regression: variant/segment path components were joined unchecked; a
