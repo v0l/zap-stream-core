@@ -147,21 +147,33 @@ impl HlsMuxer {
             }
         }
 
-        // force all variants to have the same segment length
-        if let Some(max_seg_duration) = vars
+        // Force all variants to have the same segment length. When the encoder
+        // GOP duration is known, align the common segment length to a whole
+        // number of GOPs nearest the configured target: video splits only occur
+        // on keyframes, so a target slightly above the GOP duration (2.0s vs a
+        // 1.96s GOP at 23.976fps) would otherwise stretch every segment to two
+        // GOPs.
+        let max_gop = vars
             .iter()
-            .map(|s| s.segment_length_target)
-            .sorted_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-            .last()
-            && max_seg_duration != segment_length
-        {
+            .filter_map(|v| v.gop_seconds)
+            .fold(None::<f32>, |acc, g| Some(acc.map_or(g, |a| a.max(g))));
+        let common_len = if let Some(gop) = max_gop {
+            gop * (segment_length / gop).round().max(1.0)
+        } else {
+            vars.iter()
+                .map(|s| s.segment_length_target)
+                .sorted_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                .last()
+                .unwrap_or(segment_length)
+        };
+        if common_len != segment_length {
             warn!(
-                "Forcing segment length to {:.2}s from {:.2}s",
-                max_seg_duration, segment_length
+                "Forcing segment length to {:.3}s from {:.2}s",
+                common_len, segment_length
             );
-            vars.iter_mut()
-                .for_each(|s| s.segment_length_target = max_seg_duration);
         }
+        vars.iter_mut()
+            .for_each(|s| s.segment_length_target = common_len);
 
         // Low-latency HLS requires byte-range addressable partial segments; we only
         // enable it for fMP4 output where partial fragments are well supported by players.

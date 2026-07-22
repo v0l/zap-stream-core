@@ -147,36 +147,42 @@ impl HlsRouter {
         // LL-HLS profile requires rendition reports when the multivariant
         // playlist advertises multiple renditions; AVPlayer relies on them to
         // switch levels at the live edge.
+        //
+        // Only variants referenced by the CURRENT master playlist are reported
+        // (the hls dir can contain stale variant dirs from previous sessions),
+        // and video variant URIs carry the same viewer token the master
+        // playlist rewrite adds, so the reported URLs match the URLs the
+        // client actually loaded.
         if content.windows(15).any(|w| w == b"#EXT-X-PART-INF")
             && let Some(hls_dir) = playlist_path.parent().and_then(|p| p.parent())
             && let Some(cur_variant) = playlist_path.parent().and_then(|p| p.file_name())
         {
-            let mut reports = Vec::new();
-            if let Ok(mut dirs) = tokio::fs::read_dir(hls_dir).await {
-                while let Ok(Some(entry)) = dirs.next_entry().await {
-                    let name = entry.file_name();
-                    if name == cur_variant {
-                        continue;
-                    }
-                    let sib_playlist = entry.path().join("live.m3u8");
-                    if let Ok(data) = tokio::fs::read(&sib_playlist).await
-                        && let Some((last_msn, last_part)) = Self::playlist_last_msn_part(&data)
-                    {
-                        let mut line = format!(
-                            "#EXT-X-RENDITION-REPORT:URI=\"../{}/live.m3u8\",LAST-MSN={}",
-                            name.to_string_lossy(),
-                            last_msn
-                        );
-                        if let Some(p) = last_part {
-                            line.push_str(&format!(",LAST-PART={}", p));
+            let siblings =
+                Self::master_playlist_renditions(&hls_dir.join("live.m3u8"), &cur_variant.to_string_lossy())
+                    .await;
+            for (dir, is_media_rendition) in siblings {
+                let sib_playlist = hls_dir.join(&dir).join("live.m3u8");
+                if let Ok(data) = tokio::fs::read(&sib_playlist).await
+                    && let Some((last_msn, last_part)) = Self::playlist_last_msn_part(&data)
+                {
+                    // EXT-X-MEDIA renditions are loaded without a viewer token;
+                    // STREAM-INF variants get ?vt= appended by the master rewrite
+                    let uri = match (&q.vt, is_media_rendition) {
+                        (Some(vt), false) => {
+                            format!("../{}/live.m3u8?vt={}", dir, vt)
                         }
-                        line.push('\n');
-                        reports.push(line);
+                        _ => format!("../{}/live.m3u8", dir),
+                    };
+                    let mut line = format!(
+                        "#EXT-X-RENDITION-REPORT:URI=\"{}\",LAST-MSN={}",
+                        uri, last_msn
+                    );
+                    if let Some(p) = last_part {
+                        line.push_str(&format!(",LAST-PART={}", p));
                     }
+                    line.push('\n');
+                    content.extend_from_slice(line.as_bytes());
                 }
-            }
-            for r in reports {
-                content.extend_from_slice(r.as_bytes());
             }
         }
 
@@ -186,6 +192,47 @@ impl HlsRouter {
             (axum::http::header::CACHE_CONTROL, "no-cache, no-store"),
         ];
         Ok((headers, content).into_response())
+    }
+
+    /// Read the master playlist and return the rendition directories it
+    /// references, excluding `current`. Returns (dir_name, is_media_rendition)
+    /// where is_media_rendition is true for EXT-X-MEDIA entries (audio groups)
+    /// and false for EXT-X-STREAM-INF variants.
+    async fn master_playlist_renditions(
+        master_path: &std::path::Path,
+        current: &str,
+    ) -> Vec<(String, bool)> {
+        let Ok(data) = tokio::fs::read(master_path).await else {
+            return vec![];
+        };
+        let Ok((_, m3u8_rs::Playlist::MasterPlaylist(pl))) = m3u8_rs::parse_playlist(&data) else {
+            return vec![];
+        };
+        // first path component of a variant URI is the rendition directory
+        fn dir_of(uri: &str) -> Option<String> {
+            let path = uri.split('?').next()?;
+            let dir = path.split('/').next()?;
+            if dir.is_empty() { None } else { Some(dir.to_string()) }
+        }
+        let mut out: Vec<(String, bool)> = Vec::new();
+        for alt in &pl.alternatives {
+            if let Some(uri) = &alt.uri
+                && let Some(d) = dir_of(uri)
+                && d != current
+                && !out.iter().any(|(e, _)| e == &d)
+            {
+                out.push((d, true));
+            }
+        }
+        for var in &pl.variants {
+            if let Some(d) = dir_of(&var.uri)
+                && d != current
+                && !out.iter().any(|(e, _)| e == &d)
+            {
+                out.push((d, false));
+            }
+        }
+        out
     }
 
     /// Extract (LAST-MSN, LAST-PART) for a rendition report from a media

@@ -67,6 +67,12 @@ pub struct HlsVariant {
     /// - For an audio-only variant this is the group it *provides* (EXT-X-MEDIA GROUP-ID).
     /// - For a video (main) variant this is the group it *references* (EXT-X-STREAM-INF AUDIO=).
     audio_group: Option<String>,
+    /// GOP length in seconds of the (encoder) video stream, when known.
+    /// Used to align the segment split length to a whole number of GOPs:
+    /// splits only happen on keyframes, so a segment target slightly above the
+    /// GOP duration (e.g. 2.0s target vs 1.96s GOP at 23.976fps) would make
+    /// every segment two GOPs long.
+    pub(crate) gop_seconds: Option<f32>,
     /// Anchor mapping media time -> wall clock, established at the first
     /// segment split: (media_time_secs, wall_clock). EXT-X-PROGRAM-DATE-TIME is
     /// derived from the MEDIA clock relative to this anchor so PDT deltas always
@@ -150,6 +156,7 @@ impl HlsVariant {
         let mut streams = Vec::new();
         let mut ref_stream_index = -1;
         let mut has_video = false;
+        let mut gop_seconds = None;
 
         for g in streams_in.iter().copied() {
             match g.stream {
@@ -163,9 +170,12 @@ impl HlsVariant {
                         });
                         has_video = true;
                         ref_stream_index = stream_idx as _;
-                        let sg = v.gop as f32 / v.fps;
-                        if sg > segment_length {
-                            segment_length = sg;
+                        if v.fps > 0.0 && v.gop > 0 {
+                            let sg = v.gop as f32 / v.fps;
+                            gop_seconds = Some(sg);
+                            if sg > segment_length {
+                                segment_length = sg;
+                            }
                         }
                     },
                     VariantStream::Audio(a) => unsafe {
@@ -246,6 +256,7 @@ impl HlsVariant {
             init_segment_path: None,
             has_video,
             audio_group,
+            gop_seconds,
             pdt_anchor: None,
         };
 
@@ -333,7 +344,11 @@ impl HlsVariant {
     }
 
     pub fn segment_length(&self) -> f32 {
-        self.segment_length_target.max(2.0)
+        // NOTE: no 2.0s floor here - the target may legitimately be slightly
+        // below 2s when aligned to the encoder GOP (e.g. 1.96s at 23.976fps).
+        // Flooring it above the GOP duration would make every segment span two
+        // GOPs because splits only occur on keyframes.
+        self.segment_length_target.max(1.0)
     }
 
     /// Target duration of a single partial segment (LL-HLS `PART-TARGET`).
@@ -428,7 +443,11 @@ impl HlsVariant {
             let cur_duration = pkt_pts - self.current_segment_start;
             let cur_part_duration = pkt_dts - self.current_partial_start;
 
-            let should_end_this_segment = cur_duration >= self.segment_length() as f64;
+            // Small tolerance: keyframe timestamps carry rounding jitter (e.g.
+            // 90kHz ticks at 23.976fps are not integral), so a keyframe arriving
+            // a few ms before the target must still split. Without this the
+            // split waits a whole extra GOP.
+            let should_end_this_segment = cur_duration >= self.segment_length() as f64 - 0.05;
             let split_seg = can_split && should_end_this_segment;
             // Partials are produced for the reference stream of every LL variant:
             // video keyframe-bounded parts for video variants, and per-packet
@@ -825,18 +844,23 @@ impl HlsVariant {
         // Copy variants split on source keyframes, so real segments can exceed
         // the configured target (e.g. 4.3s GOP vs 2s target) - take the max of
         // the target and every advertised segment, and always ceil.
+        // RFC 8216: each segment duration ROUNDED TO NEAREST INTEGER must be
+        // <= TARGETDURATION, so take max(round(duration)). Using ceil() here
+        // would inflate TD (e.g. a 2.005s audio segment forcing TD=3 while the
+        // video renditions advertise TD=2, which Apple flags as mismatched
+        // target durations across renditions).
         let max_seg_duration = self
             .segments
             .iter()
             .filter_map(|s| match s {
-                HlsSegment::Full(f) => Some(f.duration),
+                HlsSegment::Full(f) => Some(f.duration.round()),
                 _ => None,
             })
-            .fold(self.segment_length(), f32::max);
+            .fold(self.segment_length().round(), f32::max);
         pl.target_duration = if self.playlist_version() >= 6 {
-            max_seg_duration.ceil() as _
+            max_seg_duration as _
         } else {
-            max_seg_duration.ceil()
+            max_seg_duration
         };
         if self.low_latency {
             pl.part_inf = Some(PartInf {
@@ -1008,12 +1032,20 @@ impl HlsVariant {
                     width: (*codec_par).width as _,
                     height: (*codec_par).height as _,
                 }),
-                frame_rate: if fps > 0.0 { Some(fps) } else { None },
+                // spec: decimal with up to 3 decimal places; strict parsers
+                // reject the full float representation
+                frame_rate: if fps > 0.0 {
+                    Some((fps * 1000.0).round() / 1000.0)
+                } else {
+                    None
+                },
                 hdcp_level: None,
                 audio: self.audio_group.clone(),
                 video: None,
                 subtitles: None,
-                closed_captions: None,
+                // MUST declare CLOSED-CAPTIONS=NONE when no CC renditions exist
+                // (Apple HLS authoring spec 433088)
+                closed_captions: Some(m3u8_rs::ClosedCaptionGroupId::None),
                 other_attributes: None,
             })
         }
