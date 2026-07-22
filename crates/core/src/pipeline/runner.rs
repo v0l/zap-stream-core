@@ -315,6 +315,33 @@ impl PipelineRunner {
             self.transcode_pkt(Some(&packet))?;
         }
 
+        // Normalize copy-variant timestamps to start at ~0, matching transcoded
+        // variants (which subtract the source start_time in transcode_pkt). If
+        // copy variants keep the raw ingest timeline, every HLS level has a
+        // different timestamp base and players must re-derive initPTS on every
+        // ABR switch, causing A/V re-alignment glitches
+        // (hls.js: "passthrough-remuxer: Timestamps ... != initPTS").
+        let start_time = unsafe {
+            let stream = self.demuxer.get_stream(stream_index)?;
+            if !stream.is_null() && (*stream).start_time != AV_NOPTS_VALUE {
+                (*stream).start_time
+            } else {
+                0
+            }
+        };
+        let copy_packet = || {
+            let mut pkt = packet.clone();
+            if start_time != 0 {
+                if pkt.pts != AV_NOPTS_VALUE {
+                    pkt.pts -= start_time;
+                }
+                if pkt.dts != AV_NOPTS_VALUE {
+                    pkt.dts -= start_time;
+                }
+            }
+            pkt
+        };
+
         // egress (mux) copy variants
         for var in config.variants {
             match var {
@@ -322,7 +349,7 @@ impl PipelineRunner {
                     self.send_work(
                         v.id,
                         WorkerThreadCommand::MuxPacket {
-                            packet: packet.clone(),
+                            packet: copy_packet(),
                         },
                     )?;
                 }
@@ -330,7 +357,7 @@ impl PipelineRunner {
                     self.send_work(
                         v.id,
                         WorkerThreadCommand::MuxPacket {
-                            packet: packet.clone(),
+                            packet: copy_packet(),
                         },
                     )?;
                 }
