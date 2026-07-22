@@ -67,12 +67,15 @@ pub struct HlsVariant {
     /// - For an audio-only variant this is the group it *provides* (EXT-X-MEDIA GROUP-ID).
     /// - For a video (main) variant this is the group it *references* (EXT-X-STREAM-INF AUDIO=).
     audio_group: Option<String>,
-    /// Wall-clock time at which the CURRENT segment started. Used as
-    /// EXT-X-PROGRAM-DATE-TIME for the segment when it completes. PDT must
-    /// reference the segment START; stamping completion time skews each
-    /// variant by its own segment duration which breaks cross-rendition
-    /// alignment in players (audio/video tracks have different cadences).
-    current_segment_wallclock: chrono::DateTime<Utc>,
+    /// Anchor mapping media time -> wall clock, established at the first
+    /// segment split: (media_time_secs, wall_clock). EXT-X-PROGRAM-DATE-TIME is
+    /// derived from the MEDIA clock relative to this anchor so PDT deltas always
+    /// equal EXTINF durations. Stamping wall-clock at split time is wrong: the
+    /// start of a stream muxes probe-buffered data in a burst (PDT deltas <<
+    /// EXTINF), and players align audio/video rendition groups via PDT, so any
+    /// PDT-vs-duration inconsistency shifts the cross-track timeline between
+    /// playlist refreshes.
+    pdt_anchor: Option<(f64, chrono::DateTime<Utc>)>,
 }
 
 impl HlsVariant {
@@ -243,7 +246,7 @@ impl HlsVariant {
             init_segment_path: None,
             has_video,
             audio_group,
-            current_segment_wallclock: Utc::now(),
+            pdt_anchor: None,
         };
 
         Ok(variant)
@@ -578,8 +581,12 @@ impl HlsVariant {
     /// Reset the muxer state and start the next segment
     fn split_next_seg(&mut self, next_pkt_start: f64, flush: bool) -> Result<EgressResult> {
         let completed_segment_idx = self.idx;
-        self.idx += 1;
-        self.current_partial_index = 0;
+        // NOTE: self.idx is only advanced after every fallible step below has
+        // succeeded. Incrementing it eagerly meant a transient split failure
+        // (avio/disk error) skipped a segment index, shifting the media-sequence
+        // <-> filename mapping and breaking every player with a cached playlist
+        // ("media sequence mismatch").
+        let next_segment_idx = completed_segment_idx + 1;
 
         unsafe {
             // Manually reset muxer avio
@@ -596,7 +603,7 @@ impl HlsVariant {
             avio_closep(&mut (*ctx).pb);
             av_freep(ptr::addr_of_mut!((*ctx).url) as _);
 
-            let next_seg_url = self.map_segment_path(self.idx, self.segment_type);
+            let next_seg_url = self.map_segment_path(next_segment_idx, self.segment_type);
             (*ctx).url = cstr!(next_seg_url.to_str().unwrap());
 
             let mut next_io = ptr::null_mut();
@@ -644,10 +651,22 @@ impl HlsVariant {
             })
             .collect();
 
-        // PDT for the completed segment = wall-clock time when it STARTED.
-        // The next segment starts now (real-time live stream).
-        let seg_pdt = self.current_segment_wallclock;
-        self.current_segment_wallclock = Utc::now();
+        // PDT for the completed segment, derived from the media clock so that
+        // PDT deltas always match EXTINF durations (see pdt_anchor docs).
+        let (anchor_media, anchor_wallclock) = *self.pdt_anchor.get_or_insert_with(|| {
+            // First split: anchor stream media time to wall clock. The segment
+            // that just completed started cur_duration seconds ago in media
+            // time; approximate its wall-clock start as now - duration.
+            (
+                self.current_segment_start,
+                Utc::now()
+                    - chrono::Duration::milliseconds((cur_duration * 1000.0) as i64),
+            )
+        });
+        let seg_pdt = anchor_wallclock
+            + chrono::Duration::milliseconds(
+                ((self.current_segment_start - anchor_media) * 1000.0) as i64,
+            );
 
         let hash = {
             let mut f = File::open(&completed_seg_path)?;
@@ -672,6 +691,12 @@ impl HlsVariant {
             timestamp: seg_pdt,
         }));
 
+        Self::prune_old_partials(&mut self.segments, next_segment_idx);
+
+        // Commit the new segment index only now that every fallible step is done
+        self.idx = next_segment_idx;
+        self.current_partial_index = 0;
+
         self.write_playlist()?;
 
         // Reset counters for next segment
@@ -682,6 +707,21 @@ impl HlsVariant {
             created: vec![created],
             deleted,
         })
+    }
+
+    /// LL-HLS: drop partial segment entries that are more than ~3 target
+    /// durations behind the live edge (RFC 8216bis 6.2.2). Keeping the whole
+    /// window's parts bloats the playlist and confuses players' part-based
+    /// loading (hls.js walks the full part list and repeatedly considers
+    /// stale parts from long-completed segments). Parts are kept for the
+    /// in-progress segment plus the last 3 completed ones (>= 3 x
+    /// TARGETDURATION of parts must remain per spec).
+    pub(crate) fn prune_old_partials(segments: &mut Vec<HlsSegment>, next_segment_idx: u64) {
+        let min_part_parent = next_segment_idx.saturating_sub(3);
+        segments.retain(|s| match s {
+            HlsSegment::Partial(p) => p.parent_index >= min_part_parent,
+            _ => true,
+        });
     }
 
     pub fn video_stream(&self) -> Option<&HlsVariantStream> {
@@ -1012,6 +1052,63 @@ mod tests {
         assert!(!HlsVariant::partial_would_exceed_target(0.45, 0.033, 0.5));
         // exactly reaching the target is allowed (parts may equal PART-TARGET)
         assert!(!HlsVariant::partial_would_exceed_target(0.4, 0.1, 0.5));
+    }
+
+    fn partial(parent: u64) -> HlsSegment {
+        HlsSegment::Partial(PartialSegmentInfo {
+            index: 0,
+            parent_index: parent,
+            parent_kind: SegmentType::FMP4,
+            duration: 0.5,
+            independent: false,
+            byte_range: Some((100, Some(0))),
+        })
+    }
+
+    fn full(index: u64) -> HlsSegment {
+        HlsSegment::Full(SegmentInfo {
+            index,
+            duration: 4.0,
+            kind: SegmentType::FMP4,
+            discontinuity: false,
+            sha256: [0u8; 32],
+            timestamp: Default::default(),
+        })
+    }
+
+    /// Regression: EXT-X-PART entries were never pruned, so the playlist
+    /// carried parts for every segment in the window. Players walking the part
+    /// list (hls.js) repeatedly considered stale parts from long-completed
+    /// segments, spamming 'Need buffer at X but next unloaded part starts at Y'
+    /// and breaking part-based live edge loading.
+    #[test]
+    fn prune_old_partials_keeps_only_live_edge_parts() {
+        // segments 1..=10 full, each with a part entry; parts of 11 in progress
+        let mut segments = Vec::new();
+        for i in 1..=10u64 {
+            segments.push(partial(i));
+            segments.push(full(i));
+        }
+        segments.push(partial(11));
+
+        HlsVariant::prune_old_partials(&mut segments, 11);
+
+        // all full segments retained
+        let fulls = segments
+            .iter()
+            .filter(|s| matches!(s, HlsSegment::Full(_)))
+            .count();
+        assert_eq!(fulls, 10);
+
+        // parts retained only for parents >= 8 (11 - 3)
+        let part_parents: Vec<u64> = segments
+            .iter()
+            .filter_map(|s| match s {
+                HlsSegment::Partial(p) => Some(p.parent_index),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(part_parents, vec![8, 9, 10, 11]);
     }
 
     /// Regression: reloading a playlist on stream resume used to keep trailing
