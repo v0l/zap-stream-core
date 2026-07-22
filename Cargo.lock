@@ -7135,6 +7135,7 @@ dependencies = [
  "sha2 0.10.9",
  "sqlx",
  "sysinfo",
+ "tempfile",
  "tokio",
  "tokio-stream",
  "tokio-util 0.7.17",

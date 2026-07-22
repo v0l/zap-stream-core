@@ -958,6 +958,30 @@ mod tests {
         );
     }
 
+    /// Generate a stream into a fixed directory for external validation with
+    /// Apple's `mediastreamvalidator`:
+    /// ```sh
+    /// HLS_OUT_DIR=/tmp/hls-validate cargo test -p zap-stream-core \
+    ///   --features debug-hls generate_stream_for_validator -- --ignored
+    /// (cd /tmp/hls-validate/<id> && python3 -m http.server 8090)
+    /// mediastreamvalidator http://localhost:8090/live.m3u8
+    /// ```
+    #[ignore]
+    #[test]
+    fn generate_stream_for_validator() {
+        tracing_subscriber::fmt::try_init().ok();
+        let out = std::env::var("HLS_OUT_DIR").unwrap_or("/tmp/hls-validate".to_string());
+        let out = PathBuf::from(out);
+        let _ = fs::remove_dir_all(&out);
+        fs::create_dir_all(&out).unwrap();
+
+        let tester = HlsTimingTester::new(0.2, 1.0, 0.5);
+        let (_muxer, out_dir) = tester
+            .generate_test_stream(&out, 30.0, SegmentType::FMP4)
+            .expect("generation failed");
+        println!("Generated stream at: {}", out_dir.display());
+    }
+
     /// LL-HLS invariants over a real generated fMP4 stream. Regression coverage for:
     /// - audio-only (CMAF rendition) playlists advertising PART-INF but never
     ///   publishing any EXT-X-PART (LL players stall on blocking reload)

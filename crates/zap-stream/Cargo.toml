@@ -78,3 +78,6 @@ redis = { version = "0.32.5", features = ["cluster", "tokio-comp"] }
 libc = "0.2.175"
 nwc = { git = "https://github.com/rust-nostr/nostr.git", pacakge = "nwc", rev = "f14d869dd85e3355c756cc4fa355fd8c8318c642" }
 tokio-stream = "0.1"
+
+[dev-dependencies]
+tempfile = "3.8.1"

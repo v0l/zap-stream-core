@@ -6,11 +6,10 @@ use crate::variant::VariantStream;
 use anyhow::{Result, bail, ensure};
 use chrono::Utc;
 use ffmpeg_rs_raw::ffmpeg_sys_the_third::{
-    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVIO_FLAG_WRITE, AVCodecID, AVMediaType, av_freep,
-    av_get_bits_per_pixel, av_interleaved_write_frame, av_pix_fmt_desc_get, av_q2d, av_write_frame,
-    avio_closep, avio_flush, avio_open, avio_size,
+    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVCodecID, AVMediaType, av_get_bits_per_pixel,
+    av_interleaved_write_frame, av_pix_fmt_desc_get, av_q2d, av_write_frame, avio_flush,
 };
-use ffmpeg_rs_raw::{AvPacketRef, Muxer, bail_ffmpeg, cstr};
+use ffmpeg_rs_raw::{AvPacketRef, Muxer, bail_ffmpeg};
 use m3u8_rs::Playlist::MediaPlaylist;
 use m3u8_rs::{
     AlternativeMedia, AlternativeMediaType, ExtTag, MediaSegmentType, PartInf, Playlist,
@@ -18,10 +17,49 @@ use m3u8_rs::{
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs::{File, create_dir_all};
+use std::io::Write;
 use std::mem::transmute;
 use std::path::PathBuf;
 use std::ptr;
+use std::sync::{Arc, Mutex};
 use tracing::{debug, error, info, trace, warn};
+
+/// In-memory byte sink shared between the ffmpeg muxer and [HlsVariant].
+///
+/// The muxer writes into this buffer instead of segment files directly.
+/// [HlsVariant] drains it and appends to the current segment file ONLY at
+/// part/segment boundaries, guaranteeing the invariant that bytes on disk are
+/// always published, complete parts. (ffmpeg's avio layer auto-flushes its
+/// internal buffer mid-fragment, so writing straight to the segment file puts
+/// unpublished, truncated fragment data on disk which corrupts LL-HLS
+/// preload-hint responses served from that file.)
+#[derive(Clone, Default)]
+pub(crate) struct SharedSink {
+    inner: Arc<Mutex<Vec<u8>>>,
+}
+
+impl Write for SharedSink {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.inner
+            .lock()
+            .map_err(|_| std::io::Error::other("sink lock poisoned"))?
+            .extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl SharedSink {
+    /// Take all buffered bytes out of the sink
+    pub(crate) fn drain(&self) -> Vec<u8> {
+        self.inner
+            .lock()
+            .map(|mut b| std::mem::take(&mut *b))
+            .unwrap_or_default()
+    }
+}
 
 pub struct HlsVariant {
     /// Name of this variant (720p)
@@ -67,6 +105,12 @@ pub struct HlsVariant {
     /// - For an audio-only variant this is the group it *provides* (EXT-X-MEDIA GROUP-ID).
     /// - For a video (main) variant this is the group it *references* (EXT-X-STREAM-INF AUDIO=).
     audio_group: Option<String>,
+    /// Byte sink the muxer writes into; drained to disk at part boundaries
+    sink: SharedSink,
+    /// Currently open segment file
+    current_file: Option<File>,
+    /// Bytes written (published) to the current segment file
+    written: u64,
     /// GOP length in seconds of the (encoder) video stream, when known.
     /// Used to align the segment split length to a whole number of GOPs:
     /// splits only happen on keyframes, so a segment target slightly above the
@@ -139,13 +183,13 @@ impl HlsVariant {
             })
             .unwrap_or(1);
 
+        // The muxer writes into an in-memory sink; HlsVariant owns all file
+        // writes so that segment files only ever contain complete parts.
+        let sink = SharedSink::default();
         let mut mux = unsafe {
             Muxer::builder()
-                .with_output_path(
-                    var_dir
-                        .join(Self::segment_name(segment_type, idx))
-                        .to_str()
-                        .unwrap(),
+                .with_output_write(
+                    sink.clone(),
                     match segment_type {
                         SegmentType::MPEGTS => Some("mpegts"),
                         SegmentType::FMP4 => Some("mp4"),
@@ -258,6 +302,9 @@ impl HlsVariant {
             audio_group,
             gop_seconds,
             pdt_anchor: None,
+            sink,
+            current_file: None,
+            written: 0,
         };
 
         Ok(variant)
@@ -271,13 +318,65 @@ impl HlsVariant {
                 "+frag_custom+empty_moov+default_base_moof".to_string(),
             );
         };
+
+        // open the first segment file before the muxer writes its header
+        let seg_path = self.map_segment_path(self.idx, self.segment_type);
+        self.current_file = Some(File::create(&seg_path)?);
+        self.written = 0;
+
         unsafe {
             self.mux.open(Some(opts))?;
-            //av_dump_format(mux.context(), 0, ptr::null_mut(), 0);
+            avio_flush((*self.mux.context()).pb);
         }
 
-        self.create_init_segment()?;
+        // Route the container header from the sink:
+        // - fMP4: ftyp+moov becomes the init segment (EXT-X-MAP). Previously a
+        //   parallel muxer generated init.mp4 while the real header polluted
+        //   the first segment file, which breaks native fMP4 players.
+        // - MPEG-TS: PAT/PMT bytes simply start the first segment.
+        let header = self.sink.drain();
+        match self.segment_type {
+            SegmentType::FMP4 => {
+                let init_path = self.out_dir.join("init.mp4");
+                std::fs::write(&init_path, &header)?;
+                self.init_segment_path = Some("init.mp4".to_string());
+                info!("Created fMP4 initialization segment: {}", init_path.display());
+            }
+            SegmentType::MPEGTS => {
+                if !header.is_empty()
+                    && let Some(f) = self.current_file.as_mut()
+                {
+                    f.write_all(&header)?;
+                    self.written += header.len() as u64;
+                }
+            }
+        }
         Ok(())
+    }
+
+    /// Flush the muxer's avio buffer into the sink and append everything to
+    /// the current segment file. Returns the number of bytes appended.
+    fn drain_to_current_file(&mut self) -> Result<u64> {
+        unsafe {
+            avio_flush((*self.mux.context()).pb);
+        }
+        self.append_sink_to_file()
+    }
+
+    /// Append already-sunk bytes to the current segment file (no avio flush;
+    /// used after [Muxer::close] when the context is gone)
+    fn append_sink_to_file(&mut self) -> Result<u64> {
+        let chunk = self.sink.drain();
+        if chunk.is_empty() {
+            return Ok(0);
+        }
+        let Some(f) = self.current_file.as_mut() else {
+            bail!("No segment file open to write {} bytes", chunk.len());
+        };
+        f.write_all(&chunk)?;
+        f.flush()?;
+        self.written += chunk.len() as u64;
+        Ok(chunk.len() as u64)
     }
 
     pub fn mux(&mut self) -> &mut Muxer {
@@ -495,46 +594,40 @@ impl HlsVariant {
     }
 
     pub fn reset(&mut self) -> Result<()> {
-        unsafe { self.mux.close() }
+        unsafe { self.mux.close()? };
+        // append any trailer bytes to the current segment file and close it
+        self.append_sink_to_file()?;
+        self.current_file = None;
+        Ok(())
     }
 
     /// Create a partial segment for LL-HLS
     fn split_partial_segment(&mut self, next_pkt_start: f64, flush: bool) -> Result<()> {
-        let ctx = self.mux.context();
-        let end_pos = unsafe {
+        unsafe {
+            let ctx = self.mux.context();
             if flush {
                 // First flush the interleave queue (since we use av_interleaved_write_frame for packets)
                 av_interleaved_write_frame(ctx, ptr::null_mut());
                 // Then flush the muxer's internal buffer to create the fragment (for frag_custom)
                 av_write_frame(ctx, ptr::null_mut());
             }
-            avio_flush((*ctx).pb);
-            avio_size((*ctx).pb) as u64
-        };
+        }
 
-        ensure!(end_pos > 0, "End position cannot be 0");
+        // Publish the completed part: append it to the segment file. Byte
+        // accounting is exact because the file only ever contains full parts.
+        let previous_end_pos = self.written;
+        let partial_size = self.drain_to_current_file()?;
+        if partial_size == 0 {
+            // no media flushed since the last part; nothing to publish
+            return Ok(());
+        }
         if self.segment_type == SegmentType::MPEGTS {
             ensure!(
-                end_pos % 188 == 0,
+                self.written % 188 == 0,
                 "Invalid end position, must be multiple of 188"
             );
         }
 
-        let previous_end_pos = self
-            .segments
-            .last()
-            .and_then(|s| match &s {
-                HlsSegment::Partial(p) => p.end_pos(),
-                _ => None,
-            })
-            .unwrap_or(0);
-        ensure!(
-            end_pos >= previous_end_pos,
-            "Partial segment byte range would be negative (end_pos={}, previous_end_pos={})",
-            end_pos,
-            previous_end_pos
-        );
-        let partial_size = end_pos - previous_end_pos;
         let partial_info = PartialSegmentInfo {
             index: self.current_partial_index,
             parent_index: self.idx,
@@ -558,57 +651,17 @@ impl HlsVariant {
         Ok(())
     }
 
-    /// Create initialization segment for fMP4
-    fn create_init_segment(&mut self) -> Result<()> {
-        if self.segment_type != SegmentType::FMP4 || self.init_segment_path.is_some() {
-            return Ok(());
-        }
-
-        let init_path = self.out_dir.join("init.mp4").to_string_lossy().to_string();
-
-        // Create a temporary muxer for initialization segment
-        let mut init_opts = HashMap::new();
-        init_opts.insert(
-            "movflags".to_string(),
-            "+frag_custom+dash+delay_moov+default_base_moof".to_string(),
-        );
-
-        unsafe {
-            let mut init_mux = Muxer::builder()
-                .with_output_path(init_path.as_str(), Some("mp4"))?
-                .build()?;
-
-            // Copy stream parameters from main muxer
-            let main_ctx = self.mux.context();
-            for i in 0..(*main_ctx).nb_streams {
-                let src_stream = *(*main_ctx).streams.add(i as usize);
-                let s = init_mux.add_copy_stream(src_stream)?;
-                ensure!((*s).index == (*src_stream).index, "Stream index mismatch");
-            }
-
-            init_mux.open(Some(init_opts))?;
-            av_interleaved_write_frame(main_ctx, ptr::null_mut());
-            av_write_frame(init_mux.context(), ptr::null_mut());
-            init_mux.close()?;
-        }
-        self.init_segment_path = Some("init.mp4".to_string());
-        info!("Created fMP4 initialization segment: {}", init_path);
-
-        Ok(())
-    }
-
     /// Reset the muxer state and start the next segment
     fn split_next_seg(&mut self, next_pkt_start: f64, flush: bool) -> Result<EgressResult> {
         let completed_segment_idx = self.idx;
         // NOTE: self.idx is only advanced after every fallible step below has
         // succeeded. Incrementing it eagerly meant a transient split failure
-        // (avio/disk error) skipped a segment index, shifting the media-sequence
+        // (disk error) skipped a segment index, shifting the media-sequence
         // <-> filename mapping and breaking every player with a cached playlist
         // ("media sequence mismatch").
         let next_segment_idx = completed_segment_idx + 1;
 
         unsafe {
-            // Manually reset muxer avio
             let ctx = self.mux.context();
             if flush {
                 // First flush the interleave queue (since we use av_interleaved_write_frame for packets)
@@ -618,20 +671,16 @@ impl HlsVariant {
                 let ret = av_write_frame(ctx, ptr::null_mut());
                 bail_ffmpeg!(ret, "Failed to write flush frame");
             }
-            avio_flush((*ctx).pb);
-            avio_closep(&mut (*ctx).pb);
-            av_freep(ptr::addr_of_mut!((*ctx).url) as _);
-
-            let next_seg_url = self.map_segment_path(next_segment_idx, self.segment_type);
-            (*ctx).url = cstr!(next_seg_url.to_str().unwrap());
-
-            let mut next_io = ptr::null_mut();
-            let ret = avio_open(&mut next_io, (*ctx).url, AVIO_FLAG_WRITE);
-            bail_ffmpeg!(ret, "Failed to split segment during avio_open!", {
-                av_freep(ptr::addr_of_mut!((*ctx).url) as _);
-            });
-            (*ctx).pb = next_io;
         }
+        // publish any remaining bytes of the completed segment and close it
+        self.drain_to_current_file()?;
+        self.current_file = None;
+
+        // open the next segment file; the muxer itself just keeps writing into
+        // the sink and needs no avio/url manipulation
+        let next_seg_path = self.map_segment_path(next_segment_idx, self.segment_type);
+        self.current_file = Some(File::create(&next_seg_path)?);
+        self.written = 0;
 
         // Log the completed segment (previous index), not the next one
         let completed_seg_path = self.map_segment_path(completed_segment_idx, self.segment_type);
