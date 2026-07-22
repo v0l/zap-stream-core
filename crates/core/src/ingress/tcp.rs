@@ -1,12 +1,13 @@
-use std::net::SocketAddr;
 use crate::endpoint::EndpointConfigurator;
-use crate::ingress::{ConnectionInfo, spawn_pipeline};
+use crate::ingress::{ConnectionInfo, setup_term_handler, spawn_pipeline};
 use crate::overseer::Overseer;
 use anyhow::Result;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::runtime::Handle;
+use tokio::sync::mpsc::unbounded_channel;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 use uuid::Uuid;
@@ -41,6 +42,9 @@ pub async fn listen(
                 }
                 let socket = socket.into_std()?;
                 socket.set_nonblocking(false)?;
+                // wire up shutdown so TCP pipelines also terminate cleanly on ctrl-c
+                let (tx, rx) = unbounded_channel();
+                setup_term_handler(shutdown_rx.clone(), tx);
                 if let Err(e) = spawn_pipeline(
                     Handle::current(),
                     info,
@@ -49,7 +53,7 @@ pub async fn listen(
                     endpoint_config.clone(),
                     Box::new(socket),
                     None,
-                    None,
+                    Some(rx),
                 ) {
                     error!("Failed to spawn pipeline: {}", e);
                 }

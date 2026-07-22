@@ -131,10 +131,15 @@ impl VideoVariant {
 
     /// Apply any modifications to the config based on the ingress stream which is used for this variant
     pub fn patch_for_ingress(&mut self, ingress: &IngressStream) {
-        // if the ingress stream is a different size, apply scale mode
+        // if the ingress stream is a different size or pixel format, apply scale mode.
+        // An unknown ingress pixel format must not panic; treat it as a mismatch so
+        // the scaler is configured (which will convert or fail gracefully later).
         if ingress.width as u16 != self.width
             || ingress.height as u16 != self.height
-            || ingress.pixel_format_name().unwrap() != self.pixel_format
+            || ingress
+                .pixel_format_name()
+                .map(|n| n != self.pixel_format)
+                .unwrap_or(true)
         {
             self.scale_mode = Some(ScaleMode::Default);
         }
@@ -213,7 +218,7 @@ impl VideoVariant {
                         if cr < 0 {
                             warn!(
                                 "Color range not found {}, {}",
-                                self.color_space,
+                                self.color_range,
                                 get_ffmpeg_error_msg(cr)
                             );
                         } else {

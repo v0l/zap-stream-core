@@ -42,7 +42,14 @@ pub async fn listen(
                 break;
             }
             Some(request) = packets.incoming().next() => {
-                let socket = request.accept(None).await?;
+                let socket = match request.accept(None).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        // a single failed handshake must not kill the listener
+                        warn!("Failed to accept SRT connection: {}", e);
+                        continue;
+                    }
+                };
                 let mut info = ConnectionInfo {
                     id: Uuid::new_v4(),
                     endpoint: "srt".to_string(),
@@ -64,11 +71,16 @@ pub async fn listen(
                         dump_stream = enable_stream_dump;
                     }
                     Ok(ConnectResult::Deny { reason }) => {
+                        // reject only this connection; returning here would shut down
+                        // the whole SRT listener for a single bad stream key
                         warn!("Connection denied: {reason}");
-                        return Ok(());
+                        continue;
                     }
                     Err(e) => {
+                        // do NOT spawn a pipeline for a connection we could not
+                        // authenticate/authorize
                         error!("Failed to handle connect request: {}", e);
+                        continue;
                     }
                 }
 
@@ -76,14 +88,20 @@ pub async fn listen(
                 let mut br = BufferedReader::new(4096, MAX_SRT_BUFFER_SIZE, "SRT", Some(mtx));
                 setup_term_handler(shutdown.clone(), tx.clone());
                 let out_dir = out_dir.join(info.id.to_string());
-                if !out_dir.exists() {
-                    std::fs::create_dir_all(&out_dir)?;
+                if !out_dir.exists()
+                    && let Err(e) = std::fs::create_dir_all(&out_dir)
+                {
+                    // per-connection failure must not kill the listener
+                    error!("Failed to create output directory {}: {}", out_dir.display(), e);
+                    continue;
                 }
 
-                // Dump raw SRT stream for debugging
+                // Dump raw SRT stream for debugging (best-effort)
                 if dump_stream {
-                    let h = File::create(out_dir.join("stream.dump"))?;
-                    br.set_dump_handle(h);
+                    match File::create(out_dir.join("stream.dump")) {
+                        Ok(h) => br.set_dump_handle(h),
+                        Err(e) => warn!("Failed to create stream dump file: {}", e),
+                    }
                 }
 
                 // spawn pipeline runner thread
@@ -124,7 +142,8 @@ impl Read for SrtReader {
         let (mut rx, _) = self.socket.split_mut();
         while self.buffer.buf.len() < buf.len() {
             if rx.is_terminated() {
-                return Ok(0);
+                // stream ended: return any remaining buffered data before EOF
+                return Ok(self.buffer.read_buffered(buf));
             }
             if let Some((_, data)) = self.handle.block_on(rx.next()) {
                 let data_slice = data.iter().as_slice();

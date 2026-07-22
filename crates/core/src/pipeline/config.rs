@@ -36,9 +36,45 @@ impl PipelineConfig {
         self.variants.iter().any(|var| match var {
             VariantStream::Video(v) => v.src_index == src_index,
             VariantStream::Audio(v) => v.src_index == src_index,
-            VariantStream::Plugin { src_index, .. } => src_index == src_index,
+            // NOTE: bind with a distinct name; the previous pattern binding shadowed
+            // the function argument (`src_index == src_index`), which was always true
+            // and forced every stream through the decoder when any plugin was active
+            VariantStream::Plugin {
+                src_index: plugin_src,
+                ..
+            } => *plugin_src == src_index,
             _ => false,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    /// Regression: Plugin variants used a shadowed pattern binding making
+    /// is_transcoding_src always true for every stream index.
+    #[test]
+    fn is_transcoding_src_plugin_matches_only_its_source() {
+        let cfg = PipelineConfig {
+            variants: vec![VariantStream::Plugin {
+                id: Uuid::new_v4(),
+                name: "test".to_string(),
+                src_index: 1,
+            }],
+            egress: vec![],
+            ingress_info: IngressInfo {
+                bitrate: 0,
+                streams: vec![],
+            },
+            video_src: 0,
+            audio_src: Some(1),
+            plugins: vec![],
+        };
+        assert!(cfg.is_transcoding_src(1));
+        assert!(!cfg.is_transcoding_src(0));
+        assert!(!cfg.is_transcoding_src(2));
     }
 }
 

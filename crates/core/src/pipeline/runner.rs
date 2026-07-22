@@ -443,6 +443,15 @@ impl PipelineRunner {
         self.did_flush = true;
         self.state = RunnerState::Shutdown;
 
+        // Flush the decoder first: with B-frames the decoder holds several frames of
+        // delay which would otherwise be dropped at EOF. This pushes the remaining
+        // frames through the reorder buffers / worker channels below.
+        if self.config.is_some()
+            && let Err(e) = self.transcode_pkt(None)
+        {
+            warn!("Failed to flush decoder: {}", e);
+        }
+
         // Drain any frames still sitting in the reorder buffers so the tail of the
         // stream is not silently dropped from recordings/HLS output.
         let mut buffers = std::mem::take(&mut self.frame_reorder_buffers);
