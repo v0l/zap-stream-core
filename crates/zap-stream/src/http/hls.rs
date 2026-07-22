@@ -194,6 +194,66 @@ impl HlsRouter {
         Ok((headers, content).into_response())
     }
 
+    /// Determine how many bytes of a segment file have been PUBLISHED via the
+    /// variant playlist. The on-disk file runs ahead of the playlist (muxer
+    /// avio buffering), so only playlist part boundaries are safe to serve for
+    /// the in-progress segment.
+    fn published_length(playlist: &[u8], segment_name: &str, file_size: u64) -> PublishedLength {
+        let Ok((_, m3u8_rs::Playlist::MediaPlaylist(pl))) = m3u8_rs::parse_playlist(playlist)
+        else {
+            // unparseable playlist: fall back to raw file serving
+            return PublishedLength::Complete(file_size);
+        };
+        let mut part_end: Option<u64> = None;
+        let mut is_hint_target = false;
+        let mut referenced = false;
+        for seg in &pl.segments {
+            match seg {
+                m3u8_rs::MediaSegmentType::Full(f) => {
+                    if f.uri == segment_name {
+                        // completed segment: entire file is published
+                        return PublishedLength::Complete(file_size);
+                    }
+                }
+                m3u8_rs::MediaSegmentType::Partial(p) => {
+                    if p.uri == segment_name {
+                        referenced = true;
+                        let end = p
+                            .byte_range
+                            .as_ref()
+                            .map(|r| r.offset.unwrap_or(0) + r.length)
+                            .unwrap_or(file_size);
+                        part_end = Some(part_end.map_or(end, |e: u64| e.max(end)));
+                    }
+                }
+                m3u8_rs::MediaSegmentType::PreloadHint(_) => {}
+            }
+        }
+        if let Some(hint) = &pl.preload_hint
+            && hint.uri == segment_name
+        {
+            is_hint_target = true;
+        }
+        // also check trailing raw hint line (we serialize it manually)
+        if !is_hint_target
+            && let Ok(text) = std::str::from_utf8(playlist)
+            && text
+                .lines()
+                .any(|l| l.starts_with("#EXT-X-PRELOAD-HINT") && l.contains(segment_name))
+        {
+            is_hint_target = true;
+        }
+
+        match (part_end, referenced || is_hint_target) {
+            // in-progress segment: only published part bytes are safe
+            (Some(end), _) => PublishedLength::Partial(end),
+            // hinted next segment with no parts yet: nothing published
+            (None, true) => PublishedLength::Partial(0),
+            // not referenced at all (old segment sliding out, init.mp4, etc.)
+            (None, false) => PublishedLength::Complete(file_size),
+        }
+    }
+
     /// Read the master playlist and return the rendition directories it
     /// references, excluding `current`. Returns (dir_name, is_media_rendition)
     /// where is_media_rendition is true for EXT-X-MEDIA entries (audio groups)
@@ -372,33 +432,72 @@ impl HlsRouter {
                     .next()
                     .ok_or((StatusCode::BAD_REQUEST, "Invalid range"))?;
 
-                // LL-HLS blocking preload hint: the playlist advertises
-                // EXT-X-PRELOAD-HINT with a BYTERANGE-START at/after the current
-                // end of the in-progress segment file. Per Apple's spec, the
-                // server must hold such requests and respond as soon as the
-                // hinted media is available, so wait for the file to grow past
-                // the requested offset before serving.
-                if let StartPosition::Index(start) = single.start {
-                    use std::time::Duration;
-                    use tokio::time::Instant;
-                    let deadline = Instant::now() + Duration::from_secs(6);
-                    loop {
-                        let size = tokio::fs::metadata(&segment_path)
+                // LL-HLS: the in-progress segment file on disk runs AHEAD of the
+                // published parts (the muxer's avio buffer auto-flushes to disk
+                // mid-fragment), so the file size is NOT a valid publication
+                // boundary. Serving raw file bytes to a hinted/open-ended range
+                // request hands the client a truncated fragment and breaks
+                // native players (ExoPlayer/AVPlayer). Bound every range request
+                // by what the variant playlist has actually published, blocking
+                // hinted requests until the hinted part appears.
+                let start = match single.start {
+                    StartPosition::Index(i) => i,
+                    StartPosition::FromLast(_) => {
+                        // suffix ranges can't address unpublished data
+                        let stream = FileStream::from_path(&segment_path)
                             .await
-                            .map(|m| m.len())
                             .map_err(|_| (StatusCode::NOT_FOUND, "File not found"))?;
-                        if size > start {
-                            break;
-                        }
-                        if Instant::now() >= deadline {
+                        let file_size = stream
+                            .content_size
+                            .ok_or((StatusCode::INTERNAL_SERVER_ERROR, "Unknown file size"))?;
+                        let r = Self::get_range(file_size, &single).map_err(|_| {
+                            (StatusCode::RANGE_NOT_SATISFIABLE, "Invalid range request")
+                        })?;
+                        return Ok(stream.into_range_response(r.start, r.end, file_size));
+                    }
+                };
+
+                use std::time::Duration;
+                use tokio::time::Instant;
+                let playlist_path = segment_path.parent().map(|p| p.join("live.m3u8"));
+                let deadline = Instant::now() + Duration::from_secs(6);
+                let published_end = loop {
+                    let file_size = tokio::fs::metadata(&segment_path)
+                        .await
+                        .map(|m| m.len())
+                        .unwrap_or(0);
+                    let published = match &playlist_path {
+                        Some(pl_path) => match tokio::fs::read(pl_path).await {
+                            Ok(pl) => Self::published_length(&pl, &segment, file_size),
+                            // no playlist -> serve raw file (e.g. init.mp4 dir layout changes)
+                            Err(_) => PublishedLength::Complete(file_size),
+                        },
+                        None => PublishedLength::Complete(file_size),
+                    };
+                    match published {
+                        PublishedLength::Complete(end) => {
+                            if end > start {
+                                break end;
+                            }
+                            // fully published and still out of range -> permanent
                             return Err((
                                 StatusCode::RANGE_NOT_SATISFIABLE,
-                                "Hinted range did not become available",
+                                "Range beyond published data",
                             ));
                         }
-                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        PublishedLength::Partial(end) if end > start => break end,
+                        PublishedLength::Partial(_) => {
+                            // hinted request for a part that is not published yet
+                            if Instant::now() >= deadline {
+                                return Err((
+                                    StatusCode::RANGE_NOT_SATISFIABLE,
+                                    "Hinted range did not become available",
+                                ));
+                            }
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                        }
                     }
-                }
+                };
 
                 let stream = FileStream::from_path(&segment_path)
                     .await
@@ -406,10 +505,15 @@ impl HlsRouter {
                 let file_size = stream
                     .content_size
                     .ok_or((StatusCode::INTERNAL_SERVER_ERROR, "Unknown file size"))?;
-                let single_range = Self::get_range(file_size, &single).map_err(|_| {
-                    (StatusCode::RANGE_NOT_SATISFIABLE, "Invalid range request")
-                })?;
-                Ok(stream.into_range_response(single_range.start, single_range.end, file_size))
+                // explicit end from the client, else bounded by published data
+                let end = match single.end {
+                    EndPosition::Index(i) => i.min(published_end - 1),
+                    EndPosition::LastByte => published_end - 1,
+                };
+                if end < start {
+                    return Err((StatusCode::RANGE_NOT_SATISFIABLE, "Invalid range request"));
+                }
+                Ok(stream.into_range_response(start, end, file_size))
             } else {
                 Err((StatusCode::BAD_REQUEST, "Invalid range"))
             }
@@ -497,6 +601,14 @@ impl HlsRouter {
             format!("{}?vt={}", url, viewer_token)
         }
     }
+}
+
+/// How much of a segment file is published and whether more may follow
+enum PublishedLength {
+    /// Segment is complete; the full file is valid
+    Complete(u64),
+    /// Segment in progress; only bytes below this offset are published
+    Partial(u64),
 }
 
 #[derive(Deserialize)]
@@ -587,6 +699,49 @@ mod tests {
     #[test]
     fn last_msn_part_invalid_playlist() {
         assert_eq!(HlsRouter::playlist_last_msn_part(b"junk"), None);
+    }
+
+    /// Regression: the in-progress segment file on disk runs ahead of the
+    /// published parts (muxer avio buffer auto-flush), so range requests must
+    /// be bounded by playlist part boundaries, not file size. Serving raw file
+    /// bytes handed ExoPlayer/AVPlayer truncated fragments and broke playback.
+    #[test]
+    fn published_length_bounds_in_progress_segment() {
+        // 12.m4s is in progress with parts covering 0..200; file is 5000 bytes
+        match HlsRouter::published_length(LL_PLAYLIST.as_bytes(), "12.m4s", 5000) {
+            PublishedLength::Partial(end) => assert_eq!(end, 200),
+            _ => panic!("in-progress segment must be Partial"),
+        }
+    }
+
+    #[test]
+    fn published_length_complete_for_full_segment() {
+        match HlsRouter::published_length(LL_PLAYLIST.as_bytes(), "11.m4s", 4096) {
+            PublishedLength::Complete(end) => assert_eq!(end, 4096),
+            _ => panic!("completed segment must be Complete"),
+        }
+    }
+
+    #[test]
+    fn published_length_unreferenced_file_served_raw() {
+        // init.mp4 / old segments are not referenced -> serve as-is
+        match HlsRouter::published_length(LL_PLAYLIST.as_bytes(), "init.mp4", 1234) {
+            PublishedLength::Complete(end) => assert_eq!(end, 1234),
+            _ => panic!("unreferenced file must be Complete"),
+        }
+    }
+
+    #[test]
+    fn published_length_hinted_new_segment_blocks() {
+        // playlist where the hint points at a segment with no parts yet
+        let pl = "#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:2\n\
+#EXT-X-MEDIA-SEQUENCE:10\n#EXT-X-PART-INF:PART-TARGET=0.5\n\
+#EXTINF:2,\n10.m4s\n\
+#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"11.m4s\",BYTERANGE-START=0\n";
+        match HlsRouter::published_length(pl.as_bytes(), "11.m4s", 32768) {
+            PublishedLength::Partial(end) => assert_eq!(end, 0),
+            _ => panic!("hinted segment without parts must be Partial(0)"),
+        }
     }
 
     /// Regression: variant/segment path components were joined unchecked; a
