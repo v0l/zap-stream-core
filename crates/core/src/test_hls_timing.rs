@@ -167,6 +167,14 @@ impl HlsTimingTester {
         // queue flush at the first segment split dumps that much future audio
         // into segment 1, skewing the timing analysis.
         let keyframe_interval = (VIDEO_FPS * 2.0) as u16; // 2 second keyframe interval
+        let video_level = VideoVariant {
+            width: VIDEO_WIDTH,
+            height: VIDEO_HEIGHT,
+            fps: VIDEO_FPS,
+            bitrate: 1_000_000,
+            ..Default::default()
+        }
+        .resolved_level();
         let mut video_encoder = unsafe {
             let mut encoder = Encoder::new_with_name("libx264")?
                 .with_stream_index(0)
@@ -175,7 +183,7 @@ impl HlsTimingTester {
                 .with_pix_fmt(AVPixelFormat::YUV420P)
                 .with_width(VIDEO_WIDTH as _)
                 .with_height(VIDEO_HEIGHT as _)
-                .with_level(51)
+                .with_level(video_level as _)
                 .with_profile(AV_PROFILE_H264_MAIN)
                 .with_options(|ctx| {
                     (*ctx).gop_size = keyframe_interval as _;
@@ -222,7 +230,7 @@ impl HlsTimingTester {
             codec: "libx264".to_string(),
             preset: Some("fast".to_string()),
             profile: AV_PROFILE_H264_MAIN as u32,
-            level: 51,
+            level: video_level,
             gop: (VIDEO_FPS * 2.0) as _,
             pixel_format: "yuv420p".to_string(),
             tune: None,

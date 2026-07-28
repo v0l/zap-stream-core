@@ -237,8 +237,8 @@ impl MultiTrackEngine {
                         if let Some(t) = &v.tune {
                             settings_obj.insert("tune".to_owned(), t.to_string().into());
                         }
-                        if v.level != 0 {
-                            settings_obj.insert("level".to_owned(), v.level.into());
+                        if v.width != 0 && v.height != 0 {
+                            settings_obj.insert("level".to_owned(), v.resolved_level().into());
                         }
                         if v.bitrate != 0 {
                             settings_obj.insert("bitrate".to_owned(), (v.bitrate / 1000).into());

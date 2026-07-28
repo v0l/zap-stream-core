@@ -106,9 +106,6 @@ impl EgressEncoderConfig {
                     size: (fps * 2.0) as _,
                 },
                 EncoderParam::MaxBFrames { size: 3 },
-                EncoderParam::Level {
-                    id: 51, // H.264 High 5.1 (4K)
-                },
                 EncoderParam::Profile {
                     id: 77, // AV_PROFILE_H264_MAIN
                 },
