@@ -15,7 +15,9 @@ use serde::Deserialize;
 use std::borrow::Cow;
 use std::ops::Range;
 use std::path::PathBuf;
+use std::io::SeekFrom;
 use tokio::fs::File;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
 use tracing::warn;
 use uuid::Uuid;
@@ -455,9 +457,16 @@ impl HlsRouter {
             .map_err(|_| (StatusCode::NOT_FOUND, "File not found"))?;
         let range = Self::get_range(file_size, header)
             .map_err(|_| (StatusCode::RANGE_NOT_SATISFIABLE, "Invalid range request"))?;
-        FileStream::<ReaderStream<File>>::try_range_response(segment_path, range.start, range.end)
+
+        let mut file = File::open(segment_path)
             .await
-            .map_err(|_| (StatusCode::NOT_FOUND, "File not found"))
+            .map_err(|_| (StatusCode::NOT_FOUND, "File not found"))?;
+        file.seek(SeekFrom::Start(range.start))
+            .await
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Seek failed"))?;
+        let len = range.end - range.start + 1;
+        let stream = ReaderStream::new(file.take(len));
+        Ok(FileStream::new(stream).into_range_response(range.start, range.end, file_size))
     }
 
     fn get_range(file_size: u64, header: &SyntacticallyCorrectRange) -> Result<Range<u64>> {
@@ -670,6 +679,20 @@ mod tests {
         let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         assert_eq!(body.len(), 100);
         assert_eq!(&body[..], &data[100..200]);
+
+        // A one-byte range is legal and must not be widened to the whole file.
+        let header = parse_range_header("bytes=0-0").unwrap();
+        let resp = HlsRouter::range_response(&seg, &header.ranges[0])
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.headers()
+                .get(axum::http::header::CONTENT_RANGE)
+                .unwrap(),
+            "bytes 0-0/1000"
+        );
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&body[..], &data[..1]);
     }
 
     /// Regression: variant/segment path components were joined unchecked; a
