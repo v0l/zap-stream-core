@@ -488,6 +488,8 @@ impl HlsRouter {
                 (file_size.saturating_sub(1)).min(range_start + MAX_UNBOUNDED_RANGE)
             }
         };
+        // The body is sliced as end - start + 1, so a reversed range would underflow
+        ensure!(range_start <= range_end, "Range start after range end");
         Ok(range_start..range_end)
     }
 
@@ -725,6 +727,9 @@ mod tests {
         // start beyond EOF
         let r = parse_range_header("bytes=100-").unwrap();
         assert!(HlsRouter::get_range(100, r.ranges.first().unwrap()).is_err());
+        // reversed range: rejected rather than underflowing the body length
+        let r = parse_range_header("bytes=500-100").unwrap();
+        assert!(HlsRouter::get_range(1000, r.ranges.first().unwrap()).is_err());
     }
 
     #[test]
