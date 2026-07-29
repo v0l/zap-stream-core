@@ -15,6 +15,8 @@ use serde::Deserialize;
 use std::borrow::Cow;
 use std::ops::Range;
 use std::path::PathBuf;
+use tokio::fs::File;
+use tokio_util::io::ReaderStream;
 use tracing::warn;
 use uuid::Uuid;
 use zap_stream_core::egress::hls::HLS_EGRESS_PATH;
@@ -426,16 +428,7 @@ impl HlsRouter {
                     }
                 }
 
-                let stream = FileStream::from_path(&segment_path)
-                    .await
-                    .map_err(|_| (StatusCode::NOT_FOUND, "File not found"))?;
-                let file_size = stream
-                    .content_size
-                    .ok_or((StatusCode::INTERNAL_SERVER_ERROR, "Unknown file size"))?;
-                let single_range = Self::get_range(file_size, &single).map_err(|_| {
-                    (StatusCode::RANGE_NOT_SATISFIABLE, "Invalid range request")
-                })?;
-                Ok(stream.into_range_response(single_range.start, single_range.end, file_size))
+                Self::range_response(&segment_path, &single).await
             } else {
                 Err((StatusCode::BAD_REQUEST, "Invalid range"))
             }
@@ -445,6 +438,26 @@ impl HlsRouter {
                 .map_err(|_| (StatusCode::NOT_FOUND, "File not found"))?;
             Ok(stream.into_response())
         }
+    }
+
+    /// Serves a single byte range of a segment file.
+    ///
+    /// The body must carry only the requested bytes: a part is a byte range
+    /// inside a segment file that is still growing, so a whole-file body makes
+    /// the player read past the part it asked for.
+    async fn range_response(
+        segment_path: &std::path::Path,
+        header: &SyntacticallyCorrectRange,
+    ) -> Result<Response, (StatusCode, &'static str)> {
+        let file_size = tokio::fs::metadata(segment_path)
+            .await
+            .map(|m| m.len())
+            .map_err(|_| (StatusCode::NOT_FOUND, "File not found"))?;
+        let range = Self::get_range(file_size, header)
+            .map_err(|_| (StatusCode::RANGE_NOT_SATISFIABLE, "Invalid range request"))?;
+        FileStream::<ReaderStream<File>>::try_range_response(segment_path, range.start, range.end)
+            .await
+            .map_err(|_| (StatusCode::NOT_FOUND, "File not found"))
     }
 
     fn get_range(file_size: u64, header: &SyntacticallyCorrectRange) -> Result<Range<u64>> {
@@ -628,6 +641,35 @@ mod tests {
         assert!(HlsRouter::next_segment_exists(&p12, "12.m4s").await);
         // non-numeric names never match
         assert!(!HlsRouter::next_segment_exists(&p12, "init.mp4").await);
+    }
+
+    /// Regression: a range response must carry only the requested bytes. A
+    /// part is a byte range inside a segment file that keeps growing, so a
+    /// whole-file body makes the player read past the part it asked for.
+    #[tokio::test]
+    async fn range_response_body_is_sliced() {
+        use axum::body::to_bytes;
+
+        let dir = tempfile::tempdir().unwrap();
+        let seg = dir.path().join("12.m4s");
+        let data: Vec<u8> = (0..=255u8).cycle().take(1000).collect();
+        std::fs::write(&seg, &data).unwrap();
+
+        let header = parse_range_header("bytes=100-199").unwrap();
+        let resp = HlsRouter::range_response(&seg, &header.ranges[0])
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            resp.headers()
+                .get(axum::http::header::CONTENT_RANGE)
+                .unwrap(),
+            "bytes 100-199/1000"
+        );
+
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(body.len(), 100);
+        assert_eq!(&body[..], &data[100..200]);
     }
 
     /// Regression: variant/segment path components were joined unchecked; a
