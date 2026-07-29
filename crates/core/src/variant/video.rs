@@ -129,6 +129,61 @@ impl VideoVariant {
         }
     }
 
+    /// The level used to configure the encoder: whatever the config asked for, or the
+    /// lowest level the content actually needs when the config leaves it unset.
+    pub fn resolved_level(&self) -> u32 {
+        if self.level > 0 {
+            self.level
+        } else {
+            self.derive_h264_level()
+        }
+    }
+
+    /// Lowest H.264 level (Annex A, Table A-1) whose frame size, macroblock rate and
+    /// bitrate limits admit this variant.
+    ///
+    /// The level is advertised in the HLS codec attribute and players gate decoder
+    /// selection on it, so pinning a high level makes a device reject a rendition it
+    /// could decode easily.
+    pub fn derive_h264_level(&self) -> u32 {
+        // (level_idc, MaxMBPS, MaxFS in macroblocks, MaxBR in units of 1200 bit/s)
+        // MaxBR is scaled by cpbBrVclFactor, 1200 for Baseline/Main/Extended.
+        const LEVELS: [(u32, u64, u64, u64); 19] = [
+            (10, 1_485, 99, 64),
+            (11, 3_000, 396, 192),
+            (12, 6_000, 396, 384),
+            (13, 11_880, 396, 768),
+            (20, 11_880, 396, 2_000),
+            (21, 19_800, 792, 4_000),
+            (22, 20_250, 1_620, 4_000),
+            (30, 40_500, 1_620, 10_000),
+            (31, 108_000, 3_600, 14_000),
+            (32, 216_000, 5_120, 20_000),
+            (40, 245_760, 8_192, 20_000),
+            (41, 245_760, 8_192, 50_000),
+            (42, 522_240, 8_704, 50_000),
+            (50, 589_824, 22_080, 135_000),
+            (51, 983_040, 36_864, 240_000),
+            (52, 2_073_600, 36_864, 240_000),
+            (60, 4_177_920, 139_264, 240_000),
+            (61, 8_355_840, 139_264, 480_000),
+            (62, 16_711_680, 139_264, 800_000),
+        ];
+
+        let mbs = self.width.div_ceil(16) as u64 * self.height.div_ceil(16) as u64;
+        let fps = if self.fps > 0.0 { self.fps } else { 30.0 };
+        let mbps = (mbs as f32 * fps).ceil() as u64;
+
+        LEVELS
+            .iter()
+            .find(|(_, max_mbps, max_fs, max_br)| {
+                mbs <= *max_fs && mbps <= *max_mbps && self.bitrate <= *max_br * 1200
+            })
+            .map(|(level, ..)| *level)
+            // nothing in the table fits, ask for the highest level rather than none
+            .unwrap_or(62)
+    }
+
     /// Apply any modifications to the config based on the ingress stream which is used for this variant
     pub fn patch_for_ingress(&mut self, ingress: &IngressStream) {
         // if the ingress stream is a different size or pixel format, apply scale mode.
@@ -190,7 +245,7 @@ impl VideoVariant {
                 .with_height(self.height as _)
                 .with_pix_fmt(transmute(self.pixel_format_id()?))
                 .with_profile(self.profile as _)
-                .with_level(self.level as _)
+                .with_level(self.resolved_level() as _)
                 .with_framerate(self.fps)?
                 .with_options(|ctx| {
                     (*ctx).gop_size = self.gop as _;
@@ -246,5 +301,62 @@ impl VideoVariant {
 
             Ok(enc)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn variant(width: u16, height: u16, fps: f32, bitrate: u64) -> VideoVariant {
+        VideoVariant {
+            width,
+            height,
+            fps,
+            bitrate,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn derives_level_from_the_ladder() {
+        assert_eq!(
+            variant(1920, 1080, 23.976, 8_000_000).derive_h264_level(),
+            40
+        );
+        assert_eq!(
+            variant(1280, 720, 23.976, 4_000_000).derive_h264_level(),
+            31
+        );
+        assert_eq!(variant(854, 480, 23.976, 1_500_000).derive_h264_level(), 30);
+    }
+
+    #[test]
+    fn frame_rate_and_bitrate_raise_the_level() {
+        // same frame size, 60fps exceeds the macroblock rate of 3.1
+        assert_eq!(variant(1280, 720, 60.0, 4_000_000).derive_h264_level(), 32);
+        // same frame size and rate, bitrate exceeds MaxBR of 3.1 (16.8Mb/s)
+        assert_eq!(
+            variant(1280, 720, 23.976, 20_000_000).derive_h264_level(),
+            32
+        );
+    }
+
+    #[test]
+    fn handles_4k_and_missing_frame_rate() {
+        assert_eq!(
+            variant(3840, 2160, 30.0, 12_000_000).derive_h264_level(),
+            51
+        );
+        // an unknown frame rate must not divide by zero or pick level 1
+        assert_eq!(variant(1920, 1080, 0.0, 8_000_000).derive_h264_level(), 40);
+    }
+
+    #[test]
+    fn configured_level_wins_over_derivation() {
+        let mut v = variant(854, 480, 23.976, 1_500_000);
+        assert_eq!(v.resolved_level(), 30);
+        v.level = 51;
+        assert_eq!(v.resolved_level(), 51);
     }
 }
