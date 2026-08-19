@@ -1103,6 +1103,20 @@ impl CfApiWrapper {
             .await
     }
 
+    /// Re-publish the Nostr event for a live stream after its metadata changed.
+    /// No-op for streams that are not currently live.
+    async fn republish_stream_event(&self, stream_id: &Uuid) -> Result<()> {
+        let mut stream = self.db.get_stream(stream_id).await?;
+        if stream.state != UserStreamState::Live {
+            return Ok(());
+        }
+        let user = self.db.get_user(stream.user_id).await?;
+        let event = self.publish_stream_event(&stream, &user).await?;
+        stream.event = Some(event.as_json());
+        self.db.update_stream(&stream).await?;
+        Ok(())
+    }
+
     async fn should_publish_viewer_count(&self, stream_id: &str, count: u32) -> bool {
         let mut states = self.viewer_count_states.write().await;
         let now = Utc::now();
@@ -1274,7 +1288,18 @@ impl ZapStreamApi for CfApiWrapper {
     }
 
     async fn update_event(&self, auth: Nip98Auth, patch: PatchEvent) -> Result<()> {
-        self.api_base.update_event(auth, patch).await
+        self.api_base.update_event(auth, patch.clone()).await?;
+
+        // Republish the kind 30311 event immediately so metadata edits appear on
+        // Nostr right away. Without this the change only lands on the next poller
+        // publish (viewer-count driven), which can take several minutes or never.
+        if let Some(id) = patch.id
+            && let Ok(uuid) = id.parse::<Uuid>()
+            && let Err(e) = self.republish_stream_event(&uuid).await
+        {
+            warn!("Failed to republish nostr event for stream {}: {}", uuid, e);
+        }
+        Ok(())
     }
 
     async fn delete_event(&self, auth: Nip98Auth, stream_id: Uuid) -> Result<()> {
