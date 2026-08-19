@@ -9,7 +9,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{any};
 use axum::{Router};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use nostr_sdk::{Client, Event, JsonUtil, Kind, PublicKey, Tag, ToBech32};
 use nostr_sdk::prelude::Coordinate;
 use std::collections::HashMap;
@@ -719,6 +719,25 @@ impl CfApiWrapper {
                                     warn!("Failed to publish live input for user {}", e);
                                 }
                             } else {
+                                // Charge for time streamed since the last poll. Do this before
+                                // anything else so a stream that has run out of funds is cut off
+                                // promptly rather than after another publish cycle.
+                                match self.bill_stream(&live_stream, &user).await {
+                                    Ok(true) => {
+                                        info!("Balance ran out for stream {}, ending stream", live_stream.id);
+                                        if let Err(e) = self.publish_stream_end(input).await {
+                                            warn!("Failed to end out-of-balance stream {}: {}", live_stream.id, e);
+                                        }
+                                        continue;
+                                    }
+                                    Ok(false) => {}
+                                    Err(e) => {
+                                        // Don't cut off a stream because billing failed; log and
+                                        // retry next tick. Unbilled time is recovered then, since
+                                        // billable_duration is derived from stream.duration.
+                                        warn!("Poller: failed to bill stream {}: {}", live_stream.id, e);
+                                    }
+                                }
                                 if let Err(e) = self.ensure_tracking_live(&input, &user, &live_stream).await {
                                     warn!("Poller: failed to ensure tracking for stream {}: {}", live_stream.id, e);
                                     continue;
@@ -1101,6 +1120,44 @@ impl CfApiWrapper {
     ) -> Result<Event> {
         self.publish_stream_event_full(stream, user, download_url)
             .await
+    }
+
+    /// Meter and charge a live stream for the time elapsed since it was last billed.
+    ///
+    /// Returns `true` if the user has run out of balance and the stream should be
+    /// terminated. Streams on a zero-cost endpoint are always free and never cut off.
+    async fn bill_stream(&self, stream: &UserStream, user: &User) -> Result<bool> {
+        let endpoint_id = match stream.endpoint_id {
+            Some(id) => id,
+            None => {
+                // Pre-existing streams may have no endpoint recorded; nothing to price
+                // against, so leave them free rather than guessing a rate.
+                warn!("Stream {} has no endpoint_id, skipping billing", stream.id);
+                return Ok(false);
+            }
+        };
+        let endpoint = self.db.get_ingest_endpoint(endpoint_id).await?;
+        if endpoint.cost == 0 {
+            return Ok(false);
+        }
+
+        let billable = billable_duration(stream, Utc::now(), MAX_BILLABLE_CATCHUP_SECS);
+        if billable <= 0.0 {
+            return Ok(false);
+        }
+        let cost = cost_for_duration(endpoint.cost, billable);
+
+        let stream_uuid: Uuid = stream.id.parse()?;
+        let balance = self
+            .db
+            .tick_stream(&stream_uuid, stream.user_id, billable, cost)
+            .await?;
+
+        info!(
+            "Billed stream {} for {:.1}s ({} msats), user {} balance now {}",
+            stream.id, billable, cost, user.id, balance
+        );
+        Ok(balance <= 0)
     }
 
     /// Re-publish the Nostr event for a live stream after its metadata changed.
@@ -1500,6 +1557,35 @@ impl ZapStreamApi for CfApiWrapper {
     }
 }
 
+/// Upper bound on how much un-billed time a single poll tick may charge for.
+///
+/// Billable time is derived from wall-clock elapsed minus already-billed duration, so a
+/// service restart, a long GC pause, or a stream that predates billing would otherwise
+/// produce one huge retroactive charge. Clamping to a few poll intervals means missed
+/// ticks are still recovered, but the worst case is bounded.
+const MAX_BILLABLE_CATCHUP_SECS: f32 = 120.0;
+
+/// Seconds of stream time that have not yet been billed.
+///
+/// Derived from the DB (`starts` vs accumulated `duration`) rather than in-memory state so
+/// that it survives restarts and never double-charges: `tick_stream` advances `duration` by
+/// exactly what was billed.
+fn billable_duration(stream: &UserStream, now: DateTime<Utc>, max_catchup: f32) -> f32 {
+    let elapsed = (now - stream.starts).num_milliseconds() as f32 / 1000.0;
+    let unbilled = elapsed - stream.duration;
+    unbilled.clamp(0.0, max_catchup)
+}
+
+/// Cost in msats for `duration_secs` at `cost_per_minute` msats/min.
+fn cost_for_duration(cost_per_minute: u64, duration_secs: f32) -> i64 {
+    let cost = (cost_per_minute as f64 * (duration_secs as f64 / 60.0)).round();
+    if cost.is_finite() && cost > 0.0 {
+        cost as i64
+    } else {
+        0
+    }
+}
+
 fn resolve_tos_url(tos_url: Option<&str>) -> String {
     match tos_url {
         Some(url) if !url.trim().is_empty() => url.to_string(),
@@ -1533,7 +1619,7 @@ mod tests {
         apply_custom_ingest_domain, apply_video_asset_to_stream, build_account_endpoints,
         build_alt_text, build_stream_key, get_download_url, resolve_client_url, resolve_tos_url,
         select_ingest_endpoint, should_skip_duplicate_webhook,
-        slugify_title, ViewerCountTracker,
+        billable_duration, cost_for_duration, slugify_title, ViewerCountTracker,
     };
     use crate::cloudflare::{LiveInput, Playback, RtmpsEndpoint, SrtEndpoint, VideoAssetStatus, VideoAssetWebhook};
     use mockito::Server;
@@ -1991,6 +2077,50 @@ mod tests {
         assert!(first > 0);
         assert_eq!(first, second);
         mock.assert_async().await;
+    }
+
+    #[test]
+    fn billable_duration_charges_only_unbilled_time() {
+        let mut stream = sample_stream();
+        let now = Utc::now();
+        stream.starts = now - chrono::Duration::seconds(90);
+        stream.duration = 60.0;
+        // 90s elapsed, 60s already billed -> 30s outstanding
+        assert!((billable_duration(&stream, now, 120.0) - 30.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn billable_duration_is_clamped_for_long_gaps() {
+        let mut stream = sample_stream();
+        let now = Utc::now();
+        // Stream predates billing entirely: 10h elapsed, nothing billed
+        stream.starts = now - chrono::Duration::hours(10);
+        stream.duration = 0.0;
+        assert_eq!(billable_duration(&stream, now, 120.0), 120.0);
+    }
+
+    #[test]
+    fn billable_duration_never_negative_when_over_billed() {
+        let mut stream = sample_stream();
+        let now = Utc::now();
+        stream.starts = now - chrono::Duration::seconds(30);
+        stream.duration = 100.0;
+        assert_eq!(billable_duration(&stream, now, 120.0), 0.0);
+    }
+
+    #[test]
+    fn cost_for_duration_matches_rate_per_minute() {
+        // 1 sat/min == 1000 msats/min, billed for exactly one minute
+        assert_eq!(cost_for_duration(1000, 60.0), 1000);
+        // A 30s poll tick costs half a minute
+        assert_eq!(cost_for_duration(1000, 30.0), 500);
+    }
+
+    #[test]
+    fn cost_for_duration_is_zero_for_free_or_empty() {
+        assert_eq!(cost_for_duration(0, 60.0), 0);
+        assert_eq!(cost_for_duration(1000, 0.0), 0);
+        assert_eq!(cost_for_duration(1000, f32::NAN), 0);
     }
 
     #[test]
