@@ -3,6 +3,7 @@ name = "zap-stream-external"
 description = "NIP-53 server using an external streaming provider API"
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 version.workspace = true
 
 [features]

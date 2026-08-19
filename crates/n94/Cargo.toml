@@ -4,6 +4,7 @@ description = "Standalone NIP-53 broadcaster"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 [features]
 default = ["tls-ring", "moq"]
