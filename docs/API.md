@@ -214,7 +214,8 @@ PATCH /api/v1/event
     "string"
   ],
   "content_warning": "string",
-  "goal": "string"
+  "goal": "string",
+  "pinned": "string"
 }
 ```
 
@@ -224,7 +225,7 @@ PATCH /api/v1/event
 {}
 ```
 
-**Description:** Updates stream event metadata such as title, description, image, tags, content warnings, and goals.
+**Description:** Updates stream event metadata such as title, description, image, tags, content warnings, goals, and pinned live chat messages.
 
 ### RTMP Forward Management
 

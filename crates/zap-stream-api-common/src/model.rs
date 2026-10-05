@@ -123,6 +123,7 @@ pub struct PatchEvent {
     pub tags: Option<Vec<String>>,
     pub content_warning: Option<String>,
     pub goal: Option<String>,
+    pub pinned: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]

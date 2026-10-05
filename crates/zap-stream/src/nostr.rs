@@ -314,4 +314,83 @@ mod tests {
 
         assert_eq!(count_tag(event.tags.iter(), "alt"), 0);
     }
+
+    fn tag_value<'a>(mut tags: impl Iterator<Item = &'a Tag>, name: &str) -> Option<String> {
+        tags.find(|t| t.as_slice().first().map(|v| v.as_str()) == Some(name))
+            .and_then(|t| t.as_slice().get(1).map(|v| v.to_string()))
+    }
+
+    #[tokio::test]
+    async fn stream_to_event_adds_goal_tag() {
+        let keys = Keys::generate();
+        let client = ClientBuilder::new().signer(keys).build();
+        let publisher = N53Publisher::new(StreamManager::new("test-node".to_string()), client);
+
+        let mut stream = sample_stream(UserStreamState::Live);
+        stream.goal = Some("goal-event-id".to_string());
+        let event = publisher
+            .stream_to_event(&stream, vec![], None)
+            .await
+            .unwrap();
+
+        assert_eq!(count_tag(event.tags.iter(), "goal"), 1);
+        assert_eq!(
+            tag_value(event.tags.iter(), "goal").as_deref(),
+            Some("goal-event-id")
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_to_event_omits_empty_goal() {
+        let keys = Keys::generate();
+        let client = ClientBuilder::new().signer(keys).build();
+        let publisher = N53Publisher::new(StreamManager::new("test-node".to_string()), client);
+
+        // An empty string is how a PATCH clears the goal
+        let mut stream = sample_stream(UserStreamState::Live);
+        stream.goal = Some("".to_string());
+        let event = publisher
+            .stream_to_event(&stream, vec![], None)
+            .await
+            .unwrap();
+
+        assert_eq!(count_tag(event.tags.iter(), "goal"), 0);
+    }
+
+    #[tokio::test]
+    async fn stream_to_event_adds_pinned_tag() {
+        let keys = Keys::generate();
+        let client = ClientBuilder::new().signer(keys).build();
+        let publisher = N53Publisher::new(StreamManager::new("test-node".to_string()), client);
+
+        let mut stream = sample_stream(UserStreamState::Live);
+        stream.pinned = Some("pinned-event-id".to_string());
+        let event = publisher
+            .stream_to_event(&stream, vec![], None)
+            .await
+            .unwrap();
+
+        assert_eq!(count_tag(event.tags.iter(), "pinned"), 1);
+        assert_eq!(
+            tag_value(event.tags.iter(), "pinned").as_deref(),
+            Some("pinned-event-id")
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_to_event_omits_empty_pinned() {
+        let keys = Keys::generate();
+        let client = ClientBuilder::new().signer(keys).build();
+        let publisher = N53Publisher::new(StreamManager::new("test-node".to_string()), client);
+
+        // An empty string is how a PATCH unpins
+        let mut stream = sample_stream(UserStreamState::Live);
+        stream.pinned = Some("".to_string());
+        let event = publisher
+            .stream_to_event(&stream, vec![], None)
+            .await
+            .unwrap();
+
+        assert_eq!(count_tag(event.tags.iter(), "pinned"), 0);
+    }
 }

@@ -110,4 +110,25 @@ impl ApiClient {
         );
         resp.json::<Value>().await.expect("invalid JSON response")
     }
+
+    /// PATCH /api/v1/event to update stream (or account default) metadata.
+    pub async fn patch_event(&self, body: &Value) {
+        let url = format!("{}/event", self.base_url);
+        let token = self.make_nip98_token(&url, "PATCH").await;
+        let resp = self
+            .http
+            .patch(&url)
+            .header("Authorization", format!("Nostr {}", token))
+            .header("Content-Type", "application/json")
+            .json(body)
+            .send()
+            .await
+            .expect("PATCH /event failed");
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "PATCH /event returned {}",
+            resp.status()
+        );
+    }
 }
