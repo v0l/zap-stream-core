@@ -23,7 +23,7 @@ use tracing::log::error;
 use tracing::{info, warn};
 use url::Url;
 use uuid::Uuid;
-use zap_stream::api_base::ApiBase;
+use zap_stream::api_base::{ApiBase, is_planned};
 use zap_stream::nostr::N53Publisher;
 use zap_stream::payments::LightningNode;
 use zap_stream::stream_manager::StreamManager;
@@ -132,6 +132,7 @@ fn build_stream_key(row: &zap_stream_db::UserStreamKey, key: String) -> StreamKe
         created: row.created.timestamp(),
         expires: row.expires.map(|e| e.timestamp()),
         stream_id: row.stream_id.clone(),
+        stream: None,
     }
 }
 
@@ -453,6 +454,12 @@ impl CfApiWrapper {
                 "Resuming fixed stream {} for custom key {} (user {})",
                 stream.id, key_id, user.id
             );
+            // A new broadcast on a reused stream: it starts now (NIP-53), and so does
+            // its duration, which billing measures from `starts`
+            if stream.state != UserStreamState::Live {
+                stream.starts = Utc::now();
+                stream.duration = 0.0;
+            }
             stream.state = UserStreamState::Live;
             stream.endpoint_id = Some(endpoint.id);
             stream.ends = None;
@@ -912,7 +919,10 @@ impl CfApiWrapper {
                             warn!("Giving up on MP4 download for {} after 3 attempts", v.uid);
                         }
                     }
-                    if apply_video_asset_to_stream(&mut stream, &v) {
+                    // A stream planned again has moved on from this recording
+                    if stream.state != UserStreamState::Planned
+                        && apply_video_asset_to_stream(&mut stream, &v)
+                    {
                         let event = self
                             .publish_stream_event_with_download(&stream, &user, download_url.as_deref())
                             .await?;
@@ -1087,15 +1097,18 @@ impl CfApiWrapper {
             Tag::parse(["p", hex::encode(&user.pubkey).as_str(), "", "host"])?,
             Tag::parse(["service", self.map_to_public_url("api/v1")?.as_str()])?,
         ];
-        let input = self.get_user_live_input(user).await?;
-        match (&stream.state, self.get_streaming_url(&stream, &input)?) {
-            (&UserStreamState::Live, Some(u)) => {
-                extra_tags.push(Tag::parse(["streaming", u.as_str()])?)
+        // A planned stream has no URL yet, and looking up the live input creates one if missing
+        if stream.state != UserStreamState::Planned {
+            let input = self.get_user_live_input(user).await?;
+            match (&stream.state, self.get_streaming_url(&stream, &input)?) {
+                (&UserStreamState::Live, Some(u)) => {
+                    extra_tags.push(Tag::parse(["streaming", u.as_str()])?)
+                }
+                (&UserStreamState::Ended, Some(u)) => {
+                    extra_tags.push(Tag::parse(["recording", u.as_str()])?)
+                }
+                _ => {}
             }
-            (&UserStreamState::Ended, Some(u)) => {
-                extra_tags.push(Tag::parse(["recording", u.as_str()])?)
-            }
-            _ => {}
         }
         if let Some(url) = download_url {
             extra_tags.push(Tag::parse(["download", url])?);
@@ -1160,13 +1173,9 @@ impl CfApiWrapper {
         Ok(balance <= 0)
     }
 
-    /// Re-publish the Nostr event for a live stream after its metadata changed.
-    /// No-op for streams that are not currently live.
+    /// Re-publish the Nostr event for a stream after its metadata changed.
     async fn republish_stream_event(&self, stream_id: &Uuid) -> Result<()> {
         let mut stream = self.db.get_stream(stream_id).await?;
-        if stream.state != UserStreamState::Live {
-            return Ok(());
-        }
         let user = self.db.get_user(stream.user_id).await?;
         let event = self.publish_stream_event(&stream, &user).await?;
         stream.event = Some(event.as_json());
@@ -1345,12 +1354,11 @@ impl ZapStreamApi for CfApiWrapper {
     }
 
     async fn update_event(&self, auth: Nip98Auth, patch: PatchEvent) -> Result<()> {
-        self.api_base.update_event(auth, patch.clone()).await?;
-
         // Republish the kind 30311 event immediately so metadata edits appear on
         // Nostr right away. Without this the change only lands on the next poller
         // publish (viewer-count driven), which can take several minutes or never.
-        if let Some(id) = patch.id
+        if self.api_base.update_event(auth, patch.clone()).await?
+            && let Some(id) = patch.id
             && let Ok(uuid) = id.parse::<Uuid>()
             && let Err(e) = self.republish_stream_event(&uuid).await
         {
@@ -1480,6 +1488,10 @@ impl ZapStreamApi for CfApiWrapper {
                 }
             }
         }
+        let mut events = self.api_base.get_stream_key_events(uid).await?;
+        for key in out.iter_mut() {
+            key.stream = events.remove(&key.stream_id);
+        }
         Ok(out)
     }
 
@@ -1488,6 +1500,7 @@ impl ZapStreamApi for CfApiWrapper {
         auth: Nip98Auth,
         req: CreateStreamKeyRequest,
     ) -> Result<CreateStreamKeyResponse> {
+        let planned = is_planned(&req.status)?;
         let uid = self.db.upsert_user(&auth.pubkey).await?;
         let stream_id = Uuid::new_v4();
         let pk = PublicKey::from_slice(&auth.pubkey)?;
@@ -1502,7 +1515,8 @@ impl ZapStreamApi for CfApiWrapper {
         let mut new_stream = zap_stream_db::UserStream {
             id: stream_id.to_string(),
             user_id: uid,
-            starts: Utc::now(),
+            starts: req.starts.unwrap_or_else(Utc::now),
+            ends: req.ends,
             state: zap_stream_db::UserStreamState::Planned,
             title: req.event.title,
             summary: req.event.summary,
@@ -1529,9 +1543,20 @@ impl ZapStreamApi for CfApiWrapper {
         new_stream.stream_key_id = Some(key_id);
         self.db.update_stream(&new_stream).await?;
 
+        let mut event = None;
+        if planned {
+            match self.republish_stream_event(&stream_id).await {
+                Ok(()) => event = self.db.get_stream(&stream_id).await?.event,
+                Err(e) => warn!(
+                    "Failed to publish nostr event for stream {}: {}",
+                    stream_id, e
+                ),
+            }
+        }
+
         Ok(CreateStreamKeyResponse {
             key: input.rtmps.stream_key,
-            event: None,
+            event,
         })
     }
 

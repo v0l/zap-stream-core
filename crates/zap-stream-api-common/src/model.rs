@@ -100,12 +100,16 @@ pub struct StreamKey {
     pub created: i64,
     pub expires: Option<i64>,
     pub stream_id: String,
+    pub stream: Option<nostr_sdk::Event>,
 }
 
 #[derive(Deserialize, Serialize)]
 pub struct CreateStreamKeyRequest {
     pub event: PatchEventDetails,
     pub expires: Option<DateTime<Utc>>,
+    pub status: Option<String>,
+    pub starts: Option<DateTime<Utc>>,
+    pub ends: Option<DateTime<Utc>>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -124,6 +128,9 @@ pub struct PatchEvent {
     pub content_warning: Option<String>,
     pub goal: Option<String>,
     pub pinned: Option<String>,
+    pub status: Option<String>,
+    pub starts: Option<DateTime<Utc>>,
+    pub ends: Option<DateTime<Utc>>,
 }
 
 #[derive(Deserialize, Serialize)]
