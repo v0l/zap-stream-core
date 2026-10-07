@@ -222,6 +222,13 @@ async fn e2e_planned_show_lifecycle() {
         !nostr_relay::has_tag(&planned, "current_participants"),
         "planned event must not carry a viewer count"
     );
+    assert!(
+        planned.tags.iter().any(|t| {
+            let v = t.as_slice();
+            v.len() >= 4 && v[0] == "p" && v[1] == h.client.pubkey_hex() && v[3] == "host"
+        }),
+        "planned event does not name the streamer as host"
+    );
     let t_tags = nostr_relay::get_all_tag_values(&planned, "t");
     assert!(
         t_tags.contains(&h.run_id),
@@ -239,9 +246,8 @@ async fn e2e_planned_show_lifecycle() {
     let new_title = format!("Planned Show {} (updated)", h.run_id);
     let status = h
         .client
-        .patch_event(
-            serde_json::json!({ "id": stream_id, "status": "planned", "title": new_title }),
-        )
+        // no status: an edit to a published planned show is republished as it is
+        .patch_event(serde_json::json!({ "id": stream_id, "title": new_title }))
         .await;
     assert!(status.is_success(), "PATCH /event returned {status}");
 

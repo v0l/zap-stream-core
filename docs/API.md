@@ -231,7 +231,8 @@ PATCH /api/v1/event
 **Description:** Updates stream event metadata such as title, description, image, tags, content warnings, goals, and pinned live chat messages.
 `status: "planned"` sets the stream to planned with the given `starts` and `ends` and publishes it, including a
 custom-key stream that has ended, which plans its next broadcast. `starts` and `ends` are only applied with it. Edits
-to a live stream are republished immediately; other edits are published with the stream's next planned or live event.
+to a live stream, or to a planned stream that has been published, are republished immediately; other edits are
+published with the stream's next planned or live event.
 
 ### RTMP Forward Management
 

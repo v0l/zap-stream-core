@@ -155,7 +155,11 @@ impl ApiBase {
                 }
             }
 
-            publish = planned || stream.state == zap_stream_db::UserStreamState::Live;
+            // Publish a stream being planned, and keep a published live or planned one current
+            publish = planned
+                || stream.state == zap_stream_db::UserStreamState::Live
+                || (stream.state == zap_stream_db::UserStreamState::Planned
+                    && stream.event.is_some());
             self.db.update_stream(&stream).await?;
         } else {
             // Update user default stream info
