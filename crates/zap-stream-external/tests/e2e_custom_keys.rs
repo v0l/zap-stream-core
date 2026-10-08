@@ -388,3 +388,127 @@ async fn e2e_custom_key_metadata_isolation() {
     relay.disconnect().await;
     println!("\n====== ALL {total_steps}/{total_steps} STEPS PASSED ======");
 }
+
+/// Stream to a custom key, verify the live event plays from the key's own input and
+/// the account still reports its own key afterwards.
+#[tokio::test]
+#[ignore]
+async fn e2e_custom_key_live_keeps_account_key() {
+    let config = TestConfig::from_env();
+    let total_steps = 5;
+
+    let run_id = &Uuid::new_v4().to_string()[..8];
+    println!("[INFO] Test run_id: {run_id}");
+
+    // ── Step 1: Prerequisites ──────────────────────────────────────────
+    println!("[TEST] Step 1/{total_steps}: Check prerequisites");
+    assert!(
+        docker::check_docker_available().await,
+        "Docker is not running"
+    );
+    assert!(
+        docker::command_exists("ffmpeg").await,
+        "ffmpeg not found on PATH"
+    );
+    let ext_container = docker::detect_container("zap-stream-external")
+        .await
+        .or(config.external_container.clone())
+        .expect("Cannot find zap-stream-external container");
+    println!("[PASS] Step 1/{total_steps}: Check prerequisites");
+
+    let test_nsec = Keys::generate().secret_key().to_bech32().expect("bech32 nsec");
+    let client = ApiClient::new(&test_nsec, &config.api_base_url()).await;
+    let db = TestDb::connect(&config.db_connection_string()).await;
+    db.ensure_user_exists(&client.pubkey_hex()).await;
+
+    // ── Step 2: Note the account key ───────────────────────────────────
+    println!("[TEST] Step 2/{total_steps}: Note the account key");
+    let rtmps_endpoint = |account: &serde_json::Value| {
+        account["endpoints"]
+            .as_array()
+            .expect("no endpoints")
+            .iter()
+            .find(|e| e["name"].as_str().unwrap_or("").starts_with("RTMPS-"))
+            .expect("No RTMPS endpoint")
+            .clone()
+    };
+    let rtmps = rtmps_endpoint(&client.get_account().await);
+    let rtmp_url = rtmps["url"].as_str().unwrap().to_string();
+    let account_key = rtmps["key"].as_str().expect("No account key").to_string();
+    println!("[PASS] Step 2/{total_steps}: Account key noted");
+
+    // ── Step 3: Create a custom key ────────────────────────────────────
+    println!("[TEST] Step 3/{total_steps}: Create a custom key");
+    let key_resp = client
+        .create_key(&format!("Account key test {run_id}"), "", &[run_id])
+        .await;
+    let key = key_resp["key"].as_str().expect("No 'key' in response").to_string();
+    let keys_list = client.list_keys().await;
+    let stream_id = keys_list
+        .as_array()
+        .expect("keys list is not an array")
+        .iter()
+        .find(|k| k["key"].as_str() == Some(&key))
+        .and_then(|k| k["stream_id"].as_str())
+        .expect("Key missing stream_id")
+        .to_string();
+    let ck_external_id = db
+        .get_custom_key_external_id(&stream_id)
+        .await
+        .expect("No external_id for custom key");
+    println!("[PASS] Step 3/{total_steps}: Custom key created");
+
+    // ── Step 4: Stream to the custom key ───────────────────────────────
+    println!("[TEST] Step 4/{total_steps}: Stream to the custom key");
+    let relay = NostrRelay::connect(&config.nostr_relay_url).await;
+    let since = Timestamp::from(chrono::Utc::now().timestamp() as u64 - 60);
+    let stream_start = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+    let mut ffmpeg = FfmpegStream::start_rtmps(&rtmp_url, &key, 90, 1000).await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(ffmpeg.is_running(), "FFmpeg died immediately");
+
+    tokio::time::sleep(Duration::from_secs(20)).await;
+    let logs = docker::get_docker_logs_since(&ext_container, &stream_start).await;
+    let webhook_marker = format!("live_input.connected for input_id: {}", ck_external_id);
+    assert!(
+        logs.contains(&webhook_marker),
+        "Missing webhook for the custom key's Live Input: '{}'",
+        webhook_marker,
+    );
+
+    let events = relay.query_30311_events(since, Some(&stream_id)).await;
+    let live = events
+        .iter()
+        .find(|e| nostr_relay::get_tag_value(e, "status").as_deref() == Some("live"))
+        .expect("No LIVE event for the custom key");
+    let streaming = nostr_relay::get_tag_value(live, "streaming").expect("No streaming tag");
+    assert!(
+        streaming.contains(&ck_external_id),
+        "Live event streams from the wrong input: {} (expected input {})",
+        streaming,
+        ck_external_id,
+    );
+    println!("[PASS] Step 4/{total_steps}: Live event streams from the custom key's input");
+
+    // ── Step 5: The account still reports its own key ──────────────────
+    println!("[TEST] Step 5/{total_steps}: Account key unchanged");
+    let account_key_after = rtmps_endpoint(&client.get_account().await)["key"]
+        .as_str()
+        .expect("No account key")
+        .to_string();
+    ffmpeg.stop().await;
+    assert_eq!(
+        account_key_after, account_key,
+        "GET /account reports a different key after a custom key went live"
+    );
+    assert!(
+        !account_key_after.contains(&ck_external_id),
+        "GET /account reports the custom key's input"
+    );
+    println!("[PASS] Step 5/{total_steps}: Account key unchanged");
+
+    tokio::time::sleep(Duration::from_secs(15)).await;
+    relay.disconnect().await;
+    println!("\n====== ALL {total_steps}/{total_steps} STEPS PASSED ======");
+}

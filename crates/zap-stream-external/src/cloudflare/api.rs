@@ -289,8 +289,8 @@ pub struct CfApiWrapper {
     api_base: ApiBase,
     /// Database instance
     db: ZapStreamDb,
-    /// Cache of live input data for users
-    live_input_cache: Arc<RwLock<HashMap<u64, LiveInput>>>,
+    /// Cache of live input data by input uid
+    live_input_cache: Arc<RwLock<HashMap<String, LiveInput>>>,
     /// Map input uid to stream id with TTL
     input_stream_map: Arc<RwLock<HashMap<String, (String, Instant)>>>,
     /// Terms of Service URL to return in account info
@@ -578,7 +578,7 @@ impl CfApiWrapper {
             self.live_input_cache
                 .write()
                 .await
-                .insert(user.id, response.clone());
+                .insert(response.uid.clone(), response.clone());
 
             Ok(response)
         } else {
@@ -593,7 +593,7 @@ impl CfApiWrapper {
             self.live_input_cache
                 .write()
                 .await
-                .insert(user.id, response.result.clone());
+                .insert(response.result.uid.clone(), response.result.clone());
             Ok(response.result)
         } else {
             bail!(
@@ -604,8 +604,9 @@ impl CfApiWrapper {
     }
 
     async fn get_user_live_input(&self, user: &User) -> Result<LiveInput> {
+        let external_id = user.external_id.as_ref().unwrap_or(&user.stream_key);
         let cache = self.live_input_cache.read().await;
-        if let Some(input) = cache.get(&user.id) {
+        if let Some(input) = cache.get(external_id) {
             return Ok(input.clone());
         }
         drop(cache);
@@ -626,7 +627,7 @@ impl CfApiWrapper {
 
     async fn get_user_live_input_by_input_id(&self, input_id: &str) -> Result<LiveInput> {
         let cache = self.live_input_cache.read().await;
-        if let Some(input) = cache.values().find(|i| i.uid == input_id) {
+        if let Some(input) = cache.get(input_id) {
             return Ok(input.clone());
         }
         drop(cache);
@@ -646,7 +647,7 @@ impl CfApiWrapper {
                 self.live_input_cache
                     .write()
                     .await
-                    .insert(user.id, response.result.clone());
+                    .insert(response.result.uid.clone(), response.result.clone());
                 return Ok(response.result);
             }
         }
@@ -1099,7 +1100,11 @@ impl CfApiWrapper {
         ];
         // A planned stream has no URL yet, and looking up the live input creates one if missing
         if stream.state != UserStreamState::Planned {
-            let input = self.get_user_live_input(user).await?;
+            // A stream records the input it went live on, which may be a custom key's
+            let input = match &stream.external_input_id {
+                Some(input_id) => self.get_user_live_input_by_input_id(input_id).await?,
+                None => self.get_user_live_input(user).await?,
+            };
             match (&stream.state, self.get_streaming_url(&stream, &input)?) {
                 (&UserStreamState::Live, Some(u)) => {
                     extra_tags.push(Tag::parse(["streaming", u.as_str()])?)
