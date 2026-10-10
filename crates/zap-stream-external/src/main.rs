@@ -299,6 +299,29 @@ cloudflare:
     }
 
     #[test]
+    fn delete_recording_after_days_defaults_to_90_when_unset() {
+        let s = settings_with(&[]).unwrap();
+        assert_eq!(s.cloudflare.delete_recording_after_days, Some(90));
+    }
+
+    #[test]
+    fn delete_recording_after_days_from_env() {
+        let s = settings_with(&[("APP__CLOUDFLARE__DELETE_RECORDING_AFTER_DAYS", "60")]).unwrap();
+        assert_eq!(s.cloudflare.delete_recording_after_days, Some(60));
+    }
+
+    #[test]
+    fn delete_recording_after_days_blank_means_never() {
+        let s = settings_with(&[("APP__CLOUDFLARE__DELETE_RECORDING_AFTER_DAYS", "")]).unwrap();
+        assert_eq!(s.cloudflare.delete_recording_after_days, None);
+    }
+
+    #[test]
+    fn delete_recording_after_days_below_minimum_is_rejected() {
+        assert!(settings_with(&[("APP__CLOUDFLARE__DELETE_RECORDING_AFTER_DAYS", "29")]).is_err());
+    }
+
+    #[test]
     fn normalise_relays_trims_and_drops_empties() {
         let input: Vec<String> = ["wss://a", " wss://b", "", "  ", "wss://c  "]
             .iter().map(|s| s.to_string()).collect();
