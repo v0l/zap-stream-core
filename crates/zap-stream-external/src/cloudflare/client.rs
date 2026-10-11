@@ -18,7 +18,7 @@ pub struct CloudflareToken {
     pub token: String,
     pub account_id: String,
     /// Days after which live input recordings are deleted.
-    /// Unset = 90 (default), blank = never delete.
+    /// Unset = 90 (default), blank = never delete, below 30 = 30.
     #[serde(
         default = "default_delete_recording_after_days",
         deserialize_with = "deserialize_delete_recording_after_days"
@@ -45,10 +45,12 @@ where
         Some(s) => {
             let days: u32 = s.parse().map_err(serde::de::Error::custom)?;
             if days < MIN_DELETE_RECORDING_AFTER_DAYS {
-                return Err(serde::de::Error::custom(format!(
-                    "delete_recording_after_days must be at least {}",
+                tracing::warn!(
+                    "delete_recording_after_days {} is below Cloudflare's minimum, using {}",
+                    days,
                     MIN_DELETE_RECORDING_AFTER_DAYS
-                )));
+                );
+                return Ok(Some(MIN_DELETE_RECORDING_AFTER_DAYS));
             }
             Ok(Some(days))
         }

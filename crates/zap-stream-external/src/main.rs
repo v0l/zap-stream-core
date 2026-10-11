@@ -317,8 +317,9 @@ cloudflare:
     }
 
     #[test]
-    fn delete_recording_after_days_below_minimum_is_rejected() {
-        assert!(settings_with(&[("APP__CLOUDFLARE__DELETE_RECORDING_AFTER_DAYS", "29")]).is_err());
+    fn delete_recording_after_days_below_minimum_uses_minimum() {
+        let s = settings_with(&[("APP__CLOUDFLARE__DELETE_RECORDING_AFTER_DAYS", "29")]).unwrap();
+        assert_eq!(s.cloudflare.delete_recording_after_days, Some(30));
     }
 
     #[test]
