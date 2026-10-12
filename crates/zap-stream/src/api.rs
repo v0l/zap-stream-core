@@ -209,8 +209,8 @@ impl ZapStreamApi for Api {
     }
 
     async fn update_event(&self, auth: Nip98Auth, patch: PatchEvent) -> Result<()> {
-        self.api_base.update_event(auth, patch.clone()).await?;
-        if let Some(id) = patch.id
+        if self.api_base.update_event(auth, patch.clone()).await?
+            && let Some(id) = patch.id
             && let Ok(uuid) = id.parse()
         {
             if let Err(e) = self.overseer.on_update(&uuid).await {
@@ -276,7 +276,17 @@ impl ZapStreamApi for Api {
         auth: Nip98Auth,
         req: CreateStreamKeyRequest,
     ) -> Result<CreateStreamKeyResponse> {
-        self.api_base.create_stream_key(auth, req).await
+        let (mut rsp, announce) = self.api_base.create_stream_key(auth, req).await?;
+        if let Some(stream_id) = announce {
+            match self.overseer.on_update(&stream_id).await {
+                Ok(()) => rsp.event = self.db.get_stream(&stream_id).await?.event,
+                Err(e) => warn!(
+                    "Failed to publish nostr event for stream {}: {}",
+                    stream_id, e
+                ),
+            }
+        }
+        Ok(rsp)
     }
 
     async fn delete_stream_key(&self, _auth: Nip98Auth, _key_id: u64) -> Result<()> {

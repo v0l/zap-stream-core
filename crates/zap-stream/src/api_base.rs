@@ -6,6 +6,7 @@ use nostr_sdk::Client;
 use nostr_sdk::prelude::{EventDeletionRequest, NostrWalletConnectUri};
 use nwc::NostrWalletConnect;
 use payments_rs::lightning::{AddInvoiceRequest, LightningNode};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -27,6 +28,15 @@ pub(crate) fn tags_to_csv(tags: Vec<String>) -> Option<String> {
         None
     } else {
         Some(filtered.join(","))
+    }
+}
+
+/// Whether a request asks for its stream to be published as planned (NIP-53 `status`)
+pub fn is_planned(status: &Option<String>) -> Result<bool> {
+    match status.as_deref() {
+        None => Ok(false),
+        Some("planned") => Ok(true),
+        Some(s) => bail!("Unsupported status: {}", s),
     }
 }
 
@@ -81,8 +91,10 @@ impl ApiBase {
         Ok(())
     }
 
-    pub async fn update_event(&self, auth: Nip98Auth, patch: PatchEvent) -> Result<()> {
+    /// Returns true when the stream's nostr event should be published
+    pub async fn update_event(&self, auth: Nip98Auth, patch: PatchEvent) -> Result<bool> {
         let uid = self.db.upsert_user(&auth.pubkey).await?;
+        let mut publish = false;
 
         if patch.id.as_ref().map(|i| !i.is_empty()).unwrap_or(false) {
             // Update specific stream
@@ -94,8 +106,11 @@ impl ApiBase {
                 bail!("Unauthorized: Stream belongs to different user");
             }
 
-            // Don't allow modifications of ended streams
-            if stream.state == zap_stream_db::UserStreamState::Ended {
+            // Don't allow modifications of ended streams, except on a stream key: going
+            // live on the key reuses the stream, so this prepares its next broadcast
+            if stream.state == zap_stream_db::UserStreamState::Ended
+                && stream.stream_key_id.is_none()
+            {
                 bail!("Cannot modify ended stream");
             }
 
@@ -119,6 +134,29 @@ impl ApiBase {
                 stream.goal = Some(goal);
             }
 
+            let planned = is_planned(&patch.status)?;
+            if planned {
+                if stream.state == zap_stream_db::UserStreamState::Live {
+                    bail!("Cannot plan a live stream");
+                }
+                if stream.state == zap_stream_db::UserStreamState::Ended {
+                    // as going live does, drop the end of its last broadcast
+                    stream.ends = None;
+                }
+                stream.state = zap_stream_db::UserStreamState::Planned;
+                if let Some(starts) = patch.starts {
+                    stream.starts = starts;
+                }
+                if patch.ends.is_some() {
+                    stream.ends = patch.ends;
+                }
+            }
+
+            // Publish a stream being planned, and keep a published live or planned one current
+            publish = planned
+                || stream.state == zap_stream_db::UserStreamState::Live
+                || (stream.state == zap_stream_db::UserStreamState::Planned
+                    && stream.event.is_some());
             self.db.update_stream(&stream).await?;
         } else {
             // Update user default stream info
@@ -134,7 +172,7 @@ impl ApiBase {
                 )
                 .await?;
         }
-        Ok(())
+        Ok(publish)
     }
 
     pub async fn delete_event(&self, auth: Nip98Auth, stream_id: Uuid) -> Result<()> {
@@ -218,9 +256,28 @@ impl ApiBase {
         })
     }
 
+    /// Get the stored nostr event of the stream bound to each of a user's stream keys,
+    /// by stream id
+    pub async fn get_stream_key_events(
+        &self,
+        uid: u64,
+    ) -> Result<HashMap<String, nostr_sdk::Event>> {
+        Ok(self
+            .db
+            .get_user_keyed_streams(uid)
+            .await?
+            .into_iter()
+            .filter_map(|s| {
+                let ev = serde_json::from_str::<nostr_sdk::Event>(s.event.as_ref()?).ok()?;
+                Some((s.id, ev))
+            })
+            .collect())
+    }
+
     pub async fn get_stream_keys(&self, auth: Nip98Auth) -> Result<Vec<StreamKey>> {
         let uid = self.db.upsert_user(&auth.pubkey).await?;
         let keys = self.db.get_user_stream_keys(uid).await?;
+        let mut events = self.get_stream_key_events(uid).await?;
 
         Ok(keys
             .into_iter()
@@ -229,23 +286,27 @@ impl ApiBase {
                 key: k.key,
                 created: k.created.timestamp(),
                 expires: k.expires.map(|e| e.timestamp()),
+                stream: events.remove(&k.stream_id),
                 stream_id: k.stream_id,
             })
             .collect())
     }
 
+    /// Also returns the stream id when the new stream should be published as planned
     pub async fn create_stream_key(
         &self,
         auth: Nip98Auth,
         req: CreateStreamKeyRequest,
-    ) -> Result<CreateStreamKeyResponse> {
+    ) -> Result<(CreateStreamKeyResponse, Option<Uuid>)> {
+        let planned = is_planned(&req.status)?;
         let uid = self.db.upsert_user(&auth.pubkey).await?;
         let new_key = Uuid::new_v4().to_string();
         let stream_id = Uuid::new_v4();
         let mut new_stream = zap_stream_db::UserStream {
             id: stream_id.to_string(),
             user_id: uid,
-            starts: Utc::now(),
+            starts: req.starts.unwrap_or_else(Utc::now),
+            ends: req.ends,
             state: zap_stream_db::UserStreamState::Planned,
             title: req.event.title,
             summary: req.event.summary,
@@ -270,10 +331,13 @@ impl ApiBase {
         self.db.update_stream(&new_stream).await?;
 
         // For now, return minimal response - event building would require nostr integration
-        Ok(CreateStreamKeyResponse {
-            key: new_key,
-            event: None, // TODO: Build proper nostr event like C# version
-        })
+        Ok((
+            CreateStreamKeyResponse {
+                key: new_key,
+                event: None, // TODO: Build proper nostr event like C# version
+            },
+            planned.then_some(stream_id),
+        ))
     }
 
     pub async fn topup(

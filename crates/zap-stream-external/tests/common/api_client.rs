@@ -110,4 +110,54 @@ impl ApiClient {
         );
         resp.json::<Value>().await.expect("invalid JSON response")
     }
+
+    /// PATCH /api/v1/event to edit a stream's metadata or schedule.
+    pub async fn patch_event(&self, body: Value) -> StatusCode {
+        let url = format!("{}/event", self.base_url);
+        let token = self.make_nip98_token(&url, "PATCH").await;
+        self.http
+            .patch(&url)
+            .header("Authorization", format!("Nostr {}", token))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .expect("PATCH /event failed")
+            .status()
+    }
+
+    /// DELETE /api/v1/stream/{id} to cancel a stream.
+    pub async fn delete_stream(&self, stream_id: &str) -> StatusCode {
+        let url = format!("{}/stream/{}", self.base_url, stream_id);
+        let token = self.make_nip98_token(&url, "DELETE").await;
+        self.http
+            .delete(&url)
+            .header("Authorization", format!("Nostr {}", token))
+            .send()
+            .await
+            .expect("DELETE /stream/{id} failed")
+            .status()
+    }
+
+    /// POST /api/v1/keys with an arbitrary body, asserting success.
+    pub async fn create_key_with(&self, body: Value) -> Value {
+        let url = format!("{}/keys", self.base_url);
+        let token = self.make_nip98_token(&url, "POST").await;
+        let resp = self
+            .http
+            .post(&url)
+            .header("Authorization", format!("Nostr {}", token))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .expect("POST /keys failed");
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "POST /keys returned {}",
+            resp.status()
+        );
+        resp.json::<Value>().await.expect("invalid JSON response")
+    }
 }

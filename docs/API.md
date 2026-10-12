@@ -214,7 +214,10 @@ PATCH /api/v1/event
     "string"
   ],
   "content_warning": "string",
-  "goal": "string"
+  "goal": "string",
+  "status": "planned",
+  "starts": "2024-01-01T00:00:00Z",
+  "ends": "2024-01-01T01:00:00Z"
 }
 ```
 
@@ -225,6 +228,10 @@ PATCH /api/v1/event
 ```
 
 **Description:** Updates stream event metadata such as title, description, image, tags, content warnings, and goals.
+`status: "planned"` sets the stream to planned with the given `starts` and `ends` and publishes it, including a
+custom-key stream that has ended, which plans its next broadcast. `starts` and `ends` are only applied with it. Edits
+to a live stream, or to a planned stream that has been published, are republished immediately; other edits are
+published with the stream's next planned or live event.
 
 ### RTMP Forward Management
 
@@ -371,7 +378,8 @@ GET /api/v1/keys
     "key": "string",
     "created": 0,
     "expires": 0,
-    "stream_id": "string"
+    "stream_id": "string",
+    "stream": {}
   }
 ]
 ```
@@ -379,6 +387,8 @@ GET /api/v1/keys
 **Description:** Returns all additional stream keys for the account. These are separate from the primary stream key (
 returned in account info) and are used for fixed stream events, planned streams, or 24/7 streams with pre-defined Nostr
 events.
+
+`stream` is the key's stream event (kind 30311), once one has been published.
 
 #### Create Additional Stream Key
 
@@ -402,7 +412,10 @@ POST /api/v1/keys
     "content_warning": "string",
     "goal": "string"
   },
-  "expires": "2024-01-01T00:00:00Z"
+  "expires": "2024-01-01T00:00:00Z",
+  "status": "planned",
+  "starts": "2024-01-01T00:00:00Z",
+  "ends": "2024-01-01T01:00:00Z"
 }
 ```
 
@@ -418,6 +431,9 @@ POST /api/v1/keys
 **Description:** Creates an additional stream key with pre-defined event metadata and optional expiration time. Unlike
 the primary stream key (which creates a new Nostr event each time), these keys are tied to a specific Nostr event and
 are ideal for planned streams, scheduled events, or 24/7 streaming scenarios.
+
+`status: "planned"` publishes the stream as planned with the given `starts` and `ends`, and returns the event in
+`event`. Going live on the key later updates the same event. `starts` defaults to now.
 
 #### Delete Stream
 

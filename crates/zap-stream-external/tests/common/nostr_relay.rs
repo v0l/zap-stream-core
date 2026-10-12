@@ -45,6 +45,17 @@ impl NostrRelay {
         events
     }
 
+    /// Query NIP-09 deletion requests (kind 5) since `since`.
+    pub async fn query_deletions(&self, since: Timestamp) -> Vec<Event> {
+        let filter = Filter::new().kind(Kind::Custom(5)).since(since);
+        self.client
+            .fetch_events(filter, Duration::from_secs(15))
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .collect()
+    }
+
     /// Find the most recent event matching a pubkey (via p-tag host) and status.
     pub fn find_user_event<'a>(
         events: &'a [Event],
