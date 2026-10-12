@@ -61,6 +61,84 @@ struct Settings {
     cloudflare: CloudflareToken,
 }
 
+/// Normalise a list of relay URLs coming from configuration.
+///
+/// Comma-separated environment variables are edited by hand (often in a web
+/// form), so entries routinely arrive with surrounding whitespace, and a
+/// trailing comma yields an empty entry. Neither is rejected by the config
+/// crate: `APP__RELAYS="wss://a, wss://b,"` deserializes to
+/// `["wss://a", " wss://b", ""]`, whose last two entries silently fail to
+/// connect. Trim each entry and drop the empties so a stray keystroke cannot
+/// quietly cost a relay.
+fn normalise_relays(relays: &[String]) -> Vec<String> {
+    relays
+        .iter()
+        .map(|r| r.trim())
+        .filter(|r| !r.is_empty())
+        .map(|r| r.to_string())
+        .collect()
+}
+
+/// Environment-variable configuration source.
+///
+/// `APP__` prefix, `__` as the nesting separator (so `APP__CLOUDFLARE__TOKEN`
+/// sets `cloudflare.token`). Added after the config file, so environment
+/// variables override file values.
+///
+/// `try_parsing` + `list_separator` let list-valued keys be supplied as a
+/// comma-separated string, e.g. `APP__RELAYS=wss://a,wss://b`. Without both of
+/// these a list key fails with "invalid type: string ..., expected a sequence".
+fn env_source() -> config::Environment {
+    config::Environment::with_prefix("APP")
+        .separator("__")
+        .try_parsing(true)
+        .list_separator(",")
+        .with_list_parse_key("relays")
+}
+
+/// Wrap the config file so that a payment backend named in the environment
+/// *selects* that backend.
+///
+/// `PaymentBackend` is externally tagged: `payments` must contain exactly one
+/// key. The config crate deep-merges sources, so `APP__PAYMENTS__LNURL__ADDRESS`
+/// layered onto a file whose `payments` selects `lnd` produces `{lnd, lnurl}`
+/// and deserialization fails. The shipped config.yaml selects `lnd`, so setting
+/// the documented env var against the stock image would refuse to start.
+///
+/// Drop every backend the file declares that the environment does not name.
+/// Overriding a field of the *same* backend still merges as before, and with no
+/// `APP__PAYMENTS__*` set the file is used unchanged.
+fn with_env_payment_backend<S>(
+    file: S,
+    env: &config::Environment,
+) -> Result<Config, config::ConfigError>
+where
+    S: config::Source + Send + Sync + 'static,
+{
+    let env_backends: Vec<String> = Config::builder()
+        .add_source(env.clone())
+        .build()?
+        .get::<serde_json::Map<String, serde_json::Value>>("payments")
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default();
+
+    let mut values: serde_json::Value = Config::builder()
+        .add_source(file)
+        .build()?
+        .try_deserialize()?;
+
+    if !env_backends.is_empty() {
+        if let Some(backends) = values
+            .get_mut("payments")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            backends.retain(|k, _| env_backends.contains(k));
+        }
+    }
+
+    Config::try_from(&values)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().init();
@@ -70,14 +148,19 @@ async fn main() -> Result<()> {
     info!("Starting zap-stream-cf");
     let mut tasks = vec![];
 
+    let env = env_source();
     let mut builder = Config::builder()
-        .add_source(config::File::with_name("config.yaml"))
-        .add_source(config::Environment::with_prefix("APP").separator("__"));
+        .add_source(with_env_payment_backend(
+            config::File::with_name("config.yaml"),
+            &env,
+        )?)
+        .add_source(env);
     #[cfg(debug_assertions)]
     {
         builder = builder.add_source(config::File::with_name("config.dev.yaml").required(false));
     }
-    let settings: Settings = builder.build()?.try_deserialize()?;
+    let mut settings: Settings = builder.build()?.try_deserialize()?;
+    settings.relays = normalise_relays(&settings.relays);
 
     // setup termination handler
     let shutdown = CancellationToken::new();
@@ -182,4 +265,243 @@ async fn main() -> Result<()> {
     }
     info!("Server closed.");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Settings, env_source, normalise_relays, with_env_payment_backend};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use zap_stream::payments::PaymentBackend;
+
+    /// The config.yaml baked into the Docker image. It selects the `lnd`
+    /// payment backend, which is what makes `APP__PAYMENTS__LNURL__ADDRESS`
+    /// interesting.
+    const SHIPPED_YAML: &str = include_str!("../config.yaml");
+
+    /// Minimal valid config file contents, mirroring the shipped config.yaml shape.
+    fn base_yaml() -> String {
+        r#"
+database: "mysql://root:root@localhost:3306/zap_stream"
+listen_http: "[::]:8080"
+public_url: "https://file.example"
+tos_url: "https://file.example/tos"
+client_url: "https://file.example/live"
+nsec: "nsec1wya428srvpu96n4h78gualaj7wqw4ecgatgja8d5ytdqrxw56r2se440y4"
+relays:
+  - "wss://file-one"
+  - "wss://file-two"
+payments:
+  lnurl:
+    address: "file@example.com"
+cloudflare:
+  token: "file-token"
+  account_id: "file-account"
+"#
+        .to_string()
+    }
+
+    fn settings_with(env: &[(&str, &str)]) -> Result<Settings, config::ConfigError> {
+        settings_from(&base_yaml(), env)
+    }
+
+    /// Load `Settings` the same way `main` does: file, then env, with the
+    /// payment-backend selection applied.
+    fn settings_from(yaml: &str, env: &[(&str, &str)]) -> Result<Settings, config::ConfigError> {
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!("zsx-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("c{}.yaml", N.fetch_add(1, Ordering::Relaxed)));
+        std::fs::write(&path, yaml).unwrap();
+        let map: config::Map<String, String> = env
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect();
+        let env = env_source().source(Some(map));
+        config::Config::builder()
+            .add_source(with_env_payment_backend(
+                config::File::from(path.as_path()),
+                &env,
+            )?)
+            .add_source(env)
+            .build()?
+            .try_deserialize()
+    }
+
+    /// The shipped config selects `lnd`. Setting the documented LNURL env var
+    /// must select LNURL, not fail with a two-key `payments` table.
+    #[test]
+    fn env_lnurl_selects_backend_over_shipped_lnd() {
+        let s = settings_from(
+            SHIPPED_YAML,
+            &[("APP__PAYMENTS__LNURL__ADDRESS", "env@example.com")],
+        )
+        .unwrap();
+        match s.payments {
+            PaymentBackend::LNURL { address } => assert_eq!(address, "env@example.com"),
+            other => panic!("expected LNURL, got {other:?}"),
+        }
+    }
+
+    /// With no payments env var the shipped file is used unchanged.
+    #[test]
+    fn shipped_payments_untouched_when_env_silent() {
+        let s = settings_from(SHIPPED_YAML, &[]).unwrap();
+        assert!(
+            matches!(s.payments, PaymentBackend::LND { .. }),
+            "{:?}",
+            s.payments
+        );
+    }
+
+    /// Overriding a field of the backend the file already selects still merges.
+    #[test]
+    fn env_same_backend_field_merges_with_file() {
+        let s = settings_from(
+            SHIPPED_YAML,
+            &[("APP__PAYMENTS__LND__ADDRESS", "https://env:10009")],
+        )
+        .unwrap();
+        match s.payments {
+            PaymentBackend::LND { address, cert, .. } => {
+                assert_eq!(address, "https://env:10009");
+                assert!(cert.contains("tls.cert"), "cert should come from the file");
+            }
+            other => panic!("expected LND, got {other:?}"),
+        }
+    }
+
+    /// Production shape: the stock image plus every setting as an env var.
+    #[test]
+    fn shipped_file_plus_full_env_is_production_config() {
+        let s = settings_from(
+            SHIPPED_YAML,
+            &[
+                ("APP__DATABASE", "mysql://u:p@db:3306/zap_stream"),
+                ("APP__PUBLIC_URL", "https://api.example"),
+                ("APP__TOS_URL", "https://example/tos"),
+                ("APP__CLIENT_URL", "https://example/live"),
+                (
+                    "APP__NSEC",
+                    "nsec1wya428srvpu96n4h78gualaj7wqw4ecgatgja8d5ytdqrxw56r2se440y4",
+                ),
+                ("APP__RELAYS", "wss://one,wss://two"),
+                ("APP__PAYMENTS__LNURL__ADDRESS", "pay@example"),
+                ("APP__CLOUDFLARE__TOKEN", "cf-token"),
+                ("APP__CLOUDFLARE__ACCOUNT_ID", "cf-account"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(s.database, "mysql://u:p@db:3306/zap_stream");
+        assert_eq!(
+            s.listen_http, "[::]:8080",
+            "listen address comes from the shipped file"
+        );
+        assert_eq!(s.public_url, "https://api.example");
+        assert_eq!(s.tos_url.as_deref(), Some("https://example/tos"));
+        assert_eq!(s.client_url.as_deref(), Some("https://example/live"));
+        assert_eq!(s.relays, vec!["wss://one", "wss://two"]);
+        assert!(
+            matches!(s.payments, PaymentBackend::LNURL { ref address } if address == "pay@example")
+        );
+        assert_eq!(s.cloudflare.token, "cf-token");
+        assert_eq!(s.cloudflare.account_id, "cf-account");
+    }
+
+    #[test]
+    fn env_overrides_file_scalar() {
+        let s = settings_with(&[("APP__TOS_URL", "https://env.example/tos")]).unwrap();
+        assert_eq!(s.tos_url.as_deref(), Some("https://env.example/tos"));
+    }
+
+    #[test]
+    fn env_overrides_nested_scalar() {
+        let s = settings_with(&[("APP__PAYMENTS__LNURL__ADDRESS", "env@example.com")]).unwrap();
+        assert!(format!("{:?}", s.payments).contains("env@example.com"));
+    }
+
+    #[test]
+    fn relays_parse_from_comma_separated_env() {
+        let s = settings_with(&[("APP__RELAYS", "wss://env-one,wss://env-two,wss://env-three")])
+            .unwrap();
+        assert_eq!(
+            s.relays,
+            vec!["wss://env-one", "wss://env-two", "wss://env-three"]
+        );
+    }
+
+    #[test]
+    fn relays_fall_back_to_file_when_env_absent() {
+        let s = settings_with(&[]).unwrap();
+        assert_eq!(s.relays, vec!["wss://file-one", "wss://file-two"]);
+    }
+
+    /// try_parsing(true) coerces env values into bool/int/float where they look
+    /// like one. Guard that a numeric-looking value destined for a String field
+    /// still deserializes, since several Settings fields are plain Strings.
+    #[test]
+    fn numeric_looking_value_for_string_field() {
+        let r = settings_with(&[("APP__PUBLIC_URL", "8080")]);
+        match r {
+            Ok(s) => assert_eq!(s.public_url, "8080"),
+            Err(e) => panic!("try_parsing broke a String field: {e}"),
+        }
+    }
+
+    #[test]
+    fn delete_recording_after_days_defaults_to_90_when_unset() {
+        let s = settings_with(&[]).unwrap();
+        assert_eq!(s.cloudflare.delete_recording_after_days, Some(90));
+    }
+
+    #[test]
+    fn delete_recording_after_days_from_env() {
+        let s = settings_with(&[("APP__CLOUDFLARE__DELETE_RECORDING_AFTER_DAYS", "60")]).unwrap();
+        assert_eq!(s.cloudflare.delete_recording_after_days, Some(60));
+    }
+
+    #[test]
+    fn delete_recording_after_days_blank_means_never() {
+        let s = settings_with(&[("APP__CLOUDFLARE__DELETE_RECORDING_AFTER_DAYS", "")]).unwrap();
+        assert_eq!(s.cloudflare.delete_recording_after_days, None);
+    }
+
+    #[test]
+    fn delete_recording_after_days_below_minimum_uses_minimum() {
+        let s = settings_with(&[("APP__CLOUDFLARE__DELETE_RECORDING_AFTER_DAYS", "29")]).unwrap();
+        assert_eq!(s.cloudflare.delete_recording_after_days, Some(30));
+    }
+
+    #[test]
+    fn normalise_relays_trims_and_drops_empties() {
+        let input: Vec<String> = ["wss://a", " wss://b", "", "  ", "wss://c  "]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            normalise_relays(&input),
+            vec!["wss://a", "wss://b", "wss://c"]
+        );
+    }
+
+    #[test]
+    fn normalise_relays_handles_env_style_mistakes() {
+        // trailing comma -> empty final entry
+        assert_eq!(
+            normalise_relays(&["wss://a".into(), "wss://b".into(), "".into()]),
+            vec!["wss://a", "wss://b"]
+        );
+        // space after comma -> leading whitespace
+        assert_eq!(
+            normalise_relays(&["wss://a".into(), " wss://b".into()]),
+            vec!["wss://a", "wss://b"]
+        );
+        // entirely empty value
+        assert!(normalise_relays(&["".into()]).is_empty());
+    }
+
+    #[test]
+    fn normalise_relays_leaves_clean_input_untouched() {
+        let input: Vec<String> = ["wss://a".into(), "wss://b".into()].into();
+        assert_eq!(normalise_relays(&input), input);
+    }
 }

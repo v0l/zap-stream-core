@@ -10,12 +10,51 @@ pub struct CloudflareClient {
     api_token: String,
     account_id: String,
     base_url: String,
+    delete_recording_after_days: Option<u32>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct CloudflareToken {
     pub token: String,
     pub account_id: String,
+    /// Days after which live input recordings are deleted.
+    /// Unset = 90 (default), blank = never delete, below 30 = 30.
+    #[serde(
+        default = "default_delete_recording_after_days",
+        deserialize_with = "deserialize_delete_recording_after_days"
+    )]
+    pub delete_recording_after_days: Option<u32>,
+}
+
+fn default_delete_recording_after_days() -> Option<u32> {
+    Some(90)
+}
+
+/// Cloudflare's minimum for `deleteRecordingAfterDays`
+const MIN_DELETE_RECORDING_AFTER_DAYS: u32 = 30;
+
+fn deserialize_delete_recording_after_days<'de, D>(
+    d: D,
+) -> std::result::Result<Option<u32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v: Option<String> = Option::deserialize(d)?;
+    match v.as_deref().map(str::trim) {
+        None | Some("") => Ok(None),
+        Some(s) => {
+            let days: u32 = s.parse().map_err(serde::de::Error::custom)?;
+            if days < MIN_DELETE_RECORDING_AFTER_DAYS {
+                tracing::warn!(
+                    "delete_recording_after_days {} is below Cloudflare's minimum, using {}",
+                    days,
+                    MIN_DELETE_RECORDING_AFTER_DAYS
+                );
+                return Ok(Some(MIN_DELETE_RECORDING_AFTER_DAYS));
+            }
+            Ok(Some(days))
+        }
+    }
 }
 
 impl CloudflareClient {
@@ -26,6 +65,7 @@ impl CloudflareClient {
             api_token: key.token,
             account_id: key.account_id,
             base_url: "https://api.cloudflare.com/client/v4".to_string(),
+            delete_recording_after_days: key.delete_recording_after_days,
         }
     }
 
@@ -57,11 +97,13 @@ impl CloudflareClient {
             self.base_url, self.account_id
         );
 
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "meta": {"name": name},
-            "recording": {"mode": "automatic"},
-            "deleteRecordingAfterDays": 90
+            "recording": {"mode": "automatic"}
         });
+        if let Some(days) = self.delete_recording_after_days {
+            body["deleteRecordingAfterDays"] = days.into();
+        }
 
         let response = self
             .http_client
@@ -519,6 +561,7 @@ mod tests {
         let client = CloudflareClient::new(CloudflareToken {
             token: "test-token".to_string(),
             account_id: "test-account".to_string(),
+            delete_recording_after_days: Some(90),
         })
         .with_base_url(server.url());
 
@@ -570,6 +613,7 @@ mod tests {
         let client = CloudflareClient::new(CloudflareToken {
             token: "test-token".to_string(),
             account_id: "test-account".to_string(),
+            delete_recording_after_days: Some(90),
         })
         .with_base_url(server.url());
 
@@ -578,6 +622,47 @@ mod tests {
 
         let response = result.unwrap();
         assert_eq!(response.result.delete_recording_after_days, Some(90));
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_create_live_input_omits_delete_recording_after_days_when_none() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/accounts/test-account/stream/live_inputs")
+            .match_body(mockito::Matcher::Json(serde_json::json!({
+                "meta": {"name": "test-stream"},
+                "recording": {"mode": "automatic"}
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                "success": true,
+                "result": {
+                    "uid": "test-uid",
+                    "rtmps": {
+                        "url": "rtmps://live.cloudflare.com:443/live/",
+                        "streamKey": "test-key"
+                    },
+                    "created": "2025-01-12T00:00:00Z",
+                    "status": null
+                }
+            }"#,
+            )
+            .create_async()
+            .await;
+
+        let client = CloudflareClient::new(CloudflareToken {
+            token: "test-token".to_string(),
+            account_id: "test-account".to_string(),
+            delete_recording_after_days: None,
+        })
+        .with_base_url(server.url());
+
+        let result = client.create_live_input("test-stream").await;
+        assert!(result.is_ok());
 
         mock.assert_async().await;
     }
@@ -595,6 +680,7 @@ mod tests {
         let client = CloudflareClient::new(CloudflareToken {
             token: "invalid-token".to_string(),
             account_id: "test-account".to_string(),
+            delete_recording_after_days: Some(90),
         })
         .with_base_url(server.url());
 
@@ -630,6 +716,7 @@ mod tests {
         let client = CloudflareClient::new(CloudflareToken {
             token: "test-token".to_string(),
             account_id: "test-account".to_string(),
+            delete_recording_after_days: Some(90),
         })
         .with_base_url(server.url());
 
@@ -673,6 +760,7 @@ mod tests {
         let client = CloudflareClient::new(CloudflareToken {
             token: "test-token".to_string(),
             account_id: "test-account".to_string(),
+            delete_recording_after_days: Some(90),
         })
         .with_base_url(server.url());
 
@@ -703,6 +791,7 @@ mod tests {
         let client = CloudflareClient::new(CloudflareToken {
             token: "test-token".to_string(),
             account_id: "test-account".to_string(),
+            delete_recording_after_days: Some(90),
         })
         .with_base_url(server.url());
 
@@ -738,6 +827,7 @@ mod tests {
         let client = CloudflareClient::new(CloudflareToken {
             token: "test-token".to_string(),
             account_id: "test-account".to_string(),
+            delete_recording_after_days: Some(90),
         })
         .with_base_url(server.url());
 
@@ -775,6 +865,7 @@ mod tests {
         let client = CloudflareClient::new(CloudflareToken {
             token: "test-token".to_string(),
             account_id: "test-account".to_string(),
+            delete_recording_after_days: Some(90),
         })
         .with_base_url(server.url());
 
@@ -819,6 +910,7 @@ mod tests {
         let client = CloudflareClient::new(CloudflareToken {
             token: "test-token".to_string(),
             account_id: "test-account".to_string(),
+            delete_recording_after_days: Some(90),
         })
         .with_base_url(server.url());
 
@@ -862,6 +954,7 @@ mod tests {
         let client = CloudflareClient::new(CloudflareToken {
             token: "test-token".to_string(),
             account_id: "test-account".to_string(),
+            delete_recording_after_days: Some(90),
         })
         .with_base_url(server.url());
 
@@ -902,6 +995,7 @@ mod tests {
         let client = CloudflareClient::new(CloudflareToken {
             token: "test-token".to_string(),
             account_id: "test-account".to_string(),
+            delete_recording_after_days: Some(90),
         })
         .with_base_url(server.url());
 
@@ -929,6 +1023,7 @@ mod tests {
         let client = CloudflareClient::new(CloudflareToken {
             token: "test-token".to_string(),
             account_id: "test-account".to_string(),
+            delete_recording_after_days: Some(90),
         })
         .with_base_url(server.url());
 
@@ -951,6 +1046,7 @@ mod tests {
         let client = CloudflareClient::new(CloudflareToken {
             token: "test-token".to_string(),
             account_id: "test-account".to_string(),
+            delete_recording_after_days: Some(90),
         })
         .with_base_url(server.url());
 

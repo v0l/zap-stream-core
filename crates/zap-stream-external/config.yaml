@@ -27,6 +27,10 @@ relays:
 cloudflare:
   token: "abc"
   account_id: "123"
+  # Days until live input recordings are auto-deleted (values below 30 use 30).
+  # Omit for the default of 90; set blank to never auto-delete.
+  # Env: APP__CLOUDFLARE__DELETE_RECORDING_AFTER_DAYS
+  # delete_recording_after_days: 90
 
 # Lightning node config
 payments:
