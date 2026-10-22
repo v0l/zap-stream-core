@@ -7,6 +7,7 @@ use common::docker;
 use common::ffmpeg::FfmpegStream;
 use common::nostr_relay::{self, NostrRelay};
 use nostr_sdk::{Client, Event, EventBuilder, Keys, Kind, Tag, Timestamp, ToBech32};
+use reqwest::StatusCode;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -48,9 +49,10 @@ async fn e2e_pin_live_chat_message() {
     // ── Step 2: Set an account default title (PATCH without id) ────────
     println!("[TEST] Step 2/{total_steps}: Set account default title");
     let title = format!("Pin Show {run_id}");
-    client
-        .patch_event(&serde_json::json!({ "title": title }))
-        .await;
+    assert_eq!(
+        client.patch_event(serde_json::json!({ "title": title })).await,
+        StatusCode::OK
+    );
     let account = client.get_account().await;
     let external_id = db
         .get_external_id(&client.pubkey_hex())
@@ -110,9 +112,10 @@ async fn e2e_pin_live_chat_message() {
 
     // ── Step 5: Pin the message ────────────────────────────────────────
     println!("[TEST] Step 5/{total_steps}: Pin chat message {chat_id}");
-    client
-        .patch_event(&serde_json::json!({ "id": stream_id, "pinned": chat_id }))
-        .await;
+    assert_eq!(
+        client.patch_event(serde_json::json!({ "id": stream_id, "pinned": chat_id })).await,
+        StatusCode::OK
+    );
     tokio::time::sleep(Duration::from_secs(3)).await;
     let latest = latest_event(&relay, since, &stream_id).await;
     assert_eq!(
@@ -134,9 +137,10 @@ async fn e2e_pin_live_chat_message() {
     // ── Step 6: Pin without id only touches account defaults ───────────
     println!("[TEST] Step 6/{total_steps}: PATCH without id leaves the live pin alone");
     let other_id = "f".repeat(64);
-    client
-        .patch_event(&serde_json::json!({ "pinned": other_id }))
-        .await;
+    assert_eq!(
+        client.patch_event(serde_json::json!({ "pinned": other_id })).await,
+        StatusCode::OK
+    );
     tokio::time::sleep(Duration::from_secs(3)).await;
     let latest = latest_event(&relay, since, &stream_id).await;
     assert_eq!(
@@ -148,9 +152,10 @@ async fn e2e_pin_live_chat_message() {
 
     // ── Step 7: Unpin ──────────────────────────────────────────────────
     println!("[TEST] Step 7/{total_steps}: Unpin with empty string");
-    client
-        .patch_event(&serde_json::json!({ "id": stream_id, "pinned": "" }))
-        .await;
+    assert_eq!(
+        client.patch_event(serde_json::json!({ "id": stream_id, "pinned": "" })).await,
+        StatusCode::OK
+    );
     tokio::time::sleep(Duration::from_secs(3)).await;
     let latest = latest_event(&relay, since, &stream_id).await;
     assert!(
