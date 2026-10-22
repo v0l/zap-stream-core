@@ -14,7 +14,7 @@ use zap_stream_api_common::{
     CreateStreamKeyRequest, CreateStreamKeyResponse, HistoryEntry, HistoryResponse, Nip98Auth,
     PatchAccount, PatchEvent, StreamKey, TopupResponse,
 };
-use zap_stream_db::ZapStreamDb;
+use zap_stream_db::{UserStream, UserStreamState, ZapStreamDb};
 
 /// Convert a list of tags into a comma-separated CSV string.
 /// Filters out empty/whitespace-only tags, and returns None if no tags remain.
@@ -38,6 +38,60 @@ pub fn is_planned(status: &Option<String>) -> Result<bool> {
         Some("planned") => Ok(true),
         Some(s) => bail!("Unsupported status: {}", s),
     }
+}
+
+fn apply_stream_patch(stream: &mut UserStream, patch: PatchEvent) -> Result<bool> {
+    // Don't allow modifications of ended streams, except on a stream key: going
+    // live on the key reuses the stream, so this prepares its next broadcast
+    if stream.state == UserStreamState::Ended && stream.stream_key_id.is_none() {
+        bail!("Cannot modify ended stream");
+    }
+
+    // Update stream with patch data
+    if let Some(title) = patch.title {
+        stream.title = Some(title);
+    }
+    if let Some(summary) = patch.summary {
+        stream.summary = Some(summary);
+    }
+    if let Some(image) = patch.image {
+        stream.image = Some(image);
+    }
+    if let Some(tags) = patch.tags {
+        stream.tags = tags_to_csv(tags);
+    }
+    if let Some(content_warning) = patch.content_warning {
+        stream.content_warning = Some(content_warning);
+    }
+    if let Some(goal) = patch.goal {
+        stream.goal = Some(goal);
+    }
+    if let Some(pinned) = patch.pinned {
+        stream.pinned = Some(pinned);
+    }
+
+    let planned = is_planned(&patch.status)?;
+    if planned {
+        if stream.state == UserStreamState::Live {
+            bail!("Cannot plan a live stream");
+        }
+        if stream.state == UserStreamState::Ended {
+            // as going live does, drop the end of its last broadcast
+            stream.ends = None;
+        }
+        stream.state = UserStreamState::Planned;
+        if let Some(starts) = patch.starts {
+            stream.starts = starts;
+        }
+        if patch.ends.is_some() {
+            stream.ends = patch.ends;
+        }
+    }
+
+    // Publish a stream being planned, and keep a published live or planned one current
+    Ok(planned
+        || stream.state == UserStreamState::Live
+        || (stream.state == UserStreamState::Planned && stream.event.is_some()))
 }
 
 /// Basic API implementation which covers the simple database updates
@@ -98,7 +152,7 @@ impl ApiBase {
 
         if patch.id.as_ref().map(|i| !i.is_empty()).unwrap_or(false) {
             // Update specific stream
-            let stream_uuid = Uuid::parse_str(&patch.id.unwrap())?;
+            let stream_uuid = Uuid::parse_str(patch.id.as_ref().unwrap())?;
             let mut stream = self.db.get_stream(&stream_uuid).await?;
 
             // Verify user owns this stream
@@ -106,60 +160,7 @@ impl ApiBase {
                 bail!("Unauthorized: Stream belongs to different user");
             }
 
-            // Don't allow modifications of ended streams, except on a stream key: going
-            // live on the key reuses the stream, so this prepares its next broadcast
-            if stream.state == zap_stream_db::UserStreamState::Ended
-                && stream.stream_key_id.is_none()
-            {
-                bail!("Cannot modify ended stream");
-            }
-
-            // Update stream with patch data
-            if let Some(title) = patch.title {
-                stream.title = Some(title);
-            }
-            if let Some(summary) = patch.summary {
-                stream.summary = Some(summary);
-            }
-            if let Some(image) = patch.image {
-                stream.image = Some(image);
-            }
-            if let Some(tags) = patch.tags {
-                stream.tags = tags_to_csv(tags);
-            }
-            if let Some(content_warning) = patch.content_warning {
-                stream.content_warning = Some(content_warning);
-            }
-            if let Some(goal) = patch.goal {
-                stream.goal = Some(goal);
-            }
-            if let Some(pinned) = patch.pinned {
-                stream.pinned = Some(pinned);
-            }
-
-            let planned = is_planned(&patch.status)?;
-            if planned {
-                if stream.state == zap_stream_db::UserStreamState::Live {
-                    bail!("Cannot plan a live stream");
-                }
-                if stream.state == zap_stream_db::UserStreamState::Ended {
-                    // as going live does, drop the end of its last broadcast
-                    stream.ends = None;
-                }
-                stream.state = zap_stream_db::UserStreamState::Planned;
-                if let Some(starts) = patch.starts {
-                    stream.starts = starts;
-                }
-                if patch.ends.is_some() {
-                    stream.ends = patch.ends;
-                }
-            }
-
-            // Publish a stream being planned, and keep a published live or planned one current
-            publish = planned
-                || stream.state == zap_stream_db::UserStreamState::Live
-                || (stream.state == zap_stream_db::UserStreamState::Planned
-                    && stream.event.is_some());
+            publish = apply_stream_patch(&mut stream, patch)?;
             self.db.update_stream(&stream).await?;
         } else {
             // Update user default stream info
@@ -169,7 +170,11 @@ impl ApiBase {
                     patch.title.as_deref(),
                     patch.summary.as_deref(),
                     patch.image.as_deref(),
-                    patch.tags.as_ref().and_then(|t| tags_to_csv(t.clone())).as_deref(),
+                    patch
+                        .tags
+                        .as_ref()
+                        .and_then(|t| tags_to_csv(t.clone()))
+                        .as_deref(),
                     patch.content_warning.as_deref(),
                     patch.goal.as_deref(),
                 )
@@ -310,7 +315,7 @@ impl ApiBase {
             user_id: uid,
             starts: req.starts.unwrap_or_else(Utc::now),
             ends: req.ends,
-            state: zap_stream_db::UserStreamState::Planned,
+            state: UserStreamState::Planned,
             title: req.event.title,
             summary: req.event.summary,
             image: req.event.image,
@@ -382,5 +387,118 @@ impl ApiBase {
             .await?;
 
         Ok(TopupResponse { pr })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn patch(json: serde_json::Value) -> PatchEvent {
+        serde_json::from_value(json).unwrap()
+    }
+
+    fn stream(state: UserStreamState) -> UserStream {
+        UserStream {
+            id: Uuid::new_v4().to_string(),
+            state,
+            starts: Utc::now(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn is_planned_accepts_only_planned() {
+        assert!(!is_planned(&None).unwrap());
+        assert!(is_planned(&Some("planned".into())).unwrap());
+        assert!(is_planned(&Some("live".into())).is_err());
+        assert!(is_planned(&Some("ended".into())).is_err());
+    }
+
+    #[test]
+    fn patch_rejects_ended_stream_without_key() {
+        let mut s = stream(UserStreamState::Ended);
+        assert!(apply_stream_patch(&mut s, patch(serde_json::json!({"title": "t"}))).is_err());
+    }
+
+    #[test]
+    fn patch_plans_ended_keyed_stream() {
+        let mut s = stream(UserStreamState::Ended);
+        s.stream_key_id = Some(1);
+        s.ends = Some(Utc::now());
+        let starts = Utc::now() + chrono::Duration::hours(2);
+        let publish = apply_stream_patch(
+            &mut s,
+            patch(serde_json::json!({"status": "planned", "starts": starts})),
+        )
+        .unwrap();
+        assert!(publish);
+        assert_eq!(s.state, UserStreamState::Planned);
+        assert_eq!(s.starts.timestamp(), starts.timestamp());
+        assert!(s.ends.is_none());
+    }
+
+    #[test]
+    fn patch_edit_on_ended_keyed_stream_does_not_publish() {
+        let mut s = stream(UserStreamState::Ended);
+        s.stream_key_id = Some(1);
+        let publish =
+            apply_stream_patch(&mut s, patch(serde_json::json!({"title": "next"}))).unwrap();
+        assert!(!publish);
+        assert_eq!(s.state, UserStreamState::Ended);
+        assert_eq!(s.title.as_deref(), Some("next"));
+    }
+
+    #[test]
+    fn patch_rejects_planning_live_stream() {
+        let mut s = stream(UserStreamState::Live);
+        assert!(
+            apply_stream_patch(&mut s, patch(serde_json::json!({"status": "planned"}))).is_err()
+        );
+    }
+
+    #[test]
+    fn patch_rejects_unknown_status() {
+        let mut s = stream(UserStreamState::Planned);
+        assert!(apply_stream_patch(&mut s, patch(serde_json::json!({"status": "live"}))).is_err());
+    }
+
+    #[test]
+    fn patch_ignores_schedule_without_planned_status() {
+        let mut s = stream(UserStreamState::Planned);
+        let before = s.starts;
+        let publish = apply_stream_patch(
+            &mut s,
+            patch(serde_json::json!({"starts": Utc::now() + chrono::Duration::days(1)})),
+        )
+        .unwrap();
+        assert!(!publish);
+        assert_eq!(s.starts, before);
+    }
+
+    #[test]
+    fn patch_publishes_live_and_published_planned_streams() {
+        let mut live = stream(UserStreamState::Live);
+        assert!(apply_stream_patch(&mut live, patch(serde_json::json!({"title": "a"}))).unwrap());
+
+        let mut planned = stream(UserStreamState::Planned);
+        assert!(
+            !apply_stream_patch(&mut planned, patch(serde_json::json!({"title": "b"}))).unwrap()
+        );
+        planned.event = Some("{}".into());
+        assert!(
+            apply_stream_patch(&mut planned, patch(serde_json::json!({"title": "c"}))).unwrap()
+        );
+    }
+
+    #[test]
+    fn patch_sets_and_clears_pinned() {
+        let mut s = stream(UserStreamState::Live);
+        apply_stream_patch(&mut s, patch(serde_json::json!({"pinned": "abc"}))).unwrap();
+        assert_eq!(s.pinned.as_deref(), Some("abc"));
+        apply_stream_patch(&mut s, patch(serde_json::json!({"title": "x"}))).unwrap();
+        assert_eq!(s.pinned.as_deref(), Some("abc"));
+        apply_stream_patch(&mut s, patch(serde_json::json!({"pinned": ""}))).unwrap();
+        assert_eq!(s.pinned.as_deref(), Some(""));
     }
 }
