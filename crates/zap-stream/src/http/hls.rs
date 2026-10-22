@@ -13,9 +13,9 @@ use http_range_header::{
 };
 use serde::Deserialize;
 use std::borrow::Cow;
+use std::io::SeekFrom;
 use std::ops::Range;
 use std::path::PathBuf;
-use std::io::SeekFrom;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
@@ -97,8 +97,8 @@ impl HlsRouter {
         })?;
 
         // Parse and modify playlist to add viewer token to URLs
-        let modified_content =
-            Self::add_viewer_token_to_playlist(&playlist_content, &token).map_err(|e| {
+        let modified_content = Self::add_viewer_token_to_playlist(&playlist_content, &token)
+            .map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("Failed to add playlist token to playlist: {}", e),
@@ -161,9 +161,11 @@ impl HlsRouter {
             && let Some(hls_dir) = playlist_path.parent().and_then(|p| p.parent())
             && let Some(cur_variant) = playlist_path.parent().and_then(|p| p.file_name())
         {
-            let siblings =
-                Self::master_playlist_renditions(&hls_dir.join("live.m3u8"), &cur_variant.to_string_lossy())
-                    .await;
+            let siblings = Self::master_playlist_renditions(
+                &hls_dir.join("live.m3u8"),
+                &cur_variant.to_string_lossy(),
+            )
+            .await;
             for (dir, is_media_rendition) in siblings {
                 let sib_playlist = hls_dir.join(&dir).join("live.m3u8");
                 if let Ok(data) = tokio::fs::read(&sib_playlist).await
@@ -233,7 +235,11 @@ impl HlsRouter {
         fn dir_of(uri: &str) -> Option<String> {
             let path = uri.split('?').next()?;
             let dir = path.split('/').next()?;
-            if dir.is_empty() { None } else { Some(dir.to_string()) }
+            if dir.is_empty() {
+                None
+            } else {
+                Some(dir.to_string())
+            }
         }
         let mut out: Vec<(String, bool)> = Vec::new();
         for alt in &pl.alternatives {
@@ -281,10 +287,7 @@ impl HlsRouter {
         }
         if trailing_parts > 0 {
             // in-progress segment with published parts
-            Some((
-                pl.media_sequence + full_count,
-                Some(trailing_parts - 1),
-            ))
+            Some((pl.media_sequence + full_count, Some(trailing_parts - 1)))
         } else if full_count > 0 {
             Some((pl.media_sequence + full_count - 1, None))
         } else {
@@ -307,20 +310,27 @@ impl HlsRouter {
         // keeps connections from piling up while still covering a full segment.
         let deadline = Instant::now() + Duration::from_secs(6);
         let want_msn = want_msn.unwrap_or(0);
-        let want_part = want_part.unwrap_or(0);
 
         loop {
             let content = tokio::fs::read(path).await?;
-            if Self::playlist_has_part(&content, want_msn, want_part) || Instant::now() >= deadline {
+            if Self::playlist_has_part(&content, want_msn, want_part) || Instant::now() >= deadline
+            {
                 return Ok(content);
             }
             tokio::time::sleep(Duration::from_millis(30)).await;
         }
     }
 
-    /// Returns true when the playlist already contains the requested part, i.e.
-    /// the requested (msn, part) is <= the most recent part advertised.
-    fn playlist_has_part(content: &[u8], want_msn: u64, want_part: u64) -> bool {
+    /// Returns true when the playlist already satisfies a blocking reload
+    /// request (RFC 8216bis 6.2.5.2).
+    ///
+    /// - `_HLS_msn=M&_HLS_part=N`: part N of segment M (or anything later)
+    ///   has been published.
+    /// - `_HLS_msn=M` alone (`want_part == None`): segment M is *complete*,
+    ///   i.e. listed as a full segment. Answering when M has merely started
+    ///   (only parts published) is a premature response, which AVPlayer
+    ///   reports as "Invalid server blocking reload behavior for low latency".
+    fn playlist_has_part(content: &[u8], want_msn: u64, want_part: Option<u64>) -> bool {
         let (_, pl) = match m3u8_rs::parse_playlist(content) {
             Ok(v) => v,
             Err(_) => return false,
@@ -333,12 +343,17 @@ impl HlsRouter {
 
         // MSN of the first listed full segment
         let media_sequence = pl.media_sequence;
-        // Count full segments and the partial segments that trail the last full one.
+        // Count full segments and the partial segments that trail the last full
+        // one, and remember how many parts each listed full segment had.
         let mut full_count: u64 = 0;
         let mut trailing_parts: u64 = 0;
+        let mut parts_of_wanted: Option<u64> = None;
         for seg in &pl.segments {
             match seg {
                 m3u8_rs::MediaSegmentType::Full(_) => {
+                    if media_sequence + full_count == want_msn {
+                        parts_of_wanted = Some(trailing_parts);
+                    }
                     full_count += 1;
                     trailing_parts = 0;
                 }
@@ -352,10 +367,20 @@ impl HlsRouter {
         // The in-progress segment (the one currently accumulating parts) has this MSN
         let in_progress_msn = media_sequence + full_count;
         if want_msn < in_progress_msn {
-            // A later segment has already begun, so every part of `want_msn` exists.
+            // `want_msn` is a completed full segment. A part index past its
+            // final part means part 0 of the following segment (6.2.5.2).
+            if let (Some(want_part), Some(n)) = (want_part, parts_of_wanted)
+                && n > 0
+                && want_part >= n
+                && want_msn + 1 == in_progress_msn
+            {
+                return trailing_parts > 0;
+            }
             return true;
         }
-        if want_msn == in_progress_msn {
+        if want_msn == in_progress_msn
+            && let Some(want_part) = want_part
+        {
             // available part indices are 0..trailing_parts-1
             return trailing_parts > want_part;
         }
@@ -469,24 +494,38 @@ impl HlsRouter {
         Ok(FileStream::new(stream).into_range_response(range.start, range.end, file_size))
     }
 
+    /// Resolve a range header against the current file size (RFC 9110 14.1.2).
+    ///
+    /// Returns an inclusive `start..end` pair.
+    ///
+    /// A last-byte-pos at or past the end of the file is NOT an error: the
+    /// range is clamped to the last byte. LL-HLS clients rely on this. Players
+    /// that follow RFC 8216bis / RFC 8673 address a preload hint without
+    /// BYTERANGE-LENGTH as `bytes=<start>-9007199254740991`. Rejecting it with
+    /// 416 means the player can never load the live edge.
+    ///
+    /// Open-ended ranges are served to the end of the file. They used to be
+    /// capped at 1 MiB, which cut a high-bitrate part or segment short with a
+    /// 206 that looked valid. The body is streamed from disk, so a large range
+    /// costs no memory.
     fn get_range(file_size: u64, header: &SyntacticallyCorrectRange) -> Result<Range<u64>> {
-        const MAX_UNBOUNDED_RANGE: u64 = 1024 * 1024;
+        ensure!(file_size > 0, "Empty file has no satisfiable range");
+        let last_byte = file_size - 1;
         let range_start = match header.start {
             StartPosition::Index(i) => {
                 ensure!(i < file_size, "Range start out of range");
                 i
             }
-            StartPosition::FromLast(i) => file_size.saturating_sub(i),
+            StartPosition::FromLast(i) => {
+                // a zero-length suffix is unsatisfiable
+                ensure!(i > 0, "Empty suffix range");
+                file_size.saturating_sub(i)
+            }
         };
         let range_end = match header.end {
-            EndPosition::Index(i) => {
-                // HTTP ranges are inclusive: the max valid end index is file_size - 1
-                ensure!(i < file_size, "Range end out of range");
-                i
-            }
-            EndPosition::LastByte => {
-                (file_size.saturating_sub(1)).min(range_start + MAX_UNBOUNDED_RANGE)
-            }
+            // HTTP ranges are inclusive; clamp to the last byte of the file
+            EndPosition::Index(i) => i.min(last_byte),
+            EndPosition::LastByte => last_byte,
         };
         // The body is sliced as end - start + 1, so a reversed range would underflow
         ensure!(range_start <= range_end, "Range start after range end");
@@ -591,28 +630,102 @@ mod tests {
     #[test]
     fn part_already_available_returns_true() {
         // in-progress segment is MSN 12 with parts 0 and 1 available
-        assert!(HlsRouter::playlist_has_part(LL_PLAYLIST.as_bytes(), 12, 0));
-        assert!(HlsRouter::playlist_has_part(LL_PLAYLIST.as_bytes(), 12, 1));
+        assert!(HlsRouter::playlist_has_part(
+            LL_PLAYLIST.as_bytes(),
+            12,
+            Some(0)
+        ));
+        assert!(HlsRouter::playlist_has_part(
+            LL_PLAYLIST.as_bytes(),
+            12,
+            Some(1)
+        ));
     }
 
     #[test]
     fn earlier_segment_is_always_available() {
         // any part of an already-completed segment is available
-        assert!(HlsRouter::playlist_has_part(LL_PLAYLIST.as_bytes(), 11, 99));
-        assert!(HlsRouter::playlist_has_part(LL_PLAYLIST.as_bytes(), 10, 0));
+        assert!(HlsRouter::playlist_has_part(
+            LL_PLAYLIST.as_bytes(),
+            11,
+            Some(99)
+        ));
+        assert!(HlsRouter::playlist_has_part(
+            LL_PLAYLIST.as_bytes(),
+            10,
+            Some(0)
+        ));
     }
 
     #[test]
     fn future_part_blocks() {
         // part 2 of MSN 12 has not been published yet (only 0,1 exist)
-        assert!(!HlsRouter::playlist_has_part(LL_PLAYLIST.as_bytes(), 12, 2));
+        assert!(!HlsRouter::playlist_has_part(
+            LL_PLAYLIST.as_bytes(),
+            12,
+            Some(2)
+        ));
         // an entire future segment is not available
-        assert!(!HlsRouter::playlist_has_part(LL_PLAYLIST.as_bytes(), 13, 0));
+        assert!(!HlsRouter::playlist_has_part(
+            LL_PLAYLIST.as_bytes(),
+            13,
+            Some(0)
+        ));
+    }
+
+    /// Regression (AVPlayer "Invalid server blocking reload behavior for low
+    /// latency"): `_HLS_msn=M` without `_HLS_part` must wait until segment M is
+    /// complete, not merely started. Captured from AVPlayer against prod:
+    /// `?_HLS_msn=2532` was answered while 2532 only had part 0.
+    #[test]
+    fn msn_only_waits_for_complete_segment() {
+        // MSN 12 is in progress (parts 0,1) -> not yet complete
+        assert!(!HlsRouter::playlist_has_part(
+            LL_PLAYLIST.as_bytes(),
+            12,
+            None
+        ));
+        // MSN 11 is a full segment
+        assert!(HlsRouter::playlist_has_part(
+            LL_PLAYLIST.as_bytes(),
+            11,
+            None
+        ));
+        assert!(!HlsRouter::playlist_has_part(
+            LL_PLAYLIST.as_bytes(),
+            13,
+            None
+        ));
+    }
+
+    /// RFC 8216bis 6.2.5.2: a part index past the final part of a completed
+    /// segment is a request for part 0 of the next segment.
+    #[test]
+    fn part_past_end_of_completed_segment_means_next_part_zero() {
+        // MSN 11 completed with 4 parts, MSN 12 not started yet
+        let pl = "#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:2\n\
+#EXT-X-MEDIA-SEQUENCE:10\n#EXT-X-PART-INF:PART-TARGET=0.5\n\
+#EXTINF:2,\n10.m4s\n\
+#EXT-X-PART:DURATION=0.5,URI=\"11.m4s\",BYTERANGE=\"100@0\",INDEPENDENT=YES\n\
+#EXT-X-PART:DURATION=0.5,URI=\"11.m4s\",BYTERANGE=\"100@100\"\n\
+#EXT-X-PART:DURATION=0.5,URI=\"11.m4s\",BYTERANGE=\"100@200\"\n\
+#EXT-X-PART:DURATION=0.5,URI=\"11.m4s\",BYTERANGE=\"100@300\"\n\
+#EXTINF:2,\n11.m4s\n\
+#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"12.m4s\",BYTERANGE-START=0\n";
+        assert!(HlsRouter::playlist_has_part(pl.as_bytes(), 11, Some(3)));
+        // part 4 of 11 == part 0 of 12, which is not published
+        assert!(!HlsRouter::playlist_has_part(pl.as_bytes(), 11, Some(4)));
+        // once 12 has a part, it is satisfied
+        let pl2 = format!(
+            "{}#EXT-X-PART:DURATION=0.5,URI=\"12.m4s\",BYTERANGE=\"100@0\",INDEPENDENT=YES\n",
+            pl.trim_end_matches("#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"12.m4s\",BYTERANGE-START=0\n")
+        );
+        assert!(HlsRouter::playlist_has_part(pl2.as_bytes(), 11, Some(4)));
     }
 
     #[test]
     fn invalid_playlist_does_not_unblock() {
-        assert!(!HlsRouter::playlist_has_part(b"not a playlist", 0, 0));
+        assert!(!HlsRouter::playlist_has_part(b"not a playlist", 0, Some(0)));
     }
 
     #[test]
@@ -710,9 +823,7 @@ mod tests {
         assert!(HlsRouter::safe_path_component("a\0b").is_err());
         assert!(HlsRouter::safe_path_component("1.m4s").is_ok());
         assert!(HlsRouter::safe_path_component("720p").is_ok());
-        assert!(
-            HlsRouter::safe_path_component("f2a5c3e8-0000-0000-0000-000000000000").is_ok()
-        );
+        assert!(HlsRouter::safe_path_component("f2a5c3e8-0000-0000-0000-000000000000").is_ok());
     }
 
     #[test]
@@ -720,21 +831,237 @@ mod tests {
         use http_range_header::parse_range_header;
         // bytes=0-99 of a 100 byte file: valid (inclusive end 99)
         let r = parse_range_header("bytes=0-99").unwrap();
-        assert!(HlsRouter::get_range(100, r.ranges.first().unwrap()).is_ok());
-        // bytes=0-100 of a 100 byte file: end index out of range
+        assert_eq!(
+            HlsRouter::get_range(100, r.ranges.first().unwrap()).unwrap(),
+            0..99
+        );
+        // bytes=0-100 of a 100 byte file: end past EOF is clamped (RFC 9110 14.1.2)
         let r = parse_range_header("bytes=0-100").unwrap();
-        assert!(HlsRouter::get_range(100, r.ranges.first().unwrap()).is_err());
+        assert_eq!(
+            HlsRouter::get_range(100, r.ranges.first().unwrap()).unwrap(),
+            0..99
+        );
         // start beyond EOF
         let r = parse_range_header("bytes=100-").unwrap();
         assert!(HlsRouter::get_range(100, r.ranges.first().unwrap()).is_err());
         // reversed range: rejected rather than underflowing the body length
         let r = parse_range_header("bytes=500-100").unwrap();
         assert!(HlsRouter::get_range(1000, r.ranges.first().unwrap()).is_err());
+        // suffix ranges
+        let r = parse_range_header("bytes=-10").unwrap();
+        assert_eq!(
+            HlsRouter::get_range(100, r.ranges.first().unwrap()).unwrap(),
+            90..99
+        );
+        // nothing is satisfiable in an empty file
+        let r = parse_range_header("bytes=0-").unwrap();
+        assert!(HlsRouter::get_range(0, r.ranges.first().unwrap()).is_err());
+    }
+
+    /// Regression (iOS/AVPlayer playback): LL-HLS clients request a preload
+    /// hint that has no BYTERANGE-LENGTH with the RFC 8673 open-ended form
+    /// `bytes=<start>-9007199254740991`. The server returned 416, so the live
+    /// edge could never load.
+    #[test]
+    fn get_range_accepts_rfc8673_live_range() {
+        use http_range_header::parse_range_header;
+        let r = parse_range_header("bytes=0-9007199254740991").unwrap();
+        assert_eq!(
+            HlsRouter::get_range(1_954_416, r.ranges.first().unwrap()).unwrap(),
+            0..1_954_415
+        );
+        let r = parse_range_header("bytes=618488-9007199254740991").unwrap();
+        assert_eq!(
+            HlsRouter::get_range(981_258, r.ranges.first().unwrap()).unwrap(),
+            618_488..981_257
+        );
+    }
+
+    /// Regression: an open-ended range was capped at 1 MiB, so a request for a
+    /// 1080p segment or a large part got a truncated 206 that looked valid.
+    #[test]
+    fn get_range_open_ended_is_not_truncated() {
+        use http_range_header::parse_range_header;
+        let size = 1_954_416u64; // real 1080p@8Mbps 2s segment
+        let r = parse_range_header("bytes=0-").unwrap();
+        assert_eq!(
+            HlsRouter::get_range(size, r.ranges.first().unwrap()).unwrap(),
+            0..size - 1
+        );
+    }
+
+    /// The body for an over-long end must match the clamped Content-Range.
+    #[tokio::test]
+    async fn range_response_clamps_end_past_eof() {
+        use axum::body::to_bytes;
+        let dir = tempfile::tempdir().unwrap();
+        let seg = dir.path().join("7.m4s");
+        let data: Vec<u8> = (0..=255u8).cycle().take(3 * 1024 * 1024).collect();
+        std::fs::write(&seg, &data).unwrap();
+
+        let header = parse_range_header("bytes=100-9007199254740991").unwrap();
+        let resp = HlsRouter::range_response(&seg, &header.ranges[0])
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            resp.headers()
+                .get(axum::http::header::CONTENT_RANGE)
+                .unwrap(),
+            &format!("bytes 100-{}/{}", data.len() - 1, data.len())
+        );
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&body[..], &data[100..]);
+    }
+
+    /// End-to-end through the real router, replaying the request sequences
+    /// AVPlayer (macOS 26.5, AVFoundation) sent to production and failed on.
+    mod avplayer_replay {
+        use super::*;
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use std::time::Duration;
+        use tower::ServiceExt;
+
+        const STREAM: &str = "537a365c-f1ec-44ac-af10-22d14a7319fb";
+        const VAR: &str = "16f75f1a";
+
+        /// Variant playlist: 10 complete with 4 parts, 11 not started yet.
+        fn rollover_playlist() -> String {
+            "#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:2\n\
+#EXT-X-MEDIA-SEQUENCE:9\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXT-X-PART-INF:PART-TARGET=0.5\n\
+#EXT-X-SERVER-CONTROL:PART-HOLD-BACK=1.500,CAN-BLOCK-RELOAD=YES\n\
+#EXTINF:2,\n9.m4s\n\
+#EXT-X-PART:DURATION=0.5,URI=\"10.m4s\",BYTERANGE=\"100@0\",INDEPENDENT=YES\n\
+#EXT-X-PART:DURATION=0.5,URI=\"10.m4s\",BYTERANGE=\"100@100\"\n\
+#EXT-X-PART:DURATION=0.5,URI=\"10.m4s\",BYTERANGE=\"100@200\"\n\
+#EXT-X-PART:DURATION=0.5,URI=\"10.m4s\",BYTERANGE=\"100@300\"\n\
+#EXTINF:2,\n10.m4s\n\
+#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"11.m4s\",BYTERANGE-START=0\n"
+                .to_string()
+        }
+
+        fn setup() -> (tempfile::TempDir, std::path::PathBuf, Router) {
+            let dir = tempfile::tempdir().unwrap();
+            let var_dir = dir.path().join(STREAM).join(HLS_EGRESS_PATH).join(VAR);
+            std::fs::create_dir_all(&var_dir).unwrap();
+            std::fs::write(var_dir.join("live.m3u8"), rollover_playlist()).unwrap();
+            std::fs::write(var_dir.join("10.m4s"), vec![7u8; 400]).unwrap();
+            let router = HlsRouter::new(dir.path(), StreamManager::new("test".into()));
+            (dir, var_dir, router)
+        }
+
+        async fn get(router: &Router, uri: &str, range: Option<&str>) -> (StatusCode, Vec<u8>) {
+            let mut req = Request::get(uri);
+            if let Some(r) = range {
+                req = req.header("range", r);
+            }
+            let resp = router
+                .clone()
+                .oneshot(req.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let status = resp.status();
+            (
+                status,
+                to_bytes(resp.into_body(), usize::MAX)
+                    .await
+                    .unwrap()
+                    .to_vec(),
+            )
+        }
+
+        /// Captured: `?_HLS_msn=2636&_HLS_part=4` (2636 had parts 0..3) was
+        /// answered in 30ms with a playlist where 2637 had no parts. AVPlayer
+        /// logged "Invalid server blocking reload behavior for low latency"
+        /// (-15410) and dropped out of low-latency mode.
+        #[tokio::test]
+        async fn part_past_end_blocks_until_next_segment_part_zero() {
+            let (_d, var_dir, router) = setup();
+            let uri = format!("/{STREAM}/hls/{VAR}/live.m3u8?_HLS_msn=10&_HLS_part=4");
+
+            let publish = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                let pl = rollover_playlist().replace(
+                    "#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"11.m4s\",BYTERANGE-START=0\n",
+                    "#EXT-X-PART:DURATION=0.5,URI=\"11.m4s\",BYTERANGE=\"100@0\",INDEPENDENT=YES\n\
+#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"11.m4s\",BYTERANGE-START=100\n",
+                );
+                std::fs::write(var_dir.join("live.m3u8"), pl).unwrap();
+            });
+
+            let t = std::time::Instant::now();
+            let (status, body) = get(&router, &uri, None).await;
+            publish.await.unwrap();
+            assert_eq!(status, StatusCode::OK);
+            assert!(
+                t.elapsed() >= Duration::from_millis(250),
+                "answered before part 0 of MSN 11 existed"
+            );
+            assert!(
+                String::from_utf8(body)
+                    .unwrap()
+                    .contains("URI=\"11.m4s\",BYTERANGE=\"100@0\"")
+            );
+        }
+
+        /// `_HLS_msn=M` alone must wait for M to be complete.
+        #[tokio::test]
+        async fn msn_only_blocks_until_segment_complete() {
+            let (_d, var_dir, router) = setup();
+            let uri = format!("/{STREAM}/hls/{VAR}/live.m3u8?_HLS_msn=11");
+            let publish = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                let pl = rollover_playlist().replace(
+                    "#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"11.m4s\",BYTERANGE-START=0\n",
+                    "#EXTINF:2,\n11.m4s\n",
+                );
+                std::fs::write(var_dir.join("live.m3u8"), pl).unwrap();
+            });
+            let t = std::time::Instant::now();
+            let (status, body) = get(&router, &uri, None).await;
+            publish.await.unwrap();
+            assert_eq!(status, StatusCode::OK);
+            assert!(t.elapsed() >= Duration::from_millis(250));
+            assert!(String::from_utf8(body).unwrap().contains("\n11.m4s\n"));
+        }
+
+        /// Captured: `Range: bytes=36659-9007199254740991` -> 416, and
+        /// AVPlayer failed the item with -11850 "server is not correctly
+        /// configured".
+        #[tokio::test]
+        async fn rfc8673_range_on_published_bytes_is_206() {
+            let (_d, _v, router) = setup();
+            let uri = format!("/{STREAM}/hls/{VAR}/10.m4s");
+            let (status, body) = get(&router, &uri, Some("bytes=100-9007199254740991")).await;
+            assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+            assert_eq!(body.len(), 300);
+        }
+
+        /// Hinted RFC 8673 range on the in-progress file: waits for the part,
+        /// then returns only the bytes that exist.
+        #[tokio::test]
+        async fn rfc8673_hinted_range_blocks_then_serves() {
+            let (_d, var_dir, router) = setup();
+            std::fs::write(var_dir.join("11.m4s"), b"").unwrap();
+            let uri = format!("/{STREAM}/hls/{VAR}/11.m4s");
+            let w = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                std::fs::write(var_dir.join("11.m4s"), vec![1u8; 150]).unwrap();
+            });
+            let (status, body) = get(&router, &uri, Some("bytes=0-9007199254740991")).await;
+            w.await.unwrap();
+            assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+            assert_eq!(body.len(), 150);
+        }
     }
 
     #[test]
     fn add_token_to_url_appends_correctly() {
-        assert_eq!(HlsRouter::add_token_to_url("a/live.m3u8", "tok"), "a/live.m3u8?vt=tok");
+        assert_eq!(
+            HlsRouter::add_token_to_url("a/live.m3u8", "tok"),
+            "a/live.m3u8?vt=tok"
+        );
         assert_eq!(
             HlsRouter::add_token_to_url("a/live.m3u8?x=1", "tok"),
             "a/live.m3u8?x=1&vt=tok"
