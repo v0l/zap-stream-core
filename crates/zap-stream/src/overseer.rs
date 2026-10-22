@@ -677,6 +677,10 @@ impl Overseer for ZapStreamOverseer {
                     .map_err(|e| anyhow!("Invalid stream key {} {}", stream_id, e))?;
                 let mut stream = self.db.get_stream(&stream_uuid).await?;
 
+                // A new broadcast on a reused stream starts now (NIP-53)
+                if stream.state != UserStreamState::Live {
+                    stream.starts = Utc::now();
+                }
                 stream.state = UserStreamState::Live;
                 stream.node_name = Some(self.node_name.clone());
                 stream.endpoint_id = Some(endpoint.id);

@@ -360,6 +360,16 @@ impl ZapStreamDb {
         )
     }
 
+    /// Get the streams bound to a user's stream keys
+    pub async fn get_user_keyed_streams(&self, user_id: u64) -> Result<Vec<UserStream>> {
+        Ok(sqlx::query_as(
+            "select s.* from user_stream s join user_stream_key k on k.stream_id = s.id where k.user_id = ?",
+        )
+        .bind(user_id)
+        .fetch_all(&self.db)
+        .await?)
+    }
+
     pub async fn get_user_stream_key_by_external_id(
         &self,
         external_id: &str,
