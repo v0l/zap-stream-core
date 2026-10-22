@@ -118,6 +118,9 @@ impl ApiBase {
             if let Some(goal) = patch.goal {
                 stream.goal = Some(goal);
             }
+            if let Some(pinned) = patch.pinned {
+                stream.pinned = Some(pinned);
+            }
 
             self.db.update_stream(&stream).await?;
         } else {

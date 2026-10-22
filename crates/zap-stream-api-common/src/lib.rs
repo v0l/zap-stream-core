@@ -330,4 +330,22 @@ mod tests {
         ]);
         assert!(Nip98Auth::try_from_token(&token).is_err());
     }
+
+    #[test]
+    fn patch_event_parses_goal_and_pinned() {
+        let patch: PatchEvent =
+            serde_json::from_str(r#"{"id":"abc","goal":"goal-id","pinned":"pinned-id"}"#).unwrap();
+        assert_eq!(patch.goal.as_deref(), Some("goal-id"));
+        assert_eq!(patch.pinned.as_deref(), Some("pinned-id"));
+
+        // Empty string is passed through so it can clear the field
+        let patch: PatchEvent = serde_json::from_str(r#"{"goal":"","pinned":""}"#).unwrap();
+        assert_eq!(patch.goal.as_deref(), Some(""));
+        assert_eq!(patch.pinned.as_deref(), Some(""));
+
+        // Omitted fields deserialize as None
+        let patch: PatchEvent = serde_json::from_str(r#"{"title":"t"}"#).unwrap();
+        assert!(patch.goal.is_none());
+        assert!(patch.pinned.is_none());
+    }
 }
