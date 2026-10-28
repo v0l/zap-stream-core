@@ -46,6 +46,10 @@ struct Settings {
     #[serde(default)]
     endpoints_public_hostname: Option<String>,
 
+    /// Admin pubkey (hex), marked as admin on first admin API call
+    #[serde(default)]
+    admin_pubkey: Option<String>,
+
     /// Payment backend config
     payments: PaymentBackend,
 
@@ -197,7 +201,13 @@ async fn main() -> Result<()> {
 
     // start http server
     let admin_api_impl =
-        ZapStreamAdminApiImpl::new(db.clone(), PathBuf::new(), Vec::new(), "".to_string());
+        ZapStreamAdminApiImpl::new(
+        db.clone(),
+        PathBuf::new(),
+        Vec::new(),
+        "".to_string(),
+        settings.admin_pubkey.clone(),
+    )?;
     let http_addr: SocketAddr = settings.listen_http.parse()?;
     #[allow(unused_mut)]
     let mut server = Router::new()

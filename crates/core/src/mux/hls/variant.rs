@@ -1049,6 +1049,10 @@ impl HlsVariant {
         })
     }
 
+    pub fn peak_bandwidth(nominal_bitrate: u64) -> u64 {
+        nominal_bitrate + nominal_bitrate / 5
+    }
+
     /// Build the EXT-X-STREAM-INF entry for this variant.
     /// Returns `None` for audio-only renditions (they are emitted as EXT-X-MEDIA instead).
     pub fn to_playlist_variant(&self) -> Option<m3u8_rs::VariantStream> {
@@ -1073,9 +1077,9 @@ impl HlsVariant {
                         * (*codec_par).height as u64
                         * av_get_bits_per_pixel(pix_desc) as u64
                 } else {
-                    bitrate
+                    Self::peak_bandwidth(bitrate)
                 },
-                average_bandwidth: None,
+                average_bandwidth: if bitrate == 0 { None } else { Some(bitrate) },
                 codecs: self.to_codec_attr(),
                 resolution: Some(m3u8_rs::Resolution {
                     width: (*codec_par).width as _,
@@ -1104,6 +1108,12 @@ impl HlsVariant {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn peak_bandwidth_adds_twenty_percent_headroom() {
+        assert_eq!(HlsVariant::peak_bandwidth(8_000_000), 9_600_000);
+        assert_eq!(HlsVariant::peak_bandwidth(0), 0);
+    }
 
     /// Regression: parts were closed only once their duration reached
     /// PART-TARGET, making every part exceed the advertised target (LL-HLS

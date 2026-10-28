@@ -465,6 +465,10 @@ impl CfApiWrapper {
             stream.ends = None;
             stream.external_input_id = Some(input.uid.clone());
             self.db.update_stream(&stream).await?;
+            if stream.duration == 0.0 {
+                let stream_uuid = Uuid::parse_str(&stream.id)?;
+                self.db.reset_stream_billing(&stream_uuid).await?;
+            }
             self.register_input_mapping(&input.uid, &stream.id).await;
             return Ok(stream);
         }

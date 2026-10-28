@@ -146,9 +146,17 @@ impl ZapStreamDb {
         Ok(())
     }
 
+    pub async fn reset_stream_billing(&self, stream_id: &Uuid) -> Result<()> {
+        sqlx::query("update user_stream set duration = 0, cost = 0 where id = ?")
+            .bind(stream_id.to_string())
+            .execute(&self.db)
+            .await?;
+        Ok(())
+    }
+
     pub async fn update_stream(&self, user_stream: &UserStream) -> Result<()> {
         sqlx::query(
-        "update user_stream set state = ?, starts = ?, ends = ?, title = ?, summary = ?, image = ?, thumb = ?, tags = ?, content_warning = ?, goal = ?, pinned = ?, cost = ?, duration = ?, fee = ?, event = ?, endpoint_id = ?, node_name = ?, stream_key_id = ?, external_video_id = ?, external_input_id = ? where id = ?",
+        "update user_stream set state = ?, starts = ?, ends = ?, title = ?, summary = ?, image = ?, thumb = ?, tags = ?, content_warning = ?, goal = ?, pinned = ?, fee = ?, event = ?, endpoint_id = ?, node_name = ?, stream_key_id = ?, external_video_id = ?, external_input_id = ? where id = ?",
     )
         .bind(&user_stream.state)
         .bind(user_stream.starts)
@@ -161,8 +169,6 @@ impl ZapStreamDb {
         .bind(&user_stream.content_warning)
         .bind(&user_stream.goal)
         .bind(&user_stream.pinned)
-        .bind(user_stream.cost)
-        .bind(user_stream.duration)
         .bind(user_stream.fee)
         .bind(&user_stream.event)
         .bind(user_stream.endpoint_id)

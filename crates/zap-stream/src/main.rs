@@ -208,7 +208,8 @@ async fn main() -> Result<()> {
         PathBuf::from(&settings.output_dir),
         settings.endpoints.clone(),
         settings.endpoints_public_hostname.clone(),
-    );
+        settings.admin_pubkey.clone(),
+    )?;
     let mut server = Router::new()
         .merge(IndexRouter::new(overseer.stream_manager()))
         .merge(AxumApi::new(api.clone()))

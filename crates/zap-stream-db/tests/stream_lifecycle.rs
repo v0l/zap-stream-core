@@ -344,3 +344,43 @@ async fn update_stream_only_affects_target_row() {
         "sibling row B must be untouched"
     );
 }
+
+#[tokio::test]
+async fn update_stream_does_not_overwrite_billing_counters() {
+    let test = TestDb::start().await;
+    let db = &test.db;
+
+    let user_id = db.upsert_user(&[9u8; 32]).await.unwrap();
+    let stale = live_stream(user_id, None);
+    db.insert_stream(&stale).await.unwrap();
+    let id = uuid::Uuid::parse_str(&stale.id).unwrap();
+
+    db.tick_stream(&id, user_id, 30.0, 500).await.unwrap();
+
+    let mut other = stale.clone();
+    other.title = Some("viewer count update".to_string());
+    db.update_stream(&other).await.unwrap();
+
+    let persisted = db.get_stream(&id).await.unwrap();
+    assert_eq!(persisted.duration, 30.0);
+    assert_eq!(persisted.cost, 500);
+    assert_eq!(persisted.title.as_deref(), Some("viewer count update"));
+}
+
+#[tokio::test]
+async fn reset_stream_billing_zeroes_counters() {
+    let test = TestDb::start().await;
+    let db = &test.db;
+
+    let user_id = db.upsert_user(&[10u8; 32]).await.unwrap();
+    let stream = live_stream(user_id, None);
+    db.insert_stream(&stream).await.unwrap();
+    let id = uuid::Uuid::parse_str(&stream.id).unwrap();
+
+    db.tick_stream(&id, user_id, 30.0, 500).await.unwrap();
+    db.reset_stream_billing(&id).await.unwrap();
+
+    let persisted = db.get_stream(&id).await.unwrap();
+    assert_eq!(persisted.duration, 0.0);
+    assert_eq!(persisted.cost, 0);
+}

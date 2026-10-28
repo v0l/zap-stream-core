@@ -4,6 +4,7 @@ use anyhow::{Result, bail};
 use async_trait::async_trait;
 use std::path::PathBuf;
 use std::str::FromStr;
+use tracing::info;
 use uuid::Uuid;
 use zap_stream_api_common::*;
 use zap_stream_core::listen::ListenerEndpoint;
@@ -18,6 +19,7 @@ pub struct ZapStreamAdminApiImpl {
     endpoints: Vec<String>,
     /// Hostname which points directly to the listener endpoints
     endpoints_public_hostname: String,
+    admin_pubkey: Option<[u8; 32]>,
 }
 
 impl ZapStreamAdminApiImpl {
@@ -26,13 +28,29 @@ impl ZapStreamAdminApiImpl {
         output_dir: PathBuf,
         endpoints: Vec<String>,
         endpoints_public_hostname: String,
-    ) -> Self {
-        Self {
+        admin_pubkey: Option<String>,
+    ) -> Result<Self> {
+        let admin_pubkey = match admin_pubkey.filter(|k| !k.is_empty()) {
+            Some(k) => {
+                let bytes = hex::decode(k.trim())?;
+                Some(
+                    <[u8; 32]>::try_from(bytes.as_slice())
+                        .map_err(|_| anyhow::anyhow!("admin_pubkey must be 32 bytes of hex"))?,
+                )
+            }
+            None => None,
+        };
+        Ok(Self {
             db,
             output_dir,
             endpoints,
             endpoints_public_hostname,
-        }
+            admin_pubkey,
+        })
+    }
+
+    fn is_configured_admin(&self, pubkey: &[u8; 32]) -> bool {
+        self.admin_pubkey.as_ref() == Some(pubkey)
     }
 
     fn map_user_to_admin_user(user: &zap_stream_db::User) -> AdminUserInfo {
@@ -52,6 +70,12 @@ impl ZapStreamAdminApiImpl {
 
     async fn check_admin_access(&self, pubkey: &[u8; 32]) -> Result<u64> {
         if let Some(uid) = self.db.get_admin_uid(pubkey).await? {
+            return Ok(uid);
+        }
+        if self.is_configured_admin(pubkey) {
+            let uid = self.db.upsert_user(pubkey).await?;
+            self.db.set_admin(uid, true).await?;
+            info!("Marked configured admin_pubkey as admin (user {})", uid);
             return Ok(uid);
         }
         bail!("Access denied: Admin privileges required");
@@ -822,5 +846,41 @@ impl ZapStreamAdminApi for ZapStreamAdminApiImpl {
             limit: page_size,
             total,
         })
+    }
+}
+
+#[cfg(test)]
+mod admin_pubkey_tests {
+    use super::*;
+
+    fn api(admin_pubkey: Option<String>) -> Result<ZapStreamAdminApiImpl> {
+        let pool = sqlx::MySqlPool::connect_lazy("mysql://u:p@127.0.0.1/none")?;
+        ZapStreamAdminApiImpl::new(
+            ZapStreamDb::from_pool(pool),
+            PathBuf::new(),
+            vec![],
+            String::new(),
+            admin_pubkey,
+        )
+    }
+
+    #[tokio::test]
+    async fn configured_admin_pubkey_is_recognised() {
+        let key = [7u8; 32];
+        let a = api(Some(hex::encode(key))).unwrap();
+        assert!(a.is_configured_admin(&key));
+        assert!(!a.is_configured_admin(&[8u8; 32]));
+    }
+
+    #[tokio::test]
+    async fn unset_or_empty_admin_pubkey_matches_nobody() {
+        assert!(!api(None).unwrap().is_configured_admin(&[0u8; 32]));
+        assert!(!api(Some(String::new())).unwrap().is_configured_admin(&[0u8; 32]));
+    }
+
+    #[tokio::test]
+    async fn invalid_admin_pubkey_is_rejected() {
+        assert!(api(Some("zz".into())).is_err());
+        assert!(api(Some("abcd".into())).is_err());
     }
 }
