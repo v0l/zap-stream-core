@@ -44,3 +44,13 @@ Edit the stream URL in `abx.sh`, then:
 | `-15410 Invalid server blocking reload behavior for low latency` | A `_HLS_msn`/`_HLS_part` reload was answered before the requested part existed. |
 | `-15410 Server must support http2 ECN and SACK` | Connection is HTTP/1.1. LL-HLS is disabled, which is expected through a non-h2 proxy. |
 | `-12318 Segment exceeds specified bandwidth` | Measured segment bitrate is above the variant's BANDWIDTH. |
+
+## Serving a generated stream with the real HLS router
+
+```sh
+HLS_1080P=1 HLS_SECS=100 HLS_OUT_DIR=/tmp/hls1080 cargo test --release -p zap-stream-core --features debug-hls generate_stream_for_validator -- --ignored &
+mkdir -p /tmp/hlsbase/<uuid> && ln -s /tmp/hls1080 /tmp/hlsbase/<uuid>/hls
+cargo run -p zap-stream --example hls_serve --no-default-features --features hls -- /tmp/hlsbase 0.0.0.0:8080
+```
+
+Point `abx.sh` (reverse proxy) at that server and play with `./player`.

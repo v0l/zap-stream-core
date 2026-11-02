@@ -77,6 +77,29 @@ impl HlsTimingTestResult {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct TestStreamSpec {
+    width: u16,
+    height: u16,
+    video_bitrate: u64,
+    audio_bitrate: u64,
+    constrain_rate: bool,
+    realtime: bool,
+}
+
+impl Default for TestStreamSpec {
+    fn default() -> Self {
+        Self {
+            width: 1280,
+            height: 720,
+            video_bitrate: 1_000_000,
+            audio_bitrate: 128_000,
+            constrain_rate: false,
+            realtime: false,
+        }
+    }
+}
+
 pub struct HlsTimingTester {
     max_avg_difference: f64,
     max_individual_difference: f64,
@@ -152,10 +175,27 @@ impl HlsTimingTester {
         duration_seconds: f32,
         segment_type: SegmentType,
     ) -> Result<(HlsMuxer, PathBuf)> {
+        self.generate_test_stream_with(
+            output_dir,
+            duration_seconds,
+            segment_type,
+            TestStreamSpec::default(),
+        )
+    }
+
+    fn generate_test_stream_with(
+        &self,
+        output_dir: &Path,
+        duration_seconds: f32,
+        segment_type: SegmentType,
+        spec: TestStreamSpec,
+    ) -> Result<(HlsMuxer, PathBuf)> {
         const VIDEO_FPS: f32 = 30.0;
-        const VIDEO_WIDTH: u16 = 1280;
-        const VIDEO_HEIGHT: u16 = 720;
         const SAMPLE_RATE: u32 = 44100;
+        let video_width: u16 = spec.width;
+        let video_height: u16 = spec.height;
+        let video_bitrate: u64 = spec.video_bitrate;
+        let audio_bitrate: u64 = spec.audio_bitrate;
 
         // Determine if GLOBAL_HEADER is needed for fMP4
         let need_global_header = segment_type == SegmentType::FMP4;
@@ -168,10 +208,10 @@ impl HlsTimingTester {
         // into segment 1, skewing the timing analysis.
         let keyframe_interval = (VIDEO_FPS * 2.0) as u16; // 2 second keyframe interval
         let video_level = VideoVariant {
-            width: VIDEO_WIDTH,
-            height: VIDEO_HEIGHT,
+            width: video_width,
+            height: video_height,
             fps: VIDEO_FPS,
-            bitrate: 1_000_000,
+            bitrate: video_bitrate,
             ..Default::default()
         }
         .resolved_level();
@@ -179,10 +219,10 @@ impl HlsTimingTester {
             let mut encoder = Encoder::new_with_name("libx264")?
                 .with_stream_index(0)
                 .with_framerate(VIDEO_FPS)?
-                .with_bitrate(1_000_000)
+                .with_bitrate(video_bitrate as i64)
                 .with_pix_fmt(AVPixelFormat::YUV420P)
-                .with_width(VIDEO_WIDTH as _)
-                .with_height(VIDEO_HEIGHT as _)
+                .with_width(video_width as _)
+                .with_height(video_height as _)
                 .with_level(video_level as _)
                 .with_profile(AV_PROFILE_H264_MAIN)
                 .with_options(|ctx| {
@@ -198,6 +238,16 @@ impl HlsTimingTester {
             let mut opts = HashMap::new();
             opts.insert("preset".to_string(), "veryfast".to_string());
             opts.insert("tune".to_string(), "zerolatency".to_string());
+            if spec.constrain_rate {
+                opts.insert(
+                    "x264-params".to_string(),
+                    format!(
+                        "vbv-maxrate={}:vbv-bufsize={}",
+                        video_bitrate / 1000,
+                        video_bitrate / 1000
+                    ),
+                );
+            }
             encoder.open(Some(opts))?
         };
 
@@ -206,7 +256,7 @@ impl HlsTimingTester {
             let mut encoder = Encoder::new_with_name("aac")?
                 .with_stream_index(1)
                 .with_default_channel_layout(1)
-                .with_bitrate(128_000)
+                .with_bitrate(audio_bitrate as i64)
                 .with_sample_format(AVSampleFormat::FLTP)
                 .with_sample_rate(SAMPLE_RATE as _)?;
 
@@ -223,10 +273,10 @@ impl HlsTimingTester {
         let video_stream = VideoVariant {
             id: Uuid::new_v4(),
             src_index: 0,
-            width: VIDEO_WIDTH,
-            height: VIDEO_HEIGHT,
+            width: video_width,
+            height: video_height,
             fps: VIDEO_FPS,
-            bitrate: 1_000_000,
+            bitrate: video_bitrate,
             codec: "libx264".to_string(),
             preset: Some("fast".to_string()),
             profile: AV_PROFILE_H264_MAIN as u32,
@@ -243,7 +293,7 @@ impl HlsTimingTester {
         let audio_stream = AudioVariant {
             id: Uuid::new_v4(),
             src_index: 1,
-            bitrate: 128_000,
+            bitrate: audio_bitrate,
             codec: "aac".to_string(),
             channels: 1,
             sample_rate: SAMPLE_RATE as _,
@@ -274,8 +324,8 @@ impl HlsTimingTester {
         let frame_size = unsafe { (*audio_encoder.codec_context()).frame_size as _ };
         let mut frame_gen = FrameGenerator::new(
             VIDEO_FPS,
-            VIDEO_WIDTH,
-            VIDEO_HEIGHT,
+            video_width,
+            video_height,
             AVPixelFormat::YUV420P,
             SAMPLE_RATE,
             frame_size,
@@ -353,6 +403,9 @@ impl HlsTimingTester {
                         }
                     }
                     video_frames_generated += 1;
+                    if spec.realtime {
+                        std::thread::sleep(Duration::from_secs_f32(1.0 / VIDEO_FPS));
+                    }
                 }
             }
         }
@@ -969,9 +1022,16 @@ mod tests {
 
         // The audio rendition playlist + init segment exist and are separate from video
         let audio_pl_path = out_dir.join(&audio_uri);
-        assert!(audio_pl_path.exists(), "audio playlist missing: {:?}", audio_pl_path);
+        assert!(
+            audio_pl_path.exists(),
+            "audio playlist missing: {:?}",
+            audio_pl_path
+        );
         let audio_dir = audio_pl_path.parent().unwrap();
-        assert!(audio_dir.join("init.mp4").exists(), "audio init segment missing");
+        assert!(
+            audio_dir.join("init.mp4").exists(),
+            "audio init segment missing"
+        );
         assert_ne!(
             audio_dir,
             out_dir.join(&video.uri).parent().unwrap(),
@@ -997,6 +1057,82 @@ mod tests {
         );
     }
 
+    fn with_headroom(bitrate: u64) -> u64 {
+        bitrate + bitrate / 5
+    }
+
+    fn peak_segment_bitrate(dir: &Path, playlist: &str) -> f64 {
+        let raw = fs::read(dir.join(playlist)).unwrap();
+        let pl = match m3u8_rs::parse_playlist_res(&raw) {
+            Ok(m3u8_rs::Playlist::MediaPlaylist(m)) => m,
+            other => panic!("expected media playlist, got {:?}", other),
+        };
+        let dir = dir.join(playlist).parent().unwrap().to_path_buf();
+        pl.segments
+            .iter()
+            .filter_map(|s| match s {
+                MediaSegmentType::Full(seg) if seg.duration > 0.0 => {
+                    let len = fs::metadata(dir.join(&seg.uri)).ok()?.len();
+                    Some(len as f64 * 8.0 / seg.duration as f64)
+                }
+                _ => None,
+            })
+            .fold(0.0, f64::max)
+    }
+
+    #[test]
+    fn bandwidth_covers_video_and_audio_and_peak_segment_bitrate_1080p() {
+        let temp_dir = tempdir().unwrap();
+        let tester = HlsTimingTester::new(0.2, 1.0, 0.5);
+        let spec = TestStreamSpec {
+            width: 1920,
+            height: 1080,
+            video_bitrate: 8_000_000,
+            audio_bitrate: 128_000,
+            constrain_rate: true,
+            realtime: false,
+        };
+        let (_muxer, out_dir) = tester
+            .generate_test_stream_with(temp_dir.path(), 20.0, SegmentType::FMP4, spec)
+            .expect("generation failed");
+
+        let master_raw = fs::read(out_dir.join("live.m3u8")).unwrap();
+        let master = match m3u8_rs::parse_playlist_res(&master_raw) {
+            Ok(m3u8_rs::Playlist::MasterPlaylist(m)) => m,
+            other => panic!("expected master playlist, got {:?}", other),
+        };
+        let video = &master.variants[0];
+        let audio_uri = master
+            .alternatives
+            .iter()
+            .find(|a| a.media_type == m3u8_rs::AlternativeMediaType::Audio)
+            .and_then(|a| a.uri.clone())
+            .expect("audio rendition");
+
+        let nominal = spec.video_bitrate + spec.audio_bitrate;
+        assert_eq!(video.average_bandwidth, Some(nominal));
+        assert_eq!(video.bandwidth, with_headroom(nominal));
+        assert!(
+            video.bandwidth > with_headroom(spec.video_bitrate),
+            "BANDWIDTH must include the audio rendition"
+        );
+
+        let video_peak = peak_segment_bitrate(&out_dir, &video.uri);
+        let audio_peak = peak_segment_bitrate(&out_dir, &audio_uri);
+        let peak = video_peak + audio_peak;
+        println!(
+            "BANDWIDTH={} video_peak={:.0} audio_peak={:.0}",
+            video.bandwidth, video_peak, audio_peak
+        );
+        assert!(video_peak > 0.0 && audio_peak > 0.0);
+        assert!(
+            video.bandwidth as f64 >= peak,
+            "BANDWIDTH {} below measured peak {:.0}",
+            video.bandwidth,
+            peak
+        );
+    }
+
     /// Generate a stream into a fixed directory for external validation with
     /// Apple's `mediastreamvalidator`:
     /// ```sh
@@ -1015,8 +1151,28 @@ mod tests {
         fs::create_dir_all(&out).unwrap();
 
         let tester = HlsTimingTester::new(0.2, 1.0, 0.5);
+        let spec = if std::env::var("HLS_1080P").is_ok() {
+            TestStreamSpec {
+                width: 1920,
+                height: 1080,
+                video_bitrate: 8_000_000,
+                audio_bitrate: 128_000,
+                constrain_rate: true,
+                realtime: true,
+            }
+        } else {
+            TestStreamSpec::default()
+        };
         let (_muxer, out_dir) = tester
-            .generate_test_stream(&out, 30.0, SegmentType::FMP4)
+            .generate_test_stream_with(
+                &out,
+                std::env::var("HLS_SECS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(30.0),
+                SegmentType::FMP4,
+                spec,
+            )
             .expect("generation failed");
         println!("Generated stream at: {}", out_dir.display());
     }
