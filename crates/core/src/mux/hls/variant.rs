@@ -1055,7 +1055,23 @@ impl HlsVariant {
 
     /// Build the EXT-X-STREAM-INF entry for this variant.
     /// Returns `None` for audio-only renditions (they are emitted as EXT-X-MEDIA instead).
-    pub fn to_playlist_variant(&self) -> Option<m3u8_rs::VariantStream> {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn audio_group(&self) -> Option<&str> {
+        self.audio_group.as_deref()
+    }
+
+    pub fn nominal_bitrate(&self) -> u64 {
+        unsafe {
+            let pes = self.video_stream().unwrap_or(self.streams.first().unwrap());
+            let av_stream = *(*self.mux.context()).streams.add(pes.index());
+            (*(*av_stream).codecpar).bit_rate as u64
+        }
+    }
+
+    pub fn to_playlist_variant(&self, audio_bitrate: u64) -> Option<m3u8_rs::VariantStream> {
         if self.is_audio_only() {
             return None;
         }
@@ -1064,6 +1080,7 @@ impl HlsVariant {
             let av_stream = *(*self.mux.context()).streams.add(pes.index());
             let codec_par = (*av_stream).codecpar;
             let bitrate = (*codec_par).bit_rate as u64;
+            let combined = if bitrate == 0 { 0 } else { bitrate + audio_bitrate };
             let fps = av_q2d((*codec_par).framerate);
             Some(m3u8_rs::VariantStream {
                 is_i_frame: false,
@@ -1077,9 +1094,9 @@ impl HlsVariant {
                         * (*codec_par).height as u64
                         * av_get_bits_per_pixel(pix_desc) as u64
                 } else {
-                    Self::peak_bandwidth(bitrate)
+                    Self::peak_bandwidth(combined)
                 },
-                average_bandwidth: if bitrate == 0 { None } else { Some(bitrate) },
+                average_bandwidth: if bitrate == 0 { None } else { Some(combined) },
                 codecs: self.to_codec_attr(),
                 resolution: Some(m3u8_rs::Resolution {
                     width: (*codec_par).width as _,

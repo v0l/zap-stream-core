@@ -215,10 +215,22 @@ impl HlsMuxer {
             .iter()
             .filter_map(|v| v.to_alternative_media())
             .collect();
+        let audio_bitrates: std::collections::HashMap<&str, u64> = self
+            .variants
+            .iter()
+            .filter(|v| v.is_audio_only())
+            .map(|v| (v.name(), v.nominal_bitrate()))
+            .collect();
         pl.variants = self
             .variants
             .iter()
-            .filter_map(|v| v.to_playlist_variant())
+            .filter_map(|v| {
+                let audio = v
+                    .audio_group()
+                    .and_then(|g| audio_bitrates.get(g).copied())
+                    .unwrap_or(0);
+                v.to_playlist_variant(audio)
+            })
             .collect();
 
         let pl_path = self.out_dir.join(Self::MASTER_PLAYLIST);
