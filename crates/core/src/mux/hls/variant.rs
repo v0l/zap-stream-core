@@ -854,9 +854,13 @@ impl HlsVariant {
         }
     }
 
+    pub(crate) fn has_full_segment(segments: &[HlsSegment]) -> bool {
+        segments.iter().any(|s| matches!(s, HlsSegment::Full(_)))
+    }
+
     fn write_playlist(&mut self) -> Result<()> {
-        if self.segments.is_empty() {
-            return Ok(()); // Don't write empty playlists
+        if !Self::has_full_segment(&self.segments) {
+            return Ok(());
         }
 
         let mut pl = m3u8_rs::MediaPlaylist::default();
@@ -1191,6 +1195,13 @@ mod tests {
             independent: false,
             byte_range: Some((100, Some(0))),
         })
+    }
+
+    #[test]
+    fn playlist_not_published_until_first_full_segment() {
+        assert!(!HlsVariant::has_full_segment(&[]));
+        assert!(!HlsVariant::has_full_segment(&[partial(1)]));
+        assert!(HlsVariant::has_full_segment(&[full(1), partial(2)]));
     }
 
     fn full(index: u64) -> HlsSegment {
