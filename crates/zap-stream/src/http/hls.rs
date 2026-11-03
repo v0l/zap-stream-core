@@ -748,6 +748,19 @@ mod tests {
     }
 
     #[test]
+    fn last_msn_part_on_first_playlist_with_only_parts() {
+        let pl = "#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:2\n\
+#EXT-X-MEDIA-SEQUENCE:1\n#EXT-X-PART-INF:PART-TARGET=0.5\n\
+#EXT-X-PART:DURATION=0.5,URI=\"1.m4s\",BYTERANGE=\"100@0\",INDEPENDENT=YES\n\
+#EXT-X-PART:DURATION=0.5,URI=\"1.m4s\",BYTERANGE=\"100@100\"\n\
+#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"1.m4s\",BYTERANGE-START=200\n";
+        assert_eq!(
+            HlsRouter::playlist_last_msn_part(pl.as_bytes()),
+            Some((1, Some(1)))
+        );
+    }
+
+    #[test]
     fn last_msn_part_invalid_playlist() {
         assert_eq!(HlsRouter::playlist_last_msn_part(b"junk"), None);
     }
