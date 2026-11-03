@@ -388,9 +388,33 @@ impl HlsRouter {
         false
     }
 
+    const INIT_SEGMENT_NAME: &'static str = "init.mp4";
+
+    fn apply_init_cache_policy(segment: &str, mut response: Response) -> Response {
+        if segment == Self::INIT_SEGMENT_NAME {
+            response.headers_mut().insert(
+                axum::http::header::CACHE_CONTROL,
+                axum::http::HeaderValue::from_static("no-cache"),
+            );
+        }
+        response
+    }
+
     async fn get_segment(
-        State(this): State<HlsRouter>,
+        state: State<HlsRouter>,
         Path((stream_id, variant, segment)): Path<(Uuid, String, String)>,
+        headers: HeaderMap,
+    ) -> Result<Response, (StatusCode, &'static str)> {
+        let response =
+            Self::get_segment_inner(state, stream_id, variant, segment.clone(), headers).await?;
+        Ok(Self::apply_init_cache_policy(&segment, response))
+    }
+
+    async fn get_segment_inner(
+        State(this): State<HlsRouter>,
+        stream_id: Uuid,
+        variant: String,
+        segment: String,
         headers: HeaderMap,
     ) -> Result<Response, (StatusCode, &'static str)> {
         let segment_path = this
@@ -812,6 +836,17 @@ mod tests {
 
     /// Regression: variant/segment path components were joined unchecked; a
     /// percent-encoded ".." or "/" could escape the media base directory.
+    #[test]
+    fn init_segment_is_not_cacheable_by_edge() {
+        let r = HlsRouter::apply_init_cache_policy("init.mp4", Response::new(axum::body::Body::empty()));
+        assert_eq!(
+            r.headers().get(axum::http::header::CACHE_CONTROL).unwrap(),
+            "no-cache"
+        );
+        let r = HlsRouter::apply_init_cache_policy("1.m4s", Response::new(axum::body::Body::empty()));
+        assert!(r.headers().get(axum::http::header::CACHE_CONTROL).is_none());
+    }
+
     #[test]
     fn safe_path_component_rejects_traversal() {
         assert!(HlsRouter::safe_path_component("..").is_err());
