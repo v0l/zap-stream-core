@@ -42,7 +42,27 @@ pub struct User {
     pub ingest_id: Option<u64>,
     /// An external ID used to identify this user in an external system
     pub external_id: Option<String>,
+    pub armed_stream_id: Option<String>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArmStreamError {
+    NotFound,
+    Forbidden,
+    NotPlanned,
+}
+
+impl Display for ArmStreamError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ArmStreamError::NotFound => write!(f, "Stream not found"),
+            ArmStreamError::Forbidden => write!(f, "Stream belongs to a different user"),
+            ArmStreamError::NotPlanned => write!(f, "Only a planned stream can be armed"),
+        }
+    }
+}
+
+impl std::error::Error for ArmStreamError {}
 
 #[derive(Default, Debug, Clone, PartialEq, Type)]
 #[repr(u8)]

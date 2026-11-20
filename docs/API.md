@@ -105,6 +105,7 @@ stream details, and NWC (Nostr Wallet Connect) configuration.
 **Response Fields (GET):**
 
 - `has_nwc`: Boolean indicating whether NWC is configured for this account
+- `armed_stream_id`: Planned stream the primary key will go live on at the next connect, or `null`
 
 #### Update Account
 
@@ -435,6 +436,28 @@ are ideal for planned streams, scheduled events, or 24/7 streaming scenarios.
 
 `status: "planned"` publishes the stream as planned with the given `starts` and `ends`, and returns the event in
 `event`. Going live on the key later updates the same event. `starts` defaults to now.
+
+#### Arm Planned Stream
+
+```
+POST /api/v1/planned/{id}/arm
+DELETE /api/v1/planned/{id}/arm
+```
+
+**Authentication:** Required
+
+**Path Parameters:**
+
+- `id`: Planned stream ID (UUID)
+
+**Response:** `{}`. Errors: `403` not your stream, `404` no such stream, `409` the stream is not planned.
+
+**Description:** Arms one planned stream for the account's primary stream key. The next time the primary key
+connects, Core goes live on that stream, keeping its id, `d` tag and comments, and the arm is cleared. After the show
+ends the key behaves as normal. Only one stream is armed per account: arming another replaces the first. `DELETE`
+disarms. If the armed stream is deleted or no longer planned, the key falls back to creating a new stream. A reconnect
+within the reconnect window resumes the stream that just ended and does not use the arm. Per-event keys are unchanged.
+The armed stream is returned as `armed_stream_id` in account info.
 
 #### Delete Stream
 

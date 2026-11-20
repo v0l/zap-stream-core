@@ -514,6 +514,19 @@ impl CfApiWrapper {
             return Ok(stream);
         }
 
+        if let Some(mut stream) = self.db.take_armed_stream(user.id).await? {
+            info!("Going live on armed stream {} for user {}", stream.id, user.id);
+            stream.starts = Utc::now();
+            stream.duration = 0.0;
+            stream.state = UserStreamState::Live;
+            stream.endpoint_id = Some(endpoint.id);
+            stream.ends = None;
+            stream.external_input_id = Some(input.uid.clone());
+            self.db.update_stream(&stream).await?;
+            self.register_input_mapping(&input.uid, &stream.id).await;
+            return Ok(stream);
+        }
+
         // No grace window match: create new stream with user defaults
         let new_id = Uuid::new_v4();
         info!(
@@ -1355,6 +1368,7 @@ impl ZapStreamApi for CfApiWrapper {
                 goal: user.goal,
             }),
             has_nwc: user.nwc.is_some(),
+            armed_stream_id: user.armed_stream_id,
         })
     }
 
@@ -1378,6 +1392,14 @@ impl ZapStreamApi for CfApiWrapper {
 
     async fn delete_event(&self, auth: Nip98Auth, stream_id: Uuid) -> Result<()> {
         self.api_base.delete_event(auth, stream_id).await
+    }
+
+    async fn arm_stream(&self, auth: Nip98Auth, stream_id: Uuid) -> Result<()> {
+        self.api_base.arm_stream(auth, stream_id).await
+    }
+
+    async fn disarm_stream(&self, auth: Nip98Auth, stream_id: Uuid) -> Result<()> {
+        self.api_base.disarm_stream(auth, stream_id).await
     }
 
     async fn create_forward(

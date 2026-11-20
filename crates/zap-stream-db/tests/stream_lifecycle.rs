@@ -18,7 +18,7 @@ use futures_util::StreamExt;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration as StdDuration, Instant};
-use zap_stream_db::{UserStream, UserStreamState, ZapStreamDb};
+use zap_stream_db::{ArmStreamError, UserStream, UserStreamState, ZapStreamDb};
 
 const DB_IMAGE_NAME: &str = "mariadb";
 const DB_IMAGE_TAG: &str = "lts";
@@ -383,4 +383,267 @@ async fn reset_stream_billing_zeroes_counters() {
     let persisted = db.get_stream(&id).await.unwrap();
     assert_eq!(persisted.duration, 0.0);
     assert_eq!(persisted.cost, 0);
+}
+
+fn planned_stream(user_id: u64) -> UserStream {
+    UserStream {
+        id: uuid::Uuid::new_v4().to_string(),
+        user_id,
+        starts: Utc::now() + Duration::hours(1),
+        state: UserStreamState::Planned,
+        title: Some("planned show".to_string()),
+        ..Default::default()
+    }
+}
+
+async fn insert_planned(db: &ZapStreamDb, user_id: u64) -> uuid::Uuid {
+    let stream = planned_stream(user_id);
+    db.insert_stream(&stream).await.unwrap();
+    uuid::Uuid::parse_str(&stream.id).unwrap()
+}
+
+async fn armed(db: &ZapStreamDb, user_id: u64) -> Option<String> {
+    db.get_user(user_id).await.unwrap().armed_stream_id
+}
+
+fn arm_error(e: anyhow::Error) -> ArmStreamError {
+    e.downcast::<ArmStreamError>().expect("an ArmStreamError")
+}
+
+#[tokio::test]
+async fn arming_a_planned_stream_marks_it_on_the_user() {
+    let test = TestDb::start().await;
+    let db = &test.db;
+    let uid = db.upsert_user(&[20u8; 32]).await.unwrap();
+    let id = insert_planned(db, uid).await;
+
+    db.arm_stream(uid, &id).await.unwrap();
+
+    assert_eq!(armed(db, uid).await, Some(id.to_string()));
+}
+
+#[tokio::test]
+async fn taking_the_arm_returns_the_planned_stream_once() {
+    let test = TestDb::start().await;
+    let db = &test.db;
+    let uid = db.upsert_user(&[21u8; 32]).await.unwrap();
+    let id = insert_planned(db, uid).await;
+    db.arm_stream(uid, &id).await.unwrap();
+
+    let taken = db.take_armed_stream(uid).await.unwrap().expect("armed stream");
+    assert_eq!(taken.id, id.to_string());
+    assert_eq!(armed(db, uid).await, None);
+    assert!(db.take_armed_stream(uid).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn taking_without_an_arm_returns_nothing() {
+    let test = TestDb::start().await;
+    let db = &test.db;
+    let uid = db.upsert_user(&[22u8; 32]).await.unwrap();
+    insert_planned(db, uid).await;
+
+    assert!(db.take_armed_stream(uid).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn arming_another_stream_replaces_the_first() {
+    let test = TestDb::start().await;
+    let db = &test.db;
+    let uid = db.upsert_user(&[23u8; 32]).await.unwrap();
+    let first = insert_planned(db, uid).await;
+    let second = insert_planned(db, uid).await;
+
+    db.arm_stream(uid, &first).await.unwrap();
+    db.arm_stream(uid, &second).await.unwrap();
+
+    assert_eq!(armed(db, uid).await, Some(second.to_string()));
+    let taken = db.take_armed_stream(uid).await.unwrap().unwrap();
+    assert_eq!(taken.id, second.to_string());
+}
+
+#[tokio::test]
+async fn arming_someone_elses_stream_is_forbidden() {
+    let test = TestDb::start().await;
+    let db = &test.db;
+    let owner = db.upsert_user(&[24u8; 32]).await.unwrap();
+    let other = db.upsert_user(&[25u8; 32]).await.unwrap();
+    let id = insert_planned(db, owner).await;
+
+    let err = db.arm_stream(other, &id).await.unwrap_err();
+
+    assert_eq!(arm_error(err), ArmStreamError::Forbidden);
+    assert_eq!(armed(db, other).await, None);
+}
+
+#[tokio::test]
+async fn arming_a_missing_stream_is_not_found() {
+    let test = TestDb::start().await;
+    let db = &test.db;
+    let uid = db.upsert_user(&[26u8; 32]).await.unwrap();
+
+    let err = db.arm_stream(uid, &uuid::Uuid::new_v4()).await.unwrap_err();
+
+    assert_eq!(arm_error(err), ArmStreamError::NotFound);
+}
+
+#[tokio::test]
+async fn live_and_ended_streams_cannot_be_armed() {
+    let test = TestDb::start().await;
+    let db = &test.db;
+    let uid = db.upsert_user(&[27u8; 32]).await.unwrap();
+
+    let live = live_stream(uid, None);
+    db.insert_stream(&live).await.unwrap();
+    let mut ended = live_stream(uid, None);
+    ended.state = UserStreamState::Ended;
+    ended.ends = Some(Utc::now());
+    db.insert_stream(&ended).await.unwrap();
+
+    for s in [&live, &ended] {
+        let id = uuid::Uuid::parse_str(&s.id).unwrap();
+        let err = db.arm_stream(uid, &id).await.unwrap_err();
+        assert_eq!(arm_error(err), ArmStreamError::NotPlanned);
+    }
+    assert_eq!(armed(db, uid).await, None);
+}
+
+#[tokio::test]
+async fn a_failed_arm_keeps_the_previous_arm() {
+    let test = TestDb::start().await;
+    let db = &test.db;
+    let uid = db.upsert_user(&[28u8; 32]).await.unwrap();
+    let good = insert_planned(db, uid).await;
+    let live = live_stream(uid, None);
+    db.insert_stream(&live).await.unwrap();
+
+    db.arm_stream(uid, &good).await.unwrap();
+    let live_id = uuid::Uuid::parse_str(&live.id).unwrap();
+    db.arm_stream(uid, &live_id).await.unwrap_err();
+
+    assert_eq!(armed(db, uid).await, Some(good.to_string()));
+}
+
+#[tokio::test]
+async fn disarming_clears_only_the_matching_stream() {
+    let test = TestDb::start().await;
+    let db = &test.db;
+    let uid = db.upsert_user(&[29u8; 32]).await.unwrap();
+    let first = insert_planned(db, uid).await;
+    let second = insert_planned(db, uid).await;
+    db.arm_stream(uid, &first).await.unwrap();
+
+    db.disarm_stream(uid, &second).await.unwrap();
+    assert_eq!(armed(db, uid).await, Some(first.to_string()));
+
+    db.disarm_stream(uid, &first).await.unwrap();
+    assert_eq!(armed(db, uid).await, None);
+}
+
+#[tokio::test]
+async fn deleting_the_armed_stream_falls_back_to_normal() {
+    let test = TestDb::start().await;
+    let db = &test.db;
+    let uid = db.upsert_user(&[30u8; 32]).await.unwrap();
+    let id = insert_planned(db, uid).await;
+    db.arm_stream(uid, &id).await.unwrap();
+
+    db.clear_stream_arm(&id).await.unwrap();
+
+    assert_eq!(armed(db, uid).await, None);
+    assert!(db.take_armed_stream(uid).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn a_stream_that_is_no_longer_planned_is_not_taken() {
+    let test = TestDb::start().await;
+    let db = &test.db;
+    let uid = db.upsert_user(&[31u8; 32]).await.unwrap();
+    let id = insert_planned(db, uid).await;
+    db.arm_stream(uid, &id).await.unwrap();
+
+    let mut stream = db.get_stream(&id).await.unwrap();
+    stream.state = UserStreamState::Ended;
+    stream.ends = Some(Utc::now());
+    db.update_stream(&stream).await.unwrap();
+
+    assert!(db.take_armed_stream(uid).await.unwrap().is_none());
+    assert_eq!(armed(db, uid).await, None);
+}
+
+#[tokio::test]
+async fn taking_a_key_bound_stream_frees_it_for_the_primary_key_reconnect_window() {
+    let test = TestDb::start().await;
+    let db = &test.db;
+    let uid = db.upsert_user(&[32u8; 32]).await.unwrap();
+    let mut stream = planned_stream(uid);
+    db.insert_stream(&stream).await.unwrap();
+    let id = uuid::Uuid::parse_str(&stream.id).unwrap();
+    let key_id = db
+        .create_stream_key(uid, "per-event-key", None, None, &stream.id)
+        .await
+        .unwrap();
+    stream.stream_key_id = Some(key_id);
+    db.update_stream(&stream).await.unwrap();
+    db.arm_stream(uid, &id).await.unwrap();
+
+    let mut taken = db.take_armed_stream(uid).await.unwrap().unwrap();
+    assert_eq!(taken.stream_key_id, None);
+    taken.state = UserStreamState::Ended;
+    taken.ends = Some(Utc::now());
+    db.update_stream(&taken).await.unwrap();
+
+    let prev = db.get_user_prev_streams(uid).await.unwrap();
+    assert_eq!(prev.last_stream_id, Some(stream.id.clone()));
+    assert!(db.find_user_stream_key("per-event-key").await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn concurrent_arms_leave_exactly_one_armed() {
+    let test = TestDb::start().await;
+    let db = &test.db;
+    let uid = db.upsert_user(&[33u8; 32]).await.unwrap();
+    let mut ids = Vec::new();
+    for _ in 0..8 {
+        ids.push(insert_planned(db, uid).await);
+    }
+
+    let handles: Vec<_> = ids
+        .iter()
+        .map(|id| {
+            let db = db.clone();
+            let id = *id;
+            tokio::spawn(async move { db.arm_stream(uid, &id).await })
+        })
+        .collect();
+    for h in handles {
+        h.await.unwrap().unwrap();
+    }
+
+    let current = armed(db, uid).await.expect("one armed stream");
+    assert!(ids.iter().any(|i| i.to_string() == current));
+}
+
+#[tokio::test]
+async fn concurrent_takes_consume_the_arm_once() {
+    let test = TestDb::start().await;
+    let db = &test.db;
+    let uid = db.upsert_user(&[34u8; 32]).await.unwrap();
+    let id = insert_planned(db, uid).await;
+    db.arm_stream(uid, &id).await.unwrap();
+
+    let handles: Vec<_> = (0..8)
+        .map(|_| {
+            let db = db.clone();
+            tokio::spawn(async move { db.take_armed_stream(uid).await })
+        })
+        .collect();
+    let mut taken = 0;
+    for h in handles {
+        if h.await.unwrap().unwrap().is_some() {
+            taken += 1;
+        }
+    }
+
+    assert_eq!(taken, 1);
 }

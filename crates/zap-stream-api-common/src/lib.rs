@@ -263,6 +263,13 @@ pub(crate) struct ApiError {
     error: String,
 }
 
+pub(crate) fn error_status(error: &anyhow::Error) -> u16 {
+    error
+        .downcast_ref::<StatusError>()
+        .map(|s| s.status)
+        .unwrap_or(500)
+}
+
 impl From<anyhow::Error> for ApiError {
     fn from(error: anyhow::Error) -> Self {
         Self {
@@ -347,5 +354,41 @@ mod tests {
         let patch: PatchEvent = serde_json::from_str(r#"{"title":"t"}"#).unwrap();
         assert!(patch.goal.is_none());
         assert!(patch.pinned.is_none());
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StatusError {
+    pub status: u16,
+    pub message: String,
+}
+
+impl StatusError {
+    pub fn new(status: u16, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for StatusError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for StatusError {}
+
+#[cfg(test)]
+mod status_error_tests {
+    use super::*;
+
+    #[test]
+    fn status_error_survives_anyhow_downcast() {
+        let e = anyhow::Error::new(StatusError::new(403, "no"));
+        let s = e.downcast_ref::<StatusError>().unwrap();
+        assert_eq!(s.status, 403);
+        assert_eq!(e.to_string(), "no");
     }
 }

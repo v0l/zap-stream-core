@@ -9,6 +9,8 @@ pub struct AccountInfo {
     pub forwards: Vec<ForwardDest>,
     pub details: Option<PatchEventDetails>,
     pub has_nwc: bool,
+    #[serde(default)]
+    pub armed_stream_id: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]

@@ -146,6 +146,37 @@ where
                 ),
             )
             .route(
+                "/api/v1/planned/{id}/arm",
+                post(
+                    async |auth: Nip98Auth,
+                           State(this): State<AxumApi<T>>,
+                           Path(id): Path<Uuid>| {
+                        match this.handler.arm_stream(auth, id).await {
+                            Ok(r) => Ok(Json(r)),
+                            Err(e) => Err((
+                                StatusCode::from_u16(crate::error_status(&e))
+                                    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                                Json(ApiError::from(e)),
+                            )),
+                        }
+                    },
+                )
+                .delete(
+                    async |auth: Nip98Auth,
+                           State(this): State<AxumApi<T>>,
+                           Path(id): Path<Uuid>| {
+                        match this.handler.disarm_stream(auth, id).await {
+                            Ok(r) => Ok(Json(r)),
+                            Err(e) => Err((
+                                StatusCode::from_u16(crate::error_status(&e))
+                                    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                                Json(ApiError::from(e)),
+                            )),
+                        }
+                    },
+                ),
+            )
+            .route(
                 "/api/v1/topup",
                 get(
                     async |auth: Nip98Auth,

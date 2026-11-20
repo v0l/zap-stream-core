@@ -12,9 +12,9 @@ use tracing::{info, warn};
 use uuid::Uuid;
 use zap_stream_api_common::{
     CreateStreamKeyRequest, CreateStreamKeyResponse, HistoryEntry, HistoryResponse, Nip98Auth,
-    PatchAccount, PatchEvent, StreamKey, TopupResponse,
+    PatchAccount, PatchEvent, StatusError, StreamKey, TopupResponse,
 };
-use zap_stream_db::{UserStream, UserStreamState, ZapStreamDb};
+use zap_stream_db::{ArmStreamError, UserStream, UserStreamState, ZapStreamDb};
 
 /// Convert a list of tags into a comma-separated CSV string.
 /// Filters out empty/whitespace-only tags, and returns None if no tags remain.
@@ -37,6 +37,15 @@ pub fn is_planned(status: &Option<String>) -> Result<bool> {
         None => Ok(false),
         Some("planned") => Ok(true),
         Some(s) => bail!("Unsupported status: {}", s),
+    }
+}
+
+pub(crate) fn arm_error_to_status(e: anyhow::Error) -> anyhow::Error {
+    match e.downcast_ref::<ArmStreamError>() {
+        Some(ArmStreamError::NotFound) => StatusError::new(404, e.to_string()).into(),
+        Some(ArmStreamError::Forbidden) => StatusError::new(403, e.to_string()).into(),
+        Some(ArmStreamError::NotPlanned) => StatusError::new(409, e.to_string()).into(),
+        None => e,
     }
 }
 
@@ -192,6 +201,7 @@ impl ApiBase {
         if stream.user_id != uid && !is_admin {
             bail!("Access denied: You can only delete your own streams");
         }
+        self.db.clear_stream_arm(&stream_id).await?;
 
         // Publish Nostr deletion request event if the stream has an associated event
         if let Some(event_json) = &stream.event
@@ -237,6 +247,19 @@ impl ApiBase {
         }
 
         Ok(())
+    }
+
+    pub async fn arm_stream(&self, auth: Nip98Auth, stream_id: Uuid) -> Result<()> {
+        let uid = self.db.upsert_user(&auth.pubkey).await?;
+        self.db
+            .arm_stream(uid, &stream_id)
+            .await
+            .map_err(arm_error_to_status)
+    }
+
+    pub async fn disarm_stream(&self, auth: Nip98Auth, stream_id: Uuid) -> Result<()> {
+        let uid = self.db.upsert_user(&auth.pubkey).await?;
+        self.db.disarm_stream(uid, &stream_id).await
     }
 
     pub async fn get_balance_history(
@@ -405,6 +428,24 @@ mod tests {
             starts: Utc::now(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn arm_errors_map_to_http_statuses() {
+        let status = |e: ArmStreamError| {
+            arm_error_to_status(e.into())
+                .downcast_ref::<StatusError>()
+                .unwrap()
+                .status
+        };
+        assert_eq!(status(ArmStreamError::NotFound), 404);
+        assert_eq!(status(ArmStreamError::Forbidden), 403);
+        assert_eq!(status(ArmStreamError::NotPlanned), 409);
+        assert!(
+            arm_error_to_status(anyhow::anyhow!("db down"))
+                .downcast_ref::<StatusError>()
+                .is_none()
+        );
     }
 
     #[test]

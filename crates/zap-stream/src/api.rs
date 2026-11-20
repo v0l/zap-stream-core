@@ -201,6 +201,7 @@ impl ZapStreamApi for Api {
                 goal: user.goal,
             }),
             has_nwc: user.nwc.is_some(),
+            armed_stream_id: user.armed_stream_id,
         })
     }
 
@@ -222,6 +223,14 @@ impl ZapStreamApi for Api {
 
     async fn delete_event(&self, auth: Nip98Auth, stream_id: Uuid) -> Result<()> {
         self.api_base.delete_event(auth, stream_id).await
+    }
+
+    async fn arm_stream(&self, auth: Nip98Auth, stream_id: Uuid) -> Result<()> {
+        self.api_base.arm_stream(auth, stream_id).await
+    }
+
+    async fn disarm_stream(&self, auth: Nip98Auth, stream_id: Uuid) -> Result<()> {
+        self.api_base.disarm_stream(auth, stream_id).await
     }
 
     async fn create_forward(

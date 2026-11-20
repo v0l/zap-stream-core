@@ -1,5 +1,5 @@
 use crate::{
-    AuditLog, AuditLogWithPubkeys, IngestEndpoint, Payment, PaymentType, PaymentsSummaryData,
+    ArmStreamError, UserStreamState, AuditLog, AuditLogWithPubkeys, IngestEndpoint, Payment, PaymentType, PaymentsSummaryData,
     StreamKeyType, User, UserHistoryEntry, UserPreviousStreams, UserStream, UserStreamForward,
     UserStreamKey,
 };
@@ -62,6 +62,86 @@ impl ZapStreamDb {
         }
 
         Ok(None)
+    }
+
+    pub async fn arm_stream(&self, user_id: u64, stream_id: &Uuid) -> Result<()> {
+        let mut tx = self.db.begin().await?;
+        sqlx::query("select id from user where id = ? for update")
+            .bind(user_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let row = sqlx::query("select user_id, state from user_stream where id = ? for update")
+            .bind(stream_id.to_string())
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(ArmStreamError::NotFound)?;
+        let owner: u64 = row.try_get(0)?;
+        let state: u8 = row.try_get(1)?;
+        if owner != user_id {
+            return Err(ArmStreamError::Forbidden.into());
+        }
+        if state != UserStreamState::Planned as u8 {
+            return Err(ArmStreamError::NotPlanned.into());
+        }
+        sqlx::query("update user set armed_stream_id = ? where id = ?")
+            .bind(stream_id.to_string())
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn disarm_stream(&self, user_id: u64, stream_id: &Uuid) -> Result<()> {
+        sqlx::query("update user set armed_stream_id = null where id = ? and armed_stream_id = ?")
+            .bind(user_id)
+            .bind(stream_id.to_string())
+            .execute(&self.db)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn clear_stream_arm(&self, stream_id: &Uuid) -> Result<()> {
+        sqlx::query("update user set armed_stream_id = null where armed_stream_id = ?")
+            .bind(stream_id.to_string())
+            .execute(&self.db)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn take_armed_stream(&self, user_id: u64) -> Result<Option<UserStream>> {
+        let mut tx = self.db.begin().await?;
+        let armed: Option<String> =
+            sqlx::query_scalar("select armed_stream_id from user where id = ? for update")
+                .bind(user_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        let Some(armed) = armed else {
+            return Ok(None);
+        };
+        sqlx::query("update user set armed_stream_id = null where id = ?")
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+        let stream: Option<UserStream> = sqlx::query_as(
+            "select * from user_stream where id = ? and user_id = ? and state = ? for update",
+        )
+        .bind(armed)
+        .bind(user_id)
+        .bind(UserStreamState::Planned)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(mut stream) = stream else {
+            tx.commit().await?;
+            return Ok(None);
+        };
+        sqlx::query("update user_stream set stream_key_id = null where id = ?")
+            .bind(&stream.id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        stream.stream_key_id = None;
+        Ok(Some(stream))
     }
 
     /// Get user by id

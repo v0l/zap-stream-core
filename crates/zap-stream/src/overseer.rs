@@ -558,9 +558,22 @@ impl Overseer for ZapStreamOverseer {
                 })
                 .unwrap_or(false);
 
+        let armed_stream_id = match (&user_key, has_recent_stream) {
+            (StreamKeyType::Primary(_), false) => self
+                .db
+                .take_armed_stream(user.id)
+                .await?
+                .and_then(|s| s.id.parse::<Uuid>().ok()),
+            _ => None,
+        };
+
         Ok(ConnectResult::Allow {
             enable_stream_dump: user.stream_dump_recording,
             stream_id_override: match (has_recent_stream, user_key) {
+                (false, StreamKeyType::Primary(_)) if armed_stream_id.is_some() => {
+                    info!("Going live on armed stream {:?}", armed_stream_id);
+                    armed_stream_id
+                }
                 (true, StreamKeyType::Primary(_)) => {
                     let prev_id = prev_streams
                         .last_stream_id
@@ -645,6 +658,9 @@ impl Overseer for ZapStreamOverseer {
             StreamKeyType::Primary(_) => {
                 // resume previously ended stream
                 if let Some(mut prev_stream) = prev_stream {
+                    if prev_stream.state == UserStreamState::Planned {
+                        prev_stream.starts = Utc::now();
+                    }
                     prev_stream.state = UserStreamState::Live;
                     prev_stream.node_name = Some(self.node_name.clone());
                     prev_stream.endpoint_id = Some(endpoint.id);
