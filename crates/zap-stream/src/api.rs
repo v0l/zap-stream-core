@@ -327,3 +327,126 @@ impl ZapStreamApi for Api {
         }
     }
 }
+
+#[cfg(all(test, feature = "pipeline"))]
+mod tests {
+    use super::*;
+    use crate::test_support::{TestDb, nip98_header, test_overseer, test_settings};
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use chrono::{Duration, Utc};
+    use http_body_util::BodyExt;
+    use nostr_sdk::Keys;
+    use tower::ServiceExt;
+    use zap_stream_api_common::AxumApi;
+    use zap_stream_db::{UserStream, UserStreamState};
+
+    struct Harness {
+        t: TestDb,
+        router: axum::Router,
+    }
+
+    async fn harness() -> Harness {
+        let t = TestDb::start().await;
+        let overseer = test_overseer(&t.db);
+        let router = AxumApi::new(Api::new(overseer, test_settings()));
+        Harness { t, router }
+    }
+
+    async fn call(h: &Harness, keys: &Keys, method: &str, path: &str) -> (StatusCode, String) {
+        let req = Request::builder()
+            .method(method)
+            .uri(path)
+            .header(
+                "authorization",
+                nip98_header(keys, method, &format!("http://localhost{path}")),
+            )
+            .body(Body::empty())
+            .unwrap();
+        let rsp = h.router.clone().oneshot(req).await.unwrap();
+        let status = rsp.status();
+        let body = rsp.into_body().collect().await.unwrap().to_bytes();
+        (status, String::from_utf8_lossy(&body).to_string())
+    }
+
+    async fn stream_for(h: &Harness, keys: &Keys, state: UserStreamState) -> Uuid {
+        let uid = h
+            .t
+            .db
+            .upsert_user(&keys.public_key().to_bytes())
+            .await
+            .unwrap();
+        let s = UserStream {
+            id: Uuid::new_v4().to_string(),
+            user_id: uid,
+            starts: Utc::now() + Duration::hours(1),
+            state,
+            ..Default::default()
+        };
+        h.t.db.insert_stream(&s).await.unwrap();
+        Uuid::parse_str(&s.id).unwrap()
+    }
+
+    fn arm_path(id: &Uuid) -> String {
+        format!("/api/v1/planned/{id}/arm")
+    }
+
+    #[tokio::test]
+    async fn owner_arms_and_account_shows_it() {
+        let h = harness().await;
+        let keys = Keys::generate();
+        let id = stream_for(&h, &keys, UserStreamState::Planned).await;
+
+        let (status, _) = call(&h, &keys, "POST", &arm_path(&id)).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, body) = call(&h, &keys, "GET", "/api/v1/account").await;
+        assert_eq!(status, StatusCode::OK);
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["armed_stream_id"], id.to_string());
+    }
+
+    #[tokio::test]
+    async fn owner_disarms() {
+        let h = harness().await;
+        let keys = Keys::generate();
+        let id = stream_for(&h, &keys, UserStreamState::Planned).await;
+        call(&h, &keys, "POST", &arm_path(&id)).await;
+
+        let (status, _) = call(&h, &keys, "DELETE", &arm_path(&id)).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (_, body) = call(&h, &keys, "GET", "/api/v1/account").await;
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(json["armed_stream_id"].is_null());
+    }
+
+    #[tokio::test]
+    async fn non_owner_gets_403() {
+        let h = harness().await;
+        let owner = Keys::generate();
+        let id = stream_for(&h, &owner, UserStreamState::Planned).await;
+
+        let (status, _) = call(&h, &Keys::generate(), "POST", &arm_path(&id)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn missing_stream_gets_404() {
+        let h = harness().await;
+
+        let (status, _) = call(&h, &Keys::generate(), "POST", &arm_path(&Uuid::new_v4())).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn live_and_ended_streams_get_409() {
+        let h = harness().await;
+        let keys = Keys::generate();
+        for state in [UserStreamState::Live, UserStreamState::Ended] {
+            let id = stream_for(&h, &keys, state).await;
+            let (status, _) = call(&h, &keys, "POST", &arm_path(&id)).await;
+            assert_eq!(status, StatusCode::CONFLICT);
+        }
+    }
+}

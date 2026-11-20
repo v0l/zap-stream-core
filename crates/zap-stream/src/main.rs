@@ -35,6 +35,8 @@ mod api;
 #[cfg(feature = "pipeline")]
 mod overseer;
 mod settings;
+#[cfg(all(test, feature = "pipeline"))]
+mod test_support;
 mod websocket_metrics;
 
 #[derive(Parser, Debug)]

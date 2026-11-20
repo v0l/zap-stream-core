@@ -87,6 +87,36 @@ impl ZapStreamOverseer {
     /// Time window when we allow resuming a recently ended stream on the primary key
     const RECONNECT_WINDOW_SECONDS: u64 = 120;
 
+    #[cfg(test)]
+    pub fn for_tests(
+        settings: Settings,
+        db: ZapStreamDb,
+        lightning: Arc<dyn LightningNode + Send + Sync>,
+    ) -> Self {
+        let client = nostr_sdk::ClientBuilder::new()
+            .signer(Keys::generate())
+            .build();
+        let stream_manager = StreamManager::new("test-node".to_string());
+        Self {
+            db,
+            lightning,
+            n53: N53Publisher::new(stream_manager.clone(), client.clone()),
+            n94: None,
+            client,
+            segment_length: 2.0,
+            stream_manager,
+            node_name: "test-node".to_string(),
+            nwc_topup_requests: Arc::new(RwLock::new(HashSet::new())),
+            out_dir: PathBuf::from(&settings.output_dir),
+            last_event_publish: Arc::new(RwLock::new(HashMap::new())),
+            #[cfg(feature = "moq")]
+            moq_origin: None,
+            #[cfg(feature = "moq")]
+            moq_bind: None,
+            settings,
+        }
+    }
+
     pub async fn from_settings(settings: &Settings, shutdown: CancellationToken) -> Result<Self> {
         let db = ZapStreamDb::new(&settings.overseer.database).await?;
         db.migrate().await?;
@@ -1273,5 +1303,130 @@ mod tests {
         let segments = vec![create_test_segment(f32::NAN)];
         let (_duration, cost) = get_cost(&endpoint, &segments);
         assert!(cost >= 0, "Cost should be non-negative even with NaN input");
+    }
+
+    mod armed_connect {
+        use super::*;
+        use crate::test_support::{TestDb, test_overseer};
+        use chrono::Duration;
+        use zap_stream_core::overseer::Overseer;
+
+        async fn user_with_key(db: &ZapStreamDb, seed: u8) -> (u64, String) {
+            let uid = db.upsert_user(&[seed; 32]).await.unwrap();
+            db.update_user_balance(uid, 1_000_000).await.unwrap();
+            (uid, db.get_user(uid).await.unwrap().stream_key)
+        }
+
+        fn conn(key: &str) -> ConnectionInfo {
+            ConnectionInfo {
+                id: Uuid::new_v4(),
+                endpoint: "rtmp".to_string(),
+                ip_addr: "127.0.0.1".to_string(),
+                app_name: "basic".to_string(),
+                key: key.to_string(),
+            }
+        }
+
+        async fn planned(db: &ZapStreamDb, uid: u64) -> Uuid {
+            let s = UserStream {
+                id: Uuid::new_v4().to_string(),
+                user_id: uid,
+                starts: Utc::now() + Duration::hours(1),
+                state: UserStreamState::Planned,
+                ..Default::default()
+            };
+            db.insert_stream(&s).await.unwrap();
+            Uuid::parse_str(&s.id).unwrap()
+        }
+
+        async fn override_of(ov: &ZapStreamOverseer, key: &str) -> Option<Uuid> {
+            match ov.connect(&conn(key)).await.unwrap() {
+                ConnectResult::Allow {
+                    stream_id_override, ..
+                } => stream_id_override,
+                ConnectResult::Deny { reason } => panic!("denied: {reason}"),
+            }
+        }
+
+        #[tokio::test]
+        async fn primary_key_goes_live_on_the_armed_stream_id_once() {
+            let t = TestDb::start().await;
+            let ov = test_overseer(&t.db);
+            let (uid, key) = user_with_key(&t.db, 40).await;
+            let id = planned(&t.db, uid).await;
+            t.db.arm_stream(uid, &id).await.unwrap();
+
+            assert_eq!(override_of(&ov, &key).await, Some(id));
+            assert_eq!(t.db.get_user(uid).await.unwrap().armed_stream_id, None);
+            assert_eq!(override_of(&ov, &key).await, None);
+        }
+
+        #[tokio::test]
+        async fn primary_key_without_an_arm_gets_a_new_stream() {
+            let t = TestDb::start().await;
+            let ov = test_overseer(&t.db);
+            let (uid, key) = user_with_key(&t.db, 41).await;
+            planned(&t.db, uid).await;
+
+            assert_eq!(override_of(&ov, &key).await, None);
+        }
+
+        #[tokio::test]
+        async fn deleted_armed_stream_falls_back_to_a_new_stream() {
+            let t = TestDb::start().await;
+            let ov = test_overseer(&t.db);
+            let (uid, key) = user_with_key(&t.db, 42).await;
+            let id = planned(&t.db, uid).await;
+            t.db.arm_stream(uid, &id).await.unwrap();
+            t.db.clear_stream_arm(&id).await.unwrap();
+
+            assert_eq!(override_of(&ov, &key).await, None);
+        }
+
+        #[tokio::test]
+        async fn reconnect_within_grace_resumes_without_consuming_the_arm() {
+            let t = TestDb::start().await;
+            let ov = test_overseer(&t.db);
+            let (uid, key) = user_with_key(&t.db, 43).await;
+            let armed = planned(&t.db, uid).await;
+            t.db.arm_stream(uid, &armed).await.unwrap();
+            let mut ended = UserStream {
+                id: Uuid::new_v4().to_string(),
+                user_id: uid,
+                starts: Utc::now() - Duration::minutes(10),
+                ends: Some(Utc::now() - Duration::seconds(30)),
+                state: UserStreamState::Ended,
+                ..Default::default()
+            };
+            t.db.insert_stream(&ended).await.unwrap();
+            ended.title = Some("just ended".to_string());
+
+            let resumed = override_of(&ov, &key).await;
+
+            assert_eq!(resumed, Some(Uuid::parse_str(&ended.id).unwrap()));
+            assert_eq!(
+                t.db.get_user(uid).await.unwrap().armed_stream_id,
+                Some(armed.to_string())
+            );
+        }
+
+        #[tokio::test]
+        async fn per_event_keys_ignore_the_arm() {
+            let t = TestDb::start().await;
+            let ov = test_overseer(&t.db);
+            let (uid, _) = user_with_key(&t.db, 44).await;
+            let armed = planned(&t.db, uid).await;
+            t.db.arm_stream(uid, &armed).await.unwrap();
+            let fixed = planned(&t.db, uid).await;
+            t.db.create_stream_key(uid, "fixed-key", None, None, &fixed.to_string())
+                .await
+                .unwrap();
+
+            assert_eq!(override_of(&ov, "fixed-key").await, Some(fixed));
+            assert_eq!(
+                t.db.get_user(uid).await.unwrap().armed_stream_id,
+                Some(armed.to_string())
+            );
+        }
     }
 }
